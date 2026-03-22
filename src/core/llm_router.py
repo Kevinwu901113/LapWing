@@ -86,4 +86,4 @@ class LLMRouter:
             max_tokens=max_tokens,
             messages=messages,
         )
-        return response.choices[0].message.content
+        return response.choices[0].message.content or ""
