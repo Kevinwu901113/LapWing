@@ -3,9 +3,8 @@
 import logging
 from pathlib import Path
 
-from openai import AsyncOpenAI
-
 from src.core.prompt_loader import load_prompt
+from src.core.llm_router import LLMRouter
 from src.memory.conversation import ConversationMemory
 from config.settings import MAX_HISTORY_TURNS
 
@@ -15,9 +14,8 @@ logger = logging.getLogger("lapwing.brain")
 class LapwingBrain:
     """管理 LLM 调用和对话上下文。"""
 
-    def __init__(self, api_key: str, base_url: str, model: str, db_path: Path):
-        self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
-        self.model = model
+    def __init__(self, db_path: Path):
+        self.router = LLMRouter()
         self.memory = ConversationMemory(db_path)
         self._system_prompt: str | None = None
 
@@ -55,25 +53,18 @@ class LapwingBrain:
         max_messages = MAX_HISTORY_TURNS * 2
         recent = history[-max_messages:] if len(history) > max_messages else history
 
-        # 构建完整的消息列表（system prompt + 对话历史）
         messages = [
             {"role": "system", "content": self.system_prompt},
             *recent,
         ]
 
         try:
-            response = await self.client.chat.completions.create(
-                model=self.model,
-                max_tokens=1024,
-                messages=messages,
-            )
-            reply = response.choices[0].message.content
+            reply = await self.router.complete(messages, purpose="chat")
             await self.memory.append(chat_id, "assistant", reply)
             logger.debug(f"[{chat_id}] 回复生成成功，长度: {len(reply)}")
             return reply
 
         except Exception as e:
             logger.error(f"LLM 调用失败: {e}")
-            # 移除刚添加的 user message，保持历史一致性
             await self.memory.remove_last(chat_id)
             return "抱歉，我刚才走神了一下。你能再说一次吗？"

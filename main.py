@@ -5,9 +5,6 @@ from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 from config.settings import (
     TELEGRAM_TOKEN,
-    LLM_API_KEY,
-    LLM_BASE_URL,
-    LLM_MODEL,
     MAX_REPLY_LENGTH,
     LOG_LEVEL,
     LOGS_DIR,
@@ -28,12 +25,7 @@ logging.basicConfig(
 logger = logging.getLogger("lapwing")
 
 # ===== 初始化大脑 =====
-brain = LapwingBrain(
-    api_key=LLM_API_KEY,
-    base_url=LLM_BASE_URL,
-    model=LLM_MODEL,
-    db_path=DB_PATH,
-)
+brain = LapwingBrain(db_path=DB_PATH)
 
 
 # ===== 生命周期回调 =====
@@ -108,14 +100,8 @@ if __name__ == "__main__":
     if not TELEGRAM_TOKEN:
         logger.error("TELEGRAM_TOKEN 未配置！请检查 config/.env")
         exit(1)
-    if not LLM_API_KEY:
-        logger.error("LLM_API_KEY 未配置！请检查 config/.env")
-        exit(1)
-    if not LLM_BASE_URL:
-        logger.error("LLM_BASE_URL 未配置！请检查 config/.env")
-        exit(1)
 
-    logger.info(f"Lapwing 正在启动... 模型: {LLM_MODEL}")
+    logger.info("Lapwing 正在启动...")
 
     app = (
         Application.builder()
