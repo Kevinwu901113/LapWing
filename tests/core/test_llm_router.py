@@ -1,7 +1,20 @@
 """LLMRouter 单元测试。"""
 
+import sys
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
+
+
+@pytest.fixture(autouse=True)
+def reset_module_cache():
+    """每个测试前后清除 llm_router 和 settings 的模块缓存，确保测试隔离。"""
+    for mod in list(sys.modules.keys()):
+        if "llm_router" in mod or "settings" in mod:
+            del sys.modules[mod]
+    yield
+    for mod in list(sys.modules.keys()):
+        if "llm_router" in mod or "settings" in mod:
+            del sys.modules[mod]
 
 
 class TestLLMRouterInit:
@@ -20,10 +33,6 @@ class TestLLMRouterInit:
             "LLM_BASE_URL": "https://generic.api.com/v1",
             "LLM_MODEL": "glm-4-flash",
         }):
-            import sys
-            for mod in list(sys.modules.keys()):
-                if "llm_router" in mod or "settings" in mod:
-                    del sys.modules[mod]
             from src.core.llm_router import LLMRouter
             router = LLMRouter()
             assert router.model_for("chat") == "glm-4-plus"
@@ -36,12 +45,6 @@ class TestLLMRouterInit:
             "LLM_BASE_URL": "https://generic.api.com/v1",
             "LLM_MODEL": "glm-4-flash",
         }, clear=True):
-            import importlib
-            import sys
-            for mod in list(sys.modules.keys()):
-                if "llm_router" in mod or "settings" in mod:
-                    del sys.modules[mod]
-
             from src.core.llm_router import LLMRouter
             router = LLMRouter()
             assert router.model_for("chat") == "glm-4-flash"
@@ -65,11 +68,6 @@ class TestLLMRouterComplete:
             "LLM_BASE_URL": "https://generic.api.com/v1",
             "LLM_MODEL": "glm-4-flash",
         }):
-            import sys
-            for mod in list(sys.modules.keys()):
-                if "llm_router" in mod or "settings" in mod:
-                    del sys.modules[mod]
-
             from src.core.llm_router import LLMRouter
             router = LLMRouter()
 
