@@ -64,7 +64,7 @@ class LLMRouter:
 
         Args:
             messages: OpenAI 格式的消息列表
-            purpose: 用途标识（"chat" 或 "tool"）
+            purpose: 用途标识（"chat" 或 "tool"），未知值回退到 chat 模型
             max_tokens: 最大生成 token 数
 
         Returns:
@@ -73,8 +73,13 @@ class LLMRouter:
         Raises:
             Exception: LLM API 调用失败时向上抛出，由调用方处理
         """
-        client = self._clients.get(purpose, self._clients["chat"])
-        model = self._models.get(purpose, LLM_MODEL)
+        client = self._clients.get(purpose)
+        if client is None:
+            logger.warning(f"[{purpose}] 未知的 purpose，回退到 chat 模型")
+            client = self._clients["chat"]
+            model = self._models.get("chat", LLM_MODEL)
+        else:
+            model = self._models.get(purpose, LLM_MODEL)
 
         response = await client.chat.completions.create(
             model=model,
