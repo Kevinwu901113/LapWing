@@ -23,6 +23,15 @@ LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
 LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "")
 LLM_MODEL: str = os.getenv("LLM_MODEL", "glm-4-flash")
 
+# 多模型路由配置（可选，不配置时回退到通用 LLM_* 配置）
+LLM_CHAT_API_KEY: str = os.getenv("LLM_CHAT_API_KEY", "")
+LLM_CHAT_BASE_URL: str = os.getenv("LLM_CHAT_BASE_URL", "")
+LLM_CHAT_MODEL: str = os.getenv("LLM_CHAT_MODEL", "")
+
+LLM_TOOL_API_KEY: str = os.getenv("LLM_TOOL_API_KEY", "")
+LLM_TOOL_BASE_URL: str = os.getenv("LLM_TOOL_BASE_URL", "")
+LLM_TOOL_MODEL: str = os.getenv("LLM_TOOL_MODEL", "")
+
 # 对话设置
 MAX_HISTORY_TURNS: int = 20  # 保留最近 N 轮对话（每轮 = 1 user + 1 assistant）
 MAX_REPLY_LENGTH: int = 4096  # Telegram 消息字符限制
