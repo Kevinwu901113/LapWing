@@ -20,6 +20,7 @@ class LapwingBrain:
         self.memory = ConversationMemory(db_path)
         self.fact_extractor = FactExtractor(self.memory, self.router)
         self._system_prompt: str | None = None
+        self.dispatcher = None  # Set externally by main.py (AgentDispatcher | None)
 
     async def init_db(self) -> None:
         """初始化数据库连接和表结构。"""
@@ -69,6 +70,16 @@ class LapwingBrain:
 
         # 通知提取器有新消息（异步触发轮次/空闲计时逻辑）
         self.fact_extractor.notify(chat_id)
+
+        # Try agent dispatch first
+        if self.dispatcher is not None:
+            try:
+                agent_reply = await self.dispatcher.try_dispatch(chat_id, user_message)
+                if agent_reply is not None:
+                    await self.memory.append(chat_id, "assistant", agent_reply)
+                    return agent_reply
+            except Exception as e:
+                logger.warning(f"[{chat_id}] Agent dispatch failed, falling back: {e}")
 
         history = await self.memory.get(chat_id)
         max_messages = MAX_HISTORY_TURNS * 2
