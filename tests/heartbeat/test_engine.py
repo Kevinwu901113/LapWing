@@ -96,3 +96,26 @@ class TestHeartbeatEngineDecision:
         await engine._run_beat("fast")
         await asyncio.gather(*engine._running_tasks, return_exceptions=True)
         bot.send_message.assert_not_called()
+
+    async def test_decide_does_not_corrupt_braces_in_user_facts(self, mock_brain):
+        """user_facts_summary 中的 { } 应原样传入 NIM，不被 _escape_braces 双写。"""
+        from datetime import timezone
+        mock_brain.memory.get_user_facts = AsyncMock(return_value=[
+            {"fact_key": "test", "fact_value": "{not_a_placeholder}"}
+        ])
+        engine = HeartbeatEngine(brain=mock_brain, bot=MagicMock())
+        engine.registry.register(FakeFastAction())
+        ctx = SenseContext(
+            beat_type="fast",
+            now=datetime.now(timezone.utc),
+            last_interaction=None,
+            silence_hours=5.0,
+            user_facts_summary="- test: {not_a_placeholder}",
+            recent_memory_summary="",
+            chat_id="c1",
+        )
+        await engine._decide(ctx)
+        call_args = mock_brain.router.complete.call_args
+        prompt_content = call_args.args[0][0]["content"]  # system message content
+        assert "{not_a_placeholder}" in prompt_content
+        assert "{{not_a_placeholder}}" not in prompt_content

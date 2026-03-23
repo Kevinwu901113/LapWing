@@ -1,7 +1,7 @@
 """ProactiveMessageAction — 主动联系用户。"""
 
 import logging
-from src.core.heartbeat import HeartbeatAction, SenseContext, _escape_braces
+from src.core.heartbeat import HeartbeatAction, SenseContext
 from src.core.prompt_loader import load_prompt
 
 logger = logging.getLogger("lapwing.heartbeat.proactive")
@@ -26,12 +26,11 @@ class ProactiveMessageAction(HeartbeatAction):
             discoveries = await brain.memory.get_unshared_discoveries(ctx.chat_id, limit=3)
             discoveries_summary = self._format_discoveries(discoveries)
 
-            # user_facts_summary and discoveries_summary come from user/DB content — escape { }
             prompt = self._prompt.format(
                 now=ctx.now.strftime("%Y-%m-%d %H:%M %Z"),
                 silence_hours=ctx.silence_hours,
-                user_facts_summary=_escape_braces(ctx.user_facts_summary),
-                discoveries_summary=_escape_braces(discoveries_summary),
+                user_facts_summary=ctx.user_facts_summary,
+                discoveries_summary=discoveries_summary,
             )
 
             reply = await brain.router.complete(

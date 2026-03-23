@@ -55,10 +55,6 @@ class ActionRegistry:
         ]
 
 
-def _escape_braces(text: str) -> str:
-    """防止用户内容中的 { } 干扰 str.format() 模板替换。"""
-    return text.replace("{", "{{").replace("}", "}}")
-
 
 class SenseLayer:
     """为指定 chat_id 构建 SenseContext 快照。"""
@@ -189,13 +185,12 @@ class HeartbeatEngine:
             return []
 
         now_str = ctx.now.strftime("%Y-%m-%d %H:%M %Z")
-        # user_facts_summary and available_actions JSON both contain { } — escape them
         prompt = self._decision_prompt_text.format(
             beat_type=ctx.beat_type,
             now=now_str,
             silence_hours=ctx.silence_hours,
-            user_facts_summary=_escape_braces(ctx.user_facts_summary),
-            available_actions=_escape_braces(json.dumps(available, ensure_ascii=False)),
+            user_facts_summary=ctx.user_facts_summary,
+            available_actions=json.dumps(available, ensure_ascii=False),
         )
         try:
             response = await self._brain.router.complete(
