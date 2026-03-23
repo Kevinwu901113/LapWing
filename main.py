@@ -38,15 +38,17 @@ async def post_init(application: Application) -> None:
     logger.info("数据库初始化完成")
 
     from src.agents.base import AgentRegistry
+    from src.agents.researcher import ResearcherAgent
     from src.core.dispatcher import AgentDispatcher
 
     agent_registry = AgentRegistry()
+    agent_registry.register(ResearcherAgent(memory=brain.memory))
     brain.dispatcher = AgentDispatcher(
         registry=agent_registry,
         router=brain.router,
         memory=brain.memory,
     )
-    logger.info("Agent dispatcher initialized (registry empty, zero-overhead mode)")
+    logger.info("Agent dispatcher initialized with: researcher")
 
     heartbeat = HeartbeatEngine(brain=brain, bot=application.bot)
     heartbeat.registry.register(ProactiveMessageAction())
