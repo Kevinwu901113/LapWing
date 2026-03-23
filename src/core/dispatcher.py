@@ -1,0 +1,117 @@
+"""Agent 分发器 — 判断用户消息是否需要交给某个 Agent 处理。"""
+
+import json
+import logging
+
+from src.agents.base import AgentRegistry, AgentTask, AgentResult
+from src.core.prompt_loader import load_prompt
+
+logger = logging.getLogger(__name__)
+
+
+class AgentDispatcher:
+    """将用户消息路由到合适的 Agent，或返回 None 交由 Lapwing 直接回应。"""
+
+    def __init__(self, registry: AgentRegistry, router, memory) -> None:
+        self._registry = registry
+        self._router = router
+        self._memory = memory
+
+    async def try_dispatch(self, chat_id: str, user_message: str) -> str | None:
+        """尝试将用户消息分发给合适的 Agent。
+
+        Returns:
+            Agent 的回复文本（可能经过人格格式化），或 None（回退到普通对话）。
+        """
+        # 1. 注册表为空时直接跳过，避免任何开销
+        if self._registry.is_empty():
+            return None
+
+        try:
+            # 2. 分类：判断需要哪个 Agent（如果有的话）
+            agent_name = await self._classify(user_message)
+            if agent_name is None:
+                return None
+
+            # 3. 查找 Agent
+            agent = self._registry.get_by_name(agent_name)
+            if agent is None:
+                logger.warning(f"Dispatcher selected unknown agent '{agent_name}'")
+                return None
+
+            # 4. 从记忆中获取历史和用户画像，构建 AgentTask
+            history = await self._memory.get(chat_id)
+            user_facts = await self._memory.get_user_facts(chat_id)
+            task = AgentTask(
+                chat_id=chat_id,
+                user_message=user_message,
+                history=history,
+                user_facts=user_facts,
+            )
+
+            # 5. 执行 Agent
+            result: AgentResult = await agent.execute(task, self._router)
+
+            # 6. 按需进行人格格式化
+            if result.needs_persona_formatting:
+                return await self._format_with_persona(result.content)
+            return result.content
+
+        except Exception as e:
+            logger.warning(f"Agent dispatch failed, falling back to normal: {e}")
+            return None
+
+    async def _classify(self, user_message: str) -> str | None:
+        """使用 LLM（tool 模型）判断用户消息是否需要 Agent 处理。
+
+        Returns:
+            Agent 名称字符串，或 None（由 Lapwing 直接回应）。
+        """
+        agents_json = json.dumps(self._registry.as_descriptions(), ensure_ascii=False)
+        prompt = (
+            load_prompt("agent_dispatcher")
+            .replace("{available_agents}", agents_json)
+            .replace("{user_message}", user_message)
+        )
+        raw = await self._router.complete(
+            [{"role": "user", "content": prompt}],
+            purpose="tool",
+            max_tokens=128,
+        )
+        return self._parse_decision(raw)
+
+    def _parse_decision(self, raw: str) -> str | None:
+        """防御性解析 LLM 返回的决策 JSON。
+
+        Returns:
+            Agent 名称字符串，或 None（解析失败或 agent 为 null）。
+        """
+        if raw is None:
+            return None
+        text = raw.strip()
+        # 去除 markdown 代码块标记
+        if text.startswith("```"):
+            lines = text.split("\n")
+            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+        try:
+            data = json.loads(text)
+        except (json.JSONDecodeError, ValueError):
+            return None
+        if not isinstance(data, dict):
+            return None
+        agent = data.get("agent")
+        if agent is None:
+            return None
+        if not isinstance(agent, str):
+            return None
+        return agent if agent.strip() else None
+
+    async def _format_with_persona(self, content: str) -> str:
+        """通过 Lapwing 的人格对原始 Agent 输出进行润色转述。"""
+        system_prompt = load_prompt("lapwing")
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"请用你的风格将以下内容转述给用户：\n\n{content}"},
+        ]
+        result = await self._router.complete(messages, purpose="chat")
+        return result if result else content
