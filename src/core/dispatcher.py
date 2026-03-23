@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 
 from src.agents.base import AgentRegistry, AgentTask, AgentResult
 from src.core.prompt_loader import load_prompt
@@ -16,6 +17,7 @@ class AgentDispatcher:
         self._registry = registry
         self._router = router
         self._memory = memory
+        self._persona_prompt = load_prompt("lapwing")
 
     async def try_dispatch(self, chat_id: str, user_message: str) -> str | None:
         """尝试将用户消息分发给合适的 Agent。
@@ -88,11 +90,9 @@ class AgentDispatcher:
         """
         if raw is None:
             return None
-        text = raw.strip()
         # 去除 markdown 代码块标记
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
+        text = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
+        text = re.sub(r"\s*```$", "", text.strip(), flags=re.MULTILINE).strip()
         try:
             data = json.loads(text)
         except (json.JSONDecodeError, ValueError):
@@ -108,9 +108,8 @@ class AgentDispatcher:
 
     async def _format_with_persona(self, content: str) -> str:
         """通过 Lapwing 的人格对原始 Agent 输出进行润色转述。"""
-        system_prompt = load_prompt("lapwing")
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": self._persona_prompt},
             {"role": "user", "content": f"请用你的风格将以下内容转述给用户：\n\n{content}"},
         ]
         result = await self._router.complete(messages, purpose="chat")

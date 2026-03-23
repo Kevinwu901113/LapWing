@@ -29,6 +29,12 @@ class FakeCoderAgent(BaseAgent):
 
 # ---- 辅助构造器 ----
 
+def _mock_load(name):
+    if name == "agent_dispatcher":
+        return "mock dispatcher {available_agents} {user_message}"
+    return "mock lapwing persona"
+
+
 def make_dispatcher(registry=None, router=None, memory=None):
     if registry is None:
         registry = AgentRegistry()
@@ -38,7 +44,8 @@ def make_dispatcher(registry=None, router=None, memory=None):
         memory = AsyncMock()
         memory.get = AsyncMock(return_value=[])
         memory.get_user_facts = AsyncMock(return_value=[])
-    return AgentDispatcher(registry=registry, router=router, memory=memory)
+    with patch("src.core.dispatcher.load_prompt", side_effect=_mock_load):
+        return AgentDispatcher(registry=registry, router=router, memory=memory)
 
 
 # ---- 测试类 ----
@@ -80,7 +87,7 @@ class TestAgentDispatcher:
 
         dispatcher = make_dispatcher(registry=registry, router=router)
 
-        with patch("src.core.dispatcher.load_prompt", return_value="mock prompt {available_agents} {user_message}"):
+        with patch("src.core.dispatcher.load_prompt", side_effect=_mock_load):
             result = await dispatcher.try_dispatch("chat1", "帮我搜索一下Python教程")
 
         assert result == "这是经过人格格式化后的搜索结果。"
@@ -96,7 +103,7 @@ class TestAgentDispatcher:
 
         dispatcher = make_dispatcher(registry=registry, router=router)
 
-        with patch("src.core.dispatcher.load_prompt", return_value="mock prompt {available_agents} {user_message}"):
+        with patch("src.core.dispatcher.load_prompt", side_effect=_mock_load):
             result = await dispatcher.try_dispatch("chat1", "帮我写一个Python脚本")
 
         assert result == "```python\nprint('hello')\n```"
@@ -113,7 +120,7 @@ class TestAgentDispatcher:
 
         dispatcher = make_dispatcher(registry=registry, router=router)
 
-        with patch("src.core.dispatcher.load_prompt", return_value="mock prompt {available_agents} {user_message}"):
+        with patch("src.core.dispatcher.load_prompt", side_effect=_mock_load):
             result = await dispatcher.try_dispatch("chat1", "帮我做点什么")
 
         assert result is None
@@ -128,7 +135,7 @@ class TestAgentDispatcher:
 
         dispatcher = make_dispatcher(registry=registry, router=router)
 
-        with patch("src.core.dispatcher.load_prompt", return_value="mock prompt {available_agents} {user_message}"):
+        with patch("src.core.dispatcher.load_prompt", side_effect=_mock_load):
             result = await dispatcher.try_dispatch("chat1", "帮我搜索一下")
 
         assert result is None
@@ -149,7 +156,7 @@ class TestAgentDispatcher:
 
         dispatcher = make_dispatcher(registry=registry, router=router)
 
-        with patch("src.core.dispatcher.load_prompt", return_value="mock prompt {available_agents} {user_message}"):
+        with patch("src.core.dispatcher.load_prompt", side_effect=_mock_load):
             result = await dispatcher.try_dispatch("chat1", "帮我搜索一下")
 
         assert result is None
@@ -183,7 +190,7 @@ class TestAgentDispatcher:
 
         dispatcher = make_dispatcher(registry=registry, router=router, memory=memory)
 
-        with patch("src.core.dispatcher.load_prompt", return_value="mock prompt {available_agents} {user_message}"):
+        with patch("src.core.dispatcher.load_prompt", side_effect=_mock_load):
             await dispatcher.try_dispatch("chat1", "帮我搜索")
 
         task = captured_task["task"]
