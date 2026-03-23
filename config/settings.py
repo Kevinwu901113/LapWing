@@ -36,5 +36,9 @@ LLM_TOOL_MODEL: str = os.getenv("LLM_TOOL_MODEL", "")
 MAX_HISTORY_TURNS: int = 20  # 保留最近 N 轮对话（每轮 = 1 user + 1 assistant）
 MAX_REPLY_LENGTH: int = 4096  # Telegram 消息字符限制
 
+# 用户画像提取
+FACT_EXTRACT_IDLE_SECONDS: int = int(os.getenv("FACT_EXTRACT_IDLE_SECONDS", "300"))  # 空闲 N 秒后触发提取
+FACT_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("FACT_EXTRACT_TURN_THRESHOLD", "3"))  # 满 N 轮触发提取
+
 # 日志
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

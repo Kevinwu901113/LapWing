@@ -6,6 +6,7 @@ from pathlib import Path
 from src.core.prompt_loader import load_prompt
 from src.core.llm_router import LLMRouter
 from src.memory.conversation import ConversationMemory
+from src.memory.fact_extractor import FactExtractor
 from config.settings import MAX_HISTORY_TURNS
 
 logger = logging.getLogger("lapwing.brain")
@@ -17,6 +18,7 @@ class LapwingBrain:
     def __init__(self, db_path: Path):
         self.router = LLMRouter()
         self.memory = ConversationMemory(db_path)
+        self.fact_extractor = FactExtractor(self.memory, self.router)
         self._system_prompt: str | None = None
 
     async def init_db(self) -> None:
@@ -25,7 +27,7 @@ class LapwingBrain:
 
     @property
     def system_prompt(self) -> str:
-        """懒加载 system prompt。"""
+        """懒加载 system prompt（基础人格）。"""
         if self._system_prompt is None:
             self._system_prompt = load_prompt("lapwing")
             logger.info("已加载 Lapwing 人格 prompt")
@@ -36,6 +38,22 @@ class LapwingBrain:
         from src.core.prompt_loader import reload_prompt
         self._system_prompt = reload_prompt("lapwing")
         logger.info("已重新加载 Lapwing 人格 prompt")
+
+    async def _build_system_prompt(self, chat_id: str) -> str:
+        """组合基础人格 prompt 和用户画像信息。"""
+        base = self.system_prompt
+        facts = await self.memory.get_user_facts(chat_id)
+        if not facts:
+            return base
+
+        facts_text = "\n".join(f"- {f['fact_key']}: {f['fact_value']}" for f in facts)
+        return (
+            f"{base}\n\n"
+            f"## 你对这个用户的了解\n\n"
+            f"以下是你从之前对话中了解到的关于这个用户的信息。"
+            f"在合适的时候可以自然地引用，但不要刻意提起。\n\n"
+            f"{facts_text}"
+        )
 
     async def think(self, chat_id: str, user_message: str) -> str:
         """处理用户消息，返回 Lapwing 的回复。
@@ -49,12 +67,18 @@ class LapwingBrain:
         """
         await self.memory.append(chat_id, "user", user_message)
 
+        # 通知提取器有新消息（异步触发轮次/空闲计时逻辑）
+        self.fact_extractor.notify(chat_id)
+
         history = await self.memory.get(chat_id)
         max_messages = MAX_HISTORY_TURNS * 2
         recent = history[-max_messages:] if len(history) > max_messages else history
 
+        # 动态组合 system prompt（基础人格 + 用户画像）
+        system_content = await self._build_system_prompt(chat_id)
+
         messages = [
-            {"role": "system", "content": self.system_prompt},
+            {"role": "system", "content": system_content},
             *recent,
         ]
 

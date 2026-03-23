@@ -37,6 +37,7 @@ async def post_init(application: Application) -> None:
 
 async def post_shutdown(application: Application) -> None:
     """应用关闭时清理资源。"""
+    await brain.fact_extractor.shutdown()
     await brain.memory.close()
     logger.info("资源清理完成")
 
