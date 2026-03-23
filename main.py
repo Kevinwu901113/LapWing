@@ -37,6 +37,17 @@ async def post_init(application: Application) -> None:
     await brain.init_db()
     logger.info("数据库初始化完成")
 
+    from src.agents.base import AgentRegistry
+    from src.core.dispatcher import AgentDispatcher
+
+    agent_registry = AgentRegistry()
+    brain.dispatcher = AgentDispatcher(
+        registry=agent_registry,
+        router=brain.router,
+        memory=brain.memory,
+    )
+    logger.info("Agent dispatcher initialized (registry empty, zero-overhead mode)")
+
     heartbeat = HeartbeatEngine(brain=brain, bot=application.bot)
     heartbeat.registry.register(ProactiveMessageAction())
     heartbeat.registry.register(MemoryConsolidationAction())
