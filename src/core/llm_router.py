@@ -6,6 +6,7 @@ from config.settings import (
     LLM_API_KEY, LLM_BASE_URL, LLM_MODEL,
     LLM_CHAT_API_KEY, LLM_CHAT_BASE_URL, LLM_CHAT_MODEL,
     LLM_TOOL_API_KEY, LLM_TOOL_BASE_URL, LLM_TOOL_MODEL,
+    NIM_API_KEY, NIM_BASE_URL, NIM_MODEL,
 )
 
 logger = logging.getLogger("lapwing.llm_router")
@@ -14,6 +15,7 @@ logger = logging.getLogger("lapwing.llm_router")
 _PURPOSE_ENV: dict[str, tuple[str, str, str]] = {
     "chat": (LLM_CHAT_API_KEY, LLM_CHAT_BASE_URL, LLM_CHAT_MODEL),
     "tool": (LLM_TOOL_API_KEY, LLM_TOOL_BASE_URL, LLM_TOOL_MODEL),
+    "heartbeat": (NIM_API_KEY, NIM_BASE_URL, NIM_MODEL),
 }
 
 

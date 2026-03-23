@@ -50,6 +50,31 @@ class TestLLMRouterInit:
             assert router.model_for("chat") == "glm-4-flash"
             assert router.model_for("tool") == "glm-4-flash"
 
+    def test_heartbeat_uses_nim_when_configured(self):
+        """NIM 配置存在时，heartbeat purpose 使用 NIM 模型。"""
+        with patch.dict("os.environ", {
+            "NIM_API_KEY": "nvapi-test",
+            "NIM_BASE_URL": "https://integrate.api.nvidia.com/v1",
+            "NIM_MODEL": "meta/llama-3.1-8b-instruct",
+            "LLM_API_KEY": "generic-key",
+            "LLM_BASE_URL": "https://generic.api.com/v1",
+            "LLM_MODEL": "glm-4-flash",
+        }):
+            from src.core.llm_router import LLMRouter
+            router = LLMRouter()
+            assert router.model_for("heartbeat") == "meta/llama-3.1-8b-instruct"
+
+    def test_heartbeat_falls_back_when_nim_not_configured(self):
+        """NIM 未配置时，heartbeat purpose 回退到通用模型。"""
+        with patch.dict("os.environ", {
+            "LLM_API_KEY": "generic-key",
+            "LLM_BASE_URL": "https://generic.api.com/v1",
+            "LLM_MODEL": "glm-4-flash",
+        }, clear=True):
+            from src.core.llm_router import LLMRouter
+            router = LLMRouter()
+            assert router.model_for("heartbeat") == "glm-4-flash"
+
 
 @pytest.mark.asyncio
 class TestLLMRouterComplete:
