@@ -11,6 +11,9 @@ from config.settings import (
     DB_PATH,
 )
 from src.core.brain import LapwingBrain
+from src.core.heartbeat import HeartbeatEngine
+from src.heartbeat.actions.proactive import ProactiveMessageAction
+from src.heartbeat.actions.consolidation import MemoryConsolidationAction
 
 # ===== 日志配置 =====
 LOGS_DIR.mkdir(exist_ok=True)
@@ -30,13 +33,23 @@ brain = LapwingBrain(db_path=DB_PATH)
 
 # ===== 生命周期回调 =====
 async def post_init(application: Application) -> None:
-    """应用启动后初始化数据库。"""
+    """应用启动后初始化数据库并启动心跳引擎。"""
     await brain.init_db()
     logger.info("数据库初始化完成")
+
+    heartbeat = HeartbeatEngine(brain=brain, bot=application.bot)
+    heartbeat.registry.register(ProactiveMessageAction())
+    heartbeat.registry.register(MemoryConsolidationAction())
+    heartbeat.start()
+    application.bot_data["heartbeat"] = heartbeat
+    logger.info("心跳引擎已初始化")
 
 
 async def post_shutdown(application: Application) -> None:
     """应用关闭时清理资源。"""
+    heartbeat = application.bot_data.get("heartbeat")
+    if heartbeat:
+        await heartbeat.shutdown()
     await brain.fact_extractor.shutdown()
     await brain.memory.close()
     logger.info("资源清理完成")
