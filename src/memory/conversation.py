@@ -59,6 +59,21 @@ class ConversationMemory:
             );
             CREATE INDEX IF NOT EXISTS idx_user_facts_chat_id
                 ON user_facts(chat_id);
+
+            CREATE TABLE IF NOT EXISTS discoveries (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id       TEXT NOT NULL,
+                source        TEXT NOT NULL,
+                title         TEXT NOT NULL,
+                summary       TEXT NOT NULL,
+                url           TEXT,
+                discovered_at TEXT NOT NULL,
+                shared_at     TEXT
+            );
+            CREATE INDEX IF NOT EXISTS idx_discoveries_chat_id
+                ON discoveries(chat_id);
+            CREATE INDEX IF NOT EXISTS idx_discoveries_shared
+                ON discoveries(chat_id, shared_at);
         """)
         await self._db.commit()
 
@@ -189,3 +204,84 @@ class ConversationMemory:
             await self._db.commit()
         except Exception as e:
             logger.error(f"写入用户画像失败: {e}")
+
+    async def get_all_chat_ids(self) -> list[str]:
+        """返回所有有过对话记录的 chat_id 列表。"""
+        try:
+            async with self._db.execute(
+                "SELECT DISTINCT chat_id FROM conversations"
+            ) as cursor:
+                return [row[0] async for row in cursor]
+        except Exception as e:
+            logger.error(f"获取 chat_id 列表失败: {e}")
+            return []
+
+    async def get_last_interaction(self, chat_id: str) -> datetime | None:
+        """返回指定 chat_id 最后一条消息的时间戳，无记录时返回 None。"""
+        try:
+            async with self._db.execute(
+                "SELECT timestamp FROM conversations WHERE chat_id = ? ORDER BY id DESC LIMIT 1",
+                (chat_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+                if row is None:
+                    return None
+                return datetime.fromisoformat(row[0])
+        except Exception as e:
+            logger.error(f"获取最后交互时间失败: {e}")
+            return None
+
+    async def add_discovery(
+        self,
+        chat_id: str,
+        source: str,
+        title: str,
+        summary: str,
+        url: str | None,
+    ) -> None:
+        """写入一条新发现。"""
+        try:
+            discovered_at = datetime.now(timezone.utc).isoformat()
+            await self._db.execute(
+                """INSERT INTO discoveries (chat_id, source, title, summary, url, discovered_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (chat_id, source, title, summary, url, discovered_at),
+            )
+            await self._db.commit()
+        except Exception as e:
+            logger.error(f"写入 discovery 失败: {e}")
+
+    async def get_unshared_discoveries(self, chat_id: str, limit: int = 5) -> list[dict]:
+        """获取未分享的发现，按发现时间升序（最早的优先分享）。"""
+        try:
+            async with self._db.execute(
+                """SELECT id, source, title, summary, url, discovered_at, shared_at
+                   FROM discoveries
+                   WHERE chat_id = ? AND shared_at IS NULL
+                   ORDER BY discovered_at ASC
+                   LIMIT ?""",
+                (chat_id, limit),
+            ) as cursor:
+                return [
+                    {
+                        "id": row[0], "source": row[1], "title": row[2],
+                        "summary": row[3], "url": row[4],
+                        "discovered_at": row[5], "shared_at": row[6],
+                    }
+                    async for row in cursor
+                ]
+        except Exception as e:
+            logger.error(f"获取未分享 discovery 失败: {e}")
+            return []
+
+    async def mark_discovery_shared(self, discovery_id: int) -> None:
+        """将指定 discovery 标记为已分享。"""
+        try:
+            shared_at = datetime.now(timezone.utc).isoformat()
+            await self._db.execute(
+                "UPDATE discoveries SET shared_at = ? WHERE id = ?",
+                (shared_at, discovery_id),
+            )
+            await self._db.commit()
+        except Exception as e:
+            logger.error(f"标记 discovery 已分享失败: {e}")
