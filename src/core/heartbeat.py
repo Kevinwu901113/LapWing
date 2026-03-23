@@ -180,7 +180,7 @@ class HeartbeatEngine:
                 if action:
                     await action.execute(ctx, self._brain, self._bot)
         except Exception as e:
-            logger.error(f"[{chat_id}] 心跳处理失败: {e}")
+            logger.exception(f"[{chat_id}] 心跳处理失败: {e}")
 
     async def _decide(self, ctx: SenseContext) -> list[str]:
         """调用 NIM 决定本次心跳执行哪些 actions。"""
@@ -199,7 +199,7 @@ class HeartbeatEngine:
         )
         try:
             response = await self._brain.router.complete(
-                [{"role": "user", "content": prompt}],
+                [{"role": "system", "content": prompt}, {"role": "user", "content": "请做出判断"}],
                 purpose="heartbeat",
                 max_tokens=256,
             )
