@@ -153,6 +153,10 @@ class FactExtractor:
             logger.debug(f"解析提取结果失败: {e!r}")
             return []
 
+    async def force_extraction(self, chat_id: str) -> None:
+        """外部主动触发一次提取（供 HeartbeatEngine 的慢心跳调用）。"""
+        await self._run_extraction(chat_id)
+
     async def shutdown(self) -> None:
         """关闭时取消所有待处理的空闲计时器。"""
         for task in self._idle_tasks.values():

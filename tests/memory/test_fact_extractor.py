@@ -157,6 +157,12 @@ class TestRunExtraction:
         await extractor._run_extraction("chat1")
         assert "chat1" not in extractor._extracting
 
+    async def test_force_extraction_delegates_to_run_extraction(self, extractor):
+        """force_extraction 是 _run_extraction 的公开封装。"""
+        extractor._run_extraction = AsyncMock()
+        await extractor.force_extraction("chat1")
+        extractor._run_extraction.assert_called_once_with("chat1")
+
 
 # ===== _parse_result() 行为 =====
 
