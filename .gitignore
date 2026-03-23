@@ -12,3 +12,4 @@ data/
 logs/
 .pytest_cache/
 .coverage
+.worktrees/
