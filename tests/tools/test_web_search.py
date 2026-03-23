@@ -51,8 +51,8 @@ class TestWebSearch:
         assert results[0].url == "https://example.com"
         assert results[0].snippet == "这是摘要内容"
 
-    async def test_respects_max_results(self):
-        """返回结果数量不超过 max_results。"""
+    async def test_max_results_forwarded_to_library(self):
+        """max_results 参数被正确传递给底层库。"""
         mock_raw = [
             {"title": f"结果{i}", "href": f"https://example.com/{i}", "body": f"摘要{i}"}
             for i in range(3)
@@ -70,6 +70,25 @@ class TestWebSearch:
 
         # 验证 atext 被调用时传入了正确的 max_results 参数
         mock_ddgs.atext.assert_called_once_with("测试", max_results=3)
+        assert len(results) == 3
+
+    async def test_slices_results_when_library_over_returns(self):
+        """当库返回超过 max_results 的结果时，截断到 max_results 条。"""
+        mock_raw = [
+            {"title": f"结果{i}", "href": f"https://example.com/{i}", "body": f"摘要{i}"}
+            for i in range(5)
+        ]
+
+        mock_ddgs = AsyncMock()
+        mock_ddgs.atext = AsyncMock(return_value=mock_raw)
+
+        mock_ctx = MagicMock()
+        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ddgs)
+        mock_ctx.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("src.tools.web_search.AsyncDDGS", return_value=mock_ctx):
+            results = await web_search("测试", max_results=3)
+
         assert len(results) == 3
 
     async def test_returns_empty_list_on_exception(self):
