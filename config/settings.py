@@ -32,6 +32,16 @@ LLM_TOOL_API_KEY: str = os.getenv("LLM_TOOL_API_KEY", "")
 LLM_TOOL_BASE_URL: str = os.getenv("LLM_TOOL_BASE_URL", "")
 LLM_TOOL_MODEL: str = os.getenv("LLM_TOOL_MODEL", "")
 
+# NVIDIA NIM（心跳专用模型，可选）
+NIM_API_KEY: str = os.getenv("NIM_API_KEY", "")
+NIM_BASE_URL: str = os.getenv("NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
+NIM_MODEL: str = os.getenv("NIM_MODEL", "meta/llama-3.1-8b-instruct")
+
+# 心跳配置
+HEARTBEAT_ENABLED: bool = os.getenv("HEARTBEAT_ENABLED", "true").lower() == "true"
+HEARTBEAT_FAST_INTERVAL_MINUTES: int = int(os.getenv("HEARTBEAT_FAST_INTERVAL_MINUTES", "60"))
+HEARTBEAT_SLOW_HOUR: int = int(os.getenv("HEARTBEAT_SLOW_HOUR", "3"))
+
 # 对话设置
 MAX_HISTORY_TURNS: int = 20  # 保留最近 N 轮对话（每轮 = 1 user + 1 assistant）
 MAX_REPLY_LENGTH: int = 4096  # Telegram 消息字符限制
