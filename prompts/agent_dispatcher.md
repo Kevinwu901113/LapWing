@@ -15,6 +15,7 @@
 3. **区分"聊某个话题"和"做某件事"** — "我想聊聊 Python"是日常对话；"帮我写一个 Python 脚本"才是任务。
 4. **存疑时返回 null** — 误判为 Agent 任务会打断对话体验，误判为对话则顶多少个功能，后者代价更低。
 5. **只匹配列表中存在的 Agent** — 不要凭空发明 Agent 名称。
+6. **Agent 列表为空时，直接返回 null** — 无可用 Agent，一律由 Lapwing 直接回应。
 
 ## 用户消息
 
@@ -28,4 +29,4 @@
 {"agent": "agent_name", "reason": "brief reason"}
 
 不需要分发时：
-{"agent": null, "reason": "brief reason"}
+{"agent": null}
