@@ -1,11 +1,11 @@
 """ResearcherAgent 单元测试。"""
 
-import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.agents.base import AgentTask
 from src.agents.researcher import ResearcherAgent
+from src.tools.web_fetcher import FetchResult
 
 
 # ---- 辅助 ----
@@ -97,7 +97,14 @@ class TestExecute:
         router = make_router([FAKE_QUERIES_JSON, FAKE_SUMMARY])
 
         with patch("src.agents.researcher.load_prompt", return_value="prompt {user_message} {search_results}"), \
-             patch("src.agents.researcher.web_search.search", return_value=FAKE_RESULTS) as mock_search:
+             patch("src.agents.researcher.web_search.search", return_value=FAKE_RESULTS) as mock_search, \
+             patch("src.agents.researcher.web_fetcher.fetch", AsyncMock(return_value=FetchResult(
+                 url="https://example.com/py313",
+                 title="Python 3.13 新特性",
+                 text="完整正文",
+                 success=True,
+                 error="",
+             ))):
             agent = ResearcherAgent(memory=memory)
             result = await agent.execute(make_task(), router)
 
@@ -119,7 +126,14 @@ class TestExecute:
             return FAKE_RESULTS    # 第二个词有结果
 
         with patch("src.agents.researcher.load_prompt", return_value="p {user_message} {search_results}"), \
-             patch("src.agents.researcher.web_search.search", side_effect=mock_search):
+             patch("src.agents.researcher.web_search.search", side_effect=mock_search), \
+             patch("src.agents.researcher.web_fetcher.fetch", AsyncMock(return_value=FetchResult(
+                 url="https://python.org/313",
+                 title="Python 3.13 发布说明",
+                 text="完整正文",
+                 success=True,
+                 error="",
+             ))):
             agent = ResearcherAgent(memory=memory)
             result = await agent.execute(make_task(), router)
 
@@ -160,7 +174,14 @@ class TestExecute:
         router = make_router([FAKE_QUERIES_JSON, long_summary])
 
         with patch("src.agents.researcher.load_prompt", return_value="p {user_message} {search_results}"), \
-             patch("src.agents.researcher.web_search.search", return_value=FAKE_RESULTS):
+             patch("src.agents.researcher.web_search.search", return_value=FAKE_RESULTS), \
+             patch("src.agents.researcher.web_fetcher.fetch", AsyncMock(return_value=FetchResult(
+                 url="https://example.com/py313",
+                 title="Python 3.13 新特性",
+                 text="完整正文",
+                 success=True,
+                 error="",
+             ))):
             agent = ResearcherAgent(memory=memory)
             await agent.execute(make_task(), router)
 
@@ -175,7 +196,14 @@ class TestExecute:
         router = make_router([FAKE_QUERIES_JSON, FAKE_SUMMARY])
 
         with patch("src.agents.researcher.load_prompt", return_value="p {user_message} {search_results}"), \
-             patch("src.agents.researcher.web_search.search", return_value=FAKE_RESULTS):
+             patch("src.agents.researcher.web_search.search", return_value=FAKE_RESULTS), \
+             patch("src.agents.researcher.web_fetcher.fetch", AsyncMock(return_value=FetchResult(
+                 url="https://example.com/py313",
+                 title="Python 3.13 新特性",
+                 text="完整正文",
+                 success=True,
+                 error="",
+             ))):
             agent = ResearcherAgent(memory=memory)
             result = await agent.execute(make_task(), router)
 
@@ -191,9 +219,116 @@ class TestExecute:
         router.complete = AsyncMock(side_effect=[FAKE_QUERIES_JSON, RuntimeError("timeout")])
 
         with patch("src.agents.researcher.load_prompt", return_value="p {user_message} {search_results}"), \
-             patch("src.agents.researcher.web_search.search", return_value=FAKE_RESULTS):
+             patch("src.agents.researcher.web_search.search", return_value=FAKE_RESULTS), \
+             patch("src.agents.researcher.web_fetcher.fetch", AsyncMock(return_value=FetchResult(
+                 url="https://example.com/py313",
+                 title="Python 3.13 新特性",
+                 text="完整正文",
+                 success=True,
+                 error="",
+             ))):
             agent = ResearcherAgent(memory=memory)
             result = await agent.execute(make_task(), router)
 
         assert "搜索结果" in result.content
         assert "Python 3.13 新特性" in result.content  # 降级内容包含标题
+
+    @pytest.mark.asyncio
+    async def test_fetch_success_includes_page_text_in_summary_prompt(self):
+        """抓取成功时，送给总结模型的 prompt 包含网页正文。"""
+        memory = make_memory()
+        router = make_router([FAKE_QUERIES_JSON, FAKE_SUMMARY])
+        fetched = FetchResult(
+            url="https://example.com/py313",
+            title="Python 3.13 新特性",
+            text="这是抓取到的完整正文",
+            success=True,
+            error="",
+        )
+
+        with patch("src.agents.researcher.load_prompt", return_value="p {user_message}\n{search_results}"), \
+             patch("src.agents.researcher.web_search.search", return_value=FAKE_RESULTS), \
+             patch("src.agents.researcher.web_fetcher.fetch", AsyncMock(return_value=fetched)):
+            agent = ResearcherAgent(memory=memory)
+            await agent.execute(make_task(), router)
+
+        prompt_text = router.complete.call_args_list[1].args[0][0]["content"]
+        assert "网页正文" in prompt_text
+        assert "这是抓取到的完整正文" in prompt_text
+
+    @pytest.mark.asyncio
+    async def test_fetch_failure_still_summarizes_snippets(self):
+        """抓取失败时，仍用 snippet 正常总结。"""
+        memory = make_memory()
+        router = make_router([FAKE_QUERIES_JSON, FAKE_SUMMARY])
+        fetched = FetchResult(
+            url="https://example.com/py313",
+            title="",
+            text="",
+            success=False,
+            error="请求超时",
+        )
+
+        with patch("src.agents.researcher.load_prompt", return_value="p {user_message}\n{search_results}"), \
+             patch("src.agents.researcher.web_search.search", return_value=FAKE_RESULTS), \
+             patch("src.agents.researcher.web_fetcher.fetch", AsyncMock(return_value=fetched)):
+            agent = ResearcherAgent(memory=memory)
+            result = await agent.execute(make_task(), router)
+
+        prompt_text = router.complete.call_args_list[1].args[0][0]["content"]
+        assert result.content == FAKE_SUMMARY
+        assert "新增 JIT 编译器" in prompt_text
+        assert "网页正文" not in prompt_text
+
+    @pytest.mark.asyncio
+    async def test_only_fetches_first_two_results(self):
+        """最多只抓取前两条带 URL 的结果。"""
+        memory = make_memory()
+        router = make_router([FAKE_QUERIES_JSON, FAKE_SUMMARY])
+        results = [
+            {"title": "A", "url": "https://a.com", "snippet": "a"},
+            {"title": "B", "url": "https://b.com", "snippet": "b"},
+            {"title": "C", "url": "https://c.com", "snippet": "c"},
+        ]
+        mock_fetch = AsyncMock(return_value=FetchResult(
+            url="https://a.com",
+            title="A",
+            text="正文",
+            success=True,
+            error="",
+        ))
+
+        with patch("src.agents.researcher.load_prompt", return_value="p {user_message}\n{search_results}"), \
+             patch("src.agents.researcher.web_search.search", return_value=results), \
+             patch("src.agents.researcher.web_fetcher.fetch", mock_fetch):
+            agent = ResearcherAgent(memory=memory)
+            await agent.execute(make_task(), router)
+
+        assert mock_fetch.await_count == 2
+        fetched_urls = [call.args[0] for call in mock_fetch.await_args_list]
+        assert fetched_urls == ["https://a.com", "https://b.com"]
+
+    @pytest.mark.asyncio
+    async def test_result_without_url_is_not_fetched(self):
+        """没有 URL 的结果不会调用网页抓取。"""
+        memory = make_memory()
+        router = make_router([FAKE_QUERIES_JSON, FAKE_SUMMARY])
+        results = [
+            {"title": "A", "url": "", "snippet": "a"},
+            {"title": "B", "url": "https://b.com", "snippet": "b"},
+        ]
+        mock_fetch = AsyncMock(return_value=FetchResult(
+            url="https://b.com",
+            title="B",
+            text="正文",
+            success=True,
+            error="",
+        ))
+
+        with patch("src.agents.researcher.load_prompt", return_value="p {user_message}\n{search_results}"), \
+             patch("src.agents.researcher.web_search.search", return_value=results), \
+             patch("src.agents.researcher.web_fetcher.fetch", mock_fetch):
+            agent = ResearcherAgent(memory=memory)
+            await agent.execute(make_task(), router)
+
+        mock_fetch.assert_awaited_once_with("https://b.com")

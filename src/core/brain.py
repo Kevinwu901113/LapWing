@@ -2,12 +2,16 @@
 
 import logging
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from src.core.prompt_loader import load_prompt
 from src.core.llm_router import LLMRouter
 from src.memory.conversation import ConversationMemory
 from src.memory.fact_extractor import FactExtractor
 from config.settings import MAX_HISTORY_TURNS
+
+if TYPE_CHECKING:
+    from src.memory.interest_tracker import InterestTracker
 
 logger = logging.getLogger("lapwing.brain")
 
@@ -19,6 +23,7 @@ class LapwingBrain:
         self.router = LLMRouter()
         self.memory = ConversationMemory(db_path)
         self.fact_extractor = FactExtractor(self.memory, self.router)
+        self.interest_tracker: InterestTracker | None = None
         self._system_prompt: str | None = None
         self.dispatcher = None  # Set externally by main.py (AgentDispatcher | None)
 
@@ -40,6 +45,29 @@ class LapwingBrain:
         self._system_prompt = reload_prompt("lapwing")
         logger.info("已重新加载 Lapwing 人格 prompt")
 
+    def _split_facts(self, facts: list[dict]) -> tuple[list[dict], list[dict]]:
+        """将普通事实与 memory summary 分离。"""
+        regular_facts: list[dict] = []
+        memory_summaries: list[dict] = []
+        for fact in facts:
+            if str(fact.get("fact_key", "")).startswith("memory_summary_"):
+                memory_summaries.append(fact)
+            else:
+                regular_facts.append(fact)
+        return regular_facts, memory_summaries
+
+    def _format_recent_memory_summaries(self, summaries: list[dict]) -> str:
+        """格式化最近聊过的事摘要。"""
+        latest = sorted(
+            summaries,
+            key=lambda item: str(item.get("fact_key", "")),
+            reverse=True,
+        )[:3]
+        return "\n".join(
+            f"- {item['fact_key'].removeprefix('memory_summary_')}: {item['fact_value']}"
+            for item in latest
+        )
+
     async def _build_system_prompt(self, chat_id: str) -> str:
         """组合基础人格 prompt 和用户画像信息。"""
         base = self.system_prompt
@@ -47,14 +75,30 @@ class LapwingBrain:
         if not facts:
             return base
 
-        facts_text = "\n".join(f"- {f['fact_key']}: {f['fact_value']}" for f in facts)
-        return (
-            f"{base}\n\n"
-            f"## 你对这个用户的了解\n\n"
-            f"以下是你从之前对话中了解到的关于这个用户的信息。"
-            f"在合适的时候可以自然地引用，但不要刻意提起。\n\n"
-            f"{facts_text}"
-        )
+        regular_facts, memory_summaries = self._split_facts(facts)
+        sections = [base]
+
+        if regular_facts:
+            facts_text = "\n".join(
+                f"- {fact['fact_key']}: {fact['fact_value']}" for fact in regular_facts
+            )
+            sections.append(
+                "## 你对这个用户的了解\n\n"
+                "以下是你从之前对话中了解到的关于这个用户的信息。"
+                "在合适的时候可以自然地引用，但不要刻意提起。\n\n"
+                f"{facts_text}"
+            )
+
+        if memory_summaries:
+            summaries_text = self._format_recent_memory_summaries(memory_summaries)
+            sections.append(
+                "## 最近聊过的事\n\n"
+                "以下是你们最近几次对话的重要脉络。"
+                "当用户延续之前的话题时，可以自然接上。\n\n"
+                f"{summaries_text}"
+            )
+
+        return "\n\n".join(sections)
 
     async def think(self, chat_id: str, user_message: str) -> str:
         """处理用户消息，返回 Lapwing 的回复。
@@ -70,6 +114,8 @@ class LapwingBrain:
 
         # 通知提取器有新消息（异步触发轮次/空闲计时逻辑）
         self.fact_extractor.notify(chat_id)
+        if self.interest_tracker is not None:
+            self.interest_tracker.notify(chat_id)
 
         # Try agent dispatch first
         if self.dispatcher is not None:

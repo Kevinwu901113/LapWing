@@ -17,6 +17,17 @@
 5. **只匹配列表中存在的 Agent** — 不要凭空发明 Agent 名称。
 6. **Agent 列表为空时，直接返回 null** — 无可用 Agent，一律由 Lapwing 直接回应。
 
+## 示例
+
+- 用户说："帮我看看这个链接讲了什么 https://example.com/article"
+  返回：`{"agent": "browser", "reason": "用户明确要求阅读并总结指定网址内容"}`
+- 用户说："总结一下这个网址在讲什么 https://example.com/post"
+  返回：`{"agent": "browser", "reason": "用户希望直接浏览指定网页并提取内容"}`
+- 用户说："查一下 Python 3.13 的最新信息，参考这个链接 https://python.org"
+  返回：`{"agent": "researcher", "reason": "任务本质是搜索和整理最新信息，不是只阅读单个链接"}`
+- 用户说："我刚看到这个链接，感觉挺有意思 https://example.com"
+  返回：`{"agent": null}`
+
 ## 用户消息
 
 {user_message}

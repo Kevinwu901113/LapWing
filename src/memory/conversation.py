@@ -74,6 +74,17 @@ class ConversationMemory:
                 ON discoveries(chat_id);
             CREATE INDEX IF NOT EXISTS idx_discoveries_shared
                 ON discoveries(chat_id, shared_at);
+
+            CREATE TABLE IF NOT EXISTS interest_topics (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_id   TEXT NOT NULL,
+                topic     TEXT NOT NULL,
+                weight    REAL NOT NULL DEFAULT 1.0,
+                last_seen TEXT NOT NULL,
+                UNIQUE(chat_id, topic)
+            );
+            CREATE INDEX IF NOT EXISTS idx_interest_topics_chat_id
+                ON interest_topics(chat_id);
         """)
         await self._db.commit()
 
@@ -285,3 +296,49 @@ class ConversationMemory:
             await self._db.commit()
         except Exception as e:
             logger.error(f"标记 discovery 已分享失败: {e}")
+
+    async def bump_interest(self, chat_id: str, topic: str, increment: float = 1.0) -> None:
+        """增加话题权重（UPSERT：首次插入，已有则累加）。"""
+        try:
+            last_seen = datetime.now(timezone.utc).isoformat()
+            await self._db.execute(
+                """INSERT INTO interest_topics (chat_id, topic, weight, last_seen)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(chat_id, topic) DO UPDATE SET
+                       weight = interest_topics.weight + excluded.weight,
+                       last_seen = excluded.last_seen""",
+                (chat_id, topic, increment, last_seen),
+            )
+            await self._db.commit()
+        except Exception as e:
+            logger.error(f"增加兴趣话题失败: {e}")
+
+    async def get_top_interests(self, chat_id: str, limit: int = 10) -> list[dict]:
+        """按权重降序返回兴趣话题。"""
+        try:
+            async with self._db.execute(
+                """SELECT topic, weight, last_seen
+                   FROM interest_topics
+                   WHERE chat_id = ?
+                   ORDER BY weight DESC, last_seen DESC
+                   LIMIT ?""",
+                (chat_id, limit),
+            ) as cursor:
+                return [
+                    {"topic": row[0], "weight": row[1], "last_seen": row[2]}
+                    async for row in cursor
+                ]
+        except Exception as e:
+            logger.error(f"读取兴趣话题失败: {e}")
+            return []
+
+    async def decay_interests(self, chat_id: str, factor: float = 0.95) -> None:
+        """对所有话题权重乘以 factor（衰减），保持兴趣的时效性。"""
+        try:
+            await self._db.execute(
+                "UPDATE interest_topics SET weight = weight * ? WHERE chat_id = ?",
+                (factor, chat_id),
+            )
+            await self._db.commit()
+        except Exception as e:
+            logger.error(f"衰减兴趣话题失败: {e}")

@@ -49,6 +49,7 @@ MAX_REPLY_LENGTH: int = 4096  # Telegram 消息字符限制
 # 用户画像提取
 FACT_EXTRACT_IDLE_SECONDS: int = int(os.getenv("FACT_EXTRACT_IDLE_SECONDS", "300"))  # 空闲 N 秒后触发提取
 FACT_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("FACT_EXTRACT_TURN_THRESHOLD", "3"))  # 满 N 轮触发提取
+INTEREST_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("INTEREST_EXTRACT_TURN_THRESHOLD", "5"))
 
 # 日志
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

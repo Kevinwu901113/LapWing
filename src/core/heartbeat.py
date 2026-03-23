@@ -21,6 +21,7 @@ class SenseContext:
     user_facts_summary: str           # 用户画像文字摘要
     recent_memory_summary: str        # 最近对话摘要（慢心跳填充，快心跳为空字符串）
     chat_id: str                      # 目标用户的 chat_id
+    top_interests_summary: str = "（暂无明显兴趣）"
 
 
 class HeartbeatAction(ABC):
@@ -80,6 +81,9 @@ class SenseLayer:
             if facts else "（暂无已知信息）"
         )
 
+        top_interests = await self._memory.get_top_interests(chat_id, limit=5)
+        top_interests_summary = self._format_top_interests(top_interests)
+
         recent_memory_summary = ""
         if beat_type == "slow":
             history = await self._memory.get(chat_id)
@@ -97,6 +101,15 @@ class SenseLayer:
             user_facts_summary=user_facts_summary,
             recent_memory_summary=recent_memory_summary,
             chat_id=chat_id,
+            top_interests_summary=top_interests_summary,
+        )
+
+    def _format_top_interests(self, interests: list[dict]) -> str:
+        if not interests:
+            return "（暂无明显兴趣）"
+        return "\n".join(
+            f"- {item['topic']}（{item['weight']:.1f}）"
+            for item in interests
         )
 
 
@@ -190,6 +203,7 @@ class HeartbeatEngine:
             now=now_str,
             silence_hours=ctx.silence_hours,
             user_facts_summary=ctx.user_facts_summary,
+            top_interests_summary=ctx.top_interests_summary,
             available_actions=json.dumps(available, ensure_ascii=False),
         )
         try:

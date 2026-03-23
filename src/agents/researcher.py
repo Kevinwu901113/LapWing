@@ -3,12 +3,15 @@
 import json
 import logging
 import re
+from typing import Any
 
 from src.agents.base import AgentResult, AgentTask, BaseAgent
 from src.core.prompt_loader import load_prompt
-from src.tools import web_search
+from src.tools import web_fetcher, web_search
 
 logger = logging.getLogger("lapwing.agents.researcher")
+
+_FETCH_TOP_N = 2
 
 
 class ResearcherAgent(BaseAgent):
@@ -47,8 +50,10 @@ class ResearcherAgent(BaseAgent):
                 needs_persona_formatting=True,
             )
 
+        enriched_results = await self._enrich_results(results)
+
         # 3. 用 LLM 整理摘要
-        summary = await self._summarize(task.user_message, results, router)
+        summary = await self._summarize(task.user_message, enriched_results, router)
 
         # 4. 存 discovery（取第一条结果代表这次搜索）
         await self._save_discovery(task.chat_id, primary_query, results, summary)
@@ -79,15 +84,35 @@ class ResearcherAgent(BaseAgent):
             logger.warning(f"[researcher] 关键词提取出错: {e}")
         return []
 
+    async def _enrich_results(self, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """尝试抓取前几条搜索结果的正文内容。"""
+        enriched = [dict(result) for result in results]
+
+        fetch_count = 0
+        for result in enriched:
+            url = result.get("url")
+            if not url:
+                continue
+            if fetch_count >= _FETCH_TOP_N:
+                break
+
+            fetch_count += 1
+            try:
+                fetched = await web_fetcher.fetch(url)
+            except Exception as e:
+                logger.warning(f"[researcher] 网页抓取异常: {url} ({e})")
+                continue
+
+            if fetched.success and fetched.text:
+                result["page_text"] = fetched.text
+
+        return enriched
+
     async def _summarize(
         self, user_message: str, results: list[dict], router
     ) -> str:
         """用 LLM 整理搜索结果为摘要。"""
-        search_results_text = "\n\n".join(
-            f"[{r['title']}]({r['url']})\n{r['snippet']}"
-            for r in results
-            if r.get("title") or r.get("snippet")
-        )
+        search_results_text = self._format_results(results)
         prompt = (
             load_prompt("researcher_summarize")
             .replace("{user_message}", user_message)
@@ -104,6 +129,25 @@ class ResearcherAgent(BaseAgent):
             # 降级：直接把搜索结果标题拼起来
             lines = [f"- [{r['title']}]({r['url']})" for r in results if r.get("title")]
             return "以下是相关搜索结果：\n" + "\n".join(lines)
+
+    def _format_results(self, results: list[dict[str, Any]]) -> str:
+        """将搜索结果组织为更适合总结的结构化文本。"""
+        blocks: list[str] = []
+        for index, result in enumerate(results, start=1):
+            if not (result.get("title") or result.get("snippet") or result.get("page_text")):
+                continue
+
+            lines = [
+                f"结果 {index}",
+                f"标题：{result.get('title', '')}",
+                f"链接：{result.get('url', '')}",
+                f"摘要：{result.get('snippet', '')}",
+            ]
+            if result.get("page_text"):
+                lines.append(f"网页正文：\n{result['page_text']}")
+            blocks.append("\n".join(lines))
+
+        return "\n\n".join(blocks)
 
     async def _save_discovery(
         self,

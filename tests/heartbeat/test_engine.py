@@ -20,6 +20,7 @@ def mock_memory():
     m.get_all_chat_ids = AsyncMock(return_value=["c1"])
     m.get_last_interaction = AsyncMock(return_value=None)
     m.get_user_facts = AsyncMock(return_value=[])
+    m.get_top_interests = AsyncMock(return_value=[])
     m.get = AsyncMock(return_value=[])
     return m
 
@@ -40,6 +41,7 @@ class TestSenseLayer:
         assert ctx.chat_id == "c1"
         assert ctx.beat_type == "fast"
         assert ctx.recent_memory_summary == ""
+        assert ctx.top_interests_summary == "（暂无明显兴趣）"
 
     async def test_slow_beat_fills_recent_summary(self, mock_memory):
         mock_memory.get = AsyncMock(return_value=[
@@ -63,6 +65,15 @@ class TestSenseLayer:
         layer = SenseLayer(mock_memory)
         ctx = await layer.build("c1", "fast")
         assert 4.9 < ctx.silence_hours < 5.1
+
+    async def test_builds_top_interests_summary(self, mock_memory):
+        mock_memory.get_top_interests = AsyncMock(return_value=[
+            {"topic": "Python 编程", "weight": 8.5, "last_seen": "2026-03-23"},
+            {"topic": "机器学习", "weight": 4.2, "last_seen": "2026-03-22"},
+        ])
+        layer = SenseLayer(mock_memory)
+        ctx = await layer.build("c1", "fast")
+        assert ctx.top_interests_summary == "- Python 编程（8.5）\n- 机器学习（4.2）"
 
 
 class TestHeartbeatEngineDecision:
@@ -113,9 +124,28 @@ class TestHeartbeatEngineDecision:
             user_facts_summary="- test: {not_a_placeholder}",
             recent_memory_summary="",
             chat_id="c1",
+            top_interests_summary="（暂无明显兴趣）",
         )
         await engine._decide(ctx)
         call_args = mock_brain.router.complete.call_args
         prompt_content = call_args.args[0][0]["content"]  # system message content
         assert "{not_a_placeholder}" in prompt_content
         assert "{{not_a_placeholder}}" not in prompt_content
+
+    async def test_decide_includes_top_interests_in_prompt(self, mock_brain):
+        engine = HeartbeatEngine(brain=mock_brain, bot=MagicMock())
+        engine.registry.register(FakeFastAction())
+        ctx = SenseContext(
+            beat_type="fast",
+            now=datetime.now(timezone.utc),
+            last_interaction=None,
+            silence_hours=5.0,
+            user_facts_summary="（暂无已知信息）",
+            recent_memory_summary="",
+            chat_id="c1",
+            top_interests_summary="- Python 编程（8.5）",
+        )
+        await engine._decide(ctx)
+        prompt_content = mock_brain.router.complete.call_args.args[0][0]["content"]
+        assert "用户当前兴趣" in prompt_content
+        assert "- Python 编程（8.5）" in prompt_content

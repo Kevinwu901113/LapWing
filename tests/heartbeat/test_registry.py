@@ -72,3 +72,4 @@ class TestSenseContext:
         )
         assert ctx.beat_type == "fast"
         assert ctx.chat_id == "c1"
+        assert ctx.top_interests_summary == "（暂无明显兴趣）"

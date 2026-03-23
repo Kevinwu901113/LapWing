@@ -14,6 +14,7 @@ from src.core.brain import LapwingBrain
 from src.core.heartbeat import HeartbeatEngine
 from src.heartbeat.actions.proactive import ProactiveMessageAction
 from src.heartbeat.actions.consolidation import MemoryConsolidationAction
+from src.heartbeat.actions.interest_proactive import InterestProactiveAction
 
 # ===== 日志配置 =====
 LOGS_DIR.mkdir(exist_ok=True)
@@ -38,22 +39,28 @@ async def post_init(application: Application) -> None:
     logger.info("数据库初始化完成")
 
     from src.agents.base import AgentRegistry
+    from src.agents.browser import BrowserAgent
     from src.agents.coder import CoderAgent
     from src.agents.researcher import ResearcherAgent
     from src.core.dispatcher import AgentDispatcher
+    from src.memory.interest_tracker import InterestTracker
 
     agent_registry = AgentRegistry()
     agent_registry.register(ResearcherAgent(memory=brain.memory))
     agent_registry.register(CoderAgent(memory=brain.memory))
+    agent_registry.register(BrowserAgent(memory=brain.memory))
     brain.dispatcher = AgentDispatcher(
         registry=agent_registry,
         router=brain.router,
         memory=brain.memory,
     )
-    logger.info("Agent dispatcher initialized with: researcher, coder")
+    logger.info("Agent dispatcher initialized with: researcher, coder, browser")
+
+    brain.interest_tracker = InterestTracker(memory=brain.memory, router=brain.router)
 
     heartbeat = HeartbeatEngine(brain=brain, bot=application.bot)
     heartbeat.registry.register(ProactiveMessageAction())
+    heartbeat.registry.register(InterestProactiveAction())
     heartbeat.registry.register(MemoryConsolidationAction())
     heartbeat.start()
     application.bot_data["heartbeat"] = heartbeat
@@ -65,6 +72,8 @@ async def post_shutdown(application: Application) -> None:
     heartbeat = application.bot_data.get("heartbeat")
     if heartbeat:
         await heartbeat.shutdown()
+    if brain.interest_tracker:
+        await brain.interest_tracker.shutdown()
     await brain.fact_extractor.shutdown()
     await brain.memory.close()
     logger.info("资源清理完成")
@@ -89,6 +98,22 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await brain.memory.clear(chat_id)
     await update.message.reply_text("好的，我已经忘记了我们之前的对话。重新开始吧。")
     logger.info(f"通过 /forget 命令清除了频道 {chat_id} 的记忆")
+
+
+async def cmd_interests(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /interests 命令 - 查看当前记录的兴趣图谱。"""
+    chat_id = str(update.message.chat_id)
+    interests = await brain.memory.get_top_interests(chat_id, limit=10)
+    if not interests:
+        await update.message.reply_text("我还没有记录到明显的兴趣话题。")
+        return
+
+    lines = ["你目前记录的兴趣话题："]
+    for index, interest in enumerate(interests, start=1):
+        lines.append(
+            f"{index}. {interest['topic']}（权重 {interest['weight']:.1f}）"
+        )
+    await update.message.reply_text("\n".join(lines))
 
 
 # ===== 消息处理 =====
@@ -144,6 +169,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("reload", cmd_reload))
     app.add_handler(CommandHandler("forget", cmd_forget))
+    app.add_handler(CommandHandler("interests", cmd_interests))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
 
     # 启动轮询

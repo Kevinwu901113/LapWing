@@ -59,6 +59,58 @@ class TestBuildSystemPrompt:
             result = await brain._build_system_prompt("chat1")
             assert result.index("基础人格 prompt") < result.index("偏好_食物_不吃辣")
 
+    async def test_memory_summaries_are_placed_in_separate_section(self):
+        """memory_summary_* 不应混在普通 facts 段落里。"""
+        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"):
+            from src.core.brain import LapwingBrain
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.get_user_facts = AsyncMock(return_value=[
+                {"fact_key": "偏好_食物_不吃辣", "fact_value": "不喜欢吃辣", "updated_at": "2026-03-23"},
+                {"fact_key": "memory_summary_2026-03-23", "fact_value": "今天聊了面试和睡眠。", "updated_at": "2026-03-23"},
+            ])
+            result = await brain._build_system_prompt("chat1")
+            assert "## 你对这个用户的了解" in result
+            assert "## 最近聊过的事" in result
+            assert "- 2026-03-23: 今天聊了面试和睡眠。" in result
+            user_section = result.split("## 最近聊过的事")[0]
+            assert "memory_summary_2026-03-23" not in user_section
+
+    async def test_only_latest_three_memory_summaries_are_kept(self):
+        """最近聊过的事只保留最新三条。"""
+        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"):
+            from src.core.brain import LapwingBrain
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.get_user_facts = AsyncMock(return_value=[
+                {"fact_key": "memory_summary_2026-03-20", "fact_value": "20", "updated_at": "2026-03-20"},
+                {"fact_key": "memory_summary_2026-03-21", "fact_value": "21", "updated_at": "2026-03-21"},
+                {"fact_key": "memory_summary_2026-03-22", "fact_value": "22", "updated_at": "2026-03-22"},
+                {"fact_key": "memory_summary_2026-03-23", "fact_value": "23", "updated_at": "2026-03-23"},
+            ])
+            result = await brain._build_system_prompt("chat1")
+            assert "- 2026-03-23: 23" in result
+            assert "- 2026-03-22: 22" in result
+            assert "- 2026-03-21: 21" in result
+            assert "- 2026-03-20: 20" not in result
+
+    async def test_returns_base_plus_recent_section_when_only_memory_summaries_exist(self):
+        """只有 memory summaries 时，也应注入最近聊过的事段落。"""
+        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"):
+            from src.core.brain import LapwingBrain
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.get_user_facts = AsyncMock(return_value=[
+                {"fact_key": "memory_summary_2026-03-23", "fact_value": "今天聊了工作安排。", "updated_at": "2026-03-23"},
+            ])
+            result = await brain._build_system_prompt("chat1")
+            assert result.startswith("基础人格 prompt")
+            assert "## 最近聊过的事" in result
+            assert "## 你对这个用户的了解" not in result
+
 
 class TestThinkNotifiesExtractor:
     async def test_think_calls_fact_extractor_notify(self):
@@ -79,3 +131,24 @@ class TestThinkNotifiesExtractor:
             await brain.think("chat1", "你好")
 
             brain.fact_extractor.notify.assert_called_once_with("chat1")
+
+    async def test_think_calls_interest_tracker_notify_when_present(self):
+        """配置了 interest_tracker 时，think() 也会通知它。"""
+        with patch("src.core.brain.load_prompt", return_value="prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"):
+            from src.core.brain import LapwingBrain
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.append = AsyncMock()
+            brain.memory.get = AsyncMock(return_value=[])
+            brain.memory.get_user_facts = AsyncMock(return_value=[])
+            brain.memory.remove_last = AsyncMock()
+            brain.router.complete = AsyncMock(return_value="回复")
+            brain.fact_extractor = MagicMock()
+            brain.fact_extractor.notify = MagicMock()
+            brain.interest_tracker = MagicMock()
+            brain.interest_tracker.notify = MagicMock()
+
+            await brain.think("chat1", "你好")
+
+            brain.interest_tracker.notify.assert_called_once_with("chat1")
