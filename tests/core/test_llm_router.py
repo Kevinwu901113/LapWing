@@ -75,6 +75,18 @@ class TestLLMRouterInit:
             router = LLMRouter()
             assert router.model_for("heartbeat") == "glm-4-flash"
 
+    def test_anthropic_base_url_uses_anthropic_client(self):
+        """Anthropic 兼容地址应自动切到 Anthropic SDK。"""
+        with patch.dict("os.environ", {
+            "LLM_API_KEY": "generic-key",
+            "LLM_BASE_URL": "https://api.minimaxi.com/anthropic/v1",
+            "LLM_MODEL": "MiniMax-M2.7",
+        }, clear=True):
+            from src.core.llm_router import LLMRouter
+            router = LLMRouter()
+            assert router.model_for("chat") == "MiniMax-M2.7"
+            assert router._api_types["chat"] == "anthropic"
+
 
 @pytest.mark.asyncio
 class TestLLMRouterComplete:
@@ -111,3 +123,82 @@ class TestLLMRouterComplete:
             call_kwargs = mock_client.chat.completions.create.call_args.kwargs
             assert call_kwargs["model"] == "glm-4-plus"
             assert call_kwargs["messages"] == messages
+
+    async def test_complete_converts_messages_for_anthropic(self):
+        """Anthropic 兼容 provider 需要拆分 system prompt 并走 messages.create。"""
+        with patch.dict("os.environ", {
+            "LLM_API_KEY": "generic-key",
+            "LLM_BASE_URL": "https://api.minimaxi.com/anthropic/v1",
+            "LLM_MODEL": "MiniMax-M2.7",
+        }, clear=True):
+            from src.core.llm_router import LLMRouter
+            router = LLMRouter()
+
+            mock_block = MagicMock()
+            mock_block.type = "text"
+            mock_block.text = "测试回复"
+
+            mock_response = MagicMock()
+            mock_response.content = [mock_block]
+
+            mock_client = MagicMock()
+            mock_client.messages.create = AsyncMock(return_value=mock_response)
+            router._clients["chat"] = mock_client
+            router._api_types["chat"] = "anthropic"
+
+            messages = [
+                {"role": "system", "content": "你是助手"},
+                {"role": "user", "content": "你好"},
+            ]
+            result = await router.complete(messages, purpose="chat")
+
+            assert result == "测试回复"
+            mock_client.messages.create.assert_called_once()
+            call_kwargs = mock_client.messages.create.call_args.kwargs
+            assert call_kwargs["model"] == "MiniMax-M2.7"
+            assert call_kwargs["system"] == "你是助手"
+            assert call_kwargs["messages"] == [{"role": "user", "content": "你好"}]
+
+    async def test_complete_retries_anthropic_when_first_response_has_only_thinking(self):
+        """Anthropic 首轮仅返回 thinking 且被截断时，应自动补一次更大的 token 预算。"""
+        with patch.dict("os.environ", {
+            "LLM_API_KEY": "generic-key",
+            "LLM_BASE_URL": "https://api.minimaxi.com/anthropic/v1",
+            "LLM_MODEL": "MiniMax-M2.7",
+        }, clear=True):
+            from src.core.llm_router import LLMRouter
+            router = LLMRouter()
+
+            thinking_block = MagicMock()
+            thinking_block.type = "thinking"
+            thinking_block.thinking = "先想一想"
+
+            first_response = MagicMock()
+            first_response.content = [thinking_block]
+            first_response.stop_reason = "max_tokens"
+
+            text_block = MagicMock()
+            text_block.type = "text"
+            text_block.text = "{\"agent\": null}"
+
+            second_response = MagicMock()
+            second_response.content = [text_block]
+            second_response.stop_reason = "end_turn"
+
+            mock_client = MagicMock()
+            mock_client.messages.create = AsyncMock(side_effect=[first_response, second_response])
+            router._clients["tool"] = mock_client
+            router._api_types["tool"] = "anthropic"
+
+            result = await router.complete(
+                [{"role": "user", "content": "请只输出严格 JSON：{\"agent\": null}"}],
+                purpose="tool",
+                max_tokens=64,
+            )
+
+            assert result == "{\"agent\": null}"
+            assert mock_client.messages.create.call_count == 2
+            first_call = mock_client.messages.create.call_args_list[0].kwargs
+            second_call = mock_client.messages.create.call_args_list[1].kwargs
+            assert first_call["max_tokens"] == 64
+            assert second_call["max_tokens"] == 256
