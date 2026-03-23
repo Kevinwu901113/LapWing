@@ -51,5 +51,10 @@ FACT_EXTRACT_IDLE_SECONDS: int = int(os.getenv("FACT_EXTRACT_IDLE_SECONDS", "300
 FACT_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("FACT_EXTRACT_TURN_THRESHOLD", "3"))  # 满 N 轮触发提取
 INTEREST_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("INTEREST_EXTRACT_TURN_THRESHOLD", "5"))
 
+# 语音转写（Whisper，可选；不填则回退到通用 LLM_* 配置）
+WHISPER_API_KEY: str = os.getenv("WHISPER_API_KEY", "")
+WHISPER_BASE_URL: str = os.getenv("WHISPER_BASE_URL", "")
+WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "whisper-1")
+
 # 日志
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
