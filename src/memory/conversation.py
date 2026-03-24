@@ -332,6 +332,22 @@ class ConversationMemory:
             logger.error(f"读取兴趣话题失败: {e}")
             return []
 
+    async def get_conversations_for_date(self, chat_id: str, date_str: str) -> list[dict]:
+        """获取指定日期（YYYY-MM-DD）的所有对话记录（从 DB 查询）。"""
+        try:
+            async with self._db.execute(
+                "SELECT role, content, timestamp FROM conversations "
+                "WHERE chat_id = ? AND timestamp LIKE ? ORDER BY id ASC",
+                (chat_id, f"{date_str}%"),
+            ) as cursor:
+                return [
+                    {"role": row[0], "content": row[1], "timestamp": row[2]}
+                    async for row in cursor
+                ]
+        except Exception as e:
+            logger.error(f"获取 {date_str} 对话记录失败: {e}")
+            return []
+
     async def decay_interests(self, chat_id: str, factor: float = 0.95) -> None:
         """对所有话题权重乘以 factor（衰减），保持兴趣的时效性。"""
         try:

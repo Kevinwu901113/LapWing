@@ -71,6 +71,12 @@ class InterestProactiveAction(HeartbeatAction):
             )
             await brain.memory.append(ctx.chat_id, "assistant", message)
             await brain.memory.decay_interests(ctx.chat_id, factor=0.9)
+            if hasattr(brain, "knowledge_manager") and brain.knowledge_manager is not None:
+                brain.knowledge_manager.save_note(
+                    topic=topic,
+                    source_url=first.get("url", ""),
+                    content=message,
+                )
             logger.info(f"[{ctx.chat_id}] 已发送兴趣驱动主动消息，topic={topic!r}")
         except Exception as exc:
             logger.error(f"[{ctx.chat_id}] 兴趣主动分享失败: {exc}")

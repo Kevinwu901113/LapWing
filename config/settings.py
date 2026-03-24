@@ -59,5 +59,8 @@ WHISPER_API_KEY: str = os.getenv("WHISPER_API_KEY", "")
 WHISPER_BASE_URL: str = os.getenv("WHISPER_BASE_URL", "")
 WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "whisper-1")
 
+# 自省与进化
+SELF_REFLECTION_HOUR: int = int(os.getenv("SELF_REFLECTION_HOUR", "2"))  # 每日自省时间（小时）
+
 # 日志
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

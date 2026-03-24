@@ -21,8 +21,9 @@ class ResearcherAgent(BaseAgent):
     description = "联网搜索信息，查找新闻、技术文档、百科知识等"
     capabilities = ["搜索网页信息", "查找新闻动态", "检索技术文档", "查询百科知识"]
 
-    def __init__(self, memory) -> None:
+    def __init__(self, memory, knowledge_manager=None) -> None:
         self._memory = memory
+        self._knowledge_manager = knowledge_manager
 
     async def execute(self, task: AgentTask, router) -> AgentResult:
         """执行搜索：提取关键词 → 搜索 → 摘要 → 存 discovery。"""
@@ -55,8 +56,14 @@ class ResearcherAgent(BaseAgent):
         # 3. 用 LLM 整理摘要
         summary = await self._summarize(task.user_message, enriched_results, router)
 
-        # 4. 存 discovery（取第一条结果代表这次搜索）
+        # 4. 存 discovery + 知识笔记
         await self._save_discovery(task.chat_id, primary_query, results, summary)
+        if self._knowledge_manager is not None and results:
+            self._knowledge_manager.save_note(
+                topic=primary_query,
+                source_url=results[0].get("url", ""),
+                content=summary,
+            )
 
         sources = [{"title": r["title"], "url": r["url"]} for r in results if r.get("url")]
         return AgentResult(

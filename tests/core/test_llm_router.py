@@ -201,4 +201,4 @@ class TestLLMRouterComplete:
             first_call = mock_client.messages.create.call_args_list[0].kwargs
             second_call = mock_client.messages.create.call_args_list[1].kwargs
             assert first_call["max_tokens"] == 64
-            assert second_call["max_tokens"] == 256
+            assert second_call["max_tokens"] == 512

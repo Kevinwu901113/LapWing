@@ -18,6 +18,8 @@ from src.core.heartbeat import HeartbeatEngine
 from src.heartbeat.actions.proactive import ProactiveMessageAction
 from src.heartbeat.actions.consolidation import MemoryConsolidationAction
 from src.heartbeat.actions.interest_proactive import InterestProactiveAction
+from src.heartbeat.actions.self_reflection import SelfReflectionAction
+from src.heartbeat.actions.prompt_evolution import PromptEvolutionAction
 
 # ===== 日志配置 =====
 LOGS_DIR.mkdir(exist_ok=True)
@@ -49,27 +51,41 @@ async def post_init(application: Application) -> None:
     from src.agents.base import AgentRegistry
     from src.agents.browser import BrowserAgent
     from src.agents.coder import CoderAgent
+    from src.agents.file_agent import FileAgent
     from src.agents.researcher import ResearcherAgent
     from src.core.dispatcher import AgentDispatcher
+    from src.core.knowledge_manager import KnowledgeManager
     from src.memory.interest_tracker import InterestTracker
 
+    # 知识管理器需先初始化，agent 构造时注入
+    brain.knowledge_manager = KnowledgeManager()
+
     agent_registry = AgentRegistry()
-    agent_registry.register(ResearcherAgent(memory=brain.memory))
+    agent_registry.register(ResearcherAgent(memory=brain.memory, knowledge_manager=brain.knowledge_manager))
     agent_registry.register(CoderAgent(memory=brain.memory))
-    agent_registry.register(BrowserAgent(memory=brain.memory))
+    agent_registry.register(BrowserAgent(memory=brain.memory, knowledge_manager=brain.knowledge_manager))
+    agent_registry.register(FileAgent(memory=brain.memory))
     brain.dispatcher = AgentDispatcher(
         registry=agent_registry,
         router=brain.router,
         memory=brain.memory,
     )
-    logger.info("Agent dispatcher initialized with: researcher, coder, browser")
+    logger.info("Agent dispatcher initialized with: researcher, coder, browser, file")
 
     brain.interest_tracker = InterestTracker(memory=brain.memory, router=brain.router)
+
+    from src.core.self_reflection import SelfReflection
+    brain.self_reflection = SelfReflection(memory=brain.memory, router=brain.router)
+
+    from src.core.prompt_evolver import PromptEvolver
+    brain.prompt_evolver = PromptEvolver(memory=brain.memory, router=brain.router)
 
     heartbeat = HeartbeatEngine(brain=brain, bot=application.bot)
     heartbeat.registry.register(ProactiveMessageAction())
     heartbeat.registry.register(InterestProactiveAction())
     heartbeat.registry.register(MemoryConsolidationAction())
+    heartbeat.registry.register(SelfReflectionAction())
+    heartbeat.registry.register(PromptEvolutionAction())
     heartbeat.start()
     application.bot_data["heartbeat"] = heartbeat
     logger.info("心跳引擎已初始化")
@@ -106,6 +122,33 @@ async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await brain.memory.clear(chat_id)
     await update.message.reply_text("好的，我已经忘记了我们之前的对话。重新开始吧。")
     logger.info(f"通过 /forget 命令清除了频道 {chat_id} 的记忆")
+
+
+async def cmd_evolve(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /evolve 命令 - 手动触发 prompt 自我优化。"""
+    if not hasattr(brain, "prompt_evolver") or brain.prompt_evolver is None:
+        await update.message.reply_text("prompt 进化功能尚未启用。")
+        return
+
+    args = context.args
+    if args and args[0] == "revert":
+        result = await brain.prompt_evolver.revert()
+        if result["success"]:
+            brain.reload_persona()
+            await update.message.reply_text(f"已回滚到: {result['reverted_to']}")
+        else:
+            await update.message.reply_text(f"回滚失败: {result.get('error', '未知错误')}")
+        return
+
+    await update.message.reply_text("开始分析学习日志，优化人格 prompt……")
+    result = await brain.prompt_evolver.evolve()
+    if result["success"]:
+        brain.reload_persona()
+        await update.message.reply_text(
+            f"优化完成。\n变更摘要: {result.get('changes_summary', '（无）')}"
+        )
+    else:
+        await update.message.reply_text(f"优化未完成: {result.get('error', '未知错误')}")
 
 
 async def cmd_interests(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -252,6 +295,7 @@ if __name__ == "__main__":
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("reload", cmd_reload))
     app.add_handler(CommandHandler("forget", cmd_forget))
+    app.add_handler(CommandHandler("evolve", cmd_evolve))
     app.add_handler(CommandHandler("interests", cmd_interests))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))

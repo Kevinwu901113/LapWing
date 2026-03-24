@@ -29,6 +29,10 @@
   返回：`{"agent": "researcher", "reason": "用户明确要求搜索信息"}`
 - 用户说："搜索今天A股行情"
   返回：`{"agent": "researcher", "reason": "用户请求搜索实时信息"}`
+- 用户说："帮我看看你的人格 prompt 是怎么写的"
+  返回：`{"agent": "file", "reason": "用户要求读取 prompts/lapwing.md 文件"}`
+- 用户说："列出 prompts 目录下有哪些文件"
+  返回：`{"agent": "file", "reason": "用户要求列出目录内容"}`
 - 用户说："测试一下你的搜索能力"
   返回：`{"agent": null}`
 - 用户说："我刚看到这个链接，感觉挺有意思 https://example.com"

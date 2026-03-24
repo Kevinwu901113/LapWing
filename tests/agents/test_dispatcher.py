@@ -79,11 +79,8 @@ class TestAgentDispatcher:
         registry.register(agent)
 
         router = AsyncMock()
-        # 第一次调用：分类，第二次调用：人格格式化
-        router.complete = AsyncMock(side_effect=[
-            '{"agent": "researcher", "reason": "用户需要搜索"}',
-            "这是经过人格格式化后的搜索结果。",
-        ])
+        # 搜索类消息走 _quick_match 快速路由，跳过 LLM 分类，只有一次人格格式化调用
+        router.complete = AsyncMock(return_value="这是经过人格格式化后的搜索结果。")
 
         dispatcher = make_dispatcher(registry=registry, router=router)
 
@@ -91,7 +88,7 @@ class TestAgentDispatcher:
             result = await dispatcher.try_dispatch("chat1", "帮我搜索一下Python教程")
 
         assert result == "这是经过人格格式化后的搜索结果。"
-        assert router.complete.call_count == 2
+        assert router.complete.call_count == 1
 
     # 4. needs_persona_formatting=False → 直接返回 content，不调用 _format_with_persona
     async def test_routes_to_agent_without_persona_format(self):

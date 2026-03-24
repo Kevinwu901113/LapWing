@@ -18,8 +18,9 @@ class BrowserAgent(BaseAgent):
     description = "访问指定网页，阅读并总结页面内容"
     capabilities = ["浏览指定网址", "阅读网页文章", "提取网页信息"]
 
-    def __init__(self, memory) -> None:
+    def __init__(self, memory, knowledge_manager=None) -> None:
         self._memory = memory
+        self._knowledge_manager = knowledge_manager
 
     async def execute(self, task: AgentTask, router) -> AgentResult:
         url = self._extract_url(task.user_message)
@@ -58,6 +59,12 @@ class BrowserAgent(BaseAgent):
             )
 
         await self._save_discovery(task.chat_id, fetch_result.title, summary, url)
+        if self._knowledge_manager is not None:
+            self._knowledge_manager.save_note(
+                topic=fetch_result.title or url,
+                source_url=url,
+                content=summary,
+            )
 
         return AgentResult(
             content=summary,
