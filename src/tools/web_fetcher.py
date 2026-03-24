@@ -7,6 +7,8 @@ from html.parser import HTMLParser
 
 import httpx
 
+from config.settings import SEARCH_PROXY_URL
+
 logger = logging.getLogger("lapwing.tools.web_fetcher")
 
 _MAX_TEXT = 4000
@@ -77,6 +79,7 @@ async def fetch(url: str) -> FetchResult:
             timeout=_TIMEOUT,
             follow_redirects=True,
             headers={"User-Agent": _USER_AGENT},
+            proxy=SEARCH_PROXY_URL or None,
         ) as client:
             response = await client.get(url)
             response.raise_for_status()

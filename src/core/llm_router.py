@@ -178,8 +178,8 @@ class LLMRouter:
             if text:
                 return text
 
-            if _has_anthropic_thinking(response) and getattr(response, "stop_reason", None) == "max_tokens":
-                retry_max_tokens = max(max_tokens * 4, 256)
+            if not text and _has_anthropic_thinking(response):
+                retry_max_tokens = max(max_tokens * 4, 512)
                 if retry_max_tokens > max_tokens:
                     logger.info(
                         f"[{purpose}] Anthropic 响应仅返回 thinking，"

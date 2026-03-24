@@ -25,6 +25,12 @@
   返回：`{"agent": "browser", "reason": "用户希望直接浏览指定网页并提取内容"}`
 - 用户说："查一下 Python 3.13 的最新信息，参考这个链接 https://python.org"
   返回：`{"agent": "researcher", "reason": "任务本质是搜索和整理最新信息，不是只阅读单个链接"}`
+- 用户说："帮我搜一下华南理工大学最近的消息"
+  返回：`{"agent": "researcher", "reason": "用户明确要求搜索信息"}`
+- 用户说："搜索今天A股行情"
+  返回：`{"agent": "researcher", "reason": "用户请求搜索实时信息"}`
+- 用户说："测试一下你的搜索能力"
+  返回：`{"agent": null}`
 - 用户说："我刚看到这个链接，感觉挺有意思 https://example.com"
   返回：`{"agent": null}`
 

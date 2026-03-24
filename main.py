@@ -1,11 +1,14 @@
 """Lapwing - 入口文件。"""
 
+import asyncio
 import logging
 from telegram import Update
 from telegram.ext import Application, MessageHandler, CommandHandler, filters, ContextTypes
 from config.settings import (
     TELEGRAM_TOKEN,
+    TELEGRAM_PROXY_URL,
     MAX_REPLY_LENGTH,
+    MESSAGE_BUFFER_SECONDS,
     LOG_LEVEL,
     LOGS_DIR,
     DB_PATH,
@@ -22,7 +25,7 @@ logging.basicConfig(
     level=getattr(logging, LOG_LEVEL),
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     handlers=[
-        logging.FileHandler(LOGS_DIR / "lapwing.log", encoding="utf-8"),
+        logging.FileHandler(LOGS_DIR / "lapwing.log", encoding="utf-8", mode="a"),
         logging.StreamHandler(),
     ],
 )
@@ -30,6 +33,11 @@ logger = logging.getLogger("lapwing")
 
 # ===== 初始化大脑 =====
 brain = LapwingBrain(db_path=DB_PATH)
+
+# ===== 消息缓冲区（防连发）=====
+_message_buffers: dict[str, list[str]] = {}   # chat_id -> 待合并的消息列表
+_buffer_tasks: dict[str, asyncio.Task] = {}   # chat_id -> 待执行的 flush 任务
+_buffer_updates: dict[str, object] = {}       # chat_id -> 最新的 message 对象（用于回复）
 
 
 # ===== 生命周期回调 =====
@@ -139,8 +147,37 @@ async def _think_and_reply(message, chat_id: str, user_text: str) -> None:
     logger.info(f"已回复 [{chat_id}]，长度: {len(reply)}")
 
 
+async def _flush_buffer(chat_id: str) -> None:
+    """等待缓冲时间到期后，合并所有消息并统一回复。"""
+    await asyncio.sleep(MESSAGE_BUFFER_SECONDS)
+
+    messages = _message_buffers.pop(chat_id, [])
+    message_obj = _buffer_updates.pop(chat_id, None)
+    _buffer_tasks.pop(chat_id, None)
+
+    if not messages or not message_obj:
+        return
+
+    combined = "\n".join(messages)
+    if len(messages) > 1:
+        logger.info(f"合并 {len(messages)} 条消息 [{chat_id}]: {combined[:80]}...")
+    await _think_and_reply(message_obj, chat_id, combined)
+
+
+def _enqueue_message(chat_id: str, text: str, message_obj) -> None:
+    """追加消息到缓冲区并重置定时器（文本和语音共用）。"""
+    _message_buffers.setdefault(chat_id, []).append(text)
+    _buffer_updates[chat_id] = message_obj
+
+    old_task = _buffer_tasks.get(chat_id)
+    if old_task and not old_task.done():
+        old_task.cancel()
+
+    _buffer_tasks[chat_id] = asyncio.create_task(_flush_buffer(chat_id))
+
+
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理普通文本消息。"""
+    """处理普通文本消息 — 带缓冲合并，防止连发刷屏。"""
     message = update.message
     if not message or not message.text:
         return
@@ -149,7 +186,7 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_name = message.from_user.first_name if message.from_user else "未知"
     logger.info(f"收到消息 [{chat_id}] {user_name}: {message.text}")
 
-    await _think_and_reply(message, chat_id, message.text)
+    _enqueue_message(chat_id, message.text, message)
 
 
 async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -190,9 +227,9 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     logger.info(f"[voice] 转写结果 [{chat_id}]: {user_text}")
 
-    # 回复时显示转写内容，再给出正式回复
+    # 即时回显转写内容，处理走缓冲区（与文本消息合并）
     await message.reply_text(f"🎤 {user_text}")
-    await _think_and_reply(message, chat_id, user_text)
+    _enqueue_message(chat_id, user_text, message)
 
 
 # ===== 启动 =====
@@ -203,13 +240,13 @@ if __name__ == "__main__":
 
     logger.info("Lapwing 正在启动...")
 
-    app = (
-        Application.builder()
-        .token(TELEGRAM_TOKEN)
-        .post_init(post_init)
-        .post_shutdown(post_shutdown)
-        .build()
-    )
+    builder = Application.builder().token(TELEGRAM_TOKEN)
+    if TELEGRAM_PROXY_URL:
+        from telegram.request import HTTPXRequest
+        proxy_request = HTTPXRequest(proxy=TELEGRAM_PROXY_URL)
+        builder = builder.request(proxy_request).get_updates_request(proxy_request)
+        logger.info(f"使用代理: {TELEGRAM_PROXY_URL}")
+    app = builder.post_init(post_init).post_shutdown(post_shutdown).build()
 
     # 注册处理器
     app.add_handler(CommandHandler("start", cmd_start))

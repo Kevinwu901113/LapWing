@@ -17,6 +17,8 @@ load_dotenv(CONFIG_DIR / ".env")
 
 # Telegram
 TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN", "")
+TELEGRAM_PROXY_URL: str = os.getenv("TELEGRAM_PROXY_URL", "")
+SEARCH_PROXY_URL: str = os.getenv("SEARCH_PROXY_URL", "") or TELEGRAM_PROXY_URL
 
 # LLM（OpenAI 兼容格式）
 LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
@@ -45,6 +47,7 @@ HEARTBEAT_SLOW_HOUR: int = int(os.getenv("HEARTBEAT_SLOW_HOUR", "3"))
 # 对话设置
 MAX_HISTORY_TURNS: int = 20  # 保留最近 N 轮对话（每轮 = 1 user + 1 assistant）
 MAX_REPLY_LENGTH: int = 4096  # Telegram 消息字符限制
+MESSAGE_BUFFER_SECONDS: float = float(os.getenv("MESSAGE_BUFFER_SECONDS", "4"))  # 消息合并等待时间
 
 # 用户画像提取
 FACT_EXTRACT_IDLE_SECONDS: int = int(os.getenv("FACT_EXTRACT_IDLE_SECONDS", "300"))  # 空闲 N 秒后触发提取
