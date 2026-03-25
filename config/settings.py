@@ -59,6 +59,12 @@ WHISPER_API_KEY: str = os.getenv("WHISPER_API_KEY", "")
 WHISPER_BASE_URL: str = os.getenv("WHISPER_BASE_URL", "")
 WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "whisper-1")
 
+# Shell 执行
+SHELL_ENABLED: bool = os.getenv("SHELL_ENABLED", "true").lower() == "true"
+SHELL_TIMEOUT: int = int(os.getenv("SHELL_TIMEOUT", "30"))
+SHELL_DEFAULT_CWD: str = os.getenv("SHELL_DEFAULT_CWD", str(ROOT_DIR))
+SHELL_MAX_OUTPUT_CHARS: int = int(os.getenv("SHELL_MAX_OUTPUT_CHARS", "4000"))
+
 # 自省与进化
 SELF_REFLECTION_HOUR: int = int(os.getenv("SELF_REFLECTION_HOUR", "2"))  # 每日自省时间（小时）
 
