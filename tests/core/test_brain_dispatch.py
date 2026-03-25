@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -39,6 +40,7 @@ class TestBrainDispatch:
 
             # 配置 router mock（不应被调用）
             brain.router.complete = AsyncMock(return_value="LLM 回复")
+            brain.router.complete_with_tools = AsyncMock()
 
             # 配置 fact_extractor mock
             brain.fact_extractor = MagicMock()
@@ -70,7 +72,13 @@ class TestBrainDispatch:
             brain.memory.remove_last = AsyncMock()
 
             # 配置 router mock
-            brain.router.complete = AsyncMock(return_value="LLM 回复")
+            brain.router.complete_with_tools = AsyncMock(
+                return_value=SimpleNamespace(
+                    text="LLM 回复",
+                    tool_calls=[],
+                    continuation_message=None,
+                )
+            )
 
             # 配置 fact_extractor mock
             brain.fact_extractor = MagicMock()
@@ -83,7 +91,8 @@ class TestBrainDispatch:
 
             result = await brain.think("chat1", "user message")
 
-            brain.router.complete.assert_called_once()
+            assert result == "LLM 回复"
+            brain.router.complete_with_tools.assert_called_once()
 
     async def test_no_dispatcher_runs_normal_chat(self):
         """dispatcher 为 None 时，直接走正常 LLM 对话流程。"""
@@ -103,7 +112,13 @@ class TestBrainDispatch:
             brain.memory.remove_last = AsyncMock()
 
             # 配置 router mock
-            brain.router.complete = AsyncMock(return_value="LLM 回复")
+            brain.router.complete_with_tools = AsyncMock(
+                return_value=SimpleNamespace(
+                    text="LLM 回复",
+                    tool_calls=[],
+                    continuation_message=None,
+                )
+            )
 
             # 配置 fact_extractor mock
             brain.fact_extractor = MagicMock()
@@ -111,4 +126,5 @@ class TestBrainDispatch:
 
             result = await brain.think("chat1", "user message")
 
-            brain.router.complete.assert_called_once()
+            assert result == "LLM 回复"
+            brain.router.complete_with_tools.assert_called_once()
