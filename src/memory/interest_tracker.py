@@ -24,6 +24,7 @@ class InterestTracker:
         self._turn_counts: dict[str, int] = {}
         self._extracting: set[str] = set()
         self._tasks: set[asyncio.Task] = set()
+        self._tasks_by_chat: dict[str, set[asyncio.Task]] = {}
         self._prompt_template: str | None = None
 
     @property
@@ -40,7 +41,19 @@ class InterestTracker:
         self._turn_counts[chat_id] = 0
         task = asyncio.create_task(self._extract(chat_id))
         self._tasks.add(task)
-        task.add_done_callback(self._tasks.discard)
+        chat_tasks = self._tasks_by_chat.setdefault(chat_id, set())
+        chat_tasks.add(task)
+
+        def _cleanup(done_task: asyncio.Task) -> None:
+            self._tasks.discard(done_task)
+            bucket = self._tasks_by_chat.get(chat_id)
+            if not bucket:
+                return
+            bucket.discard(done_task)
+            if not bucket:
+                self._tasks_by_chat.pop(chat_id, None)
+
+        task.add_done_callback(_cleanup)
 
     async def _extract(self, chat_id: str) -> None:
         if chat_id in self._extracting:
@@ -108,3 +121,17 @@ class InterestTracker:
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
+        self._tasks_by_chat.clear()
+
+    async def clear_chat_state(self, chat_id: str) -> None:
+        """清理某个 chat 的兴趣提取状态，并取消其待处理任务。"""
+        self._turn_counts.pop(chat_id, None)
+
+        tasks = list(self._tasks_by_chat.pop(chat_id, set()))
+        for task in tasks:
+            task.cancel()
+            self._tasks.discard(task)
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+        self._extracting.discard(chat_id)

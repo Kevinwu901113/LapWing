@@ -27,6 +27,24 @@ class FakeCoderAgent(BaseAgent):
         return AgentResult(content="```python\nprint('hello')\n```", needs_persona_formatting=False)
 
 
+class FakeWeatherAgent(BaseAgent):
+    name = "weather"
+    description = "查询天气"
+    capabilities = ["查询天气"]
+
+    async def execute(self, task: AgentTask, router) -> AgentResult:
+        return AgentResult(content="北京当前天气晴朗", needs_persona_formatting=False)
+
+
+class FakeTodoAgent(BaseAgent):
+    name = "todo"
+    description = "管理待办"
+    capabilities = ["待办管理"]
+
+    async def execute(self, task: AgentTask, router) -> AgentResult:
+        return AgentResult(content="当前待办：", needs_persona_formatting=False)
+
+
 # ---- 辅助构造器 ----
 
 def _mock_load(name):
@@ -195,6 +213,78 @@ class TestAgentDispatcher:
         assert task.user_facts == facts
         assert task.chat_id == "chat1"
         assert task.user_message == "帮我搜索"
+
+    async def test_quick_match_routes_weather_before_researcher(self):
+        registry = AgentRegistry()
+        registry.register(FakeResearcherAgent())
+        registry.register(FakeWeatherAgent())
+
+        router = AsyncMock()
+        dispatcher = make_dispatcher(registry=registry, router=router)
+
+        result = await dispatcher.try_dispatch("chat1", "北京今天天气怎么样")
+
+        assert result == "北京当前天气晴朗"
+        router.complete.assert_not_called()
+
+    async def test_quick_match_routes_todo_without_llm_classify(self):
+        registry = AgentRegistry()
+        registry.register(FakeTodoAgent())
+
+        router = AsyncMock()
+        dispatcher = make_dispatcher(registry=registry, router=router)
+
+        result = await dispatcher.try_dispatch("chat1", "列出我的待办")
+
+        assert result == "当前待办："
+        router.complete.assert_not_called()
+
+    async def test_quick_match_routes_reminder_to_todo_without_llm_classify(self):
+        registry = AgentRegistry()
+        registry.register(FakeTodoAgent())
+
+        router = AsyncMock()
+        dispatcher = make_dispatcher(registry=registry, router=router)
+
+        result = await dispatcher.try_dispatch("chat1", "每周提醒我交周报")
+
+        assert result == "当前待办："
+        router.complete.assert_not_called()
+
+    async def test_shell_like_request_bypasses_file_agent_classification(self):
+        registry = AgentRegistry()
+
+        class FakeFileAgent(BaseAgent):
+            name = "file"
+            description = "文件管理"
+            capabilities = ["读取文件"]
+
+            async def execute(self, task: AgentTask, router) -> AgentResult:
+                return AgentResult(content="不应走到这里", needs_persona_formatting=False)
+
+        registry.register(FakeFileAgent())
+
+        router = AsyncMock()
+        router.complete = AsyncMock(return_value='{"agent": "file"}')
+
+        dispatcher = make_dispatcher(registry=registry, router=router)
+        result = await dispatcher.try_dispatch("chat1", "看看 /home/Lapwing 下有什么文件")
+
+        assert result is None
+        router.complete.assert_not_called()
+
+    async def test_embedded_absolute_path_also_bypasses_classification(self):
+        registry = AgentRegistry()
+        registry.register(FakeResearcherAgent())
+
+        router = AsyncMock()
+        router.complete = AsyncMock(return_value='{"agent": "researcher"}')
+
+        dispatcher = make_dispatcher(registry=registry, router=router)
+        result = await dispatcher.try_dispatch("chat1", "在/home下新建一个Lapwing文件夹")
+
+        assert result is None
+        router.complete.assert_not_called()
 
     # 9. _parse_decision 正常解析 agent 名称
     def test_parse_decision_returns_agent_name(self):

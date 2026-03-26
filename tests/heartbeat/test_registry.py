@@ -25,12 +25,21 @@ class FakeBothAction(HeartbeatAction):
     async def execute(self, ctx, brain, bot): pass
 
 
+class FakeMinuteAlwaysAction(HeartbeatAction):
+    name = "fake_minute"
+    description = "分钟常驻"
+    beat_types = ["minute"]
+    selection_mode = "always"
+    async def execute(self, ctx, brain, bot): pass
+
+
 @pytest.fixture
 def registry():
     r = ActionRegistry()
     r.register(FakeFastAction())
     r.register(FakeSlowAction())
     r.register(FakeBothAction())
+    r.register(FakeMinuteAlwaysAction())
     return r
 
 
@@ -57,6 +66,14 @@ class TestActionRegistry:
     def test_as_descriptions_excludes_wrong_beat_type(self, registry):
         descs = registry.as_descriptions("fast")
         assert not any(d["name"] == "fake_slow" for d in descs)
+
+    def test_get_for_beat_can_filter_by_selection_mode(self, registry):
+        names = {a.name for a in registry.get_for_beat("minute", selection_mode="always")}
+        assert names == {"fake_minute"}
+
+    def test_as_descriptions_default_only_decide(self, registry):
+        descs = registry.as_descriptions("minute")
+        assert descs == []
 
 
 class TestSenseContext:

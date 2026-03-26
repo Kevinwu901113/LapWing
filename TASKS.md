@@ -1,6 +1,6 @@
-# Lapwing 下一阶段开发规格文档
+# Lapwing 下一阶段开发规格文档（已完成归档）
 
-> 本文档供 AI 编码 Agent（Codex）接手实现。每个任务均可独立执行，按顺序排列。
+> 本文档是 2026-03 阶段的实现规格。任务 A~D 已完成，保留为实现与回归测试参考。
 
 ---
 
@@ -13,8 +13,10 @@
 - Telegram 接入：`python-telegram-bot>=21.0`
 - LLM：OpenAI 兼容格式（`openai>=1.50.0`）+ Anthropic SDK（`anthropic>=0.57.0`）
 - 数据库：SQLite（`aiosqlite>=0.20.0`）
+- 向量检索：ChromaDB（`chromadb>=0.5`）
 - 调度：APScheduler
-- 搜索：`duckduckgo-search>=7.0`
+- 搜索：`ddgs>=9.0`（DuckDuckGo）+ Bing 回退抓取
+- 本地 API：FastAPI + Uvicorn
 
 ### 关键约定
 - 所有 Prompt 放在 `prompts/` 目录，以 `.md` 格式存储，通过 `src/core/prompt_loader.load_prompt(name)` 加载
@@ -29,7 +31,10 @@
 ### 当前已完成
 - Phase 1.5 全部完成（SQLite 持久化、多模型路由、用户画像提取、心跳引擎）
 - Phase 2 全部完成（Agent 框架、ResearcherAgent、CoderAgent）
-- 测试：145 个，全部通过
+- Phase 3 全部完成（BrowserAgent、兴趣图谱、兴趣主动分享）
+- Phase 4/5 核心能力完成（消息合并、搜索增强、shell tool loop、自省、prompt 进化）
+- 补充能力：Weather/Todo/File Agent、本地 API、Desktop MVP、向量记忆
+- 测试：266 个，全部通过（2026-03-25）
 
 ---
 
@@ -66,6 +71,26 @@ CREATE TABLE discoveries (
     discovered_at TEXT NOT NULL,
     shared_at     TEXT            -- NULL = 未分享
 );
+
+-- 兴趣图谱
+CREATE TABLE interest_topics (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id   TEXT NOT NULL,
+    topic     TEXT NOT NULL,
+    weight    REAL NOT NULL DEFAULT 1.0,
+    last_seen TEXT NOT NULL,
+    UNIQUE(chat_id, topic)
+);
+
+-- 待办事项
+CREATE TABLE todos (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    chat_id    TEXT NOT NULL,
+    content    TEXT NOT NULL,
+    due_date   TEXT,
+    done       INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
 ```
 
 ---
@@ -86,6 +111,12 @@ await memory.add_discovery(chat_id, source, title, summary, url) -> None
 await memory.get_unshared_discoveries(chat_id: str, limit: int = 5) -> list[dict]
 await memory.mark_discovery_shared(discovery_id: int) -> None
 await memory.get_all_chat_ids() -> list[str]
+await memory.get_top_interests(chat_id: str, limit: int = 10) -> list[dict]
+await memory.decay_interests(chat_id: str, factor: float = 0.95) -> None
+await memory.add_todo(chat_id: str, content: str, due_date: str | None = None) -> int
+await memory.list_todos(chat_id: str) -> list[dict]
+await memory.mark_todo_done(chat_id: str, todo_id: int) -> bool
+await memory.delete_todo(chat_id: str, todo_id: int) -> bool
 
 # Prompt 加载（src/core/prompt_loader）
 load_prompt(name: str) -> str  # 从 prompts/{name}.md 读取，带缓存
@@ -463,7 +494,7 @@ heartbeat.registry.register(InterestProactiveAction())
 任务 C（InterestTracker）→ 任务 D（InterestProactiveAction）
 ```
 
-任务 A+B 和任务 C+D 可并行开发。
+执行结果：A+B 与 C+D 已按建议完成并合并到主分支。
 
 ---
 
@@ -474,7 +505,7 @@ heartbeat.registry.register(InterestProactiveAction())
 source venv/bin/activate
 pytest -v
 ```
-确保全量测试通过（当前基线：145 个测试）。
+确保全量测试通过（当前基线：266 个测试）。
 
 手动验证：
 - **任务 B**：发送包含 URL 的消息（如"帮我看看这个 https://example.com"），确认 Lapwing 返回页面摘要

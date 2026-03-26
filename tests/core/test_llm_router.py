@@ -44,6 +44,15 @@ class TestLLMRouterInit:
             "LLM_API_KEY": "generic-key",
             "LLM_BASE_URL": "https://generic.api.com/v1",
             "LLM_MODEL": "glm-4-flash",
+            "LLM_CHAT_API_KEY": "",
+            "LLM_CHAT_BASE_URL": "",
+            "LLM_CHAT_MODEL": "",
+            "LLM_TOOL_API_KEY": "",
+            "LLM_TOOL_BASE_URL": "",
+            "LLM_TOOL_MODEL": "",
+            "NIM_API_KEY": "",
+            "NIM_BASE_URL": "",
+            "NIM_MODEL": "",
         }, clear=True):
             from src.core.llm_router import LLMRouter
             router = LLMRouter()
@@ -70,6 +79,15 @@ class TestLLMRouterInit:
             "LLM_API_KEY": "generic-key",
             "LLM_BASE_URL": "https://generic.api.com/v1",
             "LLM_MODEL": "glm-4-flash",
+            "LLM_CHAT_API_KEY": "",
+            "LLM_CHAT_BASE_URL": "",
+            "LLM_CHAT_MODEL": "",
+            "LLM_TOOL_API_KEY": "",
+            "LLM_TOOL_BASE_URL": "",
+            "LLM_TOOL_MODEL": "",
+            "NIM_API_KEY": "",
+            "NIM_BASE_URL": "",
+            "NIM_MODEL": "",
         }, clear=True):
             from src.core.llm_router import LLMRouter
             router = LLMRouter()
@@ -81,6 +99,15 @@ class TestLLMRouterInit:
             "LLM_API_KEY": "generic-key",
             "LLM_BASE_URL": "https://api.minimaxi.com/anthropic/v1",
             "LLM_MODEL": "MiniMax-M2.7",
+            "LLM_CHAT_API_KEY": "",
+            "LLM_CHAT_BASE_URL": "",
+            "LLM_CHAT_MODEL": "",
+            "LLM_TOOL_API_KEY": "",
+            "LLM_TOOL_BASE_URL": "",
+            "LLM_TOOL_MODEL": "",
+            "NIM_API_KEY": "",
+            "NIM_BASE_URL": "",
+            "NIM_MODEL": "",
         }, clear=True):
             from src.core.llm_router import LLMRouter
             router = LLMRouter()
@@ -202,3 +229,315 @@ class TestLLMRouterComplete:
             second_call = mock_client.messages.create.call_args_list[1].kwargs
             assert first_call["max_tokens"] == 64
             assert second_call["max_tokens"] == 512
+
+
+@pytest.mark.asyncio
+class TestLLMRouterTools:
+    async def test_complete_with_tools_normalizes_openai_tool_calls(self):
+        with patch.dict("os.environ", {
+            "LLM_API_KEY": "generic-key",
+            "LLM_BASE_URL": "https://generic.api.com/v1",
+            "LLM_MODEL": "glm-4-flash",
+        }, clear=True):
+            from src.core.llm_router import LLMRouter
+
+            router = LLMRouter()
+
+            tool_call = MagicMock()
+            tool_call.id = "call_1"
+            tool_call.function.name = "execute_shell"
+            tool_call.function.arguments = '{"command": "pwd"}'
+
+            message = MagicMock()
+            message.content = ""
+            message.tool_calls = [tool_call]
+
+            mock_response = MagicMock()
+            mock_response.choices[0].message = message
+
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+            router._clients["chat"] = mock_client
+            router._api_types["chat"] = "openai"
+            router._base_urls["chat"] = "https://generic.api.com/v1"
+
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "execute_shell",
+                        "description": "执行命令",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                            "required": ["command"],
+                        },
+                    },
+                }
+            ]
+
+            result = await router.complete_with_tools(
+                [{"role": "user", "content": "看看当前目录"}],
+                tools=tools,
+                purpose="chat",
+            )
+
+            assert len(result.tool_calls) == 1
+            assert result.tool_calls[0].name == "execute_shell"
+            assert result.tool_calls[0].arguments == {"command": "pwd"}
+            assert result.continuation_message == {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "execute_shell",
+                            "arguments": '{"command": "pwd"}',
+                        },
+                    }
+                ],
+            }
+
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            assert call_kwargs["tools"] == tools
+            assert call_kwargs["tool_choice"] == "auto"
+            assert call_kwargs["parallel_tool_calls"] is False
+
+    async def test_complete_with_tools_normalizes_anthropic_tool_use(self):
+        with patch.dict("os.environ", {
+            "LLM_API_KEY": "generic-key",
+            "LLM_BASE_URL": "https://api.minimaxi.com/anthropic/v1",
+            "LLM_MODEL": "MiniMax-M2.7",
+        }, clear=True):
+            from src.core.llm_router import LLMRouter
+
+            router = LLMRouter()
+
+            text_block = MagicMock()
+            text_block.type = "text"
+            text_block.text = "我来看看。"
+
+            tool_block = MagicMock()
+            tool_block.type = "tool_use"
+            tool_block.id = "toolu_1"
+            tool_block.name = "execute_shell"
+            tool_block.input = {"command": "pwd"}
+
+            mock_response = MagicMock()
+            mock_response.content = [text_block, tool_block]
+
+            mock_client = MagicMock()
+            mock_client.messages.create = AsyncMock(return_value=mock_response)
+            router._clients["chat"] = mock_client
+            router._api_types["chat"] = "anthropic"
+
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "execute_shell",
+                        "description": "执行命令",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                            "required": ["command"],
+                        },
+                    },
+                }
+            ]
+
+            result = await router.complete_with_tools(
+                [
+                    {"role": "system", "content": "你是助手"},
+                    {"role": "user", "content": "看看当前目录"},
+                ],
+                tools=tools,
+                purpose="chat",
+            )
+
+            assert result.text == "我来看看。"
+            assert len(result.tool_calls) == 1
+            assert result.tool_calls[0].id == "toolu_1"
+            assert result.tool_calls[0].name == "execute_shell"
+            assert result.tool_calls[0].arguments == {"command": "pwd"}
+            assert result.continuation_message == {
+                "role": "assistant",
+                "content": [text_block, tool_block],
+            }
+
+            call_kwargs = mock_client.messages.create.call_args.kwargs
+            assert call_kwargs["system"] == "你是助手"
+            assert call_kwargs["tools"] == [
+                {
+                    "name": "execute_shell",
+                    "description": "执行命令",
+                    "input_schema": {
+                        "type": "object",
+                        "properties": {"command": {"type": "string"}},
+                        "required": ["command"],
+                    },
+                }
+            ]
+            assert call_kwargs["tool_choice"] == {
+                "type": "auto",
+                "disable_parallel_tool_use": True,
+            }
+
+    async def test_complete_with_tools_applies_minimax_openai_compat(self):
+        with patch.dict("os.environ", {
+            "LLM_API_KEY": "generic-key",
+            "LLM_BASE_URL": "https://api.minimaxi.com/v1",
+            "LLM_MODEL": "MiniMax-M2.7",
+        }, clear=True):
+            from src.core.llm_router import LLMRouter
+
+            router = LLMRouter()
+
+            message = MagicMock()
+            message.content = "ok"
+            message.tool_calls = []
+
+            mock_response = MagicMock()
+            mock_response.choices[0].message = message
+
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+            router._clients["chat"] = mock_client
+            router._api_types["chat"] = "openai"
+            router._base_urls["chat"] = "https://api.minimaxi.com/v1"
+
+            tools = [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "execute_shell",
+                        "description": "执行命令",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"command": {"type": "string"}},
+                            "required": ["command"],
+                        },
+                    },
+                }
+            ]
+
+            await router.complete_with_tools(
+                [
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": "你好"},
+                            {"type": "image_url", "image_url": {"url": "https://x"}},
+                        ],
+                    }
+                ],
+                tools=tools,
+                purpose="chat",
+            )
+
+            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+            assert "max_tokens" not in call_kwargs
+            assert call_kwargs["max_completion_tokens"] == 1024
+            assert call_kwargs["temperature"] == 1.0
+            assert call_kwargs["n"] == 1
+            assert "parallel_tool_calls" not in call_kwargs
+            assert call_kwargs["messages"] == [{"role": "user", "content": "你好"}]
+
+    def test_normalize_minimax_openai_request_clamps_invalid_values(self):
+        with patch.dict("os.environ", {
+            "LLM_API_KEY": "generic-key",
+            "LLM_BASE_URL": "https://api.minimaxi.com/v1",
+            "LLM_MODEL": "MiniMax-M2.7",
+        }, clear=True):
+            from src.core.llm_router import LLMRouter
+
+            router = LLMRouter()
+
+            normalized = router._normalize_minimax_openai_request(
+                "chat",
+                {
+                    "model": "MiniMax-M2.7",
+                    "messages": [{"role": "user", "content": "ping"}],
+                    "max_tokens": 99999,
+                    "temperature": 0,
+                    "top_p": 0,
+                    "n": 3,
+                    "function_call": "auto",
+                    "parallel_tool_calls": False,
+                },
+            )
+
+            assert normalized["max_completion_tokens"] == 2048
+            assert normalized["temperature"] == 1.0
+            assert normalized["top_p"] == 0.95
+            assert normalized["n"] == 1
+            assert "max_tokens" not in normalized
+            assert "function_call" not in normalized
+            assert "parallel_tool_calls" not in normalized
+
+    def test_build_tool_result_message_for_openai(self):
+        with patch.dict("os.environ", {
+            "LLM_API_KEY": "generic-key",
+            "LLM_BASE_URL": "https://generic.api.com/v1",
+            "LLM_MODEL": "glm-4-flash",
+        }, clear=True):
+            from src.core.llm_router import LLMRouter, ToolCallRequest
+
+            router = LLMRouter()
+            result = router.build_tool_result_message(
+                purpose="chat",
+                tool_results=[
+                    (
+                        ToolCallRequest(
+                            id="call_1",
+                            name="execute_shell",
+                            arguments={"command": "pwd"},
+                        ),
+                        '{"stdout": "/tmp"}',
+                    )
+                ],
+            )
+
+            assert result == {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "name": "execute_shell",
+                "content": '{"stdout": "/tmp"}',
+            }
+
+    def test_build_tool_result_message_for_anthropic(self):
+        with patch.dict("os.environ", {
+            "LLM_API_KEY": "generic-key",
+            "LLM_BASE_URL": "https://api.minimaxi.com/anthropic/v1",
+            "LLM_MODEL": "MiniMax-M2.7",
+        }, clear=True):
+            from src.core.llm_router import LLMRouter, ToolCallRequest
+
+            router = LLMRouter()
+            router._api_types["chat"] = "anthropic"
+            result = router.build_tool_result_message(
+                purpose="chat",
+                tool_results=[
+                    (
+                        ToolCallRequest(
+                            id="toolu_1",
+                            name="execute_shell",
+                            arguments={"command": "pwd"},
+                        ),
+                        '{"stdout": "/tmp"}',
+                    )
+                ],
+            )
+
+            assert result == {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "tool_result",
+                        "tool_use_id": "toolu_1",
+                        "content": '{"stdout": "/tmp"}',
+                    }
+                ],
+            }

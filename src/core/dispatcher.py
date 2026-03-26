@@ -20,8 +20,29 @@ _SEARCH_PATTERNS = [
     # "X的最新/最近消息/信息/新闻"
     r"(.{2,}?)(?:的)?(?:最新|最近)(?:的)?(?:消息|新闻|信息|动态|情况|进展)",
     # "X今天/今日的行情/价格" 或 "今天X行情"
-    r"(.{2,}?)(?:今天|今日|现在|当前)(?:的)?(?:行情|价格|股价|汇率|天气|状态|情况)",
-    r"(?:今天|今日|现在|当前)(.{2,}?)(?:的)?(?:行情|价格|股价|汇率|天气|状态|情况)",
+    r"(.{2,}?)(?:今天|今日|现在|当前)(?:的)?(?:行情|价格|股价|汇率|状态|情况)",
+    r"(?:今天|今日|现在|当前)(.{2,}?)(?:的)?(?:行情|价格|股价|汇率|状态|情况)",
+]
+
+_WEATHER_PATTERNS = [
+    r"(?:帮我|帮忙|麻烦|请|想知道|告诉我|查下|查一下|看下|看一下|问下).{0,8}(?:天气|气温|温度|风速)",
+    r"[\u4e00-\u9fffA-Za-z·\-\s]{2,20}(?:今天|明天|后天|现在|当前)?(?:的)?(?:天气|气温|温度|风速)(?:怎么样|如何|呢)?",
+    r"[\u4e00-\u9fffA-Za-z·\-\s]{2,20}(?:现在|今天|明天|后天)?(?:多少度|几度|冷不冷|热不热)",
+]
+
+_TODO_PATTERNS = [
+    r"(?:待办|todo)",
+    r"(?:添加|新增|记个|记一条|加入).{0,8}(?:任务|事项|待办)",
+    r"(?:列出|查看|看看|显示).{0,8}(?:待办|todo|任务清单)",
+    r"(?:完成|删除|删掉|移除).{0,8}(?:待办|todo|任务)",
+    r"(?:提醒|闹钟|定时提醒|定时任务)",
+    r"(?:列出|查看|看看|显示).{0,8}(?:提醒|闹钟)",
+    r"(?:取消|删除|移除|关闭).{0,8}(?:提醒|闹钟)",
+    r"(?:每天|每周).{0,8}(?:提醒)",
+]
+_SHELL_COMMAND_PATTERNS = [
+    r"\b(?:ls|pwd|cat|mkdir|touch|mv|cp|chmod|chown|find|grep)\b",
+    r"(?:执行|运行).{0,8}(?:命令|shell|终端)",
 ]
 
 
@@ -80,6 +101,14 @@ class AgentDispatcher:
 
     def _quick_match(self, user_message: str) -> str | None:
         """关键词快速匹配：跳过 LLM，直接派发明确的搜索意图。"""
+        if any(re.search(pattern, user_message, flags=re.IGNORECASE) for pattern in _WEATHER_PATTERNS):
+            logger.info(f"[dispatcher] 关键词快速匹配 → weather")
+            return "weather"
+
+        if any(re.search(pattern, user_message, flags=re.IGNORECASE) for pattern in _TODO_PATTERNS):
+            logger.info(f"[dispatcher] 关键词快速匹配 → todo")
+            return "todo"
+
         for pattern in _SEARCH_PATTERNS:
             if re.search(pattern, user_message):
                 logger.info(f"[dispatcher] 关键词快速匹配 → researcher")
@@ -96,6 +125,10 @@ class AgentDispatcher:
         quick = self._quick_match(user_message)
         if quick is not None:
             return quick
+
+        if self._looks_like_shell_request(user_message):
+            logger.info("[dispatcher] 检测到本地 shell 请求，保留给 Lapwing 主对话工具链")
+            return None
 
         agents_json = json.dumps(self._registry.as_descriptions(), ensure_ascii=False)
         prompt = (
@@ -133,6 +166,17 @@ class AgentDispatcher:
         if not isinstance(agent, str):
             return None
         return agent if agent.strip() else None
+
+    def _looks_like_shell_request(self, user_message: str) -> bool:
+        text = re.sub(r"https?://\S+", "", user_message)
+
+        if re.search(r"/(?!/)[A-Za-z0-9._~/-]+", text):
+            return True
+
+        return any(
+            re.search(pattern, text, flags=re.IGNORECASE)
+            for pattern in _SHELL_COMMAND_PATTERNS
+        )
 
     async def _format_with_persona(self, content: str) -> str:
         """通过 Lapwing 的人格对原始 Agent 输出进行润色转述。"""

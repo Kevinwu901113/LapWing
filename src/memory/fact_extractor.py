@@ -27,6 +27,7 @@ class FactExtractor:
         self._router = router
         self._turn_counts: dict[str, int] = {}
         self._idle_tasks: dict[str, asyncio.Task] = {}
+        self._running_tasks: dict[str, set[asyncio.Task]] = {}
         self._extracting: set[str] = set()
         self._prompt_template: str | None = None
 
@@ -59,7 +60,23 @@ class FactExtractor:
             if chat_id in self._idle_tasks:
                 self._idle_tasks[chat_id].cancel()
                 del self._idle_tasks[chat_id]
-            asyncio.create_task(self._run_extraction(chat_id))
+            self._spawn_extraction(chat_id)
+
+    def _spawn_extraction(self, chat_id: str) -> None:
+        """创建并跟踪提取任务，便于按 chat_id 取消。"""
+        task = asyncio.create_task(self._run_extraction(chat_id))
+        bucket = self._running_tasks.setdefault(chat_id, set())
+        bucket.add(task)
+
+        def _cleanup(_task: asyncio.Task) -> None:
+            tasks = self._running_tasks.get(chat_id)
+            if not tasks:
+                return
+            tasks.discard(_task)
+            if not tasks:
+                self._running_tasks.pop(chat_id, None)
+
+        task.add_done_callback(_cleanup)
 
     async def _idle_trigger(self, chat_id: str) -> None:
         """空闲计时器协程 — 等待后触发提取，被取消时安静退出。"""
@@ -157,6 +174,23 @@ class FactExtractor:
         """外部主动触发一次提取（供 HeartbeatEngine 的慢心跳调用）。"""
         await self._run_extraction(chat_id)
 
+    async def clear_chat_state(self, chat_id: str) -> None:
+        """清理某个 chat 的提取器状态，并取消其待处理任务。"""
+        self._turn_counts.pop(chat_id, None)
+
+        idle_task = self._idle_tasks.pop(chat_id, None)
+        if idle_task is not None:
+            idle_task.cancel()
+            await asyncio.gather(idle_task, return_exceptions=True)
+
+        running_tasks = list(self._running_tasks.pop(chat_id, set()))
+        for task in running_tasks:
+            task.cancel()
+        if running_tasks:
+            await asyncio.gather(*running_tasks, return_exceptions=True)
+
+        self._extracting.discard(chat_id)
+
     async def shutdown(self) -> None:
         """关闭时取消所有待处理的空闲计时器。"""
         for task in self._idle_tasks.values():
@@ -164,3 +198,12 @@ class FactExtractor:
         if self._idle_tasks:
             await asyncio.gather(*self._idle_tasks.values(), return_exceptions=True)
         self._idle_tasks.clear()
+
+        all_running_tasks: list[asyncio.Task] = []
+        for tasks in self._running_tasks.values():
+            all_running_tasks.extend(tasks)
+        for task in all_running_tasks:
+            task.cancel()
+        if all_running_tasks:
+            await asyncio.gather(*all_running_tasks, return_exceptions=True)
+        self._running_tasks.clear()

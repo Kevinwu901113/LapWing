@@ -14,7 +14,8 @@ logger = logging.getLogger("lapwing.heartbeat")
 @dataclass
 class SenseContext:
     """一次心跳的环境快照。"""
-    beat_type: str                    # "fast" | "slow"
+
+    beat_type: str                    # "fast" | "slow" | "minute"
     now: datetime                     # 当前时间（含时区）
     last_interaction: datetime | None # 上次用户发消息的时间
     silence_hours: float              # 距上次对话已沉默多少小时
@@ -26,9 +27,11 @@ class SenseContext:
 
 class HeartbeatAction(ABC):
     """所有心跳 action 实现的抽象基类。"""
+
     name: str
     description: str
     beat_types: list[str]
+    selection_mode: str = "decide"  # "decide" | "always"
 
     @abstractmethod
     async def execute(self, ctx: SenseContext, brain, bot) -> None: ...
@@ -43,18 +46,28 @@ class ActionRegistry:
     def register(self, action: HeartbeatAction) -> None:
         self._actions[action.name] = action
 
-    def get_for_beat(self, beat_type: str) -> list[HeartbeatAction]:
-        return [a for a in self._actions.values() if beat_type in a.beat_types]
+    def get_for_beat(
+        self,
+        beat_type: str,
+        selection_mode: str | None = None,
+    ) -> list[HeartbeatAction]:
+        actions = [a for a in self._actions.values() if beat_type in a.beat_types]
+        if selection_mode is None:
+            return actions
+        return [a for a in actions if getattr(a, "selection_mode", "decide") == selection_mode]
 
     def get_by_name(self, name: str) -> HeartbeatAction | None:
         return self._actions.get(name)
 
-    def as_descriptions(self, beat_type: str) -> list[dict]:
+    def as_descriptions(
+        self,
+        beat_type: str,
+        selection_mode: str = "decide",
+    ) -> list[dict]:
         return [
             {"name": a.name, "description": a.description}
-            for a in self.get_for_beat(beat_type)
+            for a in self.get_for_beat(beat_type, selection_mode=selection_mode)
         ]
-
 
 
 class SenseLayer:
@@ -113,90 +126,67 @@ class SenseLayer:
         )
 
 
-class HeartbeatEngine:
-    """心跳引擎：调度、感知、决策、执行。"""
+class ProactiveRuntime:
+    """心跳行为编排器：接收 tick，决定并执行 action。"""
 
-    def __init__(self, brain, bot) -> None:
+    def __init__(self, brain, bot, registry: ActionRegistry, sense: SenseLayer) -> None:
         self._brain = brain
         self._bot = bot
-        self._sense = SenseLayer(brain.memory)
-        self.registry = ActionRegistry()
-        self._scheduler = None
-        self._running_tasks: set[asyncio.Task] = set()
+        self._registry = registry
+        self._sense = sense
         self._decision_prompt: str | None = None
 
     @property
     def _decision_prompt_text(self) -> str:
         if self._decision_prompt is None:
             from src.core.prompt_loader import load_prompt
+
             self._decision_prompt = load_prompt("heartbeat_decision")
         return self._decision_prompt
 
-    def start(self) -> None:
-        from apscheduler.schedulers.asyncio import AsyncIOScheduler
-        from apscheduler.triggers.interval import IntervalTrigger
-        from apscheduler.triggers.cron import CronTrigger
-        from config.settings import (
-            HEARTBEAT_ENABLED,
-            HEARTBEAT_FAST_INTERVAL_MINUTES,
-            HEARTBEAT_SLOW_HOUR,
-        )
+    async def process(self, chat_id: str, beat_type: str) -> None:
+        ctx = await self._sense.build(chat_id, beat_type)
 
-        if not HEARTBEAT_ENABLED:
-            logger.info("心跳已禁用（HEARTBEAT_ENABLED=false）")
+        always_actions = self._registry.get_for_beat(beat_type, selection_mode="always")
+        await self._execute_actions(always_actions, ctx)
+
+        if beat_type not in {"fast", "slow"}:
             return
 
-        self._scheduler = AsyncIOScheduler()
-        self._scheduler.add_job(
-            self._run_beat,
-            IntervalTrigger(minutes=HEARTBEAT_FAST_INTERVAL_MINUTES),
-            args=["fast"],
-            id="heartbeat_fast",
-        )
-        self._scheduler.add_job(
-            self._run_beat,
-            CronTrigger(hour=HEARTBEAT_SLOW_HOUR),
-            args=["slow"],
-            id="heartbeat_slow",
-        )
-        self._scheduler.start()
-        logger.info(
-            f"心跳已启动：快心跳每 {HEARTBEAT_FAST_INTERVAL_MINUTES} 分钟，"
-            f"慢心跳每天 {HEARTBEAT_SLOW_HOUR:02d}:00"
-        )
+        decide_candidates = self._registry.get_for_beat(beat_type, selection_mode="decide")
+        if not decide_candidates:
+            return
 
-    async def shutdown(self) -> None:
-        if self._scheduler and self._scheduler.running:
-            self._scheduler.shutdown(wait=False)
-        if self._running_tasks:
-            await asyncio.gather(*self._running_tasks, return_exceptions=True)
-        logger.info("心跳引擎已关闭")
+        action_names = await self._decide(ctx, decide_candidates)
+        selected_actions: list[HeartbeatAction] = []
+        seen: set[str] = set()
+        for name in action_names:
+            if name in seen:
+                continue
+            seen.add(name)
+            action = self._registry.get_by_name(name)
+            if action is None:
+                continue
+            if beat_type not in action.beat_types:
+                continue
+            if getattr(action, "selection_mode", "decide") != "decide":
+                continue
+            selected_actions.append(action)
 
-    async def _run_beat(self, beat_type: str) -> None:
-        """一次心跳：为所有已知用户执行 Sense → Decide → Act。"""
-        chat_ids = await self._brain.memory.get_all_chat_ids()
-        for chat_id in chat_ids:
-            task = asyncio.create_task(self._process_user(chat_id, beat_type))
-            self._running_tasks.add(task)
-            task.add_done_callback(self._running_tasks.discard)
+        await self._execute_actions(selected_actions, ctx)
 
-    async def _process_user(self, chat_id: str, beat_type: str) -> None:
-        try:
-            ctx = await self._sense.build(chat_id, beat_type)
-            action_names = await self._decide(ctx)
-            for name in action_names:
-                action = self.registry.get_by_name(name)
-                if action:
-                    await action.execute(ctx, self._brain, self._bot)
-        except Exception as e:
-            logger.exception(f"[{chat_id}] 心跳处理失败: {e}")
+    async def _execute_actions(self, actions: list[HeartbeatAction], ctx: SenseContext) -> None:
+        for action in actions:
+            try:
+                await action.execute(ctx, self._brain, self._bot)
+            except Exception as exc:
+                logger.exception(f"[{ctx.chat_id}] action {action.name} 执行失败: {exc}")
 
-    async def _decide(self, ctx: SenseContext) -> list[str]:
-        """调用 NIM 决定本次心跳执行哪些 actions。"""
-        available = self.registry.as_descriptions(ctx.beat_type)
-        if not available:
-            return []
-
+    async def _decide(self, ctx: SenseContext, available_actions: list[HeartbeatAction]) -> list[str]:
+        payload = [
+            {"name": action.name, "description": action.description}
+            for action in available_actions
+        ]
         now_str = ctx.now.strftime("%Y-%m-%d %H:%M %Z")
         prompt = self._decision_prompt_text.format(
             beat_type=ctx.beat_type,
@@ -204,21 +194,25 @@ class HeartbeatEngine:
             silence_hours=ctx.silence_hours,
             user_facts_summary=ctx.user_facts_summary,
             top_interests_summary=ctx.top_interests_summary,
-            available_actions=json.dumps(available, ensure_ascii=False),
+            available_actions=json.dumps(payload, ensure_ascii=False),
         )
         try:
             response = await self._brain.router.complete(
-                [{"role": "system", "content": prompt}, {"role": "user", "content": "请做出判断"}],
+                [
+                    {"role": "system", "content": prompt},
+                    {"role": "user", "content": "请做出判断"},
+                ],
                 purpose="heartbeat",
                 max_tokens=256,
             )
             return self._parse_decision(response)
-        except Exception as e:
-            logger.warning(f"[{ctx.chat_id}] 心跳决策失败: {e}")
+        except Exception as exc:
+            logger.warning(f"[{ctx.chat_id}] 心跳决策失败: {exc}")
             return []
 
     def _parse_decision(self, text: str) -> list[str]:
-        """防御性解析 NIM 返回的决策 JSON，失败时返回空列表。"""
+        """防御性解析返回的决策 JSON，失败时返回空列表。"""
+
         try:
             cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.MULTILINE)
             cleaned = re.sub(r"\s*```$", "", cleaned.strip(), flags=re.MULTILINE).strip()
@@ -229,3 +223,89 @@ class HeartbeatEngine:
         except Exception:
             pass
         return []
+
+
+class HeartbeatEngine:
+    """心跳引擎：仅负责 tick 调度与分发。"""
+
+    def __init__(self, brain, bot) -> None:
+        self._brain = brain
+        self._bot = bot
+        self._sense = SenseLayer(brain.memory)
+        self.registry = ActionRegistry()
+        self._runtime = ProactiveRuntime(brain=brain, bot=bot, registry=self.registry, sense=self._sense)
+        self._scheduler = None
+        self._running_tasks: set[asyncio.Task] = set()
+
+    def start(self) -> None:
+        from apscheduler.schedulers.asyncio import AsyncIOScheduler
+        from apscheduler.triggers.cron import CronTrigger
+        from apscheduler.triggers.interval import IntervalTrigger
+        from config.settings import (
+            HEARTBEAT_ENABLED,
+            HEARTBEAT_FAST_INTERVAL_MINUTES,
+            HEARTBEAT_MINUTE_ENABLED,
+            HEARTBEAT_MINUTE_INTERVAL_SECONDS,
+            HEARTBEAT_SLOW_HOUR,
+        )
+
+        if not HEARTBEAT_ENABLED:
+            logger.info("心跳已禁用（HEARTBEAT_ENABLED=false）")
+            return
+
+        self._scheduler = AsyncIOScheduler()
+        self._scheduler.add_job(
+            self._run_tick,
+            IntervalTrigger(minutes=HEARTBEAT_FAST_INTERVAL_MINUTES),
+            args=["fast"],
+            id="heartbeat_fast",
+        )
+        self._scheduler.add_job(
+            self._run_tick,
+            CronTrigger(hour=HEARTBEAT_SLOW_HOUR),
+            args=["slow"],
+            id="heartbeat_slow",
+        )
+
+        if HEARTBEAT_MINUTE_ENABLED:
+            interval_seconds = max(int(HEARTBEAT_MINUTE_INTERVAL_SECONDS), 1)
+            self._scheduler.add_job(
+                self._run_tick,
+                IntervalTrigger(seconds=interval_seconds),
+                args=["minute"],
+                id="heartbeat_minute",
+            )
+
+        self._scheduler.start()
+        logger.info(
+            f"心跳已启动：快心跳每 {HEARTBEAT_FAST_INTERVAL_MINUTES} 分钟，"
+            f"慢心跳每天 {HEARTBEAT_SLOW_HOUR:02d}:00，"
+            f"分钟心跳={'开启' if HEARTBEAT_MINUTE_ENABLED else '关闭'}"
+        )
+
+    async def shutdown(self) -> None:
+        if self._scheduler and self._scheduler.running:
+            self._scheduler.shutdown(wait=False)
+        if self._running_tasks:
+            await asyncio.gather(*self._running_tasks, return_exceptions=True)
+        logger.info("心跳引擎已关闭")
+
+    async def _run_tick(self, beat_type: str) -> None:
+        """一次 tick：为所有已知用户触发对应主动行为。"""
+
+        chat_ids = await self._brain.memory.get_all_chat_ids()
+        for chat_id in chat_ids:
+            task = asyncio.create_task(self._process_user(chat_id, beat_type))
+            self._running_tasks.add(task)
+            task.add_done_callback(self._running_tasks.discard)
+
+    async def _run_beat(self, beat_type: str) -> None:
+        """兼容旧命名。"""
+
+        await self._run_tick(beat_type)
+
+    async def _process_user(self, chat_id: str, beat_type: str) -> None:
+        try:
+            await self._runtime.process(chat_id=chat_id, beat_type=beat_type)
+        except Exception as exc:
+            logger.exception(f"[{chat_id}] 心跳处理失败: {exc}")

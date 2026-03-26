@@ -103,3 +103,21 @@ class TestInterestProactiveAction:
              patch("src.heartbeat.actions.interest_proactive.web_search.search", AsyncMock(return_value=results)):
             await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_bot)
         assert mock_brain.router.complete.call_args.kwargs["purpose"] == "heartbeat"
+
+    async def test_publishes_desktop_event(self, mock_brain, mock_bot):
+        mock_brain.event_bus = MagicMock()
+        mock_brain.event_bus.publish = AsyncMock()
+        results = [{"title": "Python 文章", "url": "https://example.com/python", "snippet": "最新趋势"}]
+
+        with patch("src.heartbeat.actions.interest_proactive.load_prompt", return_value="{topic}\n{search_results}\n{user_facts_summary}"), \
+             patch("src.heartbeat.actions.interest_proactive.web_search.search", AsyncMock(return_value=results)):
+            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_bot)
+
+        mock_brain.event_bus.publish.assert_awaited_once_with(
+            "interest_proactive",
+            {
+                "chat_id": "c1",
+                "text": "刚看到一篇关于 Python 的文章，感觉你会喜欢。",
+                "topic": "Python",
+            },
+        )

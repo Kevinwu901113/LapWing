@@ -30,6 +30,8 @@ def mock_brain():
     b.router.complete = AsyncMock(return_value="用户今天问候了Lapwing。")
     b.fact_extractor = MagicMock()
     b.fact_extractor.force_extraction = AsyncMock()
+    b.vector_store = MagicMock()
+    b.vector_store.upsert = AsyncMock()
     return b
 
 
@@ -50,6 +52,13 @@ class TestMemoryConsolidationAction:
     async def test_calls_force_extraction(self, ctx, mock_brain):
         await MemoryConsolidationAction().execute(ctx, mock_brain, MagicMock())
         mock_brain.fact_extractor.force_extraction.assert_called_once_with("c1")
+
+    async def test_upserts_summary_to_vector_store(self, ctx, mock_brain):
+        await MemoryConsolidationAction().execute(ctx, mock_brain, MagicMock())
+        mock_brain.vector_store.upsert.assert_awaited_once()
+        call_args = mock_brain.vector_store.upsert.call_args
+        assert call_args.args[0] == "c1"
+        assert call_args.args[1].startswith("summary_")
 
     async def test_uses_heartbeat_purpose(self, ctx, mock_brain):
         await MemoryConsolidationAction().execute(ctx, mock_brain, MagicMock())

@@ -12,11 +12,13 @@ from config.settings import (
     LOG_LEVEL,
     LOGS_DIR,
     DB_PATH,
+    DATA_DIR,
 )
 from src.core.brain import LapwingBrain
 from src.core.heartbeat import HeartbeatEngine
-from src.heartbeat.actions.proactive import ProactiveMessageAction
+from src.heartbeat.actions.proactive import ProactiveMessageAction, ReminderDispatchAction
 from src.heartbeat.actions.consolidation import MemoryConsolidationAction
+from src.heartbeat.actions.autonomous_browsing import AutonomousBrowsingAction
 from src.heartbeat.actions.interest_proactive import InterestProactiveAction
 from src.heartbeat.actions.self_reflection import SelfReflectionAction
 from src.heartbeat.actions.prompt_evolution import PromptEvolutionAction
@@ -36,6 +38,9 @@ logger = logging.getLogger("lapwing")
 # ===== 初始化大脑 =====
 brain = LapwingBrain(db_path=DB_PATH)
 
+# ===== 全局 bot 引用（post_init 后赋值，用于非 handler 上下文发消息）=====
+_bot = None
+
 # ===== 消息缓冲区（防连发）=====
 _message_buffers: dict[str, list[str]] = {}   # chat_id -> 待合并的消息列表
 _buffer_tasks: dict[str, asyncio.Task] = {}   # chat_id -> 待执行的 flush 任务
@@ -45,6 +50,8 @@ _buffer_updates: dict[str, object] = {}       # chat_id -> 最新的 message 对
 # ===== 生命周期回调 =====
 async def post_init(application: Application) -> None:
     """应用启动后初始化数据库并启动心跳引擎。"""
+    global _bot
+    _bot = application.bot
     await brain.init_db()
     logger.info("数据库初始化完成")
 
@@ -53,24 +60,33 @@ async def post_init(application: Application) -> None:
     from src.agents.coder import CoderAgent
     from src.agents.file_agent import FileAgent
     from src.agents.researcher import ResearcherAgent
+    from src.agents.todo_agent import TodoAgent
+    from src.agents.weather_agent import WeatherAgent
+    from src.api.event_bus import DesktopEventBus
+    from src.api.server import LocalApiServer
     from src.core.dispatcher import AgentDispatcher
     from src.core.knowledge_manager import KnowledgeManager
     from src.memory.interest_tracker import InterestTracker
+    from src.memory.vector_store import VectorStore
 
     # 知识管理器需先初始化，agent 构造时注入
     brain.knowledge_manager = KnowledgeManager()
+    brain.vector_store = VectorStore(DATA_DIR / "chroma")
+    brain.event_bus = DesktopEventBus()
 
     agent_registry = AgentRegistry()
     agent_registry.register(ResearcherAgent(memory=brain.memory, knowledge_manager=brain.knowledge_manager))
     agent_registry.register(CoderAgent(memory=brain.memory))
     agent_registry.register(BrowserAgent(memory=brain.memory, knowledge_manager=brain.knowledge_manager))
     agent_registry.register(FileAgent(memory=brain.memory))
+    agent_registry.register(WeatherAgent())
+    agent_registry.register(TodoAgent(memory=brain.memory))
     brain.dispatcher = AgentDispatcher(
         registry=agent_registry,
         router=brain.router,
         memory=brain.memory,
     )
-    logger.info("Agent dispatcher initialized with: researcher, coder, browser, file")
+    logger.info("Agent dispatcher initialized with: researcher, coder, browser, file, weather, todo")
 
     brain.interest_tracker = InterestTracker(memory=brain.memory, router=brain.router)
 
@@ -82,12 +98,17 @@ async def post_init(application: Application) -> None:
 
     heartbeat = HeartbeatEngine(brain=brain, bot=application.bot)
     heartbeat.registry.register(ProactiveMessageAction())
+    heartbeat.registry.register(ReminderDispatchAction())
+    heartbeat.registry.register(AutonomousBrowsingAction())
     heartbeat.registry.register(InterestProactiveAction())
     heartbeat.registry.register(MemoryConsolidationAction())
     heartbeat.registry.register(SelfReflectionAction())
     heartbeat.registry.register(PromptEvolutionAction())
     heartbeat.start()
     application.bot_data["heartbeat"] = heartbeat
+    api_server = LocalApiServer(brain=brain, event_bus=brain.event_bus)
+    await api_server.start()
+    application.bot_data["api_server"] = api_server
     logger.info("心跳引擎已初始化")
 
 
@@ -96,6 +117,9 @@ async def post_shutdown(application: Application) -> None:
     heartbeat = application.bot_data.get("heartbeat")
     if heartbeat:
         await heartbeat.shutdown()
+    api_server = application.bot_data.get("api_server")
+    if api_server:
+        await api_server.shutdown()
     if brain.interest_tracker:
         await brain.interest_tracker.shutdown()
     await brain.fact_extractor.shutdown()
@@ -116,12 +140,28 @@ async def cmd_reload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info("通过 /reload 命令重新加载了人格 prompt")
 
 
-async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """处理 /forget 命令 - 清除当前对话的记忆。"""
+async def cmd_new(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /new 命令 - 清除当前对话的短期记忆。"""
     chat_id = str(update.message.chat_id)
-    await brain.memory.clear(chat_id)
-    await update.message.reply_text("好的，我已经忘记了我们之前的对话。重新开始吧。")
-    logger.info(f"通过 /forget 命令清除了频道 {chat_id} 的记忆")
+    await brain.clear_short_term_memory(chat_id)
+    await update.message.reply_text("好的，已清空当前对话上下文，我们可以重新开始。")
+    logger.info(f"通过 /new 命令清除了频道 {chat_id} 的短期记忆")
+
+
+async def cmd_clear(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /clear 命令 - 清除当前对话的短期记忆。"""
+    chat_id = str(update.message.chat_id)
+    await brain.clear_short_term_memory(chat_id)
+    await update.message.reply_text("好的，已清空当前对话上下文，我们可以重新开始。")
+    logger.info(f"通过 /clear 命令清除了频道 {chat_id} 的短期记忆")
+
+
+async def cmd_forget(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /forget 命令 - 清除当前对话的全部记忆（长短期）。"""
+    chat_id = str(update.message.chat_id)
+    await brain.clear_all_memory(chat_id)
+    await update.message.reply_text("好的，我已经清空这个 chat 的所有记忆（短期 + 长期）。")
+    logger.info(f"通过 /forget 命令清除了频道 {chat_id} 的全部记忆（长短期）")
 
 
 async def cmd_evolve(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -167,6 +207,58 @@ async def cmd_interests(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("\n".join(lines))
 
 
+def _visible_user_facts(facts: list[dict]) -> list[dict]:
+    """过滤掉内部 memory summary，仅保留可展示的用户画像。"""
+    return [
+        fact for fact in facts
+        if not str(fact.get("fact_key", "")).startswith("memory_summary_")
+    ]
+
+
+async def cmd_memory(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """处理 /memory 命令 - 查看或删除当前用户的画像信息。"""
+    message = update.message
+    if message is None:
+        return
+
+    chat_id = str(message.chat_id)
+    facts = _visible_user_facts(await brain.memory.get_user_facts(chat_id))
+    args = context.args or []
+
+    if not args:
+        if not facts:
+            await message.reply_text("我现在还没有记住关于你的信息。")
+            return
+
+        lines = ["你记住了以下关于我的信息："]
+        for index, fact in enumerate(facts, start=1):
+            lines.append(f"{index}. [{fact['fact_key']}] {fact['fact_value']}")
+        await message.reply_text("\n".join(lines))
+        return
+
+    if len(args) != 2 or args[0].lower() != "delete":
+        await message.reply_text("用法：/memory delete <编号>")
+        return
+
+    try:
+        target_index = int(args[1])
+    except ValueError:
+        await message.reply_text("用法：/memory delete <编号>")
+        return
+
+    if target_index < 1 or target_index > len(facts):
+        await message.reply_text("没有这条记忆")
+        return
+
+    fact_key = facts[target_index - 1]["fact_key"]
+    deleted = await brain.memory.delete_user_fact(chat_id, fact_key)
+    if not deleted:
+        await message.reply_text("没有这条记忆")
+        return
+
+    await message.reply_text("这条记忆已经删掉了。")
+
+
 # ===== 消息处理 =====
 
 async def _send_reply(message, reply: str) -> None:
@@ -184,8 +276,15 @@ async def _send_reply(message, reply: str) -> None:
 
 async def _think_and_reply(message, chat_id: str, user_text: str) -> None:
     """调用大脑并回复，文本和语音消息共用。"""
+    async def _send_status(cid: str, text: str) -> None:
+        if _bot:
+            try:
+                await _bot.send_message(chat_id=int(cid), text=text)
+            except Exception:
+                pass
+
     await message.chat.send_action("typing")
-    reply = await brain.think(chat_id, user_text)
+    reply = await brain.think(chat_id, user_text, status_callback=_send_status)
     await _send_reply(message, reply)
     logger.info(f"已回复 [{chat_id}]，长度: {len(reply)}")
 
@@ -294,8 +393,11 @@ if __name__ == "__main__":
     # 注册处理器
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(CommandHandler("reload", cmd_reload))
+    app.add_handler(CommandHandler("new", cmd_new))
+    app.add_handler(CommandHandler("clear", cmd_clear))
     app.add_handler(CommandHandler("forget", cmd_forget))
     app.add_handler(CommandHandler("evolve", cmd_evolve))
+    app.add_handler(CommandHandler("memory", cmd_memory))
     app.add_handler(CommandHandler("interests", cmd_interests))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, handle_voice))

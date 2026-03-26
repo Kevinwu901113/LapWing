@@ -7,6 +7,8 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+desktop/node_modules/
+desktop/src-tauri/target/
 config/.env
 data/
 logs/

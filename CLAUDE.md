@@ -3,14 +3,14 @@
 ## 项目概述
 
 Lapwing 是一个个人 AI 伴侣 & 智能助手系统，运行在 PVE 虚拟机（6核8G，Ubuntu 22.04）上。
-她通过 Telegram 与用户交互，有温柔知性的固定人格，未来会扩展 Agent 团队和自主浏览能力。
+她通过 Telegram 与用户交互，有温柔知性的固定人格，已具备 Agent 团队、心跳引擎和工具调用能力。
 
 ## 技术栈
 
 - **语言**: Python 3.11+
 - **聊天平台**: Telegram（python-telegram-bot）
 - **LLM**: OpenAI 兼容格式的第三方 provider（GLM、MiniMax 等），通过 base_url 切换
-- **数据库**: SQLite（结构化数据）+ ChromaDB（向量检索，后续引入）
+- **数据库**: SQLite（结构化数据）+ ChromaDB（向量检索）
 - **部署**: systemd service on Ubuntu 22.04 VM
 
 ## 项目结构约定
@@ -63,8 +63,8 @@ sudo systemctl restart lapwing
 
 ## 开发路线图
 
-以下是按顺序排列的开发任务。每个任务都为下一个任务打基础。
-**请按顺序逐个完成，每完成一个任务打勾。**
+以下是按顺序排列的开发任务与状态快照（持续更新）。
+**说明：Phase 1~4 已完成；Phase 5 仅任务 17 仍在进行；Phase 6 为当前整合阶段。**
 
 ### ✅ Phase 1 - 基础搭建（已完成）
 - [x] Telegram Bot 基础框架
@@ -93,20 +93,11 @@ sudo systemctl restart lapwing
 ### ✅ 额外完成
 - [x] 语音消息支持（Whisper API 转写）
 
-### ✅ Phase 4 - 体验优化与问题修复（已完成）
-- [x] 任务 11：消息合并机制（防连发）
-- [x] 任务 12：修复搜索功能
-- [x] 任务 13：人格 prompt 替换
-
-### ✅ Phase 5 - 自我进化能力（已完成）
-- [x] 任务 14：FileAgent（读写项目文件，带安全白名单）
-- [x] 任务 15：自省与学习日志（data/learnings/，实时纠正检测）
-- [x] 任务 16：Prompt 自我优化（/evolve 命令，每周自动进化）
-- [x] 任务 17：知识积累（data/knowledge/，浏览后保存笔记，对话中自动引用）
-
 ---
 
-### 🔨 Phase 4 - 体验优化与问题修复（已完成，详细记录如下）
+### ✅ Phase 4 - 体验优化与问题修复（已完成）
+
+实际使用中发现了一些影响体验的关键问题，需要优先修复。
 
 #### 任务 11：消息合并机制（防连发）
 
@@ -202,156 +193,187 @@ Lapwing 的核心身份：白发蓝眸的女孩，安静温柔但有主见。
 
 ---
 
-### 📋 Phase 5 - 自我进化能力（已完成，详细记录如下）
+### 🟡 Phase 5 - 真正的动手能力与自我进化（基本完成，持续打磨）
 
-> Lapwing 能在对话和自主探索过程中修改自己的文件、优化自己的 prompt，实现持续自我进化。
-> 灵感来源：OpenClaw 的 self-improving-agent 机制。
+> **状态更新（2026-03-25）**：Lapwing 已具备真实动手能力（shell tool loop、读写文件、自省与 prompt 进化）。
+> 当前主要待增强项是任务 17（持续自主浏览闭环）。
 
-#### 任务 14：文件系统 Agent（FileAgent）
+#### 任务 14：Shell 执行引擎（最高优先级）
 
-**目标**：让 Lapwing 能读写自己项目目录下的文件。
+**问题**：Lapwing 没有真正的命令执行能力。用户说"帮我创建一个文件"，她只是假装执行并输出一段 markdown 代码块，文件并不存在。
 
-**实现方案**：
-- 新建 `src/agents/file_agent.py`，继承 BaseAgent
-- 提供以下能力：
-  - `read_file(path)` — 读取文件内容
-  - `write_file(path, content)` — 写入/覆盖文件
-  - `append_file(path, content)` — 追加内容
-  - `list_files(directory)` — 列出目录内容
-- **安全边界**（非常重要）：
-  - 白名单目录：只允许操作 `prompts/`、`data/`、`logs/`、`config/` 下的文件
-  - 黑名单文件：禁止修改 `main.py`、`src/` 下的 Python 代码文件
-  - 所有写入操作记录到日志
-  - 修改 prompt 文件前自动备份到 `data/backups/prompts/`
-- 在 `prompts/agent_file.md` 中定义 FileAgent 的行为准则
-
-**修改文件**：
-- 新建 `src/agents/file_agent.py`
-- 新建 `prompts/agent_file.md`
-- 注册到 AgentRegistry
-
-**验证方式**：对 Lapwing 说"帮我看看你的人格 prompt 是怎么写的" → 她能读取并展示 prompts/lapwing.md 的内容。
-
-#### 任务 15：自省与学习日志
-
-**目标**：Lapwing 能回顾自己的对话表现，记录学到的东西。
+**目标**：让 Lapwing 能真正在 VM 上执行 shell 命令，并拿到真实的执行结果。
 
 **实现方案**：
-- 新建 `src/core/self_reflection.py`
-- 在 `data/learnings/` 目录下以日期为文件名记录学习日志（Markdown 格式），如 `data/learnings/2026-03-24.md`
-- 触发时机：
-  1. 每天定时（如凌晨 2 点），回顾当天的对话，提取经验
-  2. 用户明确纠正 Lapwing 时（如"你不应该这样说"、"记住以后别这么做"）
-- 学习日志格式：
-  ```markdown
-  ## 2026-03-24
-  
-  ### 对话反思
-  - 用户不喜欢我在回复结尾总是提问，以后应该更自然地回应
-  - 用户提到华南理工大学论文格式时我搜索失败了，搜索关键词应该更具体
-  
-  ### 用户偏好更新
-  - 用户在华南理工大学读书，正在写 RAG 方向的论文
+- 新建 `src/tools/shell_executor.py`，提供安全的命令执行能力
+- 核心功能：
+  - `execute(command: str) -> ShellResult`：执行命令，返回 stdout、stderr、return_code
+  - 超时机制：默认 30 秒超时，防止命令挂死
+  - 工作目录：默认在 `/home/lapwing/` 或项目目录下执行
+- **安全机制**（至关重要）：
+  - 危险命令黑名单：禁止 `rm -rf /`、`dd`、`mkfs`、`shutdown`、`reboot`、`:(){ :|:& };:` 等破坏性命令
+  - 禁止修改系统文件（/etc/、/usr/、/boot/）
+  - 禁止操作其他用户的目录
+  - 所有执行记录写入 `logs/shell_execution.log`，包含命令、时间、结果
+  - 可选：配置 `SHELL_ENABLED=true/false` 总开关
+- 将 shell 执行能力注册为 LLM 的 tool/function call：
+  ```python
+  tools = [
+      {
+          "type": "function",
+          "function": {
+              "name": "execute_shell",
+              "description": "在服务器上执行 shell 命令。用于创建文件、查看目录、安装软件等操作。",
+              "parameters": {
+                  "type": "object",
+                  "properties": {
+                      "command": {"type": "string", "description": "要执行的 shell 命令"}
+                  },
+                  "required": ["command"]
+              }
+          }
+      }
+  ]
   ```
-- 新建 `prompts/self_reflection.md` 作为自省用的 prompt
+- 修改 `src/core/brain.py`：
+  - 在 LLM 请求中加入 tools 参数
+  - 处理 tool_calls 响应：当 LLM 返回 tool_call 时，执行命令并将结果回传给 LLM
+  - LLM 拿到真实结果后生成最终回复
+  - 实现完整的 tool call 循环（可能需要多轮）
+
+**关键区别**：这不是 Agent 分发，而是 Lapwing 自己直接拥有的能力。她不需要"派 Coder Agent 去做"，而是自己就能动手。就像 OpenClaw 一样，对话过程中如果需要操作文件或执行命令，LLM 直接调用 tool。
 
 **修改文件**：
-- 新建 `src/core/self_reflection.py`
-- 新建 `prompts/self_reflection.md`
-- 在主动消息调度器中添加每日自省任务
-
-**验证方式**：和 Lapwing 聊天时纠正她的某个行为 → 次日检查 data/learnings/ 下出现了记录。
-
-#### 任务 16：Prompt 自我优化
-
-**目标**：Lapwing 能基于学习日志自动优化自己的人格 prompt。
-
-**实现方案**：
-- 新建 `src/core/prompt_evolver.py`
-- 工作流程：
-  1. 读取 `data/learnings/` 中最近 7 天的学习日志
-  2. 读取当前的 `prompts/lapwing.md`
-  3. 用 LLM 分析学习日志，生成 prompt 的改进建议
-  4. 自动应用改进（追加新规则或修改现有规则）
-  5. 写入前自动备份旧版本到 `data/backups/prompts/lapwing_YYYYMMDD_HHMMSS.md`
-  6. 写入后自动 reload prompt
-- 触发时机：
-  - 每周一次自动触发（如每周日凌晨）
-  - 用户通过 /evolve 命令手动触发
-- **安全机制**：
-  - 不能删除核心人格定义（"你是 Lapwing"、"白发蓝眸"等身份信息）
-  - 只能在"说话风格"和"行为准则"部分追加或修改规则
-  - 每次修改后在日志中记录修改内容
-  - 用户可以通过 /evolve revert 回滚到上一个版本
-- 新建 `prompts/prompt_evolver.md` 定义优化的原则和约束
-
-**修改文件**：
-- 新建 `src/core/prompt_evolver.py`
-- 新建 `prompts/prompt_evolver.md`
-- `main.py` — 添加 /evolve 和 /evolve revert 命令
-- 在调度器中添加每周自动优化任务
+- 新建 `src/tools/shell_executor.py`
+- `src/core/brain.py` — 加入 function calling / tool use 支持
+- `config/settings.py` — 添加 SHELL_ENABLED、SHELL_TIMEOUT 等配置
+- `config/.env.example` — 添加示例
 
 **验证方式**：
-1. 连续几天和 Lapwing 聊天，纠正她一些说话方式
-2. 手动执行 /evolve
-3. 检查 prompts/lapwing.md 是否增加了新的规则
-4. 检查 data/backups/prompts/ 下有旧版本备份
-5. 后续对话中她的表现有所改善
+1. 对 Lapwing 说"在 /home 下创建一个 Lapwing 文件夹，里面新建一个 txt 写些内容" → 文件真的被创建了
+2. SSH 到 VM 上 `cat /home/Lapwing/notes.txt` → 内容真的存在
+3. 对 Lapwing 说"看看 /home/Lapwing 下有什么文件" → 她返回真实的 ls 结果
 
-#### 任务 17：自主探索中的知识积累
+#### 任务 15：文件读写能力（基于 Shell 引擎）
 
-**目标**：Lapwing 在自主浏览网络的过程中，能把学到的知识融入自己的知识体系。
+**目标**：在 Shell 执行引擎的基础上，让 Lapwing 能方便地读写自己的项目文件。
 
 **实现方案**：
-- 新建 `data/knowledge/` 目录，按主题存储知识笔记（Markdown）
-- 自主浏览后，除了更新兴趣图谱，还将有价值的内容整理成笔记
-- 笔记格式：
-  ```markdown
-  # 深海水母的视觉系统
-  
-  来源: https://example.com/article
-  日期: 2026-03-24
-  
-  ## 关键发现
-  - 深海水母使用极化光感知环境
-  - 与哺乳动物视觉系统完全不同
-  
-  ## 我的思考
-  - 这种机制是否能启发新的传感器设计？
-  ```
-- 在对话中，当用户聊到相关话题时，Lapwing 能引用自己的知识笔记
-- 知识笔记可以通过 FileAgent 读写
+- 在 `brain.py` 的 tool loop 中增加 `read_file` / `write_file`（复用 shell 安全策略）
+- 新增 `FileAgent`（`src/agents/file_agent.py`）用于受控文件操作
+  - 白名单目录：`prompts/`、`data/`、`logs/`、`config/`
+  - 黑名单限制：禁止改 `main.py`、`config/.env`、`src/**/*.py`、`tests/**/*.py`
+  - 修改 prompt 文件时自动备份到 `data/backups/prompts/`
+- FileAgent 支持读、写、追加、列目录，并通过 `prompts/agent_file.md` 做意图解析
 
 **修改文件**：
-- 修改自主浏览相关代码，浏览后生成知识笔记
-- 修改 brain.py，在相关话题时检索知识笔记注入上下文
+- `src/core/brain.py` — 注册 `read_file` / `write_file` 工具
+- 新建 `src/agents/file_agent.py`
+- 新建 `prompts/agent_file.md`
 
-**验证方式**：Lapwing 自主浏览了一篇文章 → data/knowledge/ 下出现笔记 → 聊天中提到相关话题时她能引用。
+**验证方式**：对 Lapwing 说"看看你的人格 prompt 怎么写的" → 她能读取 `prompts/lapwing.md` 并返回真实内容。
+
+#### 任务 16：自省、学习与 Prompt 自我进化
+
+**目标**：Lapwing 能回顾对话、学习经验、并自动优化自己的 prompt。
+
+**前置条件**：任务 14 和 15 必须先完成（她需要真正的文件读写能力才能修改自己的 prompt）。
+
+**实现方案**：
+- 新建 `src/core/self_reflection.py`：每日自省
+  - 触发时机：每天凌晨 2 点（通过 APScheduler）
+  - 回顾当天对话记录，用 LLM 提取经验教训
+  - 将学习记录写入 `data/learnings/YYYY-MM-DD.md`（真实落盘，不伪造结果）
+  - 当用户明确纠正时（"你不该这么说"），立即触发一次微型自省
+- 新建 `src/core/prompt_evolver.py`：Prompt 自我优化
+  - 触发时机：每周日凌晨自动 + /evolve 手动触发
+  - 流程：读学习日志 → 读当前 prompt → LLM 生成改进 → 备份旧版 → 写入新版 → 自动 reload
+  - 安全机制：不能删除核心身份定义、每次修改有备份、/evolve revert 可回滚
+- 新建 prompt 文件：
+  - `prompts/self_reflection.md` — 自省用的 prompt
+  - `prompts/prompt_evolver.md` — 进化用的 prompt，定义什么能改什么不能改
+
+**修改文件**：
+- 新建 `src/core/self_reflection.py`
+- 新建 `src/core/prompt_evolver.py`
+- 新建 `prompts/self_reflection.md`
+- 新建 `prompts/prompt_evolver.md`
+- `main.py` — 添加 /evolve、/evolve revert 命令，注册定时任务
+
+**验证方式**：
+1. 和 Lapwing 聊天时说"以后别在每句话结尾都问我问题"
+2. 等自省触发（或手动检查 data/learnings/）
+3. 执行 /evolve → prompts/lapwing.md 真的被修改了，增加了新规则
+4. data/backups/ 下有旧版本
+5. 后续对话中她不再每句话都问问题
+
+#### 任务 17：真正的自主浏览（像个真人一样刷网，进行中）
+
+**目标**：Lapwing 在后台定期主动上网浏览，像一个真人刷推特、看新闻、逛论坛一样。不是被动等用户要求搜索，而是她自己想看什么就去看什么。
+
+**前置条件**：任务 14（Shell 引擎）和任务 15（文件读写）必须先完成。
+
+**实现方案**：
+- 新建或改造 `src/core/autonomous_browsing.py`
+- 浏览循环（通过 APScheduler 定期触发，如每 2 小时一次）：
+  1. Lapwing 先"想"她现在想看什么（基于兴趣图谱 + 随机好奇心）
+  2. 用搜索工具或直接访问网站（如 Hacker News、Reddit、Twitter/X、技术博客等）
+  3. 浏览内容，提取她觉得有趣的信息
+  4. 更新兴趣图谱（interest_topics 表）
+  5. 将有价值的发现写成知识笔记到 `data/knowledge/`（真正写入文件）
+  6. 决定是否要主动分享给用户（考虑时间、用户状态等）
+- 浏览起点来源：
+  - 兴趣图谱中权重高的话题 → 搜索相关内容
+  - 固定的"信息源"列表（可配置）：Hacker News、Reddit 特定 subreddit、技术博客等
+  - 随机探索：一定概率从完全随机的话题开始
+- 配置项（config/.env）：
+  ```
+  BROWSE_ENABLED=true
+  BROWSE_INTERVAL_HOURS=2
+  BROWSE_SOURCES=hackernews,reddit/technology,reddit/science
+  ```
+- 分享决策：
+  - 不是每次浏览都分享，只有她觉得"真的有意思"才会
+  - 考虑用户的活跃时间（不在凌晨发消息）
+  - 分享时用她自己的话说，不是转发摘要
+
+**修改文件**：
+- 新建或改造 `src/core/autonomous_browsing.py`
+- `config/settings.py` — 添加浏览配置
+- `config/.env.example` — 添加示例
+- 确保使用真正的网络请求（requests/aiohttp/playwright），不是假装浏览
+
+**验证方式**：
+1. 启动 Lapwing，等 2 小时
+2. 检查 `data/knowledge/` 下是否出现了新的知识笔记
+3. 检查兴趣图谱是否有更新
+4. 她是否主动发消息分享了什么有趣的发现
+5. 聊天时提到她浏览过的话题，她能说"我之前看到过一篇相关的..."
 
 ---
 
-### 🔨 Phase 6 - 功能扩展（当前阶段，Phase 5 已完成）
+### 🔨 Phase 6 - 功能扩展（当前阶段）
 
-> 以下任务按顺序开发，任务 18 → 19 → 20 → 21。
+> Phase 6 已启动：以下任务按增强顺序推进（其中 18/19/20/21 已有 MVP 实现）。
 
-#### 任务 18：记忆管理界面
+#### ✅ 任务 18：记忆管理界面（MVP 已完成）
 - /memory 命令查看 Lapwing 记住了哪些关于你的信息（user_facts）
 - /memory delete <编号> 删除某条记忆
 - /interests 命令查看她的兴趣图谱（interest_topics）
 - 格式化输出，清晰易读
 
-#### 任务 19：RAG 长期记忆
+#### ✅ 任务 19：RAG 长期记忆（基础版已完成）
 - 引入 ChromaDB 向量数据库
 - 对话历史向量化存储
 - 当用户提到过去的事情时，Lapwing 能通过语义检索找到相关的历史对话
 - 将检索到的历史上下文注入到 system prompt 中
 
-#### 任务 20：更多工具 Agent
+#### ✅ 任务 20：更多工具 Agent（已完成）
 - 天气查询 Agent
 - 日历/待办管理 Agent
 - 文件处理 Agent（读取、总结文档）
 
-#### 任务 21：桌面应用
+#### 🟡 任务 21：桌面应用（MVP 已完成，持续完善）
 - 使用 Electron 或 Tauri 构建桌面客户端
 - 任务看板：查看 Agent 团队的任务进度
 - 设置面板：管理模型配置、主动消息设置等

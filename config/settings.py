@@ -43,6 +43,20 @@ NIM_MODEL: str = os.getenv("NIM_MODEL", "meta/llama-3.1-8b-instruct")
 HEARTBEAT_ENABLED: bool = os.getenv("HEARTBEAT_ENABLED", "true").lower() == "true"
 HEARTBEAT_FAST_INTERVAL_MINUTES: int = int(os.getenv("HEARTBEAT_FAST_INTERVAL_MINUTES", "60"))
 HEARTBEAT_SLOW_HOUR: int = int(os.getenv("HEARTBEAT_SLOW_HOUR", "3"))
+HEARTBEAT_MINUTE_ENABLED: bool = os.getenv("HEARTBEAT_MINUTE_ENABLED", "true").lower() == "true"
+HEARTBEAT_MINUTE_INTERVAL_SECONDS: int = int(os.getenv("HEARTBEAT_MINUTE_INTERVAL_SECONDS", "60"))
+REMINDER_DISPATCH_GRACE_SECONDS: int = int(os.getenv("REMINDER_DISPATCH_GRACE_SECONDS", "60"))
+REMINDER_MAX_DUE_PER_CHAT: int = int(os.getenv("REMINDER_MAX_DUE_PER_CHAT", "20"))
+
+# 自主浏览配置
+BROWSE_ENABLED: bool = os.getenv("BROWSE_ENABLED", "true").lower() == "true"
+BROWSE_INTERVAL_HOURS: int = int(os.getenv("BROWSE_INTERVAL_HOURS", "2"))
+_BROWSE_SOURCES_DEFAULT = "hackernews,reddit/technology,reddit/science"
+BROWSE_SOURCES: list[str] = [
+    item.strip()
+    for item in os.getenv("BROWSE_SOURCES", _BROWSE_SOURCES_DEFAULT).split(",")
+    if item.strip()
+]
 
 # 对话设置
 MAX_HISTORY_TURNS: int = 20  # 保留最近 N 轮对话（每轮 = 1 user + 1 assistant）
@@ -58,6 +72,13 @@ INTEREST_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("INTEREST_EXTRACT_TURN_THRE
 WHISPER_API_KEY: str = os.getenv("WHISPER_API_KEY", "")
 WHISPER_BASE_URL: str = os.getenv("WHISPER_BASE_URL", "")
 WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "whisper-1")
+
+# Shell 执行
+SHELL_ENABLED: bool = os.getenv("SHELL_ENABLED", "true").lower() == "true"
+SHELL_ALLOW_SUDO: bool = os.getenv("SHELL_ALLOW_SUDO", "false").lower() == "true"
+SHELL_TIMEOUT: int = int(os.getenv("SHELL_TIMEOUT", "30"))
+SHELL_DEFAULT_CWD: str = os.getenv("SHELL_DEFAULT_CWD", str(ROOT_DIR))
+SHELL_MAX_OUTPUT_CHARS: int = int(os.getenv("SHELL_MAX_OUTPUT_CHARS", "4000"))
 
 # 自省与进化
 SELF_REFLECTION_HOUR: int = int(os.getenv("SELF_REFLECTION_HOUR", "2"))  # 每日自省时间（小时）

@@ -60,6 +60,16 @@ class InterestProactiveAction(HeartbeatAction):
                 return
 
             await bot.send_message(chat_id=ctx.chat_id, text=message)
+            event_bus = brain.__dict__.get("event_bus") if hasattr(brain, "__dict__") else None
+            if event_bus is not None:
+                await event_bus.publish(
+                    "interest_proactive",
+                    {
+                        "chat_id": ctx.chat_id,
+                        "text": message,
+                        "topic": topic,
+                    },
+                )
 
             first = results[0]
             await brain.memory.add_discovery(

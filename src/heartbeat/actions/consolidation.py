@@ -53,6 +53,17 @@ class MemoryConsolidationAction(HeartbeatAction):
                 summary,
             )
 
+            if hasattr(brain, "vector_store") and brain.vector_store is not None:
+                await brain.vector_store.upsert(
+                    ctx.chat_id,
+                    f"summary_{date_str}",
+                    summary,
+                    metadata={
+                        "kind": "memory_summary",
+                        "date": date_str,
+                    },
+                )
+
             await brain.fact_extractor.force_extraction(ctx.chat_id)
 
             logger.info(f"[{ctx.chat_id}] 记忆整理完成，摘要长度: {len(summary)}")

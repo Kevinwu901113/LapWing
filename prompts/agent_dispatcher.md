@@ -33,6 +33,16 @@
   返回：`{"agent": "file", "reason": "用户要求读取 prompts/lapwing.md 文件"}`
 - 用户说："列出 prompts 目录下有哪些文件"
   返回：`{"agent": "file", "reason": "用户要求列出目录内容"}`
+- 用户说："看看 /home/Lapwing 下有什么文件"
+  返回：`{"agent": null}`
+- 用户说："在 /home 下创建一个文件夹，然后 mkdir 一个 notes 目录"
+  返回：`{"agent": null}`
+- 用户说："北京今天天气怎么样"
+  返回：`{"agent": "weather", "reason": "用户在查询具体城市天气"}`
+- 用户说："帮我记个待办，明天交周报"
+  返回：`{"agent": "todo", "reason": "用户要求管理待办事项"}`
+- 用户说："列出我的待办"
+  返回：`{"agent": "todo", "reason": "用户要查看待办列表"}`
 - 用户说："测试一下你的搜索能力"
   返回：`{"agent": null}`
 - 用户说："我刚看到这个链接，感觉挺有意思 https://example.com"

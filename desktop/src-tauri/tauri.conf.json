@@ -1,0 +1,31 @@
+{
+  "build": {
+    "beforeDevCommand": "npm run dev",
+    "beforeBuildCommand": "npm run build",
+    "devPath": "http://localhost:1420",
+    "distDir": "../dist"
+  },
+  "package": {
+    "productName": "Lapwing Desktop",
+    "version": "0.1.0"
+  },
+  "tauri": {
+    "allowlist": {
+      "notification": {
+        "all": true
+      }
+    },
+    "windows": [
+      {
+        "title": "Lapwing Desktop",
+        "width": 1280,
+        "height": 880,
+        "resizable": true
+      }
+    ],
+    "bundle": {
+      "active": true,
+      "identifier": "com.lapwing.desktop"
+    }
+  }
+}

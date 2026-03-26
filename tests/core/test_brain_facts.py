@@ -2,6 +2,7 @@
 
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -111,6 +112,65 @@ class TestBuildSystemPrompt:
             assert "## 最近聊过的事" in result
             assert "## 你对这个用户的了解" not in result
 
+    async def test_appends_related_history_section_from_vector_hits(self):
+        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"):
+            from src.core.brain import LapwingBrain
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.get_user_facts = AsyncMock(return_value=[])
+            brain.vector_store = MagicMock()
+            brain.vector_store.search = AsyncMock(return_value=[
+                {
+                    "text": "之前聊过 RAG 和论文选题。",
+                    "metadata": {"date": "2026-03-20"},
+                    "distance": 0.12,
+                }
+            ])
+
+            result = await brain._build_system_prompt("chat1", "我想继续聊论文")
+
+            assert "## 相关历史记忆" in result
+            assert "- 2026-03-20: 之前聊过 RAG 和论文选题。" in result
+            brain.vector_store.search.assert_awaited_once_with("chat1", "我想继续聊论文", n_results=2)
+
+    async def test_skips_related_history_when_date_already_in_recent_summaries(self):
+        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"):
+            from src.core.brain import LapwingBrain
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.get_user_facts = AsyncMock(return_value=[
+                {"fact_key": "memory_summary_2026-03-23", "fact_value": "今天聊了工作安排。", "updated_at": "2026-03-23"},
+            ])
+            brain.vector_store = MagicMock()
+            brain.vector_store.search = AsyncMock(return_value=[
+                {
+                    "text": "今天聊了工作安排。",
+                    "metadata": {"date": "2026-03-23"},
+                    "distance": 0.1,
+                }
+            ])
+
+            result = await brain._build_system_prompt("chat1", "继续聊工作")
+
+            assert "## 相关历史记忆" not in result
+
+    async def test_related_history_search_failure_is_ignored(self):
+        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"):
+            from src.core.brain import LapwingBrain
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.get_user_facts = AsyncMock(return_value=[])
+            brain.vector_store = MagicMock()
+            brain.vector_store.search = AsyncMock(side_effect=RuntimeError("boom"))
+
+            result = await brain._build_system_prompt("chat1", "继续聊")
+
+            assert result.startswith("基础人格 prompt")
+            assert "## 本地执行规则" in result
+
 
 class TestThinkNotifiesExtractor:
     async def test_think_calls_fact_extractor_notify(self):
@@ -124,7 +184,13 @@ class TestThinkNotifiesExtractor:
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
             brain.memory.remove_last = AsyncMock()
-            brain.router.complete = AsyncMock(return_value="回复")
+            brain.router.complete_with_tools = AsyncMock(
+                return_value=SimpleNamespace(
+                    text="回复",
+                    tool_calls=[],
+                    continuation_message=None,
+                )
+            )
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
 
@@ -143,7 +209,13 @@ class TestThinkNotifiesExtractor:
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
             brain.memory.remove_last = AsyncMock()
-            brain.router.complete = AsyncMock(return_value="回复")
+            brain.router.complete_with_tools = AsyncMock(
+                return_value=SimpleNamespace(
+                    text="回复",
+                    tool_calls=[],
+                    continuation_message=None,
+                )
+            )
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
             brain.interest_tracker = MagicMock()
