@@ -373,7 +373,7 @@ class TestBrainTools:
             assert "Permission denied" in result
             assert "/home/kevin/Lapwing" in result
             assert "就行" in result
-            assert "chat1" in brain._pending_shell_confirmations
+            assert "chat1" in brain.task_runtime._pending_shell_confirmations
 
 
     async def test_confirmation_reply_resumes_with_approved_directory_and_verifies_success(self):
@@ -391,7 +391,7 @@ class TestBrainTools:
             brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
-            brain._pending_shell_confirmations["chat1"] = PendingShellConfirmation(
+            brain.task_runtime._pending_shell_confirmations["chat1"] = PendingShellConfirmation(
                 original_user_message="在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件",
                 alternative_directory="/home/kevin/Lapwing",
                 reason="mkdir: cannot create directory '/home/Lapwing': Permission denied",
@@ -448,7 +448,7 @@ class TestBrainTools:
             assert "原请求已经完成了" in result
             assert "/home/kevin/Lapwing/note.txt" in result
             assert "hello" in result
-            assert "chat1" not in brain._pending_shell_confirmations
+            assert "chat1" not in brain.task_runtime._pending_shell_confirmations
 
             routed_messages = brain.router.complete_with_tools.call_args.args[0]
             assert "用户已经同意改到 `/home/kevin/Lapwing`" in routed_messages[-1]["content"]
@@ -680,7 +680,7 @@ class TestBrainTools:
             )
 
             # consent 没有被触发，任务继续执行直到完成
-            assert "chat1" not in brain._pending_shell_confirmations
+            assert "chat1" not in brain.task_runtime._pending_shell_confirmations
             assert mock_execute.await_count == 2
             # 最终结果是完成消息（LLM 文本或 verify_constraints 成功消息）
             assert "完成" in result or "搞定了" in result
@@ -748,7 +748,7 @@ class TestBrainTools:
                 result = await brain.think("chat1", msg)
 
             # 目标已在当前用户 home 下，不应触发主动 consent
-            assert "chat1" not in brain._pending_shell_confirmations
+            assert "chat1" not in brain.task_runtime._pending_shell_confirmations
 
     async def test_task_events_emitted_for_successful_tool_loop(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
@@ -808,7 +808,8 @@ class TestBrainTools:
             event_calls = brain.event_bus.publish.await_args_list
             event_types = [call.args[0] for call in event_calls]
             assert event_types[0] == "task.started"
-            assert event_types[1] == "task.executing"
+            assert event_types[1] == "task.planning"
+            assert event_types[2] == "task.executing"
             assert "task.completed" in event_types
 
             for call in event_calls:
@@ -870,9 +871,9 @@ class TestBrainTools:
             assert "原请求还没有完成" in result
             event_calls = brain.event_bus.publish.await_args_list
             event_types = [call.args[0] for call in event_calls]
-            assert event_types[:3] == ["task.started", "task.executing", "task.blocked"]
+            assert event_types[:4] == ["task.started", "task.planning", "task.executing", "task.blocked"]
 
-            blocked_payload = event_calls[2].args[1]
+            blocked_payload = event_calls[3].args[1]
             assert blocked_payload["chat_id"] == "chat1"
             assert blocked_payload["phase"] == "blocked"
             assert "reason" in blocked_payload
@@ -903,9 +904,9 @@ class TestBrainTools:
             assert "原请求还没有完成" in result
             event_calls = brain.event_bus.publish.await_args_list
             event_types = [call.args[0] for call in event_calls]
-            assert event_types == ["task.started", "task.failed"]
+            assert event_types == ["task.started", "task.planning", "task.failed"]
 
-            failed_payload = event_calls[1].args[1]
+            failed_payload = event_calls[2].args[1]
             assert failed_payload["chat_id"] == "chat1"
             assert failed_payload["phase"] == "failed"
             assert "text" in failed_payload

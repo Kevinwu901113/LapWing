@@ -9,12 +9,7 @@ from src.core.llm_router import LLMRouter
 from src.core.task_runtime import RuntimeDeps, TaskRuntime
 from src.core.shell_policy import (
     build_shell_runtime_policy,
-    ExecutionSessionState,
-    PendingShellConfirmation,
-    build_followup_message,
     extract_execution_constraints,
-    is_confirmation_message,
-    is_rejection_message,
 )
 from src.core.verifier import verify_shell_constraints_status as verify_constraints
 from src.memory.conversation import ConversationMemory
@@ -48,7 +43,6 @@ class LapwingBrain:
         self.event_bus = None
         self._system_prompt: str | None = None
         self.dispatcher = None  # Set externally by main.py (AgentDispatcher | None)
-        self._pending_shell_confirmations: dict[str, PendingShellConfirmation] = {}
 
     async def init_db(self) -> None:
         """初始化数据库连接和表结构。"""
@@ -56,12 +50,12 @@ class LapwingBrain:
 
     async def clear_short_term_memory(self, chat_id: str) -> None:
         """仅清除短期对话记忆。"""
-        self._pending_shell_confirmations.pop(chat_id, None)
+        self.task_runtime.clear_chat_state(chat_id)
         await self.memory.clear(chat_id)
 
     async def clear_all_memory(self, chat_id: str) -> None:
         """清除指定 chat 的长短期记忆。"""
-        self._pending_shell_confirmations.pop(chat_id, None)
+        self.task_runtime.clear_chat_state(chat_id)
         await self.fact_extractor.clear_chat_state(chat_id)
         if self.interest_tracker is not None:
             await self.interest_tracker.clear_chat_state(chat_id)
@@ -176,53 +170,6 @@ class LapwingBrain:
             "必须明确说明执行功能当前关闭，不能编造结果。"
         )
 
-    def _resolve_pending_confirmation(
-        self,
-        chat_id: str,
-        user_message: str,
-    ) -> tuple[str, str | None, str | None]:
-        pending = self._pending_shell_confirmations.get(chat_id)
-        if pending is None:
-            return user_message, None, None
-
-        if (
-            is_confirmation_message(user_message)
-            or pending.alternative_directory in user_message
-        ):
-            self._pending_shell_confirmations.pop(chat_id, None)
-            return (
-                build_followup_message(pending),
-                pending.alternative_directory,
-                None,
-            )
-
-        if is_rejection_message(user_message):
-            self._pending_shell_confirmations.pop(chat_id, None)
-            return (
-                user_message,
-                None,
-                "好，我先不改到那个替代位置。原请求还没有完成。",
-            )
-
-        self._pending_shell_confirmations.pop(chat_id, None)
-        return user_message, None, None
-
-    def _record_pending_confirmation(
-        self,
-        chat_id: str,
-        state: ExecutionSessionState,
-    ) -> str:
-        alternative = state.alternative
-        if alternative is None:
-            return state.failure_message()
-
-        self._pending_shell_confirmations[chat_id] = PendingShellConfirmation(
-            original_user_message=state.constraints.original_user_message,
-            alternative_directory=alternative.directory,
-            reason=state.failure_reason or alternative.reason,
-        )
-        return state.consent_message()
-
     async def _complete_chat(
         self,
         chat_id: str,
@@ -252,7 +199,7 @@ class LapwingBrain:
             deps=deps,
             status_callback=status_callback,
             event_bus=self.event_bus,
-            on_consent_required=lambda state: self._record_pending_confirmation(chat_id, state),
+            on_consent_required=lambda state: self.task_runtime.record_pending_confirmation(chat_id, state),
         )
 
     async def _build_system_prompt(self, chat_id: str, user_message: str = "") -> str:
@@ -339,7 +286,7 @@ class LapwingBrain:
             self.interest_tracker.notify(chat_id)
 
         effective_user_message, approved_directory, immediate_reply = (
-            self._resolve_pending_confirmation(chat_id, user_message)
+            self.task_runtime.resolve_pending_confirmation(chat_id, user_message)
         )
         if immediate_reply is not None:
             await self.memory.append(chat_id, "assistant", immediate_reply)

@@ -10,10 +10,12 @@ from typing import Any
 
 from config.settings import ROOT_DIR
 from src.agents.base import AgentResult, AgentTask, BaseAgent
+from src.core.task_runtime import TaskLoopStep, TaskRuntime
 from src.core import verifier
 from src.core.prompt_loader import load_prompt
 from src.tools import code_runner, file_editor
 from src.tools.code_runner import CodeResult
+from src.tools.types import ToolExecutionRequest
 
 logger = logging.getLogger("lapwing.agents.coder")
 
@@ -28,8 +30,9 @@ class CoderAgent(BaseAgent):
     description = "编写和运行 Python 代码，帮助解决编程问题"
     capabilities = ["生成 Python 代码", "运行代码并返回结果", "调试代码错误", "修改项目文件"]
 
-    def __init__(self, memory) -> None:
+    def __init__(self, memory, runtime: TaskRuntime | None = None) -> None:
         self._memory = memory
+        self._runtime = runtime
 
     async def execute(self, task: AgentTask, router) -> AgentResult:
         mode = task.mode if task.mode in {"snippet", "workspace_patch"} else "snippet"
@@ -64,25 +67,53 @@ class CoderAgent(BaseAgent):
             reason="未执行",
         )
 
-        for attempt in range(1, _MAX_FIX_ATTEMPTS + 1):
-            attempts = attempt
-            result = await code_runner.run_python(code)
-            verify_result = verifier.verify_code_result(result)
-            if verify_result.passed:
-                break
+        if self._runtime is not None:
+            async def _snippet_step(round_index: int) -> TaskLoopStep:
+                nonlocal attempts, result, verify_result, code
+                attempt = round_index + 1
+                attempts = attempt
+                result, verify_result = await self._run_snippet_once(code)
+                if verify_result.passed:
+                    return TaskLoopStep(completed=True)
 
-            if result.timed_out or attempt == _MAX_FIX_ATTEMPTS:
-                break
+                if result.timed_out or attempt == _MAX_FIX_ATTEMPTS:
+                    return TaskLoopStep(stop=True)
 
-            logger.info("[coder] snippet 执行失败，开始第 %s 次修复", attempt)
-            fixed_code = await self._fix_code(
-                code=code,
-                error=verify_result.reason or result.stderr,
-                router=router,
+                logger.info("[coder] snippet 执行失败，开始第 %s 次修复", attempt)
+                fixed_code = await self._fix_code(
+                    code=code,
+                    error=verify_result.reason or result.stderr,
+                    router=router,
+                )
+                if fixed_code is None or fixed_code == code:
+                    return TaskLoopStep(stop=True)
+                code = fixed_code
+                return TaskLoopStep()
+
+            await self._runtime.run_task_loop(
+                max_rounds=_MAX_FIX_ATTEMPTS,
+                step_runner=_snippet_step,
             )
-            if fixed_code is None or fixed_code == code:
-                break
-            code = fixed_code
+        else:
+            for attempt in range(1, _MAX_FIX_ATTEMPTS + 1):
+                attempts = attempt
+                result = await code_runner.run_python(code)
+                verify_result = verifier.verify_code_result(result)
+                if verify_result.passed:
+                    break
+
+                if result.timed_out or attempt == _MAX_FIX_ATTEMPTS:
+                    break
+
+                logger.info("[coder] snippet 执行失败，开始第 %s 次修复", attempt)
+                fixed_code = await self._fix_code(
+                    code=code,
+                    error=verify_result.reason or result.stderr,
+                    router=router,
+                )
+                if fixed_code is None or fixed_code == code:
+                    break
+                code = fixed_code
 
         assert result is not None
         return AgentResult(
@@ -131,63 +162,125 @@ class CoderAgent(BaseAgent):
             reason="未执行",
         )
         tx_result = None
+        tx_payload: dict[str, Any] | None = None
 
-        for attempt in range(1, _MAX_FIX_ATTEMPTS + 1):
-            attempts = attempt
-            tx_result = file_editor.transactional_apply(
-                plan["operations"],
-                root_dir=ROOT_DIR,
-            )
-            rolled_back = rolled_back or tx_result.rolled_back
-            changed_files = tx_result.changed_files
+        if self._runtime is not None:
+            async def _workspace_step(round_index: int) -> TaskLoopStep:
+                nonlocal attempts, tx_payload, changed_files, rolled_back, verify_result, plan
+                attempt = round_index + 1
+                attempts = attempt
 
-            if not tx_result.success:
-                failure_reason = tx_result.reason or "编辑事务失败。"
-                if attempt == _MAX_FIX_ATTEMPTS:
-                    verify_result = verifier.VerificationResult(
-                        passed=False,
-                        status="failed",
-                        reason=failure_reason,
+                tx_payload = await self._apply_workspace_patch_runtime(plan["operations"])
+                rolled_back = rolled_back or bool(tx_payload.get("rolled_back", False))
+                changed_files = [str(item) for item in tx_payload.get("changed_files", [])]
+
+                if not bool(tx_payload.get("success", False)):
+                    failure_reason = str(tx_payload.get("reason", "")).strip() or "编辑事务失败。"
+                    if attempt == _MAX_FIX_ATTEMPTS:
+                        verify_result = verifier.VerificationResult(
+                            passed=False,
+                            status="failed",
+                            reason=failure_reason,
+                        )
+                        return TaskLoopStep(stop=True)
+                    next_plan = await self._fix_workspace_plan(
+                        user_message=task.user_message,
+                        previous_plan=plan,
+                        failure_reason=failure_reason,
+                        router=router,
                     )
-                    break
+                    if next_plan is None:
+                        verify_result = verifier.VerificationResult(
+                            passed=False,
+                            status="failed",
+                            reason=failure_reason,
+                        )
+                        return TaskLoopStep(stop=True)
+                    plan = next_plan
+                    return TaskLoopStep()
+
+                verify_result = await self._verify_workspace_runtime(
+                    changed_files=changed_files,
+                    pytest_targets=plan.get("pytest_targets") or None,
+                )
+                if verify_result.passed:
+                    return TaskLoopStep(completed=True)
+
+                if attempt == _MAX_FIX_ATTEMPTS:
+                    return TaskLoopStep(stop=True)
+
                 next_plan = await self._fix_workspace_plan(
                     user_message=task.user_message,
                     previous_plan=plan,
-                    failure_reason=failure_reason,
+                    failure_reason=verify_result.reason or "验证失败",
                     router=router,
                 )
                 if next_plan is None:
-                    verify_result = verifier.VerificationResult(
-                        passed=False,
-                        status="failed",
-                        reason=failure_reason,
+                    return TaskLoopStep(stop=True)
+                plan = next_plan
+                return TaskLoopStep()
+
+            await self._runtime.run_task_loop(
+                max_rounds=_MAX_FIX_ATTEMPTS,
+                step_runner=_workspace_step,
+            )
+        else:
+            for attempt in range(1, _MAX_FIX_ATTEMPTS + 1):
+                attempts = attempt
+                tx_result = file_editor.transactional_apply(
+                    plan["operations"],
+                    root_dir=ROOT_DIR,
+                )
+                rolled_back = rolled_back or tx_result.rolled_back
+                changed_files = tx_result.changed_files
+
+                if not tx_result.success:
+                    failure_reason = tx_result.reason or "编辑事务失败。"
+                    if attempt == _MAX_FIX_ATTEMPTS:
+                        verify_result = verifier.VerificationResult(
+                            passed=False,
+                            status="failed",
+                            reason=failure_reason,
+                        )
+                        break
+                    next_plan = await self._fix_workspace_plan(
+                        user_message=task.user_message,
+                        previous_plan=plan,
+                        failure_reason=failure_reason,
+                        router=router,
                     )
+                    if next_plan is None:
+                        verify_result = verifier.VerificationResult(
+                            passed=False,
+                            status="failed",
+                            reason=failure_reason,
+                        )
+                        break
+                    plan = next_plan
+                    continue
+
+                verify_result = await verifier.verify_workspace(
+                    changed_files=changed_files,
+                    root_dir=ROOT_DIR,
+                    pytest_targets=plan.get("pytest_targets") or None,
+                )
+                if verify_result.passed:
+                    break
+
+                if attempt == _MAX_FIX_ATTEMPTS:
+                    break
+
+                next_plan = await self._fix_workspace_plan(
+                    user_message=task.user_message,
+                    previous_plan=plan,
+                    failure_reason=verify_result.reason or "验证失败",
+                    router=router,
+                )
+                if next_plan is None:
                     break
                 plan = next_plan
-                continue
 
-            verify_result = await verifier.verify_workspace(
-                changed_files=changed_files,
-                root_dir=ROOT_DIR,
-                pytest_targets=plan.get("pytest_targets") or None,
-            )
-            if verify_result.passed:
-                break
-
-            if attempt == _MAX_FIX_ATTEMPTS:
-                break
-
-            next_plan = await self._fix_workspace_plan(
-                user_message=task.user_message,
-                previous_plan=plan,
-                failure_reason=verify_result.reason or "验证失败",
-                router=router,
-            )
-            if next_plan is None:
-                break
-            plan = next_plan
-
-        success = bool(tx_result and tx_result.success and verify_result.passed)
+        success = bool((tx_result and tx_result.success) or (tx_payload and tx_payload.get("success"))) and verify_result.passed
         summary = str(plan.get("summary", "")).strip() if isinstance(plan, dict) else ""
         changed_rel = [
             str(Path(path).resolve().relative_to(ROOT_DIR.resolve()))
@@ -217,6 +310,94 @@ class CoderAgent(BaseAgent):
                 },
                 "rolled_back": rolled_back,
             },
+        )
+
+    async def _run_snippet_once(
+        self,
+        code: str,
+    ) -> tuple[CodeResult, verifier.VerificationResult]:
+        if self._runtime is None:
+            result = await code_runner.run_python(code)
+            return result, verifier.verify_code_result(result)
+
+        run_exec = await self._runtime.execute_tool(
+            request=ToolExecutionRequest(
+                name="run_python_code",
+                arguments={"code": code},
+            ),
+            profile="coder_snippet",
+            workspace_root=str(ROOT_DIR),
+        )
+        payload = run_exec.payload
+        exit_code_raw = payload.get("exit_code", -1)
+        try:
+            exit_code = int(exit_code_raw)
+        except (TypeError, ValueError):
+            exit_code = -1
+        result = CodeResult(
+            stdout=str(payload.get("stdout", "")),
+            stderr=str(payload.get("stderr", "")),
+            exit_code=exit_code,
+            timed_out=bool(payload.get("timed_out", False)),
+        )
+        verify_exec = await self._runtime.execute_tool(
+            request=ToolExecutionRequest(
+                name="verify_code_result",
+                arguments={
+                    "stdout": result.stdout,
+                    "stderr": result.stderr,
+                    "exit_code": result.exit_code,
+                    "timed_out": result.timed_out,
+                },
+            ),
+            profile="coder_snippet",
+            workspace_root=str(ROOT_DIR),
+        )
+        verify_result = self._verification_from_payload(verify_exec.payload)
+        return result, verify_result
+
+    async def _apply_workspace_patch_runtime(
+        self,
+        operations: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        assert self._runtime is not None
+        execution = await self._runtime.execute_tool(
+            request=ToolExecutionRequest(
+                name="apply_workspace_patch",
+                arguments={"operations": operations},
+            ),
+            profile="coder_workspace",
+            workspace_root=str(ROOT_DIR),
+        )
+        return execution.payload
+
+    async def _verify_workspace_runtime(
+        self,
+        *,
+        changed_files: list[str],
+        pytest_targets: list[str] | None,
+    ) -> verifier.VerificationResult:
+        assert self._runtime is not None
+        execution = await self._runtime.execute_tool(
+            request=ToolExecutionRequest(
+                name="verify_workspace",
+                arguments={
+                    "changed_files": changed_files,
+                    "pytest_targets": pytest_targets or [],
+                },
+            ),
+            profile="coder_workspace",
+            workspace_root=str(ROOT_DIR),
+        )
+        return self._verification_from_payload(execution.payload)
+
+    def _verification_from_payload(self, payload: dict[str, Any]) -> verifier.VerificationResult:
+        return verifier.VerificationResult(
+            passed=bool(payload.get("passed", False)),
+            status=str(payload.get("status", "failed")),
+            reason=str(payload.get("reason", "")),
+            checks=list(payload.get("checks") or []),
+            artifacts=[str(item) for item in (payload.get("artifacts") or [])],
         )
 
     async def _generate_code(self, user_message: str, router) -> str | None:

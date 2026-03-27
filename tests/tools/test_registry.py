@@ -89,3 +89,35 @@ async def test_write_file_tool_payload_compatible():
     assert result.payload["path"] == "/tmp/a.txt"
     assert result.payload["action"] == "written"
     assert result.payload["return_code"] == 0
+
+
+@pytest.mark.asyncio
+async def test_internal_tools_are_hidden_from_function_tools():
+    registry = build_default_tool_registry()
+    names = {
+        item["function"]["name"]
+        for item in registry.function_tools(capabilities={"verify"})
+    }
+    assert names == set()
+
+
+@pytest.mark.asyncio
+async def test_internal_verify_tool_can_execute_when_directly_called():
+    registry = build_default_tool_registry()
+    context = ToolExecutionContext(
+        execute_shell=AsyncMock(),
+        shell_default_cwd="/tmp",
+    )
+    result = await registry.execute(
+        ToolExecutionRequest(
+            name="verify_code_result",
+            arguments={
+                "stdout": "",
+                "stderr": "",
+                "exit_code": 0,
+                "timed_out": False,
+            },
+        ),
+        context=context,
+    )
+    assert result.payload["passed"] is True

@@ -85,3 +85,36 @@ async def test_rejects_blocked_exact_path(tmp_path, monkeypatch):
 
     assert "不在我的操作范围内" in result.content
     assert not (tmp_path / "config" / ".env").exists()
+
+
+@pytest.mark.asyncio
+async def test_uses_runtime_tools_when_runtime_is_injected(tmp_path, monkeypatch):
+    monkeypatch.setattr("src.agents.file_agent.ROOT_DIR", tmp_path)
+    (tmp_path / "prompts").mkdir(parents=True, exist_ok=True)
+
+    runtime = MagicMock()
+    runtime.execute_tool = AsyncMock(
+        return_value=MagicMock(
+            payload={
+                "success": True,
+                "operation": "file_write",
+                "path": str(tmp_path / "prompts" / "demo.txt"),
+                "changed": True,
+                "reason": "",
+                "content": "",
+                "diff": "",
+                "backup_path": None,
+                "metadata": {},
+            }
+        )
+    )
+    agent = FileAgent(memory=MagicMock(), runtime=runtime)
+
+    with patch("src.agents.file_agent.load_prompt", return_value="prompt {user_message}"):
+        result = await agent.execute(
+            make_task("写入"),
+            make_router('{"operation":"write","path":"prompts/demo.txt","content":"abc"}'),
+        )
+
+    assert "已写入" in result.content
+    runtime.execute_tool.assert_awaited_once()

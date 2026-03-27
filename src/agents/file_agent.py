@@ -4,8 +4,10 @@ import logging
 from pathlib import Path
 
 from src.agents.base import AgentResult, AgentTask, BaseAgent
+from src.core.task_runtime import TaskRuntime
 from src.core.prompt_loader import load_prompt
 from src.tools import file_editor
+from src.tools.types import ToolExecutionRequest
 from config.settings import ROOT_DIR
 
 logger = logging.getLogger("lapwing.agents.file")
@@ -52,8 +54,9 @@ class FileAgent(BaseAgent):
         "列出目录中的文件",
     ]
 
-    def __init__(self, memory) -> None:
+    def __init__(self, memory, runtime: TaskRuntime | None = None) -> None:
         self._memory = memory
+        self._runtime = runtime
 
     async def execute(self, task: AgentTask, router) -> AgentResult:
         # 用 LLM 解析操作意图
@@ -121,12 +124,38 @@ class FileAgent(BaseAgent):
         return True, ""
 
     async def _do_read(self, abs_path: Path, rel_path: str) -> AgentResult:
-        result = file_editor.read_file_segment(
-            str(abs_path),
-            start_line=1,
-            end_line=10 ** 9,
-            root_dir=ROOT_DIR,
-        )
+        if self._runtime is None:
+            result = file_editor.read_file_segment(
+                str(abs_path),
+                start_line=1,
+                end_line=10 ** 9,
+                root_dir=ROOT_DIR,
+            )
+        else:
+            execution = await self._runtime.execute_tool(
+                request=ToolExecutionRequest(
+                    name="file_read_segment",
+                    arguments={
+                        "path": str(abs_path),
+                        "start_line": 1,
+                        "end_line": 10 ** 9,
+                    },
+                ),
+                profile="file_ops",
+                workspace_root=str(ROOT_DIR),
+            )
+            payload = execution.payload
+            result = file_editor.FileEditResult(
+                success=bool(payload.get("success", False)),
+                operation=str(payload.get("operation", "file_read_segment")),
+                path=str(payload.get("path", str(abs_path))),
+                changed=bool(payload.get("changed", False)),
+                reason=str(payload.get("reason", "")),
+                content=str(payload.get("content", "")),
+                diff=str(payload.get("diff", "")),
+                backup_path=payload.get("backup_path"),
+                metadata=dict(payload.get("metadata") or {}),
+            )
         if not result.success:
             logger.warning(f"[file] 读取失败: {rel_path} — {result.reason}")
             return AgentResult(content=f"读取文件时出错：{result.reason}")
@@ -139,11 +168,36 @@ class FileAgent(BaseAgent):
         )
 
     async def _do_write(self, abs_path: Path, rel_path: str, content: str) -> AgentResult:
-        result = file_editor.write_file(
-            str(abs_path),
-            content=content,
-            root_dir=ROOT_DIR,
-        )
+        if self._runtime is None:
+            result = file_editor.write_file(
+                str(abs_path),
+                content=content,
+                root_dir=ROOT_DIR,
+            )
+        else:
+            execution = await self._runtime.execute_tool(
+                request=ToolExecutionRequest(
+                    name="file_write",
+                    arguments={
+                        "path": str(abs_path),
+                        "content": content,
+                    },
+                ),
+                profile="file_ops",
+                workspace_root=str(ROOT_DIR),
+            )
+            payload = execution.payload
+            result = file_editor.FileEditResult(
+                success=bool(payload.get("success", False)),
+                operation=str(payload.get("operation", "file_write")),
+                path=str(payload.get("path", str(abs_path))),
+                changed=bool(payload.get("changed", False)),
+                reason=str(payload.get("reason", "")),
+                content=str(payload.get("content", "")),
+                diff=str(payload.get("diff", "")),
+                backup_path=payload.get("backup_path"),
+                metadata=dict(payload.get("metadata") or {}),
+            )
         if not result.success:
             logger.warning(f"[file] 写入失败: {rel_path} — {result.reason}")
             return AgentResult(content=f"写入文件时出错：{result.reason}")
@@ -152,11 +206,36 @@ class FileAgent(BaseAgent):
         return AgentResult(content=f"已写入 `{rel_path}`。")
 
     async def _do_append(self, abs_path: Path, rel_path: str, content: str) -> AgentResult:
-        result = file_editor.append_to_file(
-            str(abs_path),
-            content=content,
-            root_dir=ROOT_DIR,
-        )
+        if self._runtime is None:
+            result = file_editor.append_to_file(
+                str(abs_path),
+                content=content,
+                root_dir=ROOT_DIR,
+            )
+        else:
+            execution = await self._runtime.execute_tool(
+                request=ToolExecutionRequest(
+                    name="file_append",
+                    arguments={
+                        "path": str(abs_path),
+                        "content": content,
+                    },
+                ),
+                profile="file_ops",
+                workspace_root=str(ROOT_DIR),
+            )
+            payload = execution.payload
+            result = file_editor.FileEditResult(
+                success=bool(payload.get("success", False)),
+                operation=str(payload.get("operation", "file_append")),
+                path=str(payload.get("path", str(abs_path))),
+                changed=bool(payload.get("changed", False)),
+                reason=str(payload.get("reason", "")),
+                content=str(payload.get("content", "")),
+                diff=str(payload.get("diff", "")),
+                backup_path=payload.get("backup_path"),
+                metadata=dict(payload.get("metadata") or {}),
+            )
         if not result.success:
             logger.warning(f"[file] 追加失败: {rel_path} — {result.reason}")
             return AgentResult(content=f"追加文件时出错：{result.reason}")
@@ -165,7 +244,29 @@ class FileAgent(BaseAgent):
         return AgentResult(content=f"已追加内容到 `{rel_path}`。")
 
     async def _do_list(self, abs_path: Path, rel_path: str) -> AgentResult:
-        result = file_editor.list_directory(str(abs_path), root_dir=ROOT_DIR)
+        if self._runtime is None:
+            result = file_editor.list_directory(str(abs_path), root_dir=ROOT_DIR)
+        else:
+            execution = await self._runtime.execute_tool(
+                request=ToolExecutionRequest(
+                    name="file_list_directory",
+                    arguments={"path": str(abs_path)},
+                ),
+                profile="file_ops",
+                workspace_root=str(ROOT_DIR),
+            )
+            payload = execution.payload
+            result = file_editor.FileEditResult(
+                success=bool(payload.get("success", False)),
+                operation=str(payload.get("operation", "file_list_directory")),
+                path=str(payload.get("path", str(abs_path))),
+                changed=bool(payload.get("changed", False)),
+                reason=str(payload.get("reason", "")),
+                content=str(payload.get("content", "")),
+                diff=str(payload.get("diff", "")),
+                backup_path=payload.get("backup_path"),
+                metadata=dict(payload.get("metadata") or {}),
+            )
         if not result.success:
             logger.warning(f"[file] 列出失败: {rel_path} — {result.reason}")
             return AgentResult(content=f"列出目录时出错：{result.reason}")

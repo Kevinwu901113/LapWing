@@ -2,7 +2,12 @@
 
 import os
 from pathlib import Path
-from dotenv import load_dotenv
+
+try:
+    from dotenv import load_dotenv
+except ModuleNotFoundError:
+    def load_dotenv(*args, **kwargs):  # type: ignore[no-redef]
+        return False
 
 # 项目根目录
 ROOT_DIR = Path(__file__).parent.parent

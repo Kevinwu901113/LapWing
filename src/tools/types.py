@@ -8,6 +8,7 @@ from typing import Any, Awaitable, Callable, Literal
 from src.tools.shell_executor import ShellResult
 
 ToolRiskLevel = Literal["low", "medium", "high"]
+ToolVisibility = Literal["model", "internal"]
 ToolExecutor = Callable[["ToolExecutionRequest", "ToolExecutionContext"], Awaitable["ToolExecutionResult"]]
 
 
@@ -21,6 +22,8 @@ class ToolExecutionRequest:
 class ToolExecutionContext:
     execute_shell: Callable[[str], Awaitable[ShellResult]]
     shell_default_cwd: str
+    workspace_root: str = ""
+    services: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -38,8 +41,18 @@ class ToolSpec:
     json_schema: dict[str, Any]
     executor: ToolExecutor
     capability: str = "general"
+    capabilities: tuple[str, ...] = ()
+    visibility: ToolVisibility = "model"
     risk_level: ToolRiskLevel = "low"
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def supports_capability(self, capability: str) -> bool:
+        all_caps = {self.capability, *self.capabilities}
+        return capability in all_caps
+
+    @property
+    def is_model_facing(self) -> bool:
+        return self.visibility == "model"
 
     def to_function_tool(self) -> dict[str, Any]:
         return {

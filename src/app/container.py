@@ -117,14 +117,14 @@ class AppContainer:
                 knowledge_manager=self.brain.knowledge_manager,
             )
         )
-        registry.register(CoderAgent(memory=self.brain.memory))
+        registry.register(CoderAgent(memory=self.brain.memory, runtime=self.brain.task_runtime))
         registry.register(
             BrowserAgent(
                 memory=self.brain.memory,
                 knowledge_manager=self.brain.knowledge_manager,
             )
         )
-        registry.register(FileAgent(memory=self.brain.memory))
+        registry.register(FileAgent(memory=self.brain.memory, runtime=self.brain.task_runtime))
         registry.register(WeatherAgent())
         registry.register(TodoAgent(memory=self.brain.memory))
 

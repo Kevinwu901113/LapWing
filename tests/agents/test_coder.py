@@ -5,9 +5,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.agents.base import AgentTask
 from src.agents.coder import CoderAgent, _extract_code
+from src.core.task_runtime import TaskRuntime
 from src.core.verifier import VerificationResult
 from src.tools.file_editor import FileEditResult, TransactionResult
 from src.tools.code_runner import CodeResult
+from src.tools.registry import build_default_tool_registry
 from config.settings import ROOT_DIR
 
 
@@ -211,6 +213,19 @@ class TestExecute:
         assert result.metadata["attempts"] == 3
         assert result.metadata["verification"]["passed"] is False
         assert router.complete.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_snippet_mode_can_run_through_runtime_tools(self):
+        """注入 runtime 时，snippet 模式走统一 runtime 工具平面。"""
+        runtime = TaskRuntime(router=MagicMock(), tool_registry=build_default_tool_registry())
+        router = MagicMock()
+        agent = CoderAgent(memory=make_memory(), runtime=runtime)
+        with patch.object(agent, "_generate_code", new=AsyncMock(return_value="print('hello')")):
+            result = await agent.execute(make_task(), router)
+
+        assert result.metadata["mode"] == "snippet"
+        assert result.metadata["verification"]["passed"] is True
+        assert "hello" in result.content
 
     @pytest.mark.asyncio
     async def test_workspace_patch_success_sets_metadata(self):

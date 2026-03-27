@@ -1,20 +1,28 @@
 """任务执行运行时：封装 tool loop、工具执行和任务生命周期事件。"""
 
+from __future__ import annotations
+
 import json
 import logging
 import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
+from config.settings import ROOT_DIR, SHELL_DEFAULT_CWD
 from src.core.llm_router import ToolCallRequest
+from src.core.runtime_profiles import RuntimeProfile, get_runtime_profile
 from src.core.shell_policy import (
     ExecutionConstraints,
     ExecutionSessionState,
+    PendingShellConfirmation,
+    build_followup_message,
+    is_confirmation_message,
+    is_rejection_message,
 )
 from src.policy.shell_runtime_policy import ShellRuntimePolicy
 from src.tools.registry import ToolRegistry, build_default_tool_registry
-from src.tools.types import ToolExecutionContext, ToolExecutionRequest
-from src.tools.shell_executor import ShellResult
+from src.tools.shell_executor import ShellResult, execute as default_execute_shell
+from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult
 
 logger = logging.getLogger("lapwing.task_runtime")
 
@@ -31,8 +39,25 @@ class RuntimeDeps:
     shell_allow_sudo: bool
 
 
+@dataclass(frozen=True)
+class TaskLoopStep:
+    completed: bool = False
+    stop: bool = False
+    reason: str = ""
+    payload: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class TaskLoopResult:
+    completed: bool
+    stopped: bool
+    attempts: int
+    reason: str = ""
+    last_payload: dict[str, Any] | None = None
+
+
 class TaskRuntime:
-    """负责执行工具轮次与任务级事件发布。"""
+    """负责执行工具轮次、统一工具执行和任务级事件发布。"""
 
     def __init__(
         self,
@@ -43,11 +68,118 @@ class TaskRuntime:
         self._router = router
         self._max_tool_rounds = max_tool_rounds
         self._tool_registry = tool_registry or build_default_tool_registry()
+        self._pending_shell_confirmations: dict[str, PendingShellConfirmation] = {}
+
+    def clear_chat_state(self, chat_id: str) -> None:
+        self._pending_shell_confirmations.pop(chat_id, None)
+
+    def resolve_pending_confirmation(
+        self,
+        chat_id: str,
+        user_message: str,
+    ) -> tuple[str, str | None, str | None]:
+        pending = self._pending_shell_confirmations.get(chat_id)
+        if pending is None:
+            return user_message, None, None
+
+        if (
+            is_confirmation_message(user_message)
+            or pending.alternative_directory in user_message
+        ):
+            self._pending_shell_confirmations.pop(chat_id, None)
+            return (
+                build_followup_message(pending),
+                pending.alternative_directory,
+                None,
+            )
+
+        if is_rejection_message(user_message):
+            self._pending_shell_confirmations.pop(chat_id, None)
+            return (
+                user_message,
+                None,
+                "好，我先不改到那个替代位置。原请求还没有完成。",
+            )
+
+        self._pending_shell_confirmations.pop(chat_id, None)
+        return user_message, None, None
+
+    def record_pending_confirmation(
+        self,
+        chat_id: str,
+        state: ExecutionSessionState,
+    ) -> str:
+        alternative = state.alternative
+        if alternative is None:
+            return state.failure_message()
+
+        self._pending_shell_confirmations[chat_id] = PendingShellConfirmation(
+            original_user_message=state.constraints.original_user_message,
+            alternative_directory=alternative.directory,
+            reason=state.failure_reason or alternative.reason,
+        )
+        return state.consent_message()
+
+    def _resolve_profile(self, profile: str | RuntimeProfile) -> RuntimeProfile:
+        if isinstance(profile, RuntimeProfile):
+            return profile
+        return get_runtime_profile(profile)
+
+    def _tool_names_for_profile(
+        self,
+        profile: RuntimeProfile,
+        *,
+        include_internal: bool,
+    ) -> set[str]:
+        specs = self._tool_registry.list_tools(
+            capabilities=set(profile.capabilities),
+            include_internal=include_internal,
+            tool_names=set(profile.tool_names) if profile.tool_names else None,
+        )
+        return {spec.name for spec in specs}
+
+    def tools_for_profile(self, profile: str | RuntimeProfile) -> list[dict[str, Any]]:
+        profile_obj = self._resolve_profile(profile)
+        return self._tool_registry.function_tools(
+            capabilities=set(profile_obj.capabilities),
+            include_internal=False,
+            tool_names=set(profile_obj.tool_names) if profile_obj.tool_names else None,
+        )
 
     def chat_tools(self, shell_enabled: bool) -> list[dict[str, Any]]:
+        """兼容旧接口：chat 默认使用 shell profile。"""
         if not shell_enabled:
             return []
-        return self._tool_registry.function_tools(capability="shell")
+        return self.tools_for_profile("chat_shell")
+
+    async def run_task_loop(
+        self,
+        *,
+        max_rounds: int,
+        step_runner: Callable[[int], Awaitable[TaskLoopStep]],
+    ) -> TaskLoopResult:
+        last_payload: dict[str, Any] | None = None
+        for round_index in range(max_rounds):
+            step = await step_runner(round_index)
+            if step.payload is not None:
+                last_payload = step.payload
+
+            if step.completed or step.stop:
+                return TaskLoopResult(
+                    completed=step.completed,
+                    stopped=step.stop,
+                    attempts=round_index + 1,
+                    reason=step.reason,
+                    last_payload=last_payload,
+                )
+
+        return TaskLoopResult(
+            completed=False,
+            stopped=False,
+            attempts=max_rounds,
+            reason="max_rounds_exceeded",
+            last_payload=last_payload,
+        )
 
     async def complete_chat(
         self,
@@ -60,10 +192,12 @@ class TaskRuntime:
         status_callback=None,
         event_bus=None,
         on_consent_required: Callable[[ExecutionSessionState], str] | None = None,
+        profile: str | RuntimeProfile = "chat_shell",
     ) -> str:
         if not tools:
             return await self._router.complete(messages, purpose="chat")
 
+        profile_obj = self._resolve_profile(profile)
         state = ExecutionSessionState(constraints=constraints)
         task_id = f"task_{uuid.uuid4().hex[:12]}"
         await self._publish_task_event(
@@ -74,10 +208,20 @@ class TaskRuntime:
             phase="started",
             text="任务开始执行。",
         )
+        await self._publish_task_event(
+            event_bus,
+            "task.planning",
+            task_id=task_id,
+            chat_id=chat_id,
+            phase="planning",
+            text="正在规划执行步骤。",
+        )
 
         last_payload: dict[str, Any] | None = None
+        final_reply: str | None = None
 
-        for round_index in range(self._max_tool_rounds):
+        async def _step_runner(round_index: int) -> TaskLoopStep:
+            nonlocal last_payload, final_reply
             turn = await self._router.complete_with_tools(
                 self._with_shell_state_context(messages, state),
                 tools=tools,
@@ -85,7 +229,7 @@ class TaskRuntime:
             )
 
             if not turn.tool_calls:
-                return await self._finalize_without_tool_calls(
+                final_reply = await self._finalize_without_tool_calls(
                     chat_id=chat_id,
                     task_id=task_id,
                     state=state,
@@ -94,6 +238,7 @@ class TaskRuntime:
                     event_bus=event_bus,
                     on_consent_required=on_consent_required,
                 )
+                return TaskLoopStep(completed=True, payload=last_payload)
 
             if len(turn.tool_calls) > 1:
                 logger.warning(
@@ -102,7 +247,6 @@ class TaskRuntime:
                 )
 
             tool_call = turn.tool_calls[0]
-
             if turn.continuation_message is not None:
                 messages.append(turn.continuation_message)
 
@@ -123,14 +267,16 @@ class TaskRuntime:
                 round=round_index + 1,
             )
 
-            tool_result_text, last_payload = await self._execute_tool_call(
+            tool_result_text, payload = await self._execute_tool_call(
                 tool_call=tool_call,
                 state=state,
                 deps=deps,
                 task_id=task_id,
                 chat_id=chat_id,
                 event_bus=event_bus,
+                profile=profile_obj,
             )
+            last_payload = payload
 
             if state.consent_required:
                 await self._publish_task_event(
@@ -144,8 +290,10 @@ class TaskRuntime:
                     tool_name=tool_call.name,
                 )
                 if on_consent_required is not None:
-                    return on_consent_required(state)
-                return state.consent_message()
+                    final_reply = on_consent_required(state)
+                else:
+                    final_reply = state.consent_message()
+                return TaskLoopStep(completed=True, payload=last_payload)
 
             messages.append(
                 self._router.build_tool_result_message(
@@ -165,7 +313,8 @@ class TaskRuntime:
                     text="任务执行并验证完成。",
                     tool_name=tool_call.name,
                 )
-                return state.success_message()
+                final_reply = state.success_message()
+                return TaskLoopStep(completed=True, payload=last_payload)
 
             if last_payload is not None and last_payload.get("blocked"):
                 await self._publish_task_event(
@@ -178,6 +327,16 @@ class TaskRuntime:
                     reason=str(last_payload.get("reason", "命令被拦截。")),
                     tool_name=tool_call.name,
                 )
+
+            return TaskLoopStep(payload=last_payload)
+
+        loop_result = await self.run_task_loop(
+            max_rounds=self._max_tool_rounds,
+            step_runner=_step_runner,
+        )
+
+        if final_reply is not None:
+            return final_reply
 
         logger.warning("[runtime] tool call 循环超过上限，返回兜底说明")
 
@@ -214,7 +373,7 @@ class TaskRuntime:
                 chat_id=chat_id,
                 phase="failed",
                 text="任务未完成。",
-                reason=state.failure_reason or "tool 循环超过上限",
+                reason=state.failure_reason or loop_result.reason or "tool 循环超过上限",
             )
             return state.failure_message()
 
@@ -227,7 +386,7 @@ class TaskRuntime:
             text="任务未在轮次上限内完成，返回兜底结果。",
             reason="tool 循环超过上限",
         )
-        return self.tool_fallback_reply(last_payload)
+        return self.tool_fallback_reply(loop_result.last_payload)
 
     async def _finalize_without_tool_calls(
         self,
@@ -278,7 +437,6 @@ class TaskRuntime:
             return state.failure_message()
 
         reply = model_text or self.tool_fallback_reply(last_payload)
-
         if last_payload and last_payload.get("blocked"):
             await self._publish_task_event(
                 event_bus,
@@ -308,7 +466,6 @@ class TaskRuntime:
                 phase="completed",
                 text="任务执行完成。",
             )
-
         return reply
 
     def _with_shell_state_context(
@@ -337,59 +494,86 @@ class TaskRuntime:
         return [state_message, *messages]
 
     def _shell_failure_reason(self, result: ShellResult) -> str:
-        # 被主动拦截（blocked/timed_out）时直接使用 reason
         if result.reason and (result.blocked or result.timed_out):
             return result.reason
 
-        # 优先使用 stderr，比 shell_executor 生成的通用 reason 更有用
         stderr = result.stderr.strip()
         if stderr:
             return stderr
-
         if result.reason:
             return result.reason
-
         if result.timed_out:
             return "命令执行超时了。"
-
         if result.return_code != 0:
             return f"命令执行失败，退出码 {result.return_code}。"
-
         return "命令执行失败了。"
 
-    async def _execute_tool_call(
+    async def execute_tool(
         self,
         *,
-        tool_call: ToolCallRequest,
-        state: ExecutionSessionState,
-        deps: RuntimeDeps,
-        task_id: str,
-        chat_id: str,
-        event_bus,
-    ) -> tuple[str, dict[str, Any]]:
-        tool = self._tool_registry.get(tool_call.name)
+        request: ToolExecutionRequest,
+        profile: str | RuntimeProfile,
+        state: ExecutionSessionState | None = None,
+        deps: RuntimeDeps | None = None,
+        task_id: str | None = None,
+        chat_id: str | None = None,
+        event_bus=None,
+        workspace_root: str | None = None,
+        services: dict[str, Any] | None = None,
+    ) -> ToolExecutionResult:
+        profile_obj = self._resolve_profile(profile)
+        tool = self._tool_registry.get(request.name)
         if tool is None:
-            reason = f"未知工具：{tool_call.name}"
-            state.record_failure(reason, "blocked")
+            reason = f"未知工具：{request.name}"
+            if state is not None:
+                state.record_failure(reason, "blocked")
             payload = self._blocked_payload(
                 reason=reason,
-                cwd=deps.shell_default_cwd,
+                cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
                 command="",
             )
-            return json.dumps(payload, ensure_ascii=False), payload
+            return ToolExecutionResult(success=False, payload=payload, reason=reason)
 
-        command = str(tool_call.arguments.get("command", "")).strip()
+        allowed_names = self._tool_names_for_profile(
+            profile_obj,
+            include_internal=profile_obj.include_internal,
+        )
+        if request.name not in allowed_names:
+            reason = f"当前 profile `{profile_obj.name}` 不允许工具 `{request.name}`。"
+            if state is not None:
+                state.record_failure(reason, "blocked")
+            payload = self._blocked_payload(
+                reason=reason,
+                cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
+                command=str(request.arguments.get("command", "")).strip(),
+            )
+            return ToolExecutionResult(success=False, payload=payload, reason=reason)
+
+        shell_executor = deps.execute_shell if deps is not None else default_execute_shell
+        shell_default_cwd = deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD
+        context = ToolExecutionContext(
+            execute_shell=shell_executor,
+            shell_default_cwd=shell_default_cwd,
+            workspace_root=workspace_root or str(ROOT_DIR),
+            services=services or {},
+        )
+
+        policy_hook = str(tool.metadata.get("policy_hook", "")).strip()
+        use_shell_policy = (
+            profile_obj.shell_policy_enabled
+            and policy_hook == "shell_command"
+            and state is not None
+            and deps is not None
+        )
+        command = str(request.arguments.get("command", "")).strip()
         intent = None
-        if tool_call.name == "execute_shell":
+
+        if use_shell_policy:
             if not command:
                 reason = "工具参数缺少 command。"
                 state.record_failure(reason, "blocked")
-                payload = self._blocked_payload(
-                    reason=reason,
-                    cwd=deps.shell_default_cwd,
-                    command="",
-                )
-                return json.dumps(payload, ensure_ascii=False), payload
+                payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command="")
+                return ToolExecutionResult(success=False, payload=payload, reason=reason)
 
             intent = deps.policy.analyze_command(command)
             state.record_intent(intent)
@@ -404,45 +588,32 @@ class TaskRuntime:
                 reason = pre_decision.reason or "需要用户确认。"
                 if not state.failure_reason:
                     state.record_failure(reason, pre_decision.failure_type)
-                payload = self._blocked_payload(
-                    reason=reason,
-                    cwd=deps.shell_default_cwd,
-                    command=command,
-                )
-                return json.dumps(payload, ensure_ascii=False), payload
+                payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command=command)
+                return ToolExecutionResult(success=False, payload=payload, reason=reason)
             if pre_decision.action == "block":
                 reason = pre_decision.reason or "命令被策略拦截。"
                 state.record_failure(reason, pre_decision.failure_type)
-                payload = self._blocked_payload(
-                    reason=reason,
-                    cwd=deps.shell_default_cwd,
-                    command=command,
-                )
-                return json.dumps(payload, ensure_ascii=False), payload
+                payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command=command)
+                return ToolExecutionResult(success=False, payload=payload, reason=reason)
 
-        execution = await self._tool_registry.execute(
-            ToolExecutionRequest(name=tool_call.name, arguments=tool_call.arguments),
-            context=ToolExecutionContext(
-                execute_shell=deps.execute_shell,
-                shell_default_cwd=deps.shell_default_cwd,
-            ),
-        )
+        execution = await self._tool_registry.execute(request, context=context)
+        if not use_shell_policy:
+            return execution
 
-        payload = execution.payload
-        if tool_call.name != "execute_shell":
-            return json.dumps(payload, ensure_ascii=False), payload
-
+        assert state is not None
+        assert deps is not None
         shell_result = execution.shell_result
         if shell_result is None or intent is None:
             reason = execution.reason or "工具执行失败。"
             state.record_failure(reason, "blocked")
-            if "blocked" not in payload:
+            if "blocked" not in execution.payload:
                 payload = self._blocked_payload(
                     reason=reason,
-                    cwd=deps.shell_default_cwd,
+                    cwd=shell_default_cwd,
                     command=command,
                 )
-            return json.dumps(payload, ensure_ascii=False), payload
+                return ToolExecutionResult(success=False, payload=payload, reason=reason)
+            return execution
 
         post_decision = deps.policy.after_execute(
             constraints=state.constraints,
@@ -456,23 +627,48 @@ class TaskRuntime:
             state.record_failure(reason, post_decision.failure_type)
             if post_decision.alternative is not None:
                 state.require_consent(post_decision.alternative)
-        elif post_decision.should_verify:
-            await self._publish_task_event(
-                event_bus,
-                "task.verifying",
-                task_id=task_id,
-                chat_id=chat_id,
-                phase="verifying",
-                text="正在验证任务结果。",
-                command=command,
-                tool_name=tool_call.name,
-            )
+            return execution
+
+        if post_decision.should_verify:
+            if event_bus is not None and task_id is not None and chat_id is not None:
+                await self._publish_task_event(
+                    event_bus,
+                    "task.verifying",
+                    task_id=task_id,
+                    chat_id=chat_id,
+                    phase="verifying",
+                    text="正在验证任务结果。",
+                    command=command,
+                    tool_name=request.name,
+                )
             verification = deps.policy.verify(state.constraints)
             if verification.completed:
                 state.mark_completed(verification)
             else:
                 state.record_failure(verification.reason, "verification_failed")
+        return execution
 
+    async def _execute_tool_call(
+        self,
+        *,
+        tool_call: ToolCallRequest,
+        state: ExecutionSessionState,
+        deps: RuntimeDeps,
+        task_id: str,
+        chat_id: str,
+        event_bus,
+        profile: str | RuntimeProfile = "chat_shell",
+    ) -> tuple[str, dict[str, Any]]:
+        execution = await self.execute_tool(
+            request=ToolExecutionRequest(name=tool_call.name, arguments=tool_call.arguments),
+            profile=profile,
+            state=state,
+            deps=deps,
+            task_id=task_id,
+            chat_id=chat_id,
+            event_bus=event_bus,
+        )
+        payload = execution.payload
         return json.dumps(payload, ensure_ascii=False), payload
 
     def _blocked_payload(

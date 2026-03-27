@@ -5,9 +5,6 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from anthropic import AsyncAnthropic
-from openai import AsyncOpenAI
-
 from config.settings import (
     LLM_API_KEY,
     LLM_BASE_URL,
@@ -271,7 +268,7 @@ class LLMRouter:
     """按 purpose 路由到对应 LLM client。"""
 
     def __init__(self) -> None:
-        self._clients: dict[str, AsyncOpenAI | AsyncAnthropic] = {}
+        self._clients: dict[str, Any] = {}
         self._models: dict[str, str] = {}
         self._api_types: dict[str, str] = {}
         self._base_urls: dict[str, str] = {}
@@ -299,12 +296,12 @@ class LLMRouter:
 
             api_type = _detect_api_type(resolved_base_url)
             if api_type == "anthropic":
-                client = AsyncAnthropic(
+                client = self._build_anthropic_client(
                     api_key=resolved_api_key,
-                    base_url=_normalize_anthropic_base_url(resolved_base_url),
+                    base_url=resolved_base_url,
                 )
             else:
-                client = AsyncOpenAI(
+                client = self._build_openai_client(
                     api_key=resolved_api_key,
                     base_url=resolved_base_url,
                 )
@@ -318,7 +315,34 @@ class LLMRouter:
                 f"{resolved_model} ({resolved_base_url}, {api_type})"
             )
 
-    def _resolve_client(self, purpose: str) -> tuple[AsyncOpenAI | AsyncAnthropic, str, str]:
+    def _build_anthropic_client(self, *, api_key: str, base_url: str) -> Any:
+        try:
+            from anthropic import AsyncAnthropic  # type: ignore[import-not-found]
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "检测到 Anthropic 兼容 provider，但当前环境缺少 `anthropic` 依赖。"
+                "请安装：pip install anthropic"
+            ) from exc
+
+        return AsyncAnthropic(
+            api_key=api_key,
+            base_url=_normalize_anthropic_base_url(base_url),
+        )
+
+    def _build_openai_client(self, *, api_key: str, base_url: str) -> Any:
+        try:
+            from openai import AsyncOpenAI  # type: ignore[import-not-found]
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "当前环境缺少 `openai` 依赖。请安装：pip install openai"
+            ) from exc
+
+        return AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+        )
+
+    def _resolve_client(self, purpose: str) -> tuple[Any, str, str]:
         client = self._clients.get(purpose)
         if client is None:
             logger.warning(f"[{purpose}] 未知的 purpose，回退到 chat 模型")

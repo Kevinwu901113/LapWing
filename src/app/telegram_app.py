@@ -6,9 +6,6 @@ import asyncio
 import logging
 from typing import Any
 
-from telegram import Update
-from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
-
 from config.settings import MAX_REPLY_LENGTH, MESSAGE_BUFFER_SECONDS
 
 logger = logging.getLogger("lapwing.app.telegram")
@@ -25,20 +22,31 @@ class TelegramApp:
         self._buffer_updates: dict[str, object] = {}
 
     @staticmethod
+    def _import_telegram():
+        try:
+            from telegram.ext import Application, CommandHandler, ContextTypes, MessageHandler, filters
+        except ModuleNotFoundError as exc:
+            raise ModuleNotFoundError(
+                "当前环境缺少 telegram 依赖。请安装：pip install python-telegram-bot"
+            ) from exc
+        return Application, CommandHandler, ContextTypes, MessageHandler, filters
+
+    @staticmethod
     def _visible_user_facts(facts: list[dict]) -> list[dict]:
         return [
             fact for fact in facts
             if not str(fact.get("fact_key", "")).startswith("memory_summary_")
         ]
 
-    async def _post_init(self, application: Application) -> None:
+    async def _post_init(self, application) -> None:
         self._bot = application.bot
         await self._container.start(bot=application.bot)
 
-    async def _post_shutdown(self, application: Application) -> None:
+    async def _post_shutdown(self, application) -> None:
         await self._container.shutdown()
 
-    def build_application(self, *, token: str, proxy_url: str = "") -> Application:
+    def build_application(self, *, token: str, proxy_url: str = ""):
+        Application, _, _, _, _ = self._import_telegram()
         builder = Application.builder().token(token)
         if proxy_url:
             from telegram.request import HTTPXRequest
@@ -51,7 +59,8 @@ class TelegramApp:
         self._register_handlers(app)
         return app
 
-    def _register_handlers(self, app: Application) -> None:
+    def _register_handlers(self, app) -> None:
+        _, CommandHandler, _, MessageHandler, filters = self._import_telegram()
         app.add_handler(CommandHandler("start", self.cmd_start))
         app.add_handler(CommandHandler("reload", self.cmd_reload))
         app.add_handler(CommandHandler("new", self.cmd_new))
@@ -63,33 +72,33 @@ class TelegramApp:
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self.handle_voice))
 
-    async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def cmd_start(self, update, context) -> None:
         if update.message:
             await update.message.reply_text("你好，我是 Lapwing。有什么想聊的吗？")
 
-    async def cmd_reload(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def cmd_reload(self, update, context) -> None:
         self._container.brain.reload_persona()
         if update.message:
             await update.message.reply_text("人格已重新加载。")
 
-    async def cmd_new(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def cmd_new(self, update, context) -> None:
         if not update.message:
             return
         chat_id = str(update.message.chat_id)
         await self._container.brain.clear_short_term_memory(chat_id)
         await update.message.reply_text("好的，已清空当前对话上下文，我们可以重新开始。")
 
-    async def cmd_clear(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def cmd_clear(self, update, context) -> None:
         await self.cmd_new(update, context)
 
-    async def cmd_forget(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def cmd_forget(self, update, context) -> None:
         if not update.message:
             return
         chat_id = str(update.message.chat_id)
         await self._container.brain.clear_all_memory(chat_id)
         await update.message.reply_text("好的，我已经清空这个 chat 的所有记忆（短期 + 长期）。")
 
-    async def cmd_evolve(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def cmd_evolve(self, update, context) -> None:
         if not update.message:
             return
 
@@ -118,7 +127,7 @@ class TelegramApp:
         else:
             await update.message.reply_text(f"优化未完成: {result.get('error', '未知错误')}")
 
-    async def cmd_interests(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def cmd_interests(self, update, context) -> None:
         if not update.message:
             return
         chat_id = str(update.message.chat_id)
@@ -132,7 +141,7 @@ class TelegramApp:
             lines.append(f"{index}. {interest['topic']}（权重 {interest['weight']:.1f}）")
         await update.message.reply_text("\n".join(lines))
 
-    async def cmd_memory(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def cmd_memory(self, update, context) -> None:
         message = update.message
         if message is None:
             return
@@ -220,7 +229,7 @@ class TelegramApp:
 
         self._buffer_tasks[chat_id] = asyncio.create_task(self._flush_buffer(chat_id))
 
-    async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def handle_message(self, update, context) -> None:
         message = update.message
         if not message or not message.text:
             return
@@ -228,7 +237,7 @@ class TelegramApp:
         chat_id = str(message.chat_id)
         self._enqueue_message(chat_id, message.text, message)
 
-    async def handle_voice(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    async def handle_voice(self, update, context) -> None:
         from src.tools import transcriber
 
         message = update.message

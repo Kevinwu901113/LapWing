@@ -21,6 +21,7 @@ from src.core.task_runtime import RuntimeDeps, TaskRuntime
 from src.policy.shell_runtime_policy import ShellRuntimePolicy
 from src.tools.registry import build_default_tool_registry
 from src.tools.shell_executor import ShellResult
+from src.tools.types import ToolExecutionRequest
 
 
 def _make_policy(verify_constraints):
@@ -43,6 +44,45 @@ async def test_chat_tools_from_registry():
     names = {item["function"]["name"] for item in tools}
 
     assert names == {"execute_shell", "read_file", "write_file"}
+
+
+@pytest.mark.asyncio
+async def test_tools_for_profile_hides_internal_verify_tools():
+    runtime = TaskRuntime(router=MagicMock(), tool_registry=build_default_tool_registry())
+    tools = runtime.tools_for_profile("coder_snippet")
+    names = {item["function"]["name"] for item in tools}
+    assert "run_python_code" in names
+    assert "verify_code_result" not in names
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_rejects_tool_outside_profile():
+    runtime = TaskRuntime(router=MagicMock(), tool_registry=build_default_tool_registry())
+    result = await runtime.execute_tool(
+        request=ToolExecutionRequest(name="execute_shell", arguments={"command": "pwd"}),
+        profile="file_ops",
+    )
+    assert result.success is False
+    assert result.payload["blocked"] is True
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_allows_internal_verify_tool_for_coder_profile():
+    runtime = TaskRuntime(router=MagicMock(), tool_registry=build_default_tool_registry())
+    result = await runtime.execute_tool(
+        request=ToolExecutionRequest(
+            name="verify_code_result",
+            arguments={
+                "stdout": "",
+                "stderr": "",
+                "exit_code": 0,
+                "timed_out": False,
+            },
+        ),
+        profile="coder_snippet",
+    )
+    assert result.success is True
+    assert result.payload["passed"] is True
 
 
 @pytest.mark.asyncio
