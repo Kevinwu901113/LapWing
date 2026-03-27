@@ -3,8 +3,9 @@
 import json
 import logging
 import re
+from dataclasses import dataclass
 
-from src.agents.base import AgentRegistry, AgentTask, AgentResult
+from src.agents.base import AgentRegistry, AgentTask, AgentResult, AgentMode
 from src.core.prompt_loader import load_prompt
 
 logger = logging.getLogger(__name__)
@@ -45,6 +46,14 @@ _SHELL_COMMAND_PATTERNS = [
     r"(?:执行|运行).{0,8}(?:命令|shell|终端)",
 ]
 
+_VALID_AGENT_MODES: set[str] = {"default", "snippet", "workspace_patch"}
+
+
+@dataclass(frozen=True)
+class DispatchDecision:
+    agent_name: str
+    mode: AgentMode
+
 
 class AgentDispatcher:
     """将用户消息路由到合适的 Agent，或返回 None 交由 Lapwing 直接回应。"""
@@ -67,14 +76,14 @@ class AgentDispatcher:
 
         try:
             # 2. 分类：判断需要哪个 Agent（如果有的话）
-            agent_name = await self._classify(user_message)
-            if agent_name is None:
+            decision = await self._classify(user_message)
+            if decision is None:
                 return None
 
             # 3. 查找 Agent
-            agent = self._registry.get_by_name(agent_name)
+            agent = self._registry.get_by_name(decision.agent_name)
             if agent is None:
-                logger.warning(f"Dispatcher selected unknown agent '{agent_name}'")
+                logger.warning(f"Dispatcher selected unknown agent '{decision.agent_name}'")
                 return None
 
             # 4. 从记忆中获取历史和用户画像，构建 AgentTask
@@ -85,6 +94,7 @@ class AgentDispatcher:
                 user_message=user_message,
                 history=history,
                 user_facts=user_facts,
+                mode=decision.mode,
             )
 
             # 5. 执行 Agent
@@ -99,27 +109,27 @@ class AgentDispatcher:
             logger.warning(f"Agent dispatch failed, falling back to normal: {e}")
             return None
 
-    def _quick_match(self, user_message: str) -> str | None:
+    def _quick_match(self, user_message: str) -> DispatchDecision | None:
         """关键词快速匹配：跳过 LLM，直接派发明确的搜索意图。"""
         if any(re.search(pattern, user_message, flags=re.IGNORECASE) for pattern in _WEATHER_PATTERNS):
             logger.info(f"[dispatcher] 关键词快速匹配 → weather")
-            return "weather"
+            return DispatchDecision(agent_name="weather", mode="default")
 
         if any(re.search(pattern, user_message, flags=re.IGNORECASE) for pattern in _TODO_PATTERNS):
             logger.info(f"[dispatcher] 关键词快速匹配 → todo")
-            return "todo"
+            return DispatchDecision(agent_name="todo", mode="default")
 
         for pattern in _SEARCH_PATTERNS:
             if re.search(pattern, user_message):
                 logger.info(f"[dispatcher] 关键词快速匹配 → researcher")
-                return "researcher"
+                return DispatchDecision(agent_name="researcher", mode="default")
         return None
 
-    async def _classify(self, user_message: str) -> str | None:
+    async def _classify(self, user_message: str) -> DispatchDecision | None:
         """使用 LLM（tool 模型）判断用户消息是否需要 Agent 处理。
 
         Returns:
-            Agent 名称字符串，或 None（由 Lapwing 直接回应）。
+            DispatchDecision，或 None（由 Lapwing 直接回应）。
         """
         # 快速关键词匹配，命中则直接返回，跳过 LLM 调用
         quick = self._quick_match(user_message)
@@ -143,11 +153,11 @@ class AgentDispatcher:
         )
         return self._parse_decision(raw)
 
-    def _parse_decision(self, raw: str) -> str | None:
+    def _parse_decision(self, raw: str) -> DispatchDecision | None:
         """防御性解析 LLM 返回的决策 JSON。
 
         Returns:
-            Agent 名称字符串，或 None（解析失败或 agent 为 null）。
+            DispatchDecision，或 None（解析失败或 agent 为 null）。
         """
         if raw is None:
             return None
@@ -165,7 +175,22 @@ class AgentDispatcher:
             return None
         if not isinstance(agent, str):
             return None
-        return agent if agent.strip() else None
+        agent_name = agent.strip()
+        if not agent_name:
+            return None
+
+        mode_raw = data.get("mode")
+        if isinstance(mode_raw, str) and mode_raw.strip() in _VALID_AGENT_MODES:
+            mode: AgentMode = mode_raw.strip()  # type: ignore[assignment]
+        else:
+            mode = self._default_mode_for_agent(agent_name)
+
+        return DispatchDecision(agent_name=agent_name, mode=mode)
+
+    def _default_mode_for_agent(self, agent_name: str) -> AgentMode:
+        if agent_name == "coder":
+            return "snippet"
+        return "default"
 
     def _looks_like_shell_request(self, user_message: str) -> bool:
         text = re.sub(r"https?://\S+", "", user_message)

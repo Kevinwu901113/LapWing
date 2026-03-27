@@ -20,29 +20,33 @@
 ## 示例
 
 - 用户说："帮我看看这个链接讲了什么 https://example.com/article"
-  返回：`{"agent": "browser", "reason": "用户明确要求阅读并总结指定网址内容"}`
+  返回：`{"agent": "browser", "mode": "default", "reason": "用户明确要求阅读并总结指定网址内容"}`
 - 用户说："总结一下这个网址在讲什么 https://example.com/post"
-  返回：`{"agent": "browser", "reason": "用户希望直接浏览指定网页并提取内容"}`
+  返回：`{"agent": "browser", "mode": "default", "reason": "用户希望直接浏览指定网页并提取内容"}`
 - 用户说："查一下 Python 3.13 的最新信息，参考这个链接 https://python.org"
-  返回：`{"agent": "researcher", "reason": "任务本质是搜索和整理最新信息，不是只阅读单个链接"}`
+  返回：`{"agent": "researcher", "mode": "default", "reason": "任务本质是搜索和整理最新信息，不是只阅读单个链接"}`
 - 用户说："帮我搜一下华南理工大学最近的消息"
-  返回：`{"agent": "researcher", "reason": "用户明确要求搜索信息"}`
+  返回：`{"agent": "researcher", "mode": "default", "reason": "用户明确要求搜索信息"}`
 - 用户说："搜索今天A股行情"
-  返回：`{"agent": "researcher", "reason": "用户请求搜索实时信息"}`
+  返回：`{"agent": "researcher", "mode": "default", "reason": "用户请求搜索实时信息"}`
 - 用户说："帮我看看你的人格 prompt 是怎么写的"
-  返回：`{"agent": "file", "reason": "用户要求读取 prompts/lapwing.md 文件"}`
+  返回：`{"agent": "file", "mode": "default", "reason": "用户要求读取 prompts/lapwing.md 文件"}`
 - 用户说："列出 prompts 目录下有哪些文件"
-  返回：`{"agent": "file", "reason": "用户要求列出目录内容"}`
+  返回：`{"agent": "file", "mode": "default", "reason": "用户要求列出目录内容"}`
+- 用户说："写个 Python 代码计算斐波那契"
+  返回：`{"agent": "coder", "mode": "snippet", "reason": "用户希望生成并运行代码片段"}`
+- 用户说："修改 src/agents/coder.py，把修复次数改成 3 次"
+  返回：`{"agent": "coder", "mode": "workspace_patch", "reason": "用户明确要求修改项目文件"}`
 - 用户说："看看 /home/Lapwing 下有什么文件"
   返回：`{"agent": null}`
 - 用户说："在 /home 下创建一个文件夹，然后 mkdir 一个 notes 目录"
   返回：`{"agent": null}`
 - 用户说："北京今天天气怎么样"
-  返回：`{"agent": "weather", "reason": "用户在查询具体城市天气"}`
+  返回：`{"agent": "weather", "mode": "default", "reason": "用户在查询具体城市天气"}`
 - 用户说："帮我记个待办，明天交周报"
-  返回：`{"agent": "todo", "reason": "用户要求管理待办事项"}`
+  返回：`{"agent": "todo", "mode": "default", "reason": "用户要求管理待办事项"}`
 - 用户说："列出我的待办"
-  返回：`{"agent": "todo", "reason": "用户要查看待办列表"}`
+  返回：`{"agent": "todo", "mode": "default", "reason": "用户要查看待办列表"}`
 - 用户说："测试一下你的搜索能力"
   返回：`{"agent": null}`
 - 用户说："我刚看到这个链接，感觉挺有意思 https://example.com"
@@ -57,7 +61,7 @@
 只输出 JSON，不要有任何其他文字。
 
 需要分发时：
-{"agent": "agent_name", "reason": "brief reason"}
+{"agent": "agent_name", "mode": "default|snippet|workspace_patch", "reason": "brief reason"}
 
 不需要分发时：
 {"agent": null}

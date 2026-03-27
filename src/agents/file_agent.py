@@ -1,17 +1,14 @@
 """FileAgent — 读写项目文件，带安全白名单/黑名单。"""
 
 import logging
-import shutil
-from datetime import datetime
 from pathlib import Path
 
 from src.agents.base import AgentResult, AgentTask, BaseAgent
 from src.core.prompt_loader import load_prompt
-from config.settings import ROOT_DIR, DATA_DIR
+from src.tools import file_editor
+from config.settings import ROOT_DIR
 
 logger = logging.getLogger("lapwing.agents.file")
-
-_BACKUP_DIR = DATA_DIR / "backups" / "prompts"
 
 # 白名单：只允许这些目录下的文件
 _ALLOWED_DIRS = {"prompts", "data", "logs", "config"}
@@ -124,74 +121,59 @@ class FileAgent(BaseAgent):
         return True, ""
 
     async def _do_read(self, abs_path: Path, rel_path: str) -> AgentResult:
-        if not abs_path.exists():
-            return AgentResult(content=f"文件不存在：{rel_path}")
-        if not abs_path.is_file():
-            return AgentResult(content=f"{rel_path} 不是一个文件。")
-        try:
-            text = abs_path.read_text(encoding="utf-8")
-            logger.info(f"[file] 读取: {rel_path} ({len(text)} 字符)")
-            return AgentResult(
-                content=f"**{rel_path}** 的内容：\n\n```\n{text}\n```",
-                needs_persona_formatting=False,
-            )
-        except Exception as exc:
-            logger.warning(f"[file] 读取失败: {rel_path} — {exc}")
-            return AgentResult(content=f"读取文件时出错：{exc}")
+        result = file_editor.read_file_segment(
+            str(abs_path),
+            start_line=1,
+            end_line=10 ** 9,
+            root_dir=ROOT_DIR,
+        )
+        if not result.success:
+            logger.warning(f"[file] 读取失败: {rel_path} — {result.reason}")
+            return AgentResult(content=f"读取文件时出错：{result.reason}")
+
+        text = result.content
+        logger.info(f"[file] 读取: {rel_path} ({len(text)} 字符)")
+        return AgentResult(
+            content=f"**{rel_path}** 的内容：\n\n```\n{text}\n```",
+            needs_persona_formatting=False,
+        )
 
     async def _do_write(self, abs_path: Path, rel_path: str, content: str) -> AgentResult:
-        try:
-            # prompts/ 下的文件先备份
-            if abs_path.exists() and abs_path.parts[len(ROOT_DIR.parts)] == "prompts":
-                self._backup(abs_path)
-            abs_path.parent.mkdir(parents=True, exist_ok=True)
-            abs_path.write_text(content, encoding="utf-8")
-            logger.info(f"[file] 写入: {rel_path} ({len(content)} 字符)")
-            return AgentResult(content=f"已写入 `{rel_path}`。")
-        except Exception as exc:
-            logger.warning(f"[file] 写入失败: {rel_path} — {exc}")
-            return AgentResult(content=f"写入文件时出错：{exc}")
+        result = file_editor.write_file(
+            str(abs_path),
+            content=content,
+            root_dir=ROOT_DIR,
+        )
+        if not result.success:
+            logger.warning(f"[file] 写入失败: {rel_path} — {result.reason}")
+            return AgentResult(content=f"写入文件时出错：{result.reason}")
+
+        logger.info(f"[file] 写入: {rel_path} ({len(content)} 字符)")
+        return AgentResult(content=f"已写入 `{rel_path}`。")
 
     async def _do_append(self, abs_path: Path, rel_path: str, content: str) -> AgentResult:
-        try:
-            abs_path.parent.mkdir(parents=True, exist_ok=True)
-            with abs_path.open("a", encoding="utf-8") as f:
-                f.write(content)
-            logger.info(f"[file] 追加: {rel_path} ({len(content)} 字符)")
-            return AgentResult(content=f"已追加内容到 `{rel_path}`。")
-        except Exception as exc:
-            logger.warning(f"[file] 追加失败: {rel_path} — {exc}")
-            return AgentResult(content=f"追加文件时出错：{exc}")
+        result = file_editor.append_to_file(
+            str(abs_path),
+            content=content,
+            root_dir=ROOT_DIR,
+        )
+        if not result.success:
+            logger.warning(f"[file] 追加失败: {rel_path} — {result.reason}")
+            return AgentResult(content=f"追加文件时出错：{result.reason}")
+
+        logger.info(f"[file] 追加: {rel_path} ({len(content)} 字符)")
+        return AgentResult(content=f"已追加内容到 `{rel_path}`。")
 
     async def _do_list(self, abs_path: Path, rel_path: str) -> AgentResult:
-        if not abs_path.exists():
-            return AgentResult(content=f"目录不存在：{rel_path or '.'}")
-        if abs_path.is_file():
-            return AgentResult(content=f"{rel_path} 是一个文件，不是目录。")
-        try:
-            entries = sorted(abs_path.iterdir(), key=lambda p: (p.is_file(), p.name))
-            lines = []
-            for e in entries:
-                icon = "📁" if e.is_dir() else "📄"
-                lines.append(f"{icon} {e.name}")
-            result = "\n".join(lines) if lines else "（目录为空）"
-            display = rel_path or "根目录"
-            logger.info(f"[file] 列出: {display} ({len(entries)} 项)")
-            return AgentResult(
-                content=f"**{display}** 目录内容：\n\n{result}",
-                needs_persona_formatting=False,
-            )
-        except Exception as exc:
-            logger.warning(f"[file] 列出失败: {rel_path} — {exc}")
-            return AgentResult(content=f"列出目录时出错：{exc}")
+        result = file_editor.list_directory(str(abs_path), root_dir=ROOT_DIR)
+        if not result.success:
+            logger.warning(f"[file] 列出失败: {rel_path} — {result.reason}")
+            return AgentResult(content=f"列出目录时出错：{result.reason}")
 
-    def _backup(self, abs_path: Path) -> None:
-        """将文件备份到 data/backups/prompts/ 下。"""
-        try:
-            _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-            backup_name = f"{abs_path.stem}_{ts}{abs_path.suffix}"
-            shutil.copy2(abs_path, _BACKUP_DIR / backup_name)
-            logger.info(f"[file] 备份: {abs_path.name} → {backup_name}")
-        except Exception as exc:
-            logger.warning(f"[file] 备份失败: {exc}")
+        entries = result.metadata.get("entries", [])
+        display = rel_path or "根目录"
+        logger.info(f"[file] 列出: {display} ({len(entries)} 项)")
+        return AgentResult(
+            content=f"**{display}** 目录内容：\n\n{result.content}",
+            needs_persona_formatting=False,
+        )

@@ -2,6 +2,9 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
+from typing import Literal
+
+AgentMode = Literal["default", "snippet", "workspace_patch"]
 
 
 @dataclass
@@ -11,6 +14,7 @@ class AgentTask:
     user_message: str
     history: list[dict] = field(default_factory=list)
     user_facts: list[dict] = field(default_factory=list)
+    mode: AgentMode = "default"
 
 
 @dataclass

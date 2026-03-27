@@ -5,7 +5,10 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from src.agents.base import AgentTask
 from src.agents.coder import CoderAgent, _extract_code
+from src.core.verifier import VerificationResult
+from src.tools.file_editor import FileEditResult, TransactionResult
 from src.tools.code_runner import CodeResult
+from config.settings import ROOT_DIR
 
 
 # ---- 辅助 ----
@@ -16,6 +19,16 @@ def make_task(user_message: str = "写一个计算阶乘的函数") -> AgentTask
         user_message=user_message,
         history=[],
         user_facts=[],
+    )
+
+
+def make_workspace_task(user_message: str = "帮我在仓库里做多文件修改") -> AgentTask:
+    return AgentTask(
+        chat_id="42",
+        user_message=user_message,
+        history=[],
+        user_facts=[],
+        mode="workspace_patch",
     )
 
 
@@ -36,6 +49,12 @@ ERR_RESULT = CodeResult(stdout="", stderr="NameError: name 'x' is not defined", 
 FIXED_CODE_RESPONSE = "```python\nx = 1\nprint(x)\n```"
 FIXED_CODE = "x = 1\nprint(x)"
 FIXED_RESULT = CodeResult(stdout="1\n", stderr="", exit_code=0)
+FIXED_CODE_RESPONSE_2 = "```python\nx = 2\nprint(x)\n```"
+WORKSPACE_PLAN_RESPONSE = (
+    '{"summary":"更新 README 和配置","operations":[{"op":"append_to_file",'
+    '"path":"README.md","content":"\\n- updated by coder"}],'
+    '"pytest_targets":["tests/test_demo.py"],"reason":"补充说明"}'
+)
 
 
 # ---- 测试：_extract_code ----
@@ -177,3 +196,133 @@ class TestExecute:
         # 应该返回原始的错误结果
         assert "出错" in result.content
         assert result.metadata["exit_code"] != 0
+
+    @pytest.mark.asyncio
+    async def test_snippet_fix_loop_stops_after_three_attempts(self):
+        """snippet 模式修复循环上限为 3 次执行。"""
+        router = make_router([OK_CODE_RESPONSE, FIXED_CODE_RESPONSE, FIXED_CODE_RESPONSE_2])
+
+        with patch("src.agents.coder.load_prompt", return_value="prompt {user_message} {code} {error}"), \
+             patch("src.agents.coder.code_runner.run_python", return_value=ERR_RESULT):
+            agent = CoderAgent(memory=make_memory())
+            result = await agent.execute(make_task(), router)
+
+        assert result.metadata["mode"] == "snippet"
+        assert result.metadata["attempts"] == 3
+        assert result.metadata["verification"]["passed"] is False
+        assert router.complete.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_workspace_patch_success_sets_metadata(self):
+        """workspace_patch 模式成功时返回结构化 metadata。"""
+        router = make_router([WORKSPACE_PLAN_RESPONSE])
+        changed_file = str((ROOT_DIR / "README.md").resolve())
+        tx = TransactionResult(
+            success=True,
+            results=[
+                FileEditResult(
+                    success=True,
+                    operation="append_to_file",
+                    path=changed_file,
+                    changed=True,
+                )
+            ],
+            changed_files=[changed_file],
+            rolled_back=False,
+        )
+        verify_ok = VerificationResult(
+            passed=True,
+            status="passed",
+            checks=[{"name": "pytest", "passed": True}],
+            artifacts=[changed_file],
+        )
+
+        with patch("src.agents.coder.load_prompt", return_value="prompt {user_message}"), \
+             patch("src.agents.coder.file_editor.transactional_apply", return_value=tx) as mock_tx, \
+             patch("src.agents.coder.verifier.verify_workspace", new=AsyncMock(return_value=verify_ok)) as mock_verify:
+            agent = CoderAgent(memory=make_memory())
+            result = await agent.execute(make_workspace_task(), router)
+
+        assert "已完成 workspace 多文件修改" in result.content
+        assert result.metadata["mode"] == "workspace_patch"
+        assert result.metadata["attempts"] == 1
+        assert result.metadata["changed_files"] == [changed_file]
+        assert result.metadata["verification"]["passed"] is True
+        assert result.metadata["rolled_back"] is False
+        assert mock_tx.call_count == 1
+        assert mock_verify.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_workspace_patch_retries_until_max_attempts_on_verification_failure(self):
+        """workspace_patch 验证失败时最多修复 3 轮。"""
+        router = make_router([
+            WORKSPACE_PLAN_RESPONSE,
+            WORKSPACE_PLAN_RESPONSE,
+            WORKSPACE_PLAN_RESPONSE,
+        ])
+        changed_file = str((ROOT_DIR / "README.md").resolve())
+        tx = TransactionResult(
+            success=True,
+            results=[
+                FileEditResult(
+                    success=True,
+                    operation="append_to_file",
+                    path=changed_file,
+                    changed=True,
+                )
+            ],
+            changed_files=[changed_file],
+            rolled_back=False,
+        )
+        verify_fail = VerificationResult(
+            passed=False,
+            status="failed",
+            reason="pytest 失败",
+            checks=[{"name": "pytest", "passed": False}],
+            artifacts=[changed_file],
+        )
+
+        with patch("src.agents.coder.load_prompt", return_value="prompt {user_message}"), \
+             patch("src.agents.coder.file_editor.transactional_apply", return_value=tx) as mock_tx, \
+             patch("src.agents.coder.verifier.verify_workspace", new=AsyncMock(return_value=verify_fail)) as mock_verify:
+            agent = CoderAgent(memory=make_memory())
+            result = await agent.execute(make_workspace_task(), router)
+
+        assert "workspace 修改未完全通过验证" in result.content
+        assert result.metadata["mode"] == "workspace_patch"
+        assert result.metadata["attempts"] == 3
+        assert result.metadata["verification"]["passed"] is False
+        assert mock_tx.call_count == 3
+        assert mock_verify.await_count == 3
+        assert router.complete.await_count == 3
+
+    @pytest.mark.asyncio
+    async def test_workspace_patch_transaction_failure_reports_rollback(self):
+        """事务失败且回滚时，metadata 标记 rolled_back。"""
+        plan = {
+            "summary": "do changes",
+            "operations": [{"op": "append_to_file", "path": "README.md", "content": "x"}],
+            "pytest_targets": [],
+            "reason": "x",
+        }
+        changed_file = str((ROOT_DIR / "README.md").resolve())
+        tx_fail = TransactionResult(
+            success=False,
+            results=[],
+            changed_files=[changed_file],
+            rolled_back=True,
+            reason="目标锚点不存在",
+        )
+        router = MagicMock()
+
+        agent = CoderAgent(memory=make_memory())
+        with patch.object(agent, "_plan_workspace", new=AsyncMock(return_value=plan)), \
+             patch.object(agent, "_fix_workspace_plan", new=AsyncMock(return_value=None)), \
+             patch("src.agents.coder.file_editor.transactional_apply", return_value=tx_fail):
+            result = await agent.execute(make_workspace_task(), router)
+
+        assert "回滚状态：已发生回滚" in result.content
+        assert result.metadata["mode"] == "workspace_patch"
+        assert result.metadata["attempts"] == 1
+        assert result.metadata["rolled_back"] is True
+        assert result.metadata["verification"]["passed"] is False

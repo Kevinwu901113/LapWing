@@ -1,5 +1,4 @@
 """AgentDispatcher 测试。"""
-import json
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -114,7 +113,9 @@ class TestAgentDispatcher:
         registry.register(FakeCoderAgent())
 
         router = AsyncMock()
-        router.complete = AsyncMock(return_value='{"agent": "coder", "reason": "用户要写代码"}')
+        router.complete = AsyncMock(
+            return_value='{"agent": "coder", "mode": "snippet", "reason": "用户要写代码"}'
+        )
 
         dispatcher = make_dispatcher(registry=registry, router=router)
 
@@ -213,6 +214,7 @@ class TestAgentDispatcher:
         assert task.user_facts == facts
         assert task.chat_id == "chat1"
         assert task.user_message == "帮我搜索"
+        assert task.mode == "default"
 
     async def test_quick_match_routes_weather_before_researcher(self):
         registry = AgentRegistry()
@@ -290,7 +292,9 @@ class TestAgentDispatcher:
     def test_parse_decision_returns_agent_name(self):
         dispatcher = make_dispatcher()
         result = dispatcher._parse_decision('{"agent": "researcher"}')
-        assert result == "researcher"
+        assert result is not None
+        assert result.agent_name == "researcher"
+        assert result.mode == "default"
 
     # 10. _parse_decision 返回 None（agent 为 null）
     def test_parse_decision_returns_none_for_null(self):
@@ -301,12 +305,28 @@ class TestAgentDispatcher:
     # 11. _parse_decision 正确处理 markdown 代码块包装
     def test_parse_decision_strips_code_fence(self):
         dispatcher = make_dispatcher()
-        raw = '```json\n{"agent": "coder", "reason": "用户要写代码"}\n```'
+        raw = '```json\n{"agent": "coder", "mode": "workspace_patch", "reason": "用户要写代码"}\n```'
         result = dispatcher._parse_decision(raw)
-        assert result == "coder"
+        assert result is not None
+        assert result.agent_name == "coder"
+        assert result.mode == "workspace_patch"
 
     # 12. _parse_decision 对格式错误的 JSON 返回 None
     def test_parse_decision_returns_none_for_malformed_json(self):
         dispatcher = make_dispatcher()
         result = dispatcher._parse_decision("这不是JSON")
         assert result is None
+
+    def test_parse_decision_falls_back_to_default_mode_for_invalid_mode(self):
+        dispatcher = make_dispatcher()
+        result = dispatcher._parse_decision('{"agent": "weather", "mode": "invalid"}')
+        assert result is not None
+        assert result.agent_name == "weather"
+        assert result.mode == "default"
+
+    def test_parse_decision_defaults_coder_to_snippet_mode_when_missing_mode(self):
+        dispatcher = make_dispatcher()
+        result = dispatcher._parse_decision('{"agent": "coder"}')
+        assert result is not None
+        assert result.agent_name == "coder"
+        assert result.mode == "snippet"
