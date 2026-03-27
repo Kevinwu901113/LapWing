@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from typing import Any
 
-from config.settings import MAX_REPLY_LENGTH, MESSAGE_BUFFER_SECONDS
+from config.settings import MAX_REPLY_LENGTH, MESSAGE_BUFFER_SECONDS, SKILLS_COMMANDS_ENABLED
 
 logger = logging.getLogger("lapwing.app.telegram")
 
@@ -20,6 +21,7 @@ class TelegramApp:
         self._message_buffers: dict[str, list[str]] = {}
         self._buffer_tasks: dict[str, asyncio.Task] = {}
         self._buffer_updates: dict[str, object] = {}
+        self._skill_shortcut_pattern = re.compile(r"^/([a-z0-9-]+):(.*)$", flags=re.IGNORECASE)
 
     @staticmethod
     def _import_telegram():
@@ -69,6 +71,7 @@ class TelegramApp:
         app.add_handler(CommandHandler("evolve", self.cmd_evolve))
         app.add_handler(CommandHandler("memory", self.cmd_memory))
         app.add_handler(CommandHandler("interests", self.cmd_interests))
+        app.add_handler(CommandHandler("skill", self.cmd_skill))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self.handle_voice))
 
@@ -78,8 +81,9 @@ class TelegramApp:
 
     async def cmd_reload(self, update, context) -> None:
         self._container.brain.reload_persona()
+        self._container.brain.reload_skills()
         if update.message:
-            await update.message.reply_text("人格已重新加载。")
+            await update.message.reply_text("人格与技能目录已重新加载。")
 
     async def cmd_new(self, update, context) -> None:
         if not update.message:
@@ -181,6 +185,40 @@ class TelegramApp:
             return
         await message.reply_text("这条记忆已经删掉了。")
 
+    async def cmd_skill(self, update, context) -> None:
+        message = update.message
+        if message is None:
+            return
+        if not SKILLS_COMMANDS_ENABLED:
+            await message.reply_text("技能命令当前已关闭。")
+            return
+
+        args = context.args or []
+        skill_name = ""
+        user_input = ""
+        raw_user_message = str(message.text or "").strip()
+
+        if args:
+            skill_name = str(args[0]).strip().lower().lstrip(":")
+            user_input = " ".join(str(item) for item in args[1:]).strip()
+        else:
+            match = re.match(r"^/skill:([a-z0-9-]+)(?:\s+(.*))?$", raw_user_message, flags=re.IGNORECASE)
+            if match:
+                skill_name = match.group(1).strip().lower()
+                user_input = (match.group(2) or "").strip()
+
+        if not skill_name:
+            await message.reply_text("用法：/skill <name> [args]")
+            return
+
+        await self._run_skill_command(
+            message=message,
+            chat_id=str(message.chat_id),
+            raw_user_message=raw_user_message,
+            skill_name=skill_name,
+            user_input=user_input,
+        )
+
     async def _send_reply(self, message, reply: str) -> None:
         if len(reply) <= MAX_REPLY_LENGTH:
             await message.reply_text(reply)
@@ -193,7 +231,7 @@ class TelegramApp:
             else:
                 await message.chat.send_message(chunk)
 
-    async def _think_and_reply(self, message, chat_id: str, user_text: str) -> None:
+    def _build_status_sender(self):
         async def _send_status(cid: str, text: str) -> None:
             if self._bot:
                 try:
@@ -201,10 +239,63 @@ class TelegramApp:
                 except Exception:
                     pass
 
+        return _send_status
+
+    async def _think_and_reply(self, message, chat_id: str, user_text: str) -> None:
         await message.chat.send_action("typing")
-        reply = await self._container.brain.think(chat_id, user_text, status_callback=_send_status)
+        reply = await self._container.brain.think(
+            chat_id,
+            user_text,
+            status_callback=self._build_status_sender(),
+        )
         await self._send_reply(message, reply)
         logger.info("已回复 [%s]，长度: %s", chat_id, len(reply))
+
+    async def _run_skill_command(
+        self,
+        *,
+        message,
+        chat_id: str,
+        raw_user_message: str,
+        skill_name: str,
+        user_input: str,
+    ) -> None:
+        await message.chat.send_action("typing")
+        reply = await self._container.brain.run_skill_command(
+            chat_id=chat_id,
+            raw_user_message=raw_user_message,
+            skill_name=skill_name,
+            user_input=user_input,
+            status_callback=self._build_status_sender(),
+        )
+        await self._send_reply(message, reply)
+
+    def _parse_skill_shortcut(self, text: str) -> tuple[str, str] | None:
+        if not SKILLS_COMMANDS_ENABLED:
+            return None
+        cleaned = text.strip()
+        if not cleaned:
+            return None
+
+        # /skill:name [args]
+        if cleaned.lower().startswith("/skill:"):
+            rest = cleaned[len("/skill:"):].strip()
+            if not rest:
+                return None
+            parts = rest.split(maxsplit=1)
+            skill_name = parts[0].strip().lower()
+            user_input = parts[1].strip() if len(parts) > 1 else ""
+            return skill_name, user_input
+
+        # /<name>:<args>
+        match = self._skill_shortcut_pattern.match(cleaned)
+        if not match:
+            return None
+        skill_name = match.group(1).strip().lower()
+        user_input = match.group(2).strip()
+        if skill_name == "skill":
+            return None
+        return skill_name, user_input
 
     async def _flush_buffer(self, chat_id: str) -> None:
         await asyncio.sleep(MESSAGE_BUFFER_SECONDS)
@@ -235,6 +326,18 @@ class TelegramApp:
             return
 
         chat_id = str(message.chat_id)
+        skill_shortcut = self._parse_skill_shortcut(message.text)
+        if skill_shortcut is not None:
+            skill_name, user_input = skill_shortcut
+            await self._run_skill_command(
+                message=message,
+                chat_id=chat_id,
+                raw_user_message=message.text,
+                skill_name=skill_name,
+                user_input=user_input,
+            )
+            return
+
         self._enqueue_message(chat_id, message.text, message)
 
     async def handle_voice(self, update, context) -> None:

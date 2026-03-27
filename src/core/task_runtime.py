@@ -2,13 +2,28 @@
 
 from __future__ import annotations
 
+from collections import deque
+import hashlib
 import json
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
-from config.settings import ROOT_DIR, SHELL_DEFAULT_CWD
+from config.settings import (
+    LOOP_DETECTION_CRITICAL_THRESHOLD,
+    LOOP_DETECTION_DETECTOR_GENERIC_REPEAT,
+    LOOP_DETECTION_DETECTOR_KNOWN_POLL_NO_PROGRESS,
+    LOOP_DETECTION_DETECTOR_PING_PONG,
+    LOOP_DETECTION_ENABLED,
+    LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD,
+    LOOP_DETECTION_HISTORY_SIZE,
+    LOOP_DETECTION_WARNING_THRESHOLD,
+    ROOT_DIR,
+    SHELL_DEFAULT_CWD,
+    TASK_MAX_TOOL_ROUNDS,
+)
 from src.core.llm_router import ToolCallRequest
 from src.core.runtime_profiles import RuntimeProfile, get_runtime_profile
 from src.core.shell_policy import (
@@ -26,7 +41,28 @@ from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExec
 
 logger = logging.getLogger("lapwing.task_runtime")
 
-_MAX_TOOL_ROUNDS = 8
+_MAX_TOOL_ROUNDS = TASK_MAX_TOOL_ROUNDS
+
+
+@dataclass(frozen=True)
+class LoopDetectionConfig:
+    """工具循环检测配置（对齐 OpenClaw 语义）。"""
+
+    enabled: bool = LOOP_DETECTION_ENABLED
+    history_size: int = LOOP_DETECTION_HISTORY_SIZE
+    warning_threshold: int = LOOP_DETECTION_WARNING_THRESHOLD
+    critical_threshold: int = LOOP_DETECTION_CRITICAL_THRESHOLD
+    global_circuit_breaker_threshold: int = LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD
+    detector_generic_repeat: bool = LOOP_DETECTION_DETECTOR_GENERIC_REPEAT
+    detector_ping_pong: bool = LOOP_DETECTION_DETECTOR_PING_PONG
+    detector_known_poll_no_progress: bool = LOOP_DETECTION_DETECTOR_KNOWN_POLL_NO_PROGRESS
+
+
+@dataclass
+class LoopDetectionState:
+    """单次 complete_chat 生命周期内的循环检测状态。"""
+
+    history: deque[tuple[str, str]]
 
 
 @dataclass(frozen=True)
@@ -64,11 +100,18 @@ class TaskRuntime:
         router,
         max_tool_rounds: int = _MAX_TOOL_ROUNDS,
         tool_registry: ToolRegistry | None = None,
+        loop_detection_config: LoopDetectionConfig | None = None,
+        latency_monitor: Any | None = None,
     ) -> None:
         self._router = router
         self._max_tool_rounds = max_tool_rounds
         self._tool_registry = tool_registry or build_default_tool_registry()
         self._pending_shell_confirmations: dict[str, PendingShellConfirmation] = {}
+        self._loop_detection_config = loop_detection_config or LoopDetectionConfig()
+        self._latency_monitor = latency_monitor
+
+    def set_latency_monitor(self, latency_monitor: Any | None) -> None:
+        self._latency_monitor = latency_monitor
 
     def clear_chat_state(self, chat_id: str) -> None:
         self._pending_shell_confirmations.pop(chat_id, None)
@@ -146,11 +189,24 @@ class TaskRuntime:
             tool_names=set(profile_obj.tool_names) if profile_obj.tool_names else None,
         )
 
-    def chat_tools(self, shell_enabled: bool) -> list[dict[str, Any]]:
-        """兼容旧接口：chat 默认使用 shell profile。"""
-        if not shell_enabled:
+    def chat_tools(
+        self,
+        shell_enabled: bool,
+        *,
+        skill_activation_enabled: bool = False,
+    ) -> list[dict[str, Any]]:
+        """chat 场景工具集：按需暴露 shell 与 activate_skill。"""
+        tool_names: set[str] = set()
+        if shell_enabled:
+            tool_names.update({"execute_shell", "read_file", "write_file"})
+        if skill_activation_enabled:
+            tool_names.add("activate_skill")
+        if not tool_names:
             return []
-        return self.tools_for_profile("chat_shell")
+        return self._tool_registry.function_tools(
+            include_internal=False,
+            tool_names=tool_names,
+        )
 
     async def run_task_loop(
         self,
@@ -192,6 +248,7 @@ class TaskRuntime:
         status_callback=None,
         event_bus=None,
         on_consent_required: Callable[[ExecutionSessionState], str] | None = None,
+        services: dict[str, Any] | None = None,
         profile: str | RuntimeProfile = "chat_shell",
     ) -> str:
         if not tools:
@@ -219,9 +276,11 @@ class TaskRuntime:
 
         last_payload: dict[str, Any] | None = None
         final_reply: str | None = None
+        loop_detection_state = self._new_loop_detection_state()
 
         async def _step_runner(round_index: int) -> TaskLoopStep:
             nonlocal last_payload, final_reply
+            round_started_at = time.perf_counter()
             turn = await self._router.complete_with_tools(
                 self._with_shell_state_context(messages, state),
                 tools=tools,
@@ -240,13 +299,22 @@ class TaskRuntime:
                 )
                 return TaskLoopStep(completed=True, payload=last_payload)
 
+            tool_names = [tool_call.name for tool_call in turn.tool_calls]
+            executed_tool_names: list[str] = []
+
+            def _record_round_latency() -> None:
+                names = executed_tool_names if executed_tool_names else tool_names
+                self._record_tool_loop_latency(
+                    round_started_at=round_started_at,
+                    tool_names=names,
+                )
+
             if len(turn.tool_calls) > 1:
-                logger.warning(
-                    "[runtime] 模型返回了 %s 个 tool calls，当前将按顺序只处理第一个。",
+                logger.info(
+                    "[runtime] 模型返回了 %s 个 tool calls，当前按顺序串行执行。",
                     len(turn.tool_calls),
                 )
 
-            tool_call = turn.tool_calls[0]
             if turn.continuation_message is not None:
                 messages.append(turn.continuation_message)
 
@@ -256,52 +324,209 @@ class TaskRuntime:
                 except Exception:
                     pass
 
-            await self._publish_task_event(
-                event_bus,
-                "task.executing",
-                task_id=task_id,
-                chat_id=chat_id,
-                phase="executing",
-                text=f"正在执行工具：{tool_call.name}",
-                tool_name=tool_call.name,
-                round=round_index + 1,
-            )
+            tool_results: list[tuple[ToolCallRequest, str]] = []
+            last_tool_name: str | None = None
+            for tool_index, tool_call in enumerate(turn.tool_calls):
+                tool_args_hash = self._tool_args_hash(tool_call.arguments)
+                tool_signature = (tool_call.name, tool_args_hash)
+                generic_repeat_count = self._generic_repeat_count(
+                    loop_detection_state=loop_detection_state,
+                    current_signature=tool_signature,
+                )
+                tool_event_common = {
+                    "tool_name": tool_call.name,
+                    "round": round_index + 1,
+                    "turn_tool_index": tool_index + 1,
+                    "turn_tool_total": len(turn.tool_calls),
+                    "toolCallId": tool_call.id,
+                    "toolName": tool_call.name,
+                    "argsHash": tool_args_hash,
+                }
+                loop_detection_common = {
+                    "loop_detection_detector": "genericRepeat",
+                    "loop_detection_repeat_count": generic_repeat_count,
+                    "loop_detection_warning_threshold": self._loop_detection_config.warning_threshold,
+                    "loop_detection_critical_threshold": self._loop_detection_config.critical_threshold,
+                    "loop_detection_global_circuit_breaker_threshold": (
+                        self._loop_detection_config.global_circuit_breaker_threshold
+                    ),
+                }
 
-            tool_result_text, payload = await self._execute_tool_call(
-                tool_call=tool_call,
-                state=state,
-                deps=deps,
-                task_id=task_id,
-                chat_id=chat_id,
-                event_bus=event_bus,
-                profile=profile_obj,
-            )
-            last_payload = payload
+                if self._should_emit_generic_repeat_warning(generic_repeat_count):
+                    logger.warning(
+                        (
+                            "[runtime] 检测到 genericRepeat 警告: tool=%s, repeat=%s, "
+                            "warning=%s, critical=%s, global=%s, args_hash=%s"
+                        ),
+                        tool_call.name,
+                        generic_repeat_count,
+                        self._loop_detection_config.warning_threshold,
+                        self._loop_detection_config.critical_threshold,
+                        self._loop_detection_config.global_circuit_breaker_threshold,
+                        tool_args_hash,
+                    )
+                    await self._publish_task_event(
+                        event_bus,
+                        "task.executing",
+                        task_id=task_id,
+                        chat_id=chat_id,
+                        phase="executing",
+                        text=(
+                            "检测到可能无进展的重复调用，继续执行并观察："
+                            f"{tool_call.name}（连续 {generic_repeat_count} 次）"
+                        ),
+                        **tool_event_common,
+                        loop_detection_warning=True,
+                        **loop_detection_common,
+                    )
 
-            if state.consent_required:
+                if self._should_block_by_global_circuit_breaker(generic_repeat_count):
+                    reason = (
+                        "检测到无进展重复循环（同一工具与参数连续重复），"
+                        "已触发全局断路器，需用户介入（提供新策略/新指令）。"
+                    )
+                    logger.warning(
+                        (
+                            "[runtime] 触发 loop global circuit breaker: tool=%s, repeat=%s, "
+                            "global_threshold=%s, args_hash=%s"
+                        ),
+                        tool_call.name,
+                        generic_repeat_count,
+                        self._loop_detection_config.global_circuit_breaker_threshold,
+                        tool_args_hash,
+                    )
+                    state.record_failure(reason, "blocked")
+                    await self._publish_task_event(
+                        event_bus,
+                        "task.blocked",
+                        task_id=task_id,
+                        chat_id=chat_id,
+                        phase="blocked",
+                        text="检测到无进展重复循环，已停止自动执行，等待用户介入。",
+                        reason=reason,
+                        **tool_event_common,
+                        **loop_detection_common,
+                    )
+                    final_reply = (
+                        "检测到无进展重复循环（同一工具与参数连续重复），"
+                        "我已停止当前自动执行，需用户介入。请提供新的策略或更具体的指令后我再继续。"
+                    )
+                    _record_round_latency()
+                    return TaskLoopStep(completed=True, payload=last_payload)
+
+                # 当前先走串行执行，后续可按 provider 能力升级到并行分发。
                 await self._publish_task_event(
                     event_bus,
-                    "task.blocked",
+                    "task.executing",
                     task_id=task_id,
                     chat_id=chat_id,
-                    phase="blocked",
-                    text="任务被阻塞，等待用户确认替代路径。",
-                    reason=state.failure_reason or "需要用户确认",
-                    tool_name=tool_call.name,
+                    phase="executing",
+                    text=f"正在执行工具：{tool_call.name}",
+                    **tool_event_common,
                 )
-                if on_consent_required is not None:
-                    final_reply = on_consent_required(state)
-                else:
-                    final_reply = state.consent_message()
-                return TaskLoopStep(completed=True, payload=last_payload)
+                await self._publish_task_event(
+                    event_bus,
+                    "task.tool_execution_start",
+                    task_id=task_id,
+                    chat_id=chat_id,
+                    phase="executing",
+                    text=f"工具开始执行：{tool_call.name}",
+                    stdoutBytes=0,
+                    stderrBytes=0,
+                    isError=False,
+                    durationMs=0,
+                    **tool_event_common,
+                )
 
-            messages.append(
-                self._router.build_tool_result_message(
-                    purpose="chat",
-                    tool_results=[(tool_call, tool_result_text)],
+                tool_started_at = time.perf_counter()
+                tool_result_text, payload, execution_success = await self._execute_tool_call(
+                    tool_call=tool_call,
+                    state=state,
+                    deps=deps,
+                    task_id=task_id,
+                    chat_id=chat_id,
+                    event_bus=event_bus,
+                    profile=profile_obj,
+                    services=services,
                 )
+                duration_ms = max(int((time.perf_counter() - tool_started_at) * 1000), 0)
+                stdout_bytes = self._text_utf8_bytes(payload.get("stdout"))
+                stderr_bytes = self._text_utf8_bytes(payload.get("stderr"))
+                is_error = self._tool_execution_is_error(
+                    payload=payload,
+                    execution_success=execution_success,
+                )
+                tool_event_metrics = {
+                    "stdoutBytes": stdout_bytes,
+                    "stderrBytes": stderr_bytes,
+                    "isError": is_error,
+                    "durationMs": duration_ms,
+                }
+                await self._publish_task_event(
+                    event_bus,
+                    "task.tool_execution_update",
+                    task_id=task_id,
+                    chat_id=chat_id,
+                    phase="executing",
+                    text=f"工具执行进度：{tool_call.name}",
+                    **tool_event_common,
+                    **tool_event_metrics,
+                )
+                await self._publish_task_event(
+                    event_bus,
+                    "task.tool_execution_end",
+                    task_id=task_id,
+                    chat_id=chat_id,
+                    phase="executing",
+                    text=f"工具执行结束：{tool_call.name}",
+                    **tool_event_common,
+                    **tool_event_metrics,
+                )
+                tool_results.append((tool_call, tool_result_text))
+                executed_tool_names.append(tool_call.name)
+                self._record_tool_signature(
+                    loop_detection_state=loop_detection_state,
+                    signature=tool_signature,
+                )
+                last_payload = payload
+                last_tool_name = tool_call.name
+                logger.info(
+                    "[runtime] 第 %s 轮完成 tool call %s/%s: %s",
+                    round_index + 1,
+                    tool_index + 1,
+                    len(turn.tool_calls),
+                    tool_call.name,
+                )
+
+                if state.consent_required:
+                    await self._publish_task_event(
+                        event_bus,
+                        "task.blocked",
+                        task_id=task_id,
+                        chat_id=chat_id,
+                        phase="blocked",
+                        text="任务被阻塞，等待用户确认替代路径。",
+                        reason=state.failure_reason or "需要用户确认",
+                        tool_name=tool_call.name,
+                    )
+                    if on_consent_required is not None:
+                        final_reply = on_consent_required(state)
+                    else:
+                        final_reply = state.consent_message()
+                    _record_round_latency()
+                    return TaskLoopStep(completed=True, payload=last_payload)
+
+                if state.completed:
+                    break
+
+            result_message = self._router.build_tool_result_message(
+                purpose="chat",
+                tool_results=tool_results,
             )
-            logger.info("[runtime] 完成第 %s 轮 tool call: %s", round_index + 1, tool_call.name)
+            if isinstance(result_message, list):
+                messages.extend(result_message)
+            else:
+                messages.append(result_message)
 
             if state.completed:
                 await self._publish_task_event(
@@ -311,9 +536,10 @@ class TaskRuntime:
                     chat_id=chat_id,
                     phase="completed",
                     text="任务执行并验证完成。",
-                    tool_name=tool_call.name,
+                    tool_name=last_tool_name,
                 )
                 final_reply = state.success_message()
+                _record_round_latency()
                 return TaskLoopStep(completed=True, payload=last_payload)
 
             if last_payload is not None and last_payload.get("blocked"):
@@ -325,9 +551,10 @@ class TaskRuntime:
                     phase="blocked",
                     text="命令被拦截，等待后续恢复步骤。",
                     reason=str(last_payload.get("reason", "命令被拦截。")),
-                    tool_name=tool_call.name,
+                    tool_name=last_tool_name,
                 )
 
+            _record_round_latency()
             return TaskLoopStep(payload=last_payload)
 
         loop_result = await self.run_task_loop(
@@ -657,8 +884,9 @@ class TaskRuntime:
         task_id: str,
         chat_id: str,
         event_bus,
+        services: dict[str, Any] | None = None,
         profile: str | RuntimeProfile = "chat_shell",
-    ) -> tuple[str, dict[str, Any]]:
+    ) -> tuple[str, dict[str, Any], bool]:
         execution = await self.execute_tool(
             request=ToolExecutionRequest(name=tool_call.name, arguments=tool_call.arguments),
             profile=profile,
@@ -667,9 +895,106 @@ class TaskRuntime:
             task_id=task_id,
             chat_id=chat_id,
             event_bus=event_bus,
+            services=services,
         )
         payload = execution.payload
-        return json.dumps(payload, ensure_ascii=False), payload
+        return json.dumps(payload, ensure_ascii=False), payload, execution.success
+
+    def _new_loop_detection_state(self) -> LoopDetectionState:
+        return LoopDetectionState(
+            history=deque(maxlen=self._loop_detection_config.history_size),
+        )
+
+    def _generic_repeat_count(
+        self,
+        *,
+        loop_detection_state: LoopDetectionState,
+        current_signature: tuple[str, str],
+    ) -> int:
+        count = 1
+        for previous_signature in reversed(loop_detection_state.history):
+            if previous_signature != current_signature:
+                break
+            count += 1
+        return count
+
+    def _record_tool_signature(
+        self,
+        *,
+        loop_detection_state: LoopDetectionState,
+        signature: tuple[str, str],
+    ) -> None:
+        loop_detection_state.history.append(signature)
+
+    def _should_emit_generic_repeat_warning(self, repeat_count: int) -> bool:
+        if not self._loop_detection_config.enabled:
+            return False
+        if not self._loop_detection_config.detector_generic_repeat:
+            return False
+        return repeat_count >= self._loop_detection_config.warning_threshold
+
+    def _should_block_by_global_circuit_breaker(self, repeat_count: int) -> bool:
+        if not self._loop_detection_config.enabled:
+            return False
+        if not self._loop_detection_config.detector_generic_repeat:
+            return False
+        return repeat_count >= self._loop_detection_config.global_circuit_breaker_threshold
+
+    def _record_tool_loop_latency(
+        self,
+        *,
+        round_started_at: float,
+        tool_names: list[str],
+    ) -> None:
+        if self._latency_monitor is None:
+            return
+
+        duration_ms = max(int((time.perf_counter() - round_started_at) * 1000), 0)
+        bucket = self._tool_loop_bucket(tool_names)
+        try:
+            self._latency_monitor.record_tool_loop_round(
+                bucket=bucket,
+                duration_ms=duration_ms,
+            )
+        except Exception as exc:
+            logger.warning("[runtime] 记录 tool loop 延迟失败: %s", exc)
+
+    def _tool_loop_bucket(self, tool_names: list[str]) -> str:
+        for name in tool_names:
+            normalized = str(name).strip().lower()
+            if any(keyword in normalized for keyword in ("search", "web", "browser", "crawl", "fetch")):
+                return "web_search"
+        return "shell_local"
+
+    def _tool_args_hash(self, arguments: dict[str, Any]) -> str:
+        canonical = json.dumps(
+            arguments,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+    def _text_utf8_bytes(self, value: Any) -> int:
+        if not isinstance(value, str):
+            return 0
+        return len(value.encode("utf-8"))
+
+    def _tool_execution_is_error(
+        self,
+        *,
+        payload: dict[str, Any],
+        execution_success: bool,
+    ) -> bool:
+        if not execution_success:
+            return True
+        if payload.get("blocked") or payload.get("timed_out"):
+            return True
+        try:
+            return_code = int(payload.get("return_code", 0))
+        except (TypeError, ValueError):
+            return False
+        return return_code != 0
 
     def _blocked_payload(
         self,

@@ -10,6 +10,9 @@ from typing import Any
 _TASK_STATUS_BY_EVENT = {
     "task.started": "started",
     "task.executing": "executing",
+    "task.tool_execution_start": "executing",
+    "task.tool_execution_update": "executing",
+    "task.tool_execution_end": "executing",
     "task.verifying": "verifying",
     "task.completed": "completed",
     "task.failed": "failed",
@@ -82,9 +85,19 @@ class TaskViewStore:
         phase = str(payload.get("phase", "")).strip() or status
         text = str(payload.get("text", "")).strip()
         tool_name = payload.get("tool_name")
+        if tool_name is None:
+            tool_name = payload.get("toolName")
         round_raw = payload.get("round")
         command = payload.get("command")
         reason = payload.get("reason")
+        tool_call_id = payload.get("toolCallId")
+        args_hash = payload.get("argsHash")
+        stdout_bytes = payload.get("stdoutBytes")
+        stderr_bytes = payload.get("stderrBytes")
+        is_error = payload.get("isError")
+        duration_ms = payload.get("durationMs")
+        turn_tool_index = payload.get("turn_tool_index")
+        turn_tool_total = payload.get("turn_tool_total")
 
         event_item = {
             "type": event_type,
@@ -95,6 +108,15 @@ class TaskViewStore:
             "round": round_raw,
             "command": command,
             "reason": reason,
+            "toolCallId": tool_call_id,
+            "toolName": payload.get("toolName"),
+            "argsHash": args_hash,
+            "stdoutBytes": stdout_bytes,
+            "stderrBytes": stderr_bytes,
+            "isError": is_error,
+            "durationMs": duration_ms,
+            "turn_tool_index": turn_tool_index,
+            "turn_tool_total": turn_tool_total,
         }
 
         async with self._lock:

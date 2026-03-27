@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import {
   API_BASE,
@@ -11,6 +11,7 @@ import {
   getInterests,
   getLearnings,
   getMemory,
+  postLatencyTelemetry,
   getStatus,
   InterestItem,
   LearningItem,
@@ -21,6 +22,10 @@ import {
   TaskSummary,
   ChatSummary,
 } from "./api";
+
+const TOOL_EVENT_UPDATE_THROTTLE_MS = 500;
+const LATENCY_TELEMETRY_FLUSH_INTERVAL_MS = 10000;
+const LATENCY_TELEMETRY_MIN_BATCH_SIZE = 5;
 
 function formatDate(value: string | null) {
   if (!value) {
@@ -42,6 +47,41 @@ export default function App() {
   const [taskDetail, setTaskDetail] = useState<TaskDetail | null>(null);
   const [eventConnected, setEventConnected] = useState(false);
   const [busyAction, setBusyAction] = useState<"reload" | "evolve" | null>(null);
+  const toolUpdateLastSeenAt = useRef<Record<string, number>>({});
+  const startToUiSamplesRef = useRef<number[]>([]);
+  const telemetryFlushInFlight = useRef(false);
+  const lastTelemetryFlushAt = useRef(0);
+
+  async function flushLatencyTelemetry(force = false) {
+    if (telemetryFlushInFlight.current) {
+      return;
+    }
+    const now = Date.now();
+    const hasEnoughSamples = startToUiSamplesRef.current.length >= LATENCY_TELEMETRY_MIN_BATCH_SIZE;
+    const timedOutSinceLastFlush = now - lastTelemetryFlushAt.current >= LATENCY_TELEMETRY_FLUSH_INTERVAL_MS;
+    if (!force && !hasEnoughSamples && !timedOutSinceLastFlush) {
+      return;
+    }
+    if (startToUiSamplesRef.current.length === 0) {
+      return;
+    }
+
+    telemetryFlushInFlight.current = true;
+    const samples = [...startToUiSamplesRef.current];
+    startToUiSamplesRef.current = [];
+    try {
+      await postLatencyTelemetry({
+        metric: "tool_execution_start_to_ui",
+        samples_ms: samples,
+        client_timestamp: new Date().toISOString(),
+      });
+      lastTelemetryFlushAt.current = now;
+    } catch {
+      // telemetry 失败不影响主流程，丢弃本批次样本
+    } finally {
+      telemetryFlushInFlight.current = false;
+    }
+  }
 
   useEffect(() => {
     void loadOverview();
@@ -56,6 +96,27 @@ export default function App() {
     stream.onerror = () => setEventConnected(false);
     stream.onmessage = (message) => {
       const event = JSON.parse(message.data) as DesktopEvent;
+      if (event.type === "task.tool_execution_update") {
+        const key = event.payload.toolCallId ?? "__global__";
+        const now = Date.now();
+        const last = toolUpdateLastSeenAt.current[key] ?? 0;
+        if (now - last < TOOL_EVENT_UPDATE_THROTTLE_MS) {
+          return;
+        }
+        toolUpdateLastSeenAt.current[key] = now;
+      }
+
+      if (event.type === "task.tool_execution_start") {
+        const eventTimestamp = Date.parse(event.timestamp);
+        if (!Number.isNaN(eventTimestamp)) {
+          const delayMs = Date.now() - eventTimestamp;
+          if (delayMs >= 0 && delayMs <= 60000) {
+            startToUiSamplesRef.current.push(delayMs);
+            void flushLatencyTelemetry();
+          }
+        }
+      }
+
       setEvents((previous) => [event, ...previous].slice(0, 5));
 
       if (event.type.startsWith("task.")) {
@@ -78,7 +139,17 @@ export default function App() {
     };
 
     return () => {
+      void flushLatencyTelemetry(true);
       stream.close();
+    };
+  }, []);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      void flushLatencyTelemetry();
+    }, LATENCY_TELEMETRY_FLUSH_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
     };
   }, []);
 

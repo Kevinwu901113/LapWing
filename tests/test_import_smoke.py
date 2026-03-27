@@ -20,6 +20,40 @@ def test_settings_import_without_dotenv_dependency():
     assert str(module.ROOT_DIR).endswith("lapwing")
 
 
+def test_settings_invalid_loop_detection_threshold_order_raises():
+    _clear_modules("settings")
+    with patch.dict(
+        "os.environ",
+        {
+            "LOOP_DETECTION_WARNING_THRESHOLD": "10",
+            "LOOP_DETECTION_CRITICAL_THRESHOLD": "10",
+            "LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD": "30",
+        },
+        clear=True,
+    ):
+        try:
+            importlib.import_module("config.settings")
+            assert False, "expected ValueError"
+        except ValueError as exc:
+            assert "LOOP_DETECTION_WARNING_THRESHOLD" in str(exc)
+
+
+def test_settings_invalid_latency_window_raises():
+    _clear_modules("settings")
+    with patch.dict(
+        "os.environ",
+        {
+            "TOOL_LATENCY_WINDOW_SIZE": "0",
+        },
+        clear=True,
+    ):
+        try:
+            importlib.import_module("config.settings")
+            assert False, "expected ValueError"
+        except ValueError as exc:
+            assert "TOOL_LATENCY_WINDOW_SIZE" in str(exc)
+
+
 def test_llm_router_openai_path_does_not_require_anthropic():
     _clear_modules("settings", "llm_router")
     with patch.dict(

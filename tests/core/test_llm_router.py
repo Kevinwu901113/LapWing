@@ -507,6 +507,52 @@ class TestLLMRouterTools:
                 "content": '{"stdout": "/tmp"}',
             }
 
+    def test_build_tool_result_message_for_openai_multiple_results(self):
+        with patch.dict("os.environ", {
+            "LLM_API_KEY": "generic-key",
+            "LLM_BASE_URL": "https://generic.api.com/v1",
+            "LLM_MODEL": "glm-4-flash",
+        }, clear=True):
+            from src.core.llm_router import LLMRouter, ToolCallRequest
+
+            router = LLMRouter()
+            result = router.build_tool_result_message(
+                purpose="chat",
+                tool_results=[
+                    (
+                        ToolCallRequest(
+                            id="call_1",
+                            name="execute_shell",
+                            arguments={"command": "pwd"},
+                        ),
+                        '{"stdout": "/tmp"}',
+                    ),
+                    (
+                        ToolCallRequest(
+                            id="call_2",
+                            name="read_file",
+                            arguments={"path": "/tmp/a.txt"},
+                        ),
+                        '{"path": "/tmp/a.txt", "content": "hello"}',
+                    ),
+                ],
+            )
+
+            assert result == [
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "name": "execute_shell",
+                    "content": '{"stdout": "/tmp"}',
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_2",
+                    "name": "read_file",
+                    "content": '{"path": "/tmp/a.txt", "content": "hello"}',
+                },
+            ]
+
     def test_build_tool_result_message_for_anthropic(self):
         with patch.dict("os.environ", {
             "LLM_API_KEY": "generic-key",

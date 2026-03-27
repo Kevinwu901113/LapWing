@@ -10,6 +10,7 @@ import pytest
 from src.api.event_bus import DesktopEventBus
 from src.api.server import create_app
 from src.app.task_view import TaskViewStore
+from src.core.latency_monitor import LatencyMonitor
 
 
 @pytest.fixture
@@ -41,7 +42,11 @@ def mock_brain():
 @pytest.mark.asyncio
 class TestLocalApi:
     async def test_status_and_chats_endpoints(self, mock_brain):
-        app = create_app(mock_brain, DesktopEventBus())
+        app = create_app(
+            mock_brain,
+            DesktopEventBus(),
+            latency_monitor=LatencyMonitor(window_size=20, min_samples_for_slo=1),
+        )
         transport = httpx.ASGITransport(app=app)
 
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -53,9 +58,14 @@ class TestLocalApi:
         assert status_response.status_code == 200
         assert status_response.json()["online"] is True
         assert status_response.json()["chat_count"] == 2
+        assert "latency_monitor" in status_response.json()
 
     async def test_memory_endpoint_filters_summaries(self, mock_brain):
-        app = create_app(mock_brain, DesktopEventBus())
+        app = create_app(
+            mock_brain,
+            DesktopEventBus(),
+            latency_monitor=LatencyMonitor(window_size=20, min_samples_for_slo=1),
+        )
         transport = httpx.ASGITransport(app=app)
 
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
@@ -117,6 +127,34 @@ class TestLocalApi:
         assert "proactive_message" in body
         assert "你好" in body
 
+    async def test_latency_telemetry_endpoint_updates_status_snapshot(self, mock_brain):
+        app = create_app(
+            mock_brain,
+            DesktopEventBus(),
+            latency_monitor=LatencyMonitor(window_size=20, min_samples_for_slo=1),
+        )
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            telemetry_resp = await client.post(
+                "/api/telemetry/latency",
+                json={
+                    "metric": "tool_execution_start_to_ui",
+                    "samples_ms": [120, 140, 180],
+                    "client_timestamp": "2026-03-27T10:00:00+00:00",
+                },
+            )
+            status_resp = await client.get("/api/status")
+
+        assert telemetry_resp.status_code == 200
+        telemetry_data = telemetry_resp.json()
+        assert telemetry_data["success"] is True
+        assert telemetry_data["accepted_samples"] == 3
+        status_data = status_resp.json()
+        frontend_metric = status_data["latency_monitor"]["frontend"]["tool_execution_start_to_ui"]
+        assert frontend_metric["samples"] == 3
+        assert frontend_metric["p95_ms"] == 180
+
     async def test_events_stream_emits_task_event(self, mock_brain):
         event_bus = DesktopEventBus()
         app = create_app(mock_brain, event_bus)
@@ -141,6 +179,26 @@ class TestLocalApi:
 
         assert "task.executing" in body
         assert "task_123" in body
+
+    async def test_status_includes_backend_publish_to_sse_latency(self, mock_brain):
+        event_bus = DesktopEventBus()
+        monitor = LatencyMonitor(window_size=20, min_samples_for_slo=1)
+        app = create_app(mock_brain, event_bus, latency_monitor=monitor)
+        route = next(route for route in app.routes if getattr(route, "path", "") == "/api/events/stream")
+        response = await route.endpoint()
+
+        first_chunk_task = asyncio.create_task(response.body_iterator.__anext__())
+        await asyncio.sleep(0.05)
+        await event_bus.publish("task.started", {"task_id": "task_1", "chat_id": "c1"})
+        _ = await asyncio.wait_for(first_chunk_task, timeout=1)
+
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            status_resp = await client.get("/api/status")
+
+        assert status_resp.status_code == 200
+        metric = status_resp.json()["latency_monitor"]["backend"]["event_pipeline"]["publish_to_sse"]
+        assert metric["samples"] >= 1
 
     async def test_tasks_endpoints_return_projected_tasks(self, mock_brain):
         event_bus = DesktopEventBus()
@@ -192,3 +250,52 @@ class TestLocalApi:
             response = await client.get("/api/tasks/not_exists")
 
         assert response.status_code == 404
+
+    async def test_task_detail_includes_tool_execution_event_fields(self, mock_brain):
+        event_bus = DesktopEventBus()
+        task_store = TaskViewStore()
+        event_bus.add_listener(task_store.ingest_event)
+        app = create_app(mock_brain, event_bus, task_store)
+        transport = httpx.ASGITransport(app=app)
+
+        await event_bus.publish(
+            "task.started",
+            {
+                "task_id": "task_2",
+                "chat_id": "c1",
+                "phase": "started",
+                "text": "任务开始",
+            },
+        )
+        await event_bus.publish(
+            "task.tool_execution_end",
+            {
+                "task_id": "task_2",
+                "chat_id": "c1",
+                "phase": "executing",
+                "text": "工具执行结束：execute_shell",
+                "tool_name": "execute_shell",
+                "toolCallId": "call_1",
+                "toolName": "execute_shell",
+                "argsHash": "c" * 64,
+                "stdoutBytes": 8,
+                "stderrBytes": 0,
+                "isError": False,
+                "durationMs": 12,
+            },
+        )
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            detail_resp = await client.get("/api/tasks/task_2")
+
+        assert detail_resp.status_code == 200
+        detail_data = detail_resp.json()
+        tool_event = detail_data["events"][1]
+        assert tool_event["type"] == "task.tool_execution_end"
+        assert tool_event["toolCallId"] == "call_1"
+        assert tool_event["toolName"] == "execute_shell"
+        assert tool_event["argsHash"] == "c" * 64
+        assert tool_event["stdoutBytes"] == 8
+        assert tool_event["stderrBytes"] == 0
+        assert tool_event["isError"] is False
+        assert tool_event["durationMs"] == 12

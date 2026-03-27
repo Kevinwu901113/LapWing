@@ -8,6 +8,7 @@ from src.core.prompt_loader import load_prompt
 from src.core.llm_router import LLMRouter
 from src.core.task_runtime import RuntimeDeps, TaskRuntime
 from src.core.shell_policy import (
+    ExecutionSessionState,
     build_shell_runtime_policy,
     extract_execution_constraints,
 )
@@ -16,9 +17,17 @@ from src.memory.conversation import ConversationMemory
 from src.memory.fact_extractor import FactExtractor
 from src.tools.registry import build_default_tool_registry
 from src.tools.shell_executor import execute as execute_shell
-from config.settings import MAX_HISTORY_TURNS, SHELL_ALLOW_SUDO, SHELL_DEFAULT_CWD, SHELL_ENABLED
+from src.tools.types import ToolExecutionRequest
+from config.settings import (
+    MAX_HISTORY_TURNS,
+    SHELL_ALLOW_SUDO,
+    SHELL_DEFAULT_CWD,
+    SHELL_ENABLED,
+    SKILLS_DISPATCH_TOOL_WHITELIST,
+)
 
 if TYPE_CHECKING:
+    from src.core.skills import SkillDefinition, SkillManager
     from src.memory.interest_tracker import InterestTracker
     from src.core.self_reflection import SelfReflection
     from src.core.knowledge_manager import KnowledgeManager
@@ -40,6 +49,7 @@ class LapwingBrain:
         self.self_reflection: SelfReflection | None = None
         self.knowledge_manager: KnowledgeManager | None = None
         self.vector_store: VectorStore | None = None
+        self.skill_manager: SkillManager | None = None
         self.event_bus = None
         self._system_prompt: str | None = None
         self.dispatcher = None  # Set externally by main.py (AgentDispatcher | None)
@@ -81,6 +91,11 @@ class LapwingBrain:
         from src.core.prompt_loader import reload_prompt
         self._system_prompt = reload_prompt("lapwing")
         logger.info("已重新加载 Lapwing 人格 prompt")
+
+    def reload_skills(self) -> None:
+        if self.skill_manager is None:
+            return
+        self.skill_manager.reload()
 
     def _split_facts(self, facts: list[dict]) -> tuple[list[dict], list[dict]]:
         """将普通事实与 memory summary 分离。"""
@@ -176,13 +191,20 @@ class LapwingBrain:
         messages: list[dict],
         user_message: str,
         approved_directory: str | None = None,
+        include_skill_activation_tool: bool = False,
         status_callback=None,
     ) -> str:
         constraints = extract_execution_constraints(
             user_message,
             approved_directory=approved_directory,
         )
-        tools = self.task_runtime.chat_tools(shell_enabled=SHELL_ENABLED)
+        tools = self.task_runtime.chat_tools(
+            shell_enabled=SHELL_ENABLED,
+            skill_activation_enabled=include_skill_activation_tool,
+        )
+        services = {}
+        if include_skill_activation_tool and self.skill_manager is not None:
+            services["skill_manager"] = self.skill_manager
 
         deps = RuntimeDeps(
             execute_shell=execute_shell,
@@ -200,6 +222,7 @@ class LapwingBrain:
             status_callback=status_callback,
             event_bus=self.event_bus,
             on_consent_required=lambda state: self.task_runtime.record_pending_confirmation(chat_id, state),
+            services=services,
         )
 
     async def _build_system_prompt(self, chat_id: str, user_message: str = "") -> str:
@@ -263,10 +286,192 @@ class LapwingBrain:
                     f"{notes_text}"
                 )
 
+        if self.skill_manager is not None and self.skill_manager.has_model_visible_skills():
+            skills_catalog = self.skill_manager.render_catalog_for_prompt()
+            if skills_catalog:
+                sections.append(
+                    "## 可用技能目录\n\n"
+                    "以下是当前可用的技能，你可以在确实需要时调用 `activate_skill` 按需加载。\n\n"
+                    f"{skills_catalog}"
+                )
+
         if user_message:
             sections.append(self._tool_runtime_instruction())
 
         return "\n\n".join(sections)
+
+    def _recent_messages(
+        self,
+        history: list[dict],
+        *,
+        user_message: str,
+        original_user_message: str,
+    ) -> list[dict]:
+        max_messages = MAX_HISTORY_TURNS * 2
+        recent = history[-max_messages:] if len(history) > max_messages else history
+        recent_messages = [dict(item) for item in recent]
+        if user_message != original_user_message:
+            if recent_messages and recent_messages[-1].get("role") == "user":
+                recent_messages[-1]["content"] = user_message
+            else:
+                recent_messages.append({"role": "user", "content": user_message})
+        return recent_messages
+
+    def _skill_activation_tool_enabled(self) -> bool:
+        return self.skill_manager is not None and self.skill_manager.has_model_visible_skills()
+
+    async def run_skill_command(
+        self,
+        *,
+        chat_id: str,
+        raw_user_message: str,
+        skill_name: str,
+        user_input: str = "",
+        status_callback=None,
+    ) -> str:
+        """执行用户显式技能命令。"""
+        await self.memory.append(chat_id, "user", raw_user_message)
+
+        self.fact_extractor.notify(chat_id)
+        if self.interest_tracker is not None:
+            self.interest_tracker.notify(chat_id)
+
+        if self.skill_manager is None or not self.skill_manager.enabled:
+            reply = "技能系统当前未启用。"
+            await self.memory.append(chat_id, "assistant", reply)
+            return reply
+
+        skill = self.skill_manager.get(skill_name)
+        if skill is None:
+            reply = f"未找到技能 `{skill_name}`。"
+            await self.memory.append(chat_id, "assistant", reply)
+            return reply
+        if not skill.user_invocable:
+            reply = f"技能 `{skill.name}` 不允许用户直接调用。"
+            await self.memory.append(chat_id, "assistant", reply)
+            return reply
+
+        try:
+            if skill.command_dispatch == "tool":
+                reply = await self._run_skill_direct_dispatch(skill=skill, user_input=user_input)
+            else:
+                reply = await self._run_skill_dialogue(
+                    chat_id=chat_id,
+                    raw_user_message=raw_user_message,
+                    skill=skill,
+                    user_input=user_input,
+                    status_callback=status_callback,
+                )
+        except Exception as exc:
+            logger.warning("[skills] 执行技能 `%s` 失败: %s", skill.name, exc)
+            reply = f"技能 `{skill.name}` 执行失败：{exc}"
+
+        await self.memory.append(chat_id, "assistant", reply)
+        return reply
+
+    async def _run_skill_dialogue(
+        self,
+        *,
+        chat_id: str,
+        raw_user_message: str,
+        skill: "SkillDefinition",
+        user_input: str,
+        status_callback=None,
+    ) -> str:
+        assert self.skill_manager is not None
+        activation = self.skill_manager.activate(skill.name, user_input=user_input)
+        skill_context = str(activation.get("wrapped_content", "")).strip()
+        model_user_message = user_input.strip() or f"请按照技能 `{skill.name}` 的说明完成任务。"
+
+        history = await self.memory.get(chat_id)
+        recent_messages = self._recent_messages(
+            history,
+            user_message=model_user_message,
+            original_user_message=raw_user_message,
+        )
+        system_content = await self._build_system_prompt(chat_id, model_user_message)
+
+        if skill_context:
+            system_content = (
+                f"{system_content}\n\n"
+                "## 显式激活技能\n\n"
+                f"{skill_context}"
+            )
+
+        messages = [
+            {"role": "system", "content": system_content},
+            *recent_messages,
+        ]
+        return await self._complete_chat(
+            chat_id,
+            messages,
+            model_user_message,
+            include_skill_activation_tool=self._skill_activation_tool_enabled(),
+            status_callback=status_callback,
+        )
+
+    async def _run_skill_direct_dispatch(
+        self,
+        *,
+        skill: "SkillDefinition",
+        user_input: str,
+    ) -> str:
+        if skill.command_dispatch != "tool" or not skill.command_tool:
+            return f"技能 `{skill.name}` 未声明可直派工具。"
+
+        command_tool = skill.command_tool
+        if command_tool not in SKILLS_DISPATCH_TOOL_WHITELIST:
+            return f"技能 `{skill.name}` 请求的工具 `{command_tool}` 不在白名单中。"
+
+        command_text = user_input.strip()
+        if skill.command_arg_mode == "raw" and not command_text:
+            return f"技能 `{skill.name}` 需要参数输入。"
+
+        constraints_text = command_text or f"执行技能 `{skill.name}` 的工具直派任务"
+        constraints = extract_execution_constraints(constraints_text)
+        state = ExecutionSessionState(constraints=constraints)
+        deps = RuntimeDeps(
+            execute_shell=execute_shell,
+            policy=build_shell_runtime_policy(verify_constraints_fn=verify_constraints),
+            shell_default_cwd=SHELL_DEFAULT_CWD,
+            shell_allow_sudo=SHELL_ALLOW_SUDO,
+        )
+        result = await self.task_runtime.execute_tool(
+            request=ToolExecutionRequest(
+                name=command_tool,
+                arguments={
+                    "command": command_text,
+                    "commandName": f"/{skill.name}",
+                    "skillName": skill.name,
+                },
+            ),
+            profile="chat_shell",
+            state=state,
+            deps=deps,
+            services={"skill_manager": self.skill_manager} if self.skill_manager is not None else None,
+        )
+        return self._format_dispatched_tool_result(skill_name=skill.name, result=result.payload, success=result.success)
+
+    def _format_dispatched_tool_result(
+        self,
+        *,
+        skill_name: str,
+        result: dict,
+        success: bool,
+    ) -> str:
+        if not success:
+            reason = str(result.get("reason", "")).strip() or "工具执行失败。"
+            return f"技能 `{skill_name}` 直派执行失败：{reason}"
+
+        stdout = str(result.get("stdout", "")).strip()
+        stderr = str(result.get("stderr", "")).strip()
+        if stdout:
+            return stdout
+        if stderr:
+            return stderr
+        if "content" in result and str(result.get("content", "")).strip():
+            return str(result.get("content", "")).strip()
+        return f"技能 `{skill_name}` 已执行完成。"
 
     async def think(self, chat_id: str, user_message: str, status_callback=None) -> str:
         """处理用户消息，返回 Lapwing 的回复。
@@ -315,14 +520,11 @@ class LapwingBrain:
                 logger.warning(f"[{chat_id}] Agent dispatch failed, falling back: {e}")
 
         history = await self.memory.get(chat_id)
-        max_messages = MAX_HISTORY_TURNS * 2
-        recent = history[-max_messages:] if len(history) > max_messages else history
-        recent_messages = [dict(item) for item in recent]
-        if effective_user_message != user_message:
-            if recent_messages and recent_messages[-1].get("role") == "user":
-                recent_messages[-1]["content"] = effective_user_message
-            else:
-                recent_messages.append({"role": "user", "content": effective_user_message})
+        recent_messages = self._recent_messages(
+            history,
+            user_message=effective_user_message,
+            original_user_message=user_message,
+        )
 
         # 动态组合 system prompt（基础人格 + 用户画像 + 知识笔记）
         system_content = await self._build_system_prompt(chat_id, effective_user_message)
@@ -338,6 +540,7 @@ class LapwingBrain:
                 messages,
                 effective_user_message,
                 approved_directory=approved_directory,
+                include_skill_activation_tool=self._skill_activation_tool_enabled(),
                 status_callback=status_callback,
             )
             await self.memory.append(chat_id, "assistant", reply)

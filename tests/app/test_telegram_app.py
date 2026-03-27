@@ -12,6 +12,7 @@ from src.app.telegram_app import TelegramApp
 def app_with_container():
     brain = MagicMock()
     brain.think = AsyncMock(return_value="ok")
+    brain.run_skill_command = AsyncMock(return_value="skill ok")
     brain.memory = MagicMock()
     container = SimpleNamespace(
         brain=brain,
@@ -82,3 +83,45 @@ async def test_handle_voice_transcribes_and_enqueues(app_with_container):
 
     message.reply_text.assert_awaited_once_with("🎤 你好")
     mock_enqueue.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_cmd_skill_requires_name_arg(app_with_container):
+    app, _ = app_with_container
+    message = make_message()
+    update = SimpleNamespace(message=message)
+    context = SimpleNamespace(args=[])
+
+    await app.cmd_skill(update, context)
+
+    message.reply_text.assert_awaited_once_with("用法：/skill <name> [args]")
+
+
+@pytest.mark.asyncio
+async def test_cmd_skill_calls_brain_run_skill_command(app_with_container):
+    app, container = app_with_container
+    message = make_message(text="/skill demo do something")
+    update = SimpleNamespace(message=message)
+    context = SimpleNamespace(args=["demo", "do", "something"])
+
+    await app.cmd_skill(update, context)
+
+    container.brain.run_skill_command.assert_awaited_once()
+    kwargs = container.brain.run_skill_command.await_args.kwargs
+    assert kwargs["chat_id"] == "42"
+    assert kwargs["skill_name"] == "demo"
+    assert kwargs["user_input"] == "do something"
+
+
+@pytest.mark.asyncio
+async def test_handle_message_skill_shortcut_bypasses_buffer(app_with_container):
+    app, _ = app_with_container
+    update = SimpleNamespace(message=make_message(text="/demo: ls -la"))
+    context = MagicMock()
+
+    with patch.object(app, "_run_skill_command", new=AsyncMock()) as mock_run_skill, \
+         patch.object(app, "_enqueue_message") as mock_enqueue:
+        await app.handle_message(update, context)
+
+    mock_run_skill.assert_awaited_once()
+    mock_enqueue.assert_not_called()

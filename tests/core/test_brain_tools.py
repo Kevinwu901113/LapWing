@@ -278,6 +278,7 @@ class TestBrainTools:
                 reason="命令一直被要求重复执行。",
                 cwd="/home/kevin/lapwing",
             )
+            max_rounds = brain.task_runtime._max_tool_rounds
             brain.router.complete_with_tools = AsyncMock(
                 side_effect=[
                     _tool_turn(
@@ -294,7 +295,7 @@ class TestBrainTools:
                             "tool_calls": [{"id": f"call_{index}"}],
                         },
                     )
-                    for index in range(1, 9)
+                    for index in range(1, max_rounds + 1)
                 ]
             )
             brain.router.build_tool_result_message = MagicMock(
@@ -310,7 +311,7 @@ class TestBrainTools:
 
             assert "本地命令没有执行" in result
             assert "命令一直被要求重复执行" in result
-            assert brain.router.complete_with_tools.await_count == 8
+            assert brain.router.complete_with_tools.await_count == max_rounds
 
     async def test_failed_absolute_path_triggers_proactive_consent_after_first_command(self):
         # 权限拒绝后，主动恢复流程在第一条命令失败后立即触发，不需要 LLM 再尝试替代路径
@@ -871,9 +872,15 @@ class TestBrainTools:
             assert "原请求还没有完成" in result
             event_calls = brain.event_bus.publish.await_args_list
             event_types = [call.args[0] for call in event_calls]
-            assert event_types[:4] == ["task.started", "task.planning", "task.executing", "task.blocked"]
+            assert event_types[0] == "task.started"
+            assert event_types[1] == "task.planning"
+            assert "task.executing" in event_types
+            assert "task.tool_execution_start" in event_types
+            assert "task.tool_execution_update" in event_types
+            assert "task.tool_execution_end" in event_types
+            assert event_types[-1] == "task.blocked"
 
-            blocked_payload = event_calls[3].args[1]
+            blocked_payload = event_calls[-1].args[1]
             assert blocked_payload["chat_id"] == "chat1"
             assert blocked_payload["phase"] == "blocked"
             assert "reason" in blocked_payload
@@ -910,3 +917,60 @@ class TestBrainTools:
             assert failed_payload["chat_id"] == "chat1"
             assert failed_payload["phase"] == "failed"
             assert "text" in failed_payload
+
+    async def test_think_enables_activate_skill_tool_when_skills_available(self):
+        with patch("src.core.brain.load_prompt", return_value="prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"):
+            from src.core.brain import LapwingBrain
+
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.append = AsyncMock()
+            brain.memory.get = AsyncMock(return_value=[])
+            brain.memory.get_user_facts = AsyncMock(return_value=[])
+            brain.memory.remove_last = AsyncMock()
+            brain.fact_extractor = MagicMock()
+            brain.fact_extractor.notify = MagicMock()
+            brain.router.complete = AsyncMock(return_value="ok")
+            brain.task_runtime.chat_tools = MagicMock(return_value=[])
+            brain.skill_manager = MagicMock()
+            brain.skill_manager.has_model_visible_skills.return_value = True
+            brain.skill_manager.render_catalog_for_prompt.return_value = "<available_skills/>"
+
+            await brain.think("chat1", "你好")
+
+            brain.task_runtime.chat_tools.assert_called_once_with(
+                shell_enabled=True,
+                skill_activation_enabled=True,
+            )
+
+    async def test_run_skill_command_blocks_non_user_invocable_skill(self):
+        with patch("src.core.brain.load_prompt", return_value="prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"):
+            from src.core.brain import LapwingBrain
+
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.append = AsyncMock()
+            brain.memory.get = AsyncMock(return_value=[])
+            brain.memory.get_user_facts = AsyncMock(return_value=[])
+            brain.fact_extractor = MagicMock()
+            brain.fact_extractor.notify = MagicMock()
+
+            skill = SimpleNamespace(
+                name="private-skill",
+                user_invocable=False,
+                command_dispatch=None,
+            )
+            brain.skill_manager = MagicMock()
+            brain.skill_manager.enabled = True
+            brain.skill_manager.get.return_value = skill
+
+            reply = await brain.run_skill_command(
+                chat_id="chat1",
+                raw_user_message="/skill private-skill",
+                skill_name="private-skill",
+                user_input="",
+            )
+
+            assert "不允许用户直接调用" in reply

@@ -171,6 +171,26 @@ class TestBuildSystemPrompt:
             assert result.startswith("基础人格 prompt")
             assert "## 本地执行规则" in result
 
+    async def test_injects_skill_catalog_when_skills_available(self):
+        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"):
+            from src.core.brain import LapwingBrain
+
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.get_user_facts = AsyncMock(return_value=[])
+            brain.skill_manager = MagicMock()
+            brain.skill_manager.has_model_visible_skills.return_value = True
+            brain.skill_manager.render_catalog_for_prompt.return_value = (
+                "<available_skills><skill><name>demo</name></skill></available_skills>"
+            )
+
+            result = await brain._build_system_prompt("chat1")
+
+            assert "## 可用技能目录" in result
+            assert "<available_skills>" in result
+            assert "<name>demo</name>" in result
+
 
 class TestThinkNotifiesExtractor:
     async def test_think_calls_fact_extractor_notify(self):

@@ -541,7 +541,7 @@ class LLMRouter:
         self,
         purpose: str,
         tool_results: list[tuple[ToolCallRequest, str]],
-    ) -> dict[str, Any]:
+    ) -> dict[str, Any] | list[dict[str, Any]]:
         """根据 provider 生成下一轮 continuation message。"""
         if not tool_results:
             raise ValueError("tool_results 不能为空")
@@ -561,10 +561,15 @@ class LLMRouter:
                 ],
             }
 
-        tool_call, output = tool_results[0]
-        return {
-            "role": "tool",
-            "tool_call_id": tool_call.id,
-            "name": tool_call.name,
-            "content": output,
-        }
+        messages = [
+            {
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "name": tool_call.name,
+                "content": output,
+            }
+            for tool_call, output in tool_results
+        ]
+        if len(messages) == 1:
+            return messages[0]
+        return messages

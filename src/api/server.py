@@ -14,6 +14,7 @@ from pydantic import BaseModel
 import uvicorn
 
 from config.settings import DATA_DIR
+from src.core.latency_monitor import LatencyMonitor
 
 logger = logging.getLogger("lapwing.api")
 
@@ -24,6 +25,12 @@ _DIST_DIR = Path(__file__).parent.parent.parent / "desktop" / "dist"
 class MemoryDeleteRequest(BaseModel):
     chat_id: str
     fact_key: str
+
+
+class LatencyTelemetryRequest(BaseModel):
+    metric: str
+    samples_ms: list[float]
+    client_timestamp: str | None = None
 
 
 def _visible_user_facts(facts: list[dict]) -> list[dict]:
@@ -51,11 +58,20 @@ def _read_learning_entries(directory: Path) -> list[dict]:
     return items
 
 
-def create_app(brain, event_bus, task_view_store=None) -> FastAPI:
+def create_app(
+    brain,
+    event_bus,
+    task_view_store=None,
+    latency_monitor: LatencyMonitor | None = None,
+) -> FastAPI:
+    if latency_monitor is not None and hasattr(event_bus, "set_latency_monitor"):
+        event_bus.set_latency_monitor(latency_monitor)
+
     app = FastAPI(title="Lapwing Local API", version="0.1.0")
     app.state.brain = brain
     app.state.event_bus = event_bus
     app.state.task_view_store = task_view_store
+    app.state.latency_monitor = latency_monitor
     app.state.started_at = datetime.now(timezone.utc).isoformat()
 
     app.add_middleware(
@@ -90,6 +106,11 @@ def create_app(brain, event_bus, task_view_store=None) -> FastAPI:
             "started_at": app.state.started_at,
             "chat_count": len(chats),
             "last_interaction": last_interaction,
+            "latency_monitor": (
+                app.state.latency_monitor.snapshot()
+                if app.state.latency_monitor is not None
+                else None
+            ),
         }
 
     @app.get("/api/interests")
@@ -136,6 +157,21 @@ def create_app(brain, event_bus, task_view_store=None) -> FastAPI:
         brain.reload_persona()
         return {"success": True}
 
+    @app.post("/api/telemetry/latency")
+    async def post_latency_telemetry(payload: LatencyTelemetryRequest):
+        monitor = app.state.latency_monitor
+        if monitor is None:
+            return {"success": False, "reason": "latency_monitor_not_enabled", "accepted_samples": 0}
+
+        accepted_samples = 0
+        if payload.metric == "tool_execution_start_to_ui":
+            accepted_samples = monitor.record_frontend_start_to_ui_samples(payload.samples_ms)
+        return {
+            "success": True,
+            "accepted_samples": accepted_samples,
+            "metric": payload.metric,
+        }
+
     @app.get("/api/events/stream")
     async def stream_events():
         async def event_stream():
@@ -147,6 +183,12 @@ def create_app(brain, event_bus, task_view_store=None) -> FastAPI:
                     except asyncio.TimeoutError:
                         yield ": keep-alive\n\n"
                         continue
+
+                    if app.state.latency_monitor is not None:
+                        try:
+                            app.state.latency_monitor.record_event_stream_emitted(event)
+                        except Exception as exc:
+                            logger.warning("记录 SSE 事件出站延迟失败: %s", exc)
 
                     yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
             finally:
@@ -203,12 +245,14 @@ class LocalApiServer:
         brain,
         event_bus,
         task_view_store=None,
+        latency_monitor: LatencyMonitor | None = None,
         host: str = "0.0.0.0",
         port: int = 8765,
     ) -> None:
         self._brain = brain
         self._event_bus = event_bus
         self._task_view_store = task_view_store
+        self._latency_monitor = latency_monitor
         self._host = host
         self._port = port
         self._server: uvicorn.Server | None = None
@@ -218,7 +262,12 @@ class LocalApiServer:
         if self._task is not None:
             return
 
-        app = create_app(self._brain, self._event_bus, self._task_view_store)
+        app = create_app(
+            self._brain,
+            self._event_bus,
+            self._task_view_store,
+            self._latency_monitor,
+        )
         config = uvicorn.Config(
             app,
             host=self._host,

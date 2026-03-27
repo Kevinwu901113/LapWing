@@ -5,12 +5,21 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from config.settings import DATA_DIR, DB_PATH
+from config.settings import (
+    DATA_DIR,
+    DB_PATH,
+    SKILLS_BUNDLED_DIR,
+    SKILLS_ENABLED,
+    SKILLS_EXTRA_DIRS,
+    SKILLS_MANAGED_DIR,
+    SKILLS_WORKSPACE_DIR,
+)
 from src.api.event_bus import DesktopEventBus
 from src.api.server import LocalApiServer
 from src.app.task_view import TaskViewStore
 from src.core.brain import LapwingBrain
 from src.core.heartbeat import HeartbeatEngine
+from src.core.latency_monitor import LatencyMonitor
 from src.heartbeat.actions.autonomous_browsing import AutonomousBrowsingAction
 from src.heartbeat.actions.consolidation import MemoryConsolidationAction
 from src.heartbeat.actions.interest_proactive import InterestProactiveAction
@@ -39,14 +48,21 @@ class AppContainer:
 
         self.brain = brain or LapwingBrain(db_path=self._db_path)
         self.task_view_store = task_view_store or TaskViewStore()
+        self.latency_monitor = LatencyMonitor()
         self.event_bus = event_bus or DesktopEventBus()
+        if hasattr(self.event_bus, "set_latency_monitor"):
+            self.event_bus.set_latency_monitor(self.latency_monitor)
         self.event_bus.add_listener(self.task_view_store.ingest_event)
         self.brain.event_bus = self.event_bus
+        runtime = getattr(self.brain, "task_runtime", None)
+        if runtime is not None and hasattr(runtime, "set_latency_monitor"):
+            runtime.set_latency_monitor(self.latency_monitor)
 
         self.api_server = api_server or LocalApiServer(
             brain=self.brain,
             event_bus=self.event_bus,
             task_view_store=self.task_view_store,
+            latency_monitor=self.latency_monitor,
         )
         self.heartbeat: HeartbeatEngine | None = None
         self.telegram_app = None
@@ -103,12 +119,21 @@ class AppContainer:
         from src.core.dispatcher import AgentDispatcher
         from src.core.knowledge_manager import KnowledgeManager
         from src.core.prompt_evolver import PromptEvolver
+        from src.core.skills import SkillManager
         from src.core.self_reflection import SelfReflection
         from src.memory.interest_tracker import InterestTracker
         from src.memory.vector_store import VectorStore
 
         self.brain.knowledge_manager = KnowledgeManager()
         self.brain.vector_store = VectorStore(self._data_dir / "chroma")
+        self.brain.skill_manager = SkillManager(
+            enabled=SKILLS_ENABLED,
+            workspace_dir=Path(SKILLS_WORKSPACE_DIR),
+            managed_dir=Path(SKILLS_MANAGED_DIR),
+            bundled_dir=Path(SKILLS_BUNDLED_DIR),
+            extra_dirs=[Path(item) for item in SKILLS_EXTRA_DIRS],
+        )
+        self.brain.skill_manager.reload()
 
         registry = AgentRegistry()
         registry.register(

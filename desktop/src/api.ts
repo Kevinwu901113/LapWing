@@ -5,6 +5,56 @@ export type StatusResponse = {
   started_at: string;
   chat_count: number;
   last_interaction: string | null;
+  latency_monitor?: {
+    backend?: {
+      tool_loop?: {
+        shell_local?: {
+          p95_ms?: number | null;
+          samples?: number;
+          threshold_ms?: number;
+          slo_exceeded?: boolean;
+          no_data?: boolean;
+          enough_samples?: boolean;
+          last_updated?: string | null;
+          long_command_cutoff_ms?: number;
+          long_command_excluded?: number;
+        };
+        web_search?: {
+          p95_ms?: number | null;
+          samples?: number;
+          threshold_ms?: number;
+          slo_exceeded?: boolean;
+          no_data?: boolean;
+          enough_samples?: boolean;
+          last_updated?: string | null;
+        };
+      };
+      event_pipeline?: {
+        publish_to_sse?: {
+          p95_ms?: number | null;
+          samples?: number;
+          threshold_ms?: number;
+          slo_exceeded?: boolean;
+          no_data?: boolean;
+          enough_samples?: boolean;
+          last_updated?: string | null;
+        };
+        update_throttle_ms?: number;
+      };
+    };
+    frontend?: {
+      tool_execution_start_to_ui?: {
+        p95_ms?: number | null;
+        samples?: number;
+        threshold_ms?: number;
+        slo_exceeded?: boolean;
+        no_data?: boolean;
+        enough_samples?: boolean;
+        last_updated?: string | null;
+      };
+    };
+    last_updated?: string | null;
+  } | null;
 };
 
 export type ChatSummary = {
@@ -45,6 +95,15 @@ export type DesktopEvent = {
     command?: string;
     reason?: string;
     topic?: string;
+    toolCallId?: string;
+    toolName?: string;
+    argsHash?: string;
+    stdoutBytes?: number;
+    stderrBytes?: number;
+    isError?: boolean;
+    durationMs?: number;
+    turn_tool_index?: number;
+    turn_tool_total?: number;
   };
 };
 
@@ -74,6 +133,15 @@ export type TaskEventItem = {
   round?: number | null;
   command?: string | null;
   reason?: string | null;
+  toolCallId?: string | null;
+  toolName?: string | null;
+  argsHash?: string | null;
+  stdoutBytes?: number | null;
+  stderrBytes?: number | null;
+  isError?: boolean | null;
+  durationMs?: number | null;
+  turn_tool_index?: number | null;
+  turn_tool_total?: number | null;
 };
 
 export type TaskDetail = TaskSummary & {
@@ -156,4 +224,18 @@ export async function getTasks(chatId?: string, status?: string, limit = 20) {
 
 export async function getTask(taskId: string) {
   return fetchJson<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}`);
+}
+
+export async function postLatencyTelemetry(payload: {
+  metric: string;
+  samples_ms: number[];
+  client_timestamp?: string;
+}) {
+  return fetchJson<{ success: boolean; accepted_samples: number; metric: string; reason?: string }>(
+    "/api/telemetry/latency",
+    {
+      method: "POST",
+      body: JSON.stringify(payload),
+    },
+  );
 }

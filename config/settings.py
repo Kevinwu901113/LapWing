@@ -84,6 +84,84 @@ SHELL_ALLOW_SUDO: bool = os.getenv("SHELL_ALLOW_SUDO", "false").lower() == "true
 SHELL_TIMEOUT: int = int(os.getenv("SHELL_TIMEOUT", "30"))
 SHELL_DEFAULT_CWD: str = os.getenv("SHELL_DEFAULT_CWD", str(ROOT_DIR))
 SHELL_MAX_OUTPUT_CHARS: int = int(os.getenv("SHELL_MAX_OUTPUT_CHARS", "4000"))
+TASK_MAX_TOOL_ROUNDS: int = int(os.getenv("TASK_MAX_TOOL_ROUNDS", "32"))
+
+# Skills（AgentSkills / OpenClaw-compatible）
+SKILLS_ENABLED: bool = os.getenv("SKILLS_ENABLED", "true").lower() == "true"
+SKILLS_COMMANDS_ENABLED: bool = os.getenv("SKILLS_COMMANDS_ENABLED", "true").lower() == "true"
+SKILLS_WORKSPACE_DIR: str = os.getenv("SKILLS_WORKSPACE_DIR", str(ROOT_DIR / "skills"))
+SKILLS_MANAGED_DIR: str = os.getenv("SKILLS_MANAGED_DIR", str(Path.home() / ".lapwing" / "skills"))
+SKILLS_BUNDLED_DIR: str = os.getenv("SKILLS_BUNDLED_DIR", str(ROOT_DIR / "bundled_skills"))
+SKILLS_EXTRA_DIRS: list[str] = [
+    item.strip()
+    for item in os.getenv("SKILLS_EXTRA_DIRS", "").split(",")
+    if item.strip()
+]
+SKILLS_DISPATCH_TOOL_WHITELIST: set[str] = {
+    item.strip()
+    for item in os.getenv("SKILLS_DISPATCH_TOOL_WHITELIST", "execute_shell").split(",")
+    if item.strip()
+}
+
+# Latency / 体感 SLO（监控+告警）
+TOOL_LOOP_SLO_SHELL_P95_MS: int = int(os.getenv("TOOL_LOOP_SLO_SHELL_P95_MS", "2000"))
+TOOL_LOOP_SLO_WEB_P95_MS: int = int(os.getenv("TOOL_LOOP_SLO_WEB_P95_MS", "5000"))
+TOOL_LOOP_LONG_COMMAND_CUTOFF_MS: int = int(os.getenv("TOOL_LOOP_LONG_COMMAND_CUTOFF_MS", "10000"))
+TOOL_EVENT_START_TO_UI_P95_MS: int = int(os.getenv("TOOL_EVENT_START_TO_UI_P95_MS", "200"))
+TOOL_EVENT_UPDATE_THROTTLE_MS: int = int(os.getenv("TOOL_EVENT_UPDATE_THROTTLE_MS", "500"))
+TOOL_LATENCY_WINDOW_SIZE: int = int(os.getenv("TOOL_LATENCY_WINDOW_SIZE", "200"))
+TOOL_LATENCY_MIN_SAMPLES_FOR_SLO: int = int(os.getenv("TOOL_LATENCY_MIN_SAMPLES_FOR_SLO", "20"))
+
+# 工具循环检测（OpenClaw 语义）
+LOOP_DETECTION_ENABLED: bool = os.getenv("LOOP_DETECTION_ENABLED", "false").lower() == "true"
+LOOP_DETECTION_HISTORY_SIZE: int = int(os.getenv("LOOP_DETECTION_HISTORY_SIZE", "30"))
+LOOP_DETECTION_WARNING_THRESHOLD: int = int(os.getenv("LOOP_DETECTION_WARNING_THRESHOLD", "10"))
+LOOP_DETECTION_CRITICAL_THRESHOLD: int = int(os.getenv("LOOP_DETECTION_CRITICAL_THRESHOLD", "20"))
+LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD: int = int(
+    os.getenv("LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD", "30")
+)
+LOOP_DETECTION_DETECTOR_GENERIC_REPEAT: bool = (
+    os.getenv("LOOP_DETECTION_DETECTOR_GENERIC_REPEAT", "true").lower() == "true"
+)
+LOOP_DETECTION_DETECTOR_PING_PONG: bool = (
+    os.getenv("LOOP_DETECTION_DETECTOR_PING_PONG", "true").lower() == "true"
+)
+LOOP_DETECTION_DETECTOR_KNOWN_POLL_NO_PROGRESS: bool = (
+    os.getenv("LOOP_DETECTION_DETECTOR_KNOWN_POLL_NO_PROGRESS", "true").lower() == "true"
+)
+
+if TASK_MAX_TOOL_ROUNDS <= 0:
+    raise ValueError("TASK_MAX_TOOL_ROUNDS 必须是正整数。")
+if TOOL_LOOP_SLO_SHELL_P95_MS <= 0:
+    raise ValueError("TOOL_LOOP_SLO_SHELL_P95_MS 必须是正整数。")
+if TOOL_LOOP_SLO_WEB_P95_MS <= 0:
+    raise ValueError("TOOL_LOOP_SLO_WEB_P95_MS 必须是正整数。")
+if TOOL_LOOP_LONG_COMMAND_CUTOFF_MS <= 0:
+    raise ValueError("TOOL_LOOP_LONG_COMMAND_CUTOFF_MS 必须是正整数。")
+if TOOL_EVENT_START_TO_UI_P95_MS <= 0:
+    raise ValueError("TOOL_EVENT_START_TO_UI_P95_MS 必须是正整数。")
+if TOOL_EVENT_UPDATE_THROTTLE_MS <= 0:
+    raise ValueError("TOOL_EVENT_UPDATE_THROTTLE_MS 必须是正整数。")
+if TOOL_LATENCY_WINDOW_SIZE <= 0:
+    raise ValueError("TOOL_LATENCY_WINDOW_SIZE 必须是正整数。")
+if TOOL_LATENCY_MIN_SAMPLES_FOR_SLO <= 0:
+    raise ValueError("TOOL_LATENCY_MIN_SAMPLES_FOR_SLO 必须是正整数。")
+if LOOP_DETECTION_HISTORY_SIZE <= 0:
+    raise ValueError("LOOP_DETECTION_HISTORY_SIZE 必须是正整数。")
+if LOOP_DETECTION_WARNING_THRESHOLD <= 0:
+    raise ValueError("LOOP_DETECTION_WARNING_THRESHOLD 必须是正整数。")
+if LOOP_DETECTION_CRITICAL_THRESHOLD <= 0:
+    raise ValueError("LOOP_DETECTION_CRITICAL_THRESHOLD 必须是正整数。")
+if LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD <= 0:
+    raise ValueError("LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD 必须是正整数。")
+if LOOP_DETECTION_WARNING_THRESHOLD >= LOOP_DETECTION_CRITICAL_THRESHOLD:
+    raise ValueError(
+        "LOOP_DETECTION_WARNING_THRESHOLD 必须小于 LOOP_DETECTION_CRITICAL_THRESHOLD。"
+    )
+if LOOP_DETECTION_CRITICAL_THRESHOLD >= LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD:
+    raise ValueError(
+        "LOOP_DETECTION_CRITICAL_THRESHOLD 必须小于 LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD。"
+    )
 
 # 自省与进化
 SELF_REFLECTION_HOUR: int = int(os.getenv("SELF_REFLECTION_HOUR", "2"))  # 每日自省时间（小时）

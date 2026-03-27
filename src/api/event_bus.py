@@ -4,6 +4,7 @@ import asyncio
 import inspect
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 logger = logging.getLogger("lapwing.api.event_bus")
 
@@ -11,13 +12,17 @@ logger = logging.getLogger("lapwing.api.event_bus")
 class DesktopEventBus:
     """为桌面端 SSE 提供本地事件发布能力。"""
 
-    def __init__(self) -> None:
+    def __init__(self, latency_monitor: Any | None = None) -> None:
         self._subscribers: set[asyncio.Queue] = set()
         self._listeners: list = []
         self._lock = asyncio.Lock()
+        self._latency_monitor = latency_monitor
 
     def add_listener(self, listener) -> None:
         self._listeners.append(listener)
+
+    def set_latency_monitor(self, latency_monitor: Any | None) -> None:
+        self._latency_monitor = latency_monitor
 
     async def publish(self, event_type: str, payload: dict) -> None:
         event = {
@@ -25,6 +30,12 @@ class DesktopEventBus:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "payload": payload,
         }
+        if self._latency_monitor is not None:
+            try:
+                self._latency_monitor.record_event_published(event)
+            except Exception as exc:
+                logger.warning("记录事件发布时间失败: %s", exc)
+
         async with self._lock:
             subscribers = list(self._subscribers)
             listeners = list(self._listeners)

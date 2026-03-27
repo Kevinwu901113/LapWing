@@ -117,3 +117,93 @@ async def test_task_view_filters_and_sorts():
 
     failed_items = await store.list_tasks(status="failed", limit=10)
     assert [item["task_id"] for item in failed_items] == ["task_new"]
+
+
+@pytest.mark.asyncio
+async def test_task_view_keeps_tool_execution_event_details():
+    store = TaskViewStore()
+    await store.ingest_event(
+        {
+            "type": "task.started",
+            "timestamp": "2026-03-27T10:00:00+00:00",
+            "payload": {
+                "task_id": "task_3",
+                "chat_id": "c1",
+                "phase": "started",
+                "text": "开始",
+            },
+        }
+    )
+    await store.ingest_event(
+        {
+            "type": "task.tool_execution_end",
+            "timestamp": "2026-03-27T10:00:01+00:00",
+            "payload": {
+                "task_id": "task_3",
+                "chat_id": "c1",
+                "phase": "executing",
+                "text": "工具执行结束：execute_shell",
+                "tool_name": "execute_shell",
+                "toolCallId": "call_1",
+                "toolName": "execute_shell",
+                "argsHash": "a" * 64,
+                "stdoutBytes": 12,
+                "stderrBytes": 0,
+                "isError": False,
+                "durationMs": 23,
+            },
+        }
+    )
+
+    detail = await store.get_task("task_3")
+    assert detail is not None
+    tool_event = detail["events"][-1]
+    assert tool_event["type"] == "task.tool_execution_end"
+    assert tool_event["toolCallId"] == "call_1"
+    assert tool_event["toolName"] == "execute_shell"
+    assert tool_event["argsHash"] == "a" * 64
+    assert tool_event["stdoutBytes"] == 12
+    assert tool_event["stderrBytes"] == 0
+    assert tool_event["isError"] is False
+    assert tool_event["durationMs"] == 23
+
+
+@pytest.mark.asyncio
+async def test_task_view_tool_execution_event_does_not_downgrade_final_status():
+    store = TaskViewStore()
+    await store.ingest_event(
+        {
+            "type": "task.completed",
+            "timestamp": "2026-03-27T10:00:02+00:00",
+            "payload": {
+                "task_id": "task_4",
+                "chat_id": "c1",
+                "phase": "completed",
+                "text": "完成",
+            },
+        }
+    )
+    await store.ingest_event(
+        {
+            "type": "task.tool_execution_update",
+            "timestamp": "2026-03-27T10:00:01+00:00",
+            "payload": {
+                "task_id": "task_4",
+                "chat_id": "c1",
+                "phase": "executing",
+                "text": "工具执行进度",
+                "toolCallId": "call_1",
+                "toolName": "execute_shell",
+                "argsHash": "b" * 64,
+                "stdoutBytes": 5,
+                "stderrBytes": 1,
+                "isError": True,
+                "durationMs": 10,
+            },
+        }
+    )
+
+    detail = await store.get_task("task_4")
+    assert detail is not None
+    assert detail["status"] == "completed"
+    assert len(detail["events"]) == 2
