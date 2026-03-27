@@ -5,6 +5,8 @@ import {
   deleteMemory,
   DesktopEvent,
   evolvePrompt,
+  getTask,
+  getTasks,
   getChats,
   getInterests,
   getLearnings,
@@ -15,6 +17,8 @@ import {
   MemoryItem,
   reloadPersona,
   StatusResponse,
+  TaskDetail,
+  TaskSummary,
   ChatSummary,
 } from "./api";
 
@@ -33,6 +37,9 @@ export default function App() {
   const [memoryItems, setMemoryItems] = useState<MemoryItem[]>([]);
   const [learnings, setLearnings] = useState<LearningItem[]>([]);
   const [events, setEvents] = useState<DesktopEvent[]>([]);
+  const [tasks, setTasks] = useState<TaskSummary[]>([]);
+  const [selectedTaskId, setSelectedTaskId] = useState("");
+  const [taskDetail, setTaskDetail] = useState<TaskDetail | null>(null);
   const [eventConnected, setEventConnected] = useState(false);
   const [busyAction, setBusyAction] = useState<"reload" | "evolve" | null>(null);
 
@@ -51,11 +58,21 @@ export default function App() {
       const event = JSON.parse(message.data) as DesktopEvent;
       setEvents((previous) => [event, ...previous].slice(0, 5));
 
-      if ("Notification" in window && Notification.permission === "granted") {
+      if (event.type.startsWith("task.")) {
+        void loadTasks(selectedChatId || undefined);
+      }
+
+      const shouldNotify = [
+        "interest_proactive",
+        "proactive_message",
+        "reminder_message",
+      ].includes(event.type);
+
+      if (shouldNotify && "Notification" in window && Notification.permission === "granted") {
         const title = event.type === "interest_proactive" ? "Lapwing 主动分享" : "Lapwing 主动消息";
         const suffix = event.payload.topic ? `\n主题：${event.payload.topic}` : "";
         new Notification(title, {
-          body: `${event.payload.text}${suffix}`,
+          body: `${event.payload.text ?? "收到新消息"}${suffix}`,
         });
       }
     };
@@ -69,16 +86,30 @@ export default function App() {
     if (!selectedChatId) {
       setInterests([]);
       setMemoryItems([]);
+      void loadTasks(undefined);
+    } else {
+      void loadChatData(selectedChatId);
+      void loadTasks(selectedChatId);
+    }
+  }, [selectedChatId]);
+
+  useEffect(() => {
+    if (!selectedTaskId) {
+      setTaskDetail(null);
       return;
     }
-    void loadChatData(selectedChatId);
-  }, [selectedChatId]);
+    void loadTaskDetail(selectedTaskId);
+  }, [selectedTaskId]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
       void loadOverview(false);
       if (selectedChatId) {
         void loadChatData(selectedChatId);
+      }
+      void loadTasks(selectedChatId || undefined);
+      if (selectedTaskId) {
+        void loadTaskDetail(selectedTaskId);
       }
     }, 30000);
 
@@ -109,6 +140,26 @@ export default function App() {
   async function loadLearnings() {
     const response = await getLearnings();
     setLearnings(response.items);
+  }
+
+  async function loadTasks(chatId?: string) {
+    const response = await getTasks(chatId, undefined, 20);
+    setTasks(response.items);
+    if (response.items.length === 0) {
+      setSelectedTaskId("");
+      setTaskDetail(null);
+      return;
+    }
+
+    const selectedExists = response.items.some((item) => item.task_id === selectedTaskId);
+    if (!selectedExists) {
+      setSelectedTaskId(response.items[0].task_id);
+    }
+  }
+
+  async function loadTaskDetail(taskId: string) {
+    const detail = await getTask(taskId);
+    setTaskDetail(detail);
   }
 
   async function handleDeleteMemory(factKey: string) {
@@ -251,19 +302,59 @@ export default function App() {
 
         <section className="panel">
           <div className="panel-head">
-            <h2>主动消息</h2>
+            <h2>事件流</h2>
           </div>
           <div className="event-list">
-            {events.length === 0 ? <p className="empty">等待来自 SSE 的主动消息事件。</p> : null}
+            {events.length === 0 ? <p className="empty">等待来自 SSE 的主动消息与任务事件。</p> : null}
             {events.map((event, index) => (
               <article key={`${event.timestamp}-${index}`} className="event-item">
                 <span className="event-type">{event.type}</span>
-                <p>{event.payload.text}</p>
+                <p>{event.payload.text ?? "（无文本）"}</p>
                 <span className="muted">
-                  {event.payload.chat_id} · {formatDate(event.timestamp)}
+                  {event.payload.chat_id ?? "unknown"} · {formatDate(event.timestamp)}
+                  {event.payload.task_id ? ` · ${event.payload.task_id}` : ""}
+                  {event.payload.phase ? ` · ${event.payload.phase}` : ""}
+                  {event.payload.tool_name ? ` · ${event.payload.tool_name}` : ""}
                 </span>
               </article>
             ))}
+          </div>
+        </section>
+
+        <section className="panel span-2">
+          <div className="panel-head">
+            <h2>任务视图</h2>
+          </div>
+          <div className="memory-list">
+            {tasks.length === 0 ? <p className="empty">暂无任务记录。</p> : null}
+            {tasks.map((task) => (
+              <article
+                key={task.task_id}
+                className="memory-item"
+                onClick={() => setSelectedTaskId(task.task_id)}
+                style={{
+                  cursor: "pointer",
+                  border: selectedTaskId === task.task_id ? "1px solid #4a90e2" : undefined,
+                }}
+              >
+                <div>
+                  <p className="memory-key">{task.task_id}</p>
+                  <p className="memory-value">{task.text || "（无文本）"}</p>
+                  <span className="muted">
+                    {task.chat_id} · {task.status} · {formatDate(task.updated_at ?? null)}
+                  </span>
+                </div>
+              </article>
+            ))}
+            {taskDetail ? (
+              <article className="learning-item">
+                <div className="learning-head">
+                  <strong>任务详情：{taskDetail.task_id}</strong>
+                  <span className="muted">{taskDetail.status}</span>
+                </div>
+                <pre>{JSON.stringify(taskDetail.events, null, 2)}</pre>
+              </article>
+            ) : null}
           </div>
         </section>
 

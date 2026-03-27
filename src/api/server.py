@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import FastAPI, Query
+from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
@@ -50,10 +51,11 @@ def _read_learning_entries(directory: Path) -> list[dict]:
     return items
 
 
-def create_app(brain, event_bus) -> FastAPI:
+def create_app(brain, event_bus, task_view_store=None) -> FastAPI:
     app = FastAPI(title="Lapwing Local API", version="0.1.0")
     app.state.brain = brain
     app.state.event_bus = event_bus
+    app.state.task_view_store = task_view_store
     app.state.started_at = datetime.now(timezone.utc).isoformat()
 
     app.add_middleware(
@@ -159,6 +161,28 @@ def create_app(brain, event_bus) -> FastAPI:
             },
         )
 
+    @app.get("/api/tasks")
+    async def get_tasks(
+        chat_id: str | None = Query(default=None),
+        status: str | None = Query(default=None),
+        limit: int = Query(default=50, ge=1, le=500),
+    ):
+        store = app.state.task_view_store
+        if store is None:
+            return {"items": []}
+        items = await store.list_tasks(chat_id=chat_id, status=status, limit=limit)
+        return {"items": items}
+
+    @app.get("/api/tasks/{task_id}")
+    async def get_task(task_id: str):
+        store = app.state.task_view_store
+        if store is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        task = await store.get_task(task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        return task
+
     # 托管构建好的前端静态文件（SPA 回退到 index.html）
     if _DIST_DIR.exists():
         @app.get("/{full_path:path}", include_in_schema=False)
@@ -174,9 +198,17 @@ def create_app(brain, event_bus) -> FastAPI:
 class LocalApiServer:
     """管理 uvicorn 生命周期。"""
 
-    def __init__(self, brain, event_bus, host: str = "0.0.0.0", port: int = 8765) -> None:
+    def __init__(
+        self,
+        brain,
+        event_bus,
+        task_view_store=None,
+        host: str = "0.0.0.0",
+        port: int = 8765,
+    ) -> None:
         self._brain = brain
         self._event_bus = event_bus
+        self._task_view_store = task_view_store
         self._host = host
         self._port = port
         self._server: uvicorn.Server | None = None
@@ -186,7 +218,7 @@ class LocalApiServer:
         if self._task is not None:
             return
 
-        app = create_app(self._brain, self._event_bus)
+        app = create_app(self._brain, self._event_bus, self._task_view_store)
         config = uvicorn.Config(
             app,
             host=self._host,

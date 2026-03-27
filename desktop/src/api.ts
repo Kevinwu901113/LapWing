@@ -36,10 +36,48 @@ export type DesktopEvent = {
   type: string;
   timestamp: string;
   payload: {
-    chat_id: string;
-    text: string;
+    chat_id?: string;
+    text?: string;
+    task_id?: string;
+    phase?: string;
+    tool_name?: string;
+    round?: number;
+    command?: string;
+    reason?: string;
     topic?: string;
   };
+};
+
+export type TaskSummary = {
+  task_id: string;
+  chat_id: string;
+  status: string;
+  phase: string;
+  text: string;
+  tool_name?: string | null;
+  round?: number | null;
+  command?: string | null;
+  reason?: string | null;
+  started_at?: string | null;
+  updated_at?: string | null;
+  completed_at?: string | null;
+  failed_at?: string | null;
+  blocked_at?: string | null;
+};
+
+export type TaskEventItem = {
+  type: string;
+  timestamp: string;
+  phase: string;
+  text: string;
+  tool_name?: string | null;
+  round?: number | null;
+  command?: string | null;
+  reason?: string | null;
+};
+
+export type TaskDetail = TaskSummary & {
+  events: TaskEventItem[];
 };
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -102,4 +140,20 @@ export async function evolvePrompt() {
       body: JSON.stringify({}),
     },
   );
+}
+
+export async function getTasks(chatId?: string, status?: string, limit = 20) {
+  const params = new URLSearchParams();
+  if (chatId) {
+    params.set("chat_id", chatId);
+  }
+  if (status) {
+    params.set("status", status);
+  }
+  params.set("limit", String(limit));
+  return fetchJson<{ items: TaskSummary[] }>(`/api/tasks?${params.toString()}`);
+}
+
+export async function getTask(taskId: string) {
+  return fetchJson<TaskDetail>(`/api/tasks/${encodeURIComponent(taskId)}`);
 }

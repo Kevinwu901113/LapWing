@@ -9,6 +9,7 @@ import pytest
 
 from src.api.event_bus import DesktopEventBus
 from src.api.server import create_app
+from src.app.task_view import TaskViewStore
 
 
 @pytest.fixture
@@ -115,3 +116,79 @@ class TestLocalApi:
 
         assert "proactive_message" in body
         assert "你好" in body
+
+    async def test_events_stream_emits_task_event(self, mock_brain):
+        event_bus = DesktopEventBus()
+        app = create_app(mock_brain, event_bus)
+        route = next(route for route in app.routes if getattr(route, "path", "") == "/api/events/stream")
+        response = await route.endpoint()
+
+        first_chunk_task = asyncio.create_task(response.body_iterator.__anext__())
+        await asyncio.sleep(0.05)
+        await event_bus.publish(
+            "task.executing",
+            {
+                "task_id": "task_123",
+                "chat_id": "c1",
+                "phase": "executing",
+                "text": "正在执行工具：execute_shell",
+                "tool_name": "execute_shell",
+            },
+        )
+        body = await asyncio.wait_for(first_chunk_task, timeout=1)
+        if isinstance(body, bytes):
+            body = body.decode("utf-8")
+
+        assert "task.executing" in body
+        assert "task_123" in body
+
+    async def test_tasks_endpoints_return_projected_tasks(self, mock_brain):
+        event_bus = DesktopEventBus()
+        task_store = TaskViewStore()
+        event_bus.add_listener(task_store.ingest_event)
+        app = create_app(mock_brain, event_bus, task_store)
+        transport = httpx.ASGITransport(app=app)
+
+        await event_bus.publish(
+            "task.started",
+            {
+                "task_id": "task_1",
+                "chat_id": "c1",
+                "phase": "started",
+                "text": "任务开始",
+            },
+        )
+        await event_bus.publish(
+            "task.completed",
+            {
+                "task_id": "task_1",
+                "chat_id": "c1",
+                "phase": "completed",
+                "text": "任务完成",
+            },
+        )
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            list_resp = await client.get("/api/tasks", params={"chat_id": "c1"})
+            detail_resp = await client.get("/api/tasks/task_1")
+
+        assert list_resp.status_code == 200
+        list_data = list_resp.json()
+        assert list_data["items"][0]["task_id"] == "task_1"
+        assert list_data["items"][0]["status"] == "completed"
+
+        assert detail_resp.status_code == 200
+        detail_data = detail_resp.json()
+        assert detail_data["task_id"] == "task_1"
+        assert len(detail_data["events"]) == 2
+
+    async def test_task_detail_returns_404_when_not_found(self, mock_brain):
+        event_bus = DesktopEventBus()
+        task_store = TaskViewStore()
+        app = create_app(mock_brain, event_bus, task_store)
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/tasks/not_exists")
+
+        assert response.status_code == 404
