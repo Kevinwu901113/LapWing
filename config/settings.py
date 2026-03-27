@@ -83,5 +83,8 @@ SHELL_MAX_OUTPUT_CHARS: int = int(os.getenv("SHELL_MAX_OUTPUT_CHARS", "4000"))
 # 自省与进化
 SELF_REFLECTION_HOUR: int = int(os.getenv("SELF_REFLECTION_HOUR", "2"))  # 每日自省时间（小时）
 
+# 搜索配置
+SEARCH_MAX_RESULTS: int = int(os.getenv("SEARCH_MAX_RESULTS", "5"))
+
 # 日志
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
