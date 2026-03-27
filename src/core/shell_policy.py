@@ -439,6 +439,26 @@ def failure_type_from_result(result: ShellResult) -> str | None:
     return "nonzero_exit"
 
 
+def failure_reason_from_result(result: ShellResult) -> str:
+    if result.reason and (result.blocked or result.timed_out):
+        return result.reason
+
+    stderr = result.stderr.strip()
+    if stderr:
+        return stderr
+
+    if result.reason:
+        return result.reason
+
+    if result.timed_out:
+        return "命令执行超时了。"
+
+    if result.return_code != 0:
+        return f"命令执行失败，退出码 {result.return_code}。"
+
+    return "命令执行失败了。"
+
+
 def is_confirmation_message(user_message: str) -> bool:
     return _looks_like_confirmation(user_message)
 
@@ -527,65 +547,9 @@ def infer_permission_denied_alternative(
 
 
 def verify_constraints(constraints: ExecutionConstraints) -> VerificationStatus:
-    target_directory = constraints.active_directory or constraints.target_directory
-    if target_directory is None:
-        return VerificationStatus(completed=False, reason="没有可验证的目标路径。")
+    from src.core.verifier import verify_shell_constraints_status
 
-    directory = Path(target_directory)
-    if not directory.exists():
-        return VerificationStatus(
-            completed=False,
-            directory_path=target_directory,
-            reason=f"目标目录 `{target_directory}` 还不存在。",
-        )
-    if not directory.is_dir():
-        return VerificationStatus(
-            completed=False,
-            directory_path=target_directory,
-            reason=f"`{target_directory}` 不是目录。",
-        )
-
-    file_path: Path | None = None
-    if constraints.required_filename:
-        file_path = directory / constraints.required_filename
-        if not file_path.exists() or not file_path.is_file():
-            return VerificationStatus(
-                completed=False,
-                directory_path=target_directory,
-                file_path=str(file_path),
-                reason=f"目标文件 `{file_path}` 还不存在。",
-            )
-    elif constraints.required_extension:
-        files = sorted(
-            path for path in directory.iterdir()
-            if path.is_file() and path.suffix.lower() == constraints.required_extension
-        )
-        if not files:
-            return VerificationStatus(
-                completed=False,
-                directory_path=target_directory,
-                reason=f"目录 `{target_directory}` 下还没有 {constraints.required_extension} 文件。",
-            )
-        file_path = files[0]
-
-    file_content = ""
-    if file_path is not None:
-        try:
-            file_content = file_path.read_text(encoding="utf-8")[:_VERIFY_CONTENT_LIMIT]
-        except Exception as exc:
-            return VerificationStatus(
-                completed=False,
-                directory_path=target_directory,
-                file_path=str(file_path),
-                reason=f"目标文件存在，但读取失败：{exc}",
-            )
-
-    return VerificationStatus(
-        completed=True,
-        directory_path=target_directory,
-        file_path=str(file_path) if file_path is not None else None,
-        file_content=file_content.strip(),
-    )
+    return verify_shell_constraints_status(constraints)
 
 
 def should_validate_after_success(
@@ -616,3 +580,21 @@ def should_request_consent_for_command(
 
     reason = state.failure_reason or "这会改变你刚才指定的目标路径。"
     return build_alternative_proposal(constraints, intent, reason)
+
+
+def build_shell_runtime_policy(
+    *,
+    verify_constraints_fn=verify_constraints,
+):
+    """兼容导出：构建运行时策略对象。"""
+    from src.policy.shell_runtime_policy import ShellRuntimePolicy
+
+    return ShellRuntimePolicy(
+        analyze_command=analyze_command,
+        should_request_consent_for_command=should_request_consent_for_command,
+        failure_type_from_result=failure_type_from_result,
+        infer_permission_denied_alternative=infer_permission_denied_alternative,
+        should_validate_after_success=should_validate_after_success,
+        verify_constraints=verify_constraints_fn,
+        failure_reason_builder=failure_reason_from_result,
+    )

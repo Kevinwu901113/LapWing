@@ -749,3 +749,163 @@ class TestBrainTools:
 
             # 目标已在当前用户 home 下，不应触发主动 consent
             assert "chat1" not in brain._pending_shell_confirmations
+
+    async def test_task_events_emitted_for_successful_tool_loop(self):
+        with patch("src.core.brain.load_prompt", return_value="prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"), \
+             patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
+            from src.core.brain import LapwingBrain
+
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.append = AsyncMock()
+            brain.memory.get = AsyncMock(return_value=[])
+            brain.memory.get_user_facts = AsyncMock(return_value=[])
+            brain.memory.remove_last = AsyncMock()
+            brain.fact_extractor = MagicMock()
+            brain.fact_extractor.notify = MagicMock()
+            brain.event_bus = MagicMock()
+            brain.event_bus.publish = AsyncMock()
+
+            mock_execute.return_value = ShellResult(
+                stdout="/home/kevin/lapwing\n",
+                stderr="",
+                return_code=0,
+                cwd="/home/kevin/lapwing",
+            )
+            brain.router.complete_with_tools = AsyncMock(
+                side_effect=[
+                    _tool_turn(
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call_1",
+                                name="execute_shell",
+                                arguments={"command": "pwd"},
+                            )
+                        ],
+                        continuation_message={
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{"id": "call_1"}],
+                        },
+                    ),
+                    _tool_turn(text="当前目录在项目根目录。"),
+                ]
+            )
+            brain.router.build_tool_result_message = MagicMock(
+                return_value={
+                    "role": "tool",
+                    "tool_call_id": "call_1",
+                    "name": "execute_shell",
+                    "content": "{}",
+                }
+            )
+
+            result = await brain.think("chat1", "看看当前目录")
+
+            assert result == "当前目录在项目根目录。"
+
+            event_calls = brain.event_bus.publish.await_args_list
+            event_types = [call.args[0] for call in event_calls]
+            assert event_types[0] == "task.started"
+            assert event_types[1] == "task.executing"
+            assert "task.completed" in event_types
+
+            for call in event_calls:
+                payload = call.args[1]
+                assert "task_id" in payload
+                assert payload["chat_id"] == "chat1"
+                assert "phase" in payload
+                assert "text" in payload
+
+    async def test_task_blocked_event_emitted_when_consent_required(self):
+        with patch("src.core.brain.load_prompt", return_value="prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"), \
+             patch("src.core.brain.SHELL_ALLOW_SUDO", False), \
+             patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
+            from src.core.brain import LapwingBrain
+
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.append = AsyncMock()
+            brain.memory.get = AsyncMock(return_value=[])
+            brain.memory.get_user_facts = AsyncMock(return_value=[])
+            brain.memory.remove_last = AsyncMock()
+            brain.fact_extractor = MagicMock()
+            brain.fact_extractor.notify = MagicMock()
+            brain.event_bus = MagicMock()
+            brain.event_bus.publish = AsyncMock()
+
+            mock_execute.return_value = ShellResult(
+                stdout="",
+                stderr="mkdir: cannot create directory '/home/Lapwing': Permission denied\n",
+                return_code=1,
+                cwd="/home/kevin/lapwing",
+            )
+            brain.router.complete_with_tools = AsyncMock(
+                return_value=_tool_turn(
+                    tool_calls=[
+                        SimpleNamespace(
+                            id="call_1",
+                            name="execute_shell",
+                            arguments={"command": "mkdir -p /home/Lapwing"},
+                        )
+                    ],
+                    continuation_message={
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": [{"id": "call_1"}],
+                    },
+                )
+            )
+            brain.router.build_tool_result_message = MagicMock(
+                return_value={"role": "tool", "tool_call_id": "call_1", "content": "{}"}
+            )
+
+            result = await brain.think(
+                "chat1",
+                "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件",
+            )
+
+            assert "原请求还没有完成" in result
+            event_calls = brain.event_bus.publish.await_args_list
+            event_types = [call.args[0] for call in event_calls]
+            assert event_types[:3] == ["task.started", "task.executing", "task.blocked"]
+
+            blocked_payload = event_calls[2].args[1]
+            assert blocked_payload["chat_id"] == "chat1"
+            assert blocked_payload["phase"] == "blocked"
+            assert "reason" in blocked_payload
+            assert "Permission denied" in blocked_payload["reason"]
+
+    async def test_task_failed_event_emitted_when_write_objective_unfinished(self):
+        with patch("src.core.brain.load_prompt", return_value="prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"):
+            from src.core.brain import LapwingBrain
+
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.append = AsyncMock()
+            brain.memory.get = AsyncMock(return_value=[])
+            brain.memory.get_user_facts = AsyncMock(return_value=[])
+            brain.memory.remove_last = AsyncMock()
+            brain.fact_extractor = MagicMock()
+            brain.fact_extractor.notify = MagicMock()
+            brain.event_bus = MagicMock()
+            brain.event_bus.publish = AsyncMock()
+            brain.router.complete_with_tools = AsyncMock(return_value=_tool_turn(text=""))
+
+            result = await brain.think(
+                "chat1",
+                "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件",
+            )
+
+            assert "原请求还没有完成" in result
+            event_calls = brain.event_bus.publish.await_args_list
+            event_types = [call.args[0] for call in event_calls]
+            assert event_types == ["task.started", "task.failed"]
+
+            failed_payload = event_calls[1].args[1]
+            assert failed_payload["chat_id"] == "chat1"
+            assert failed_payload["phase"] == "failed"
+            assert "text" in failed_payload

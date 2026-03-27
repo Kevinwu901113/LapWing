@@ -1,31 +1,26 @@
 """Lapwing 的大脑 - LLM 调用与对话管理。"""
 
-import json
 import logging
-import shlex
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from src.core.prompt_loader import load_prompt
-from src.core.llm_router import LLMRouter, ToolCallRequest
+from src.core.llm_router import LLMRouter
+from src.core.task_runtime import RuntimeDeps, TaskRuntime
 from src.core.shell_policy import (
-    AlternativeProposal,
+    build_shell_runtime_policy,
     ExecutionSessionState,
     PendingShellConfirmation,
-    analyze_command,
     build_followup_message,
     extract_execution_constraints,
-    failure_type_from_result,
-    infer_permission_denied_alternative,
     is_confirmation_message,
     is_rejection_message,
-    should_request_consent_for_command,
-    should_validate_after_success,
-    verify_constraints,
 )
+from src.core.verifier import verify_shell_constraints_status as verify_constraints
 from src.memory.conversation import ConversationMemory
 from src.memory.fact_extractor import FactExtractor
-from src.tools.shell_executor import ShellResult, execute as execute_shell
+from src.tools.registry import build_default_tool_registry
+from src.tools.shell_executor import execute as execute_shell
 from config.settings import MAX_HISTORY_TURNS, SHELL_ALLOW_SUDO, SHELL_DEFAULT_CWD, SHELL_ENABLED
 
 if TYPE_CHECKING:
@@ -37,14 +32,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger("lapwing.brain")
 
 _RELATED_MEMORY_LIMIT = 300
-_MAX_TOOL_ROUNDS = 8
-
-
 class LapwingBrain:
     """管理 LLM 调用和对话上下文。"""
 
     def __init__(self, db_path: Path):
         self.router = LLMRouter()
+        self.tool_registry = build_default_tool_registry()
+        self.task_runtime = TaskRuntime(router=self.router, tool_registry=self.tool_registry)
         self.memory = ConversationMemory(db_path)
         self.fact_extractor = FactExtractor(self.memory, self.router)
         self.interest_tracker: InterestTracker | None = None
@@ -182,97 +176,6 @@ class LapwingBrain:
             "必须明确说明执行功能当前关闭，不能编造结果。"
         )
 
-    def _chat_tools(self) -> list[dict]:
-        if not SHELL_ENABLED:
-            return []
-
-        return [
-            {
-                "type": "function",
-                "function": {
-                    "name": "execute_shell",
-                    "description": (
-                        "在服务器上执行 shell 命令。"
-                        "用于创建文件/目录、查看文件内容、安装软件、运行脚本等任何命令行操作。"
-                        "遇到权限问题时自动尝试替代路径，不要询问用户。"
-                    ),
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "command": {
-                                "type": "string",
-                                "description": "要执行的 shell 命令",
-                            }
-                        },
-                        "required": ["command"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "read_file",
-                    "description": "读取服务器上的文件内容。用于查看配置文件、日志、代码等。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "文件的绝对路径",
-                            }
-                        },
-                        "required": ["path"],
-                    },
-                },
-            },
-            {
-                "type": "function",
-                "function": {
-                    "name": "write_file",
-                    "description": "将内容写入文件。如果文件不存在会自动创建，包括必要的父目录。",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "path": {
-                                "type": "string",
-                                "description": "文件的绝对路径",
-                            },
-                            "content": {
-                                "type": "string",
-                                "description": "要写入的内容",
-                            },
-                        },
-                        "required": ["path", "content"],
-                    },
-                },
-            },
-        ]
-
-    def _with_shell_state_context(
-        self,
-        messages: list[dict],
-        state: ExecutionSessionState,
-    ) -> list[dict]:
-        needs_context = (
-            state.constraints.is_write_request
-            or state.constraints.has_hard_path_constraints
-            or bool(state.failure_reason)
-            or state.consent_required
-        )
-        if not needs_context:
-            return messages
-
-        state_content = state.as_system_context()
-        if messages and messages[0].get("role") == "system":
-            merged_system = dict(messages[0])
-            base_content = str(merged_system.get("content", "")).strip()
-            merged_system["content"] = (
-                f"{base_content}\n\n{state_content}" if base_content else state_content
-            )
-            return [merged_system, *messages[1:]]
-        state_message = {"role": "system", "content": state_content}
-        return [state_message, *messages]
-
     def _resolve_pending_confirmation(
         self,
         chat_id: str,
@@ -320,177 +223,6 @@ class LapwingBrain:
         )
         return state.consent_message()
 
-    def _shell_failure_reason(self, result: ShellResult) -> str:
-        # 被主动拦截（blocked/timed_out）时直接使用 reason
-        if result.reason and (result.blocked or result.timed_out):
-            return result.reason
-
-        # 优先使用 stderr，比 shell_executor 生成的通用 reason 更有用
-        stderr = result.stderr.strip()
-        if stderr:
-            return stderr
-
-        if result.reason:
-            return result.reason
-
-        if result.timed_out:
-            return "命令执行超时了。"
-
-        if result.return_code != 0:
-            return f"命令执行失败，退出码 {result.return_code}。"
-
-        return "命令执行失败了。"
-
-    async def _execute_tool_call(
-        self,
-        tool_call: ToolCallRequest,
-        state: ExecutionSessionState,
-    ) -> tuple[str, dict]:
-        payload: dict
-
-        if tool_call.name == "read_file":
-            path = str(tool_call.arguments.get("path", "")).strip()
-            if not path:
-                payload = {"error": "缺少 path 参数", "stdout": "", "return_code": -1}
-                return json.dumps(payload, ensure_ascii=False), payload
-            result = await execute_shell(f"cat {shlex.quote(path)}")
-            payload = {"path": path, **result.to_dict()}
-            return json.dumps(payload, ensure_ascii=False), payload
-
-        if tool_call.name == "write_file":
-            path = str(tool_call.arguments.get("path", "")).strip()
-            content = str(tool_call.arguments.get("content", ""))
-            if not path:
-                payload = {"error": "缺少 path 参数", "stdout": "", "return_code": -1}
-                return json.dumps(payload, ensure_ascii=False), payload
-            dir_cmd = f"mkdir -p $(dirname {shlex.quote(path)})"
-            await execute_shell(dir_cmd)
-            write_cmd = f"cat > {shlex.quote(path)} << 'LAPWING_EOF'\n{content}\nLAPWING_EOF"
-            result = await execute_shell(write_cmd)
-            payload = {"path": path, "action": "written", **result.to_dict()}
-            return json.dumps(payload, ensure_ascii=False), payload
-
-        if tool_call.name != "execute_shell":
-            state.record_failure(f"未知工具：{tool_call.name}", "blocked")
-            payload = {
-                "command": "",
-                "stdout": "",
-                "stderr": "",
-                "return_code": -1,
-                "timed_out": False,
-                "blocked": True,
-                "reason": f"未知工具：{tool_call.name}",
-                "cwd": SHELL_DEFAULT_CWD,
-                "stdout_truncated": False,
-                "stderr_truncated": False,
-            }
-            return json.dumps(payload, ensure_ascii=False), payload
-
-        command = str(tool_call.arguments.get("command", "")).strip()
-        if not command:
-            state.record_failure("工具参数缺少 command。", "blocked")
-            payload = {
-                "command": "",
-                "stdout": "",
-                "stderr": "",
-                "return_code": -1,
-                "timed_out": False,
-                "blocked": True,
-                "reason": "工具参数缺少 command。",
-                "cwd": SHELL_DEFAULT_CWD,
-                "stdout_truncated": False,
-                "stderr_truncated": False,
-            }
-            return json.dumps(payload, ensure_ascii=False), payload
-
-        intent = analyze_command(command)
-        state.record_intent(intent)
-
-        proposal = should_request_consent_for_command(
-            state.constraints,
-            intent,
-            state,
-        )
-        if proposal is not None:
-            state.require_consent(proposal)
-            target_directory = state.constraints.active_directory or state.constraints.target_directory
-            reason = (
-                f"这条命令会把目标从 `{target_directory}` 改到 "
-                f"`{proposal.directory}`，需要先征求用户同意。"
-            )
-            if not state.failure_reason:
-                state.record_failure(reason, "requires_consent")
-            payload = {
-                "command": command,
-                "stdout": "",
-                "stderr": "",
-                "return_code": -1,
-                "timed_out": False,
-                "blocked": True,
-                "reason": reason,
-                "cwd": SHELL_DEFAULT_CWD,
-                "stdout_truncated": False,
-                "stderr_truncated": False,
-            }
-            return json.dumps(payload, ensure_ascii=False), payload
-
-        result: ShellResult = await execute_shell(command)
-        failure_type = failure_type_from_result(result)
-        if failure_type is not None:
-            state.record_failure(self._shell_failure_reason(result), failure_type)
-            # 权限拒绝时推断替代路径；如果 sudo 可用，让 LLM 自行决定是否 sudo，不打断用户
-            if (
-                failure_type == "permission_denied"
-                and not state.consent_required
-                and state.constraints.target_directory is not None
-                and not SHELL_ALLOW_SUDO
-            ):
-                alt = infer_permission_denied_alternative(state.constraints)
-                if alt is not None:
-                    state.require_consent(AlternativeProposal(
-                        directory=alt,
-                        reason=state.failure_reason,
-                        blocked_command=command,
-                    ))
-        elif should_validate_after_success(state.constraints, intent, result):
-            verification = verify_constraints(state.constraints)
-            if verification.completed:
-                state.mark_completed(verification)
-            else:
-                state.record_failure(verification.reason, "verification_failed")
-
-        payload = {
-            "command": command,
-            **result.to_dict(),
-        }
-        return json.dumps(payload, ensure_ascii=False), payload
-
-    def _tool_fallback_reply(self, payload: dict | None) -> str:
-        if not payload:
-            return "我这次没有整理出可回复的结果。"
-
-        command = str(payload.get("command", "")).strip()
-        if payload.get("blocked"):
-            return f"本地命令没有执行。{payload.get('reason', '命令被拦截了。')}"
-
-        if payload.get("timed_out"):
-            if command:
-                return f"本地命令执行超时了：`{command}`。"
-            return "本地命令执行超时了。"
-
-        return_code = int(payload.get("return_code", -1))
-        if return_code != 0:
-            stderr = str(payload.get("stderr", "")).strip()
-            if stderr:
-                return f"命令执行失败，退出码 {return_code}。\n\n```\n{stderr}\n```"
-            return f"命令执行失败，退出码 {return_code}。"
-
-        stdout = str(payload.get("stdout", "")).strip()
-        if stdout:
-            return f"命令已经执行完了，输出是：\n\n```\n{stdout}\n```"
-
-        return "命令已经执行完了，但没有输出。"
-
     async def _complete_chat(
         self,
         chat_id: str,
@@ -499,74 +231,29 @@ class LapwingBrain:
         approved_directory: str | None = None,
         status_callback=None,
     ) -> str:
-        tools = self._chat_tools()
-        if not tools:
-            return await self.router.complete(messages, purpose="chat")
-
-        state = ExecutionSessionState(
-            constraints=extract_execution_constraints(
-                user_message,
-                approved_directory=approved_directory,
-            )
+        constraints = extract_execution_constraints(
+            user_message,
+            approved_directory=approved_directory,
         )
-        last_payload: dict | None = None
-        for round_index in range(_MAX_TOOL_ROUNDS):
-            turn = await self.router.complete_with_tools(
-                self._with_shell_state_context(messages, state),
-                tools=tools,
-                purpose="chat",
-            )
+        tools = self.task_runtime.chat_tools(shell_enabled=SHELL_ENABLED)
 
-            if not turn.tool_calls:
-                if state.consent_required:
-                    return self._record_pending_confirmation(chat_id, state)
-                if state.completed:
-                    return state.success_message()
-                if state.constraints.is_write_request and state.constraints.objective != "generic":
-                    return state.failure_message()
-                return turn.text or self._tool_fallback_reply(last_payload)
+        deps = RuntimeDeps(
+            execute_shell=execute_shell,
+            policy=build_shell_runtime_policy(verify_constraints_fn=verify_constraints),
+            shell_default_cwd=SHELL_DEFAULT_CWD,
+            shell_allow_sudo=SHELL_ALLOW_SUDO,
+        )
 
-            if len(turn.tool_calls) > 1:
-                logger.warning(
-                    f"[brain] 模型返回了 {len(turn.tool_calls)} 个 tool calls，"
-                    "当前将按顺序只处理第一个。"
-                )
-
-            tool_call = turn.tool_calls[0]
-
-            if turn.continuation_message is not None:
-                messages.append(turn.continuation_message)
-
-            if status_callback and round_index >= 1:
-                try:
-                    await status_callback(chat_id, f"第 {round_index} 步完成，继续处理中...")
-                except Exception:
-                    pass
-
-            tool_result_text, last_payload = await self._execute_tool_call(
-                tool_call,
-                state=state,
-            )
-            if state.consent_required:
-                return self._record_pending_confirmation(chat_id, state)
-            messages.append(
-                self.router.build_tool_result_message(
-                    purpose="chat",
-                    tool_results=[(tool_call, tool_result_text)],
-                )
-            )
-            logger.info(f"[brain] 完成第 {round_index + 1} 轮 tool call: {tool_call.name}")
-            if state.completed:
-                return state.success_message()
-
-        logger.warning("[brain] tool call 循环超过上限，返回兜底说明")
-        if state.consent_required:
-            return self._record_pending_confirmation(chat_id, state)
-        if state.completed:
-            return state.success_message()
-        if state.constraints.is_write_request and state.constraints.objective != "generic":
-            return state.failure_message()
-        return self._tool_fallback_reply(last_payload)
+        return await self.task_runtime.complete_chat(
+            chat_id=chat_id,
+            messages=messages,
+            constraints=constraints,
+            tools=tools,
+            deps=deps,
+            status_callback=status_callback,
+            event_bus=self.event_bus,
+            on_consent_required=lambda state: self._record_pending_confirmation(chat_id, state),
+        )
 
     async def _build_system_prompt(self, chat_id: str, user_message: str = "") -> str:
         """组合基础人格 prompt、用户画像信息和相关知识笔记。"""
