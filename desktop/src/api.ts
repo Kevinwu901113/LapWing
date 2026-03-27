@@ -1,4 +1,10 @@
-export const API_BASE = "";
+const DEFAULT_API_BASE =
+  typeof window !== "undefined" && ["http:", "https:"].includes(window.location.protocol)
+    ? ""
+    : "http://127.0.0.1:8765";
+
+export const API_BASE = (import.meta.env.VITE_LAPWING_API_BASE as string | undefined) ?? DEFAULT_API_BASE;
+const REQUEST_CREDENTIALS: RequestCredentials = API_BASE ? "include" : "same-origin";
 
 export type StatusResponse = {
   online: boolean;
@@ -55,6 +61,53 @@ export type StatusResponse = {
     };
     last_updated?: string | null;
   } | null;
+};
+
+export type AuthProfileSummary = {
+  profileId: string;
+  provider: string;
+  type: string;
+  expiresAt: string | null;
+  status: string;
+  reasonCode: string | null;
+};
+
+export type AuthStatusResponse = {
+  profiles: AuthProfileSummary[];
+  bindings: Record<string, string>;
+  routes?: Record<
+    string,
+    {
+      provider?: string | null;
+      baseUrl: string;
+      model: string;
+      apiType: string;
+      source: string;
+      bindingPurpose?: string | null;
+      bindingProfileId?: string | null;
+      bindingProvider?: string | null;
+      bindingMismatch?: boolean;
+    }
+  >;
+  serviceAuth: {
+    protected: boolean;
+    host: string;
+    cookieName: string;
+  };
+};
+
+export type OAuthLoginSession = {
+  loginId: string;
+  provider: string;
+  status: "pending" | "completing" | "completed" | "failed" | "expired";
+  authorizeUrl: string;
+  profileIdHint?: string | null;
+  resolvedProfileId?: string | null;
+  error?: string | null;
+  createdAt: string;
+  updatedAt: string;
+  completionMessage?: string | null;
+  profile?: AuthProfileSummary | null;
 };
 
 export type ChatSummary = {
@@ -153,11 +206,21 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
     headers: {
       "Content-Type": "application/json",
     },
+    credentials: REQUEST_CREDENTIALS,
     ...init,
   });
 
   if (!response.ok) {
-    throw new Error(`Request failed: ${response.status}`);
+    let detail = `Request failed: ${response.status}`;
+    try {
+      const payload = (await response.json()) as { detail?: string };
+      if (typeof payload.detail === "string" && payload.detail.trim().length > 0) {
+        detail = payload.detail;
+      }
+    } catch {
+      // ignore non-json error payload
+    }
+    throw new Error(detail);
   }
   return response.json() as Promise<T>;
 }
@@ -238,4 +301,42 @@ export async function postLatencyTelemetry(payload: {
       body: JSON.stringify(payload),
     },
   );
+}
+
+export async function createApiSession(bootstrapToken: string) {
+  return fetchJson<{ success: boolean }>("/api/auth/session", {
+    method: "POST",
+    body: JSON.stringify({ bootstrap_token: bootstrapToken }),
+  });
+}
+
+export function getAuthStatus() {
+  return fetchJson<AuthStatusResponse>("/api/auth/status");
+}
+
+export async function importCodexCache(path?: string, profileId?: string) {
+  return fetchJson<{ success: boolean; profile_id: string }>(
+    "/api/auth/import/codex-cache",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        path,
+        profile_id: profileId,
+      }),
+    },
+  );
+}
+
+export async function startOpenAICodexOAuth(returnTo?: string, profileId?: string) {
+  return fetchJson<OAuthLoginSession>("/api/auth/oauth/openai-codex/start", {
+    method: "POST",
+    body: JSON.stringify({
+      return_to: returnTo,
+      profile_id: profileId,
+    }),
+  });
+}
+
+export function getOAuthLoginSession(loginId: string) {
+  return fetchJson<OAuthLoginSession>(`/api/auth/oauth/sessions/${encodeURIComponent(loginId)}`);
 }

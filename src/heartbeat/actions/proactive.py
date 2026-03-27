@@ -6,6 +6,7 @@ from datetime import datetime
 from config.settings import REMINDER_DISPATCH_GRACE_SECONDS, REMINDER_MAX_DUE_PER_CHAT
 from src.core.heartbeat import HeartbeatAction, SenseContext
 from src.core.prompt_loader import load_prompt
+from src.core.reasoning_tags import strip_internal_thinking_tags
 
 logger = logging.getLogger("lapwing.heartbeat.proactive")
 
@@ -40,8 +41,13 @@ class ProactiveMessageAction(HeartbeatAction):
                 [{"role": "user", "content": prompt}],
                 purpose="heartbeat",
                 max_tokens=200,
+                session_key=f"chat:{ctx.chat_id}",
+                origin="heartbeat.proactive_message",
             )
 
+            if not reply:
+                return
+            reply = strip_internal_thinking_tags(reply)
             if not reply:
                 return
 
@@ -115,7 +121,11 @@ class ReminderDispatchAction(HeartbeatAction):
                     [{"role": "user", "content": prompt}],
                     purpose="heartbeat",
                     max_tokens=120,
+                    session_key=f"chat:{ctx.chat_id}",
+                    origin="heartbeat.reminder_dispatch",
                 )
+                if message:
+                    message = strip_internal_thinking_tags(message)
                 if not message:
                     message = f"提醒你：{reminder['content']}"
 

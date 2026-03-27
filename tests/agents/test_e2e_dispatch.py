@@ -10,7 +10,7 @@ from src.core.dispatcher import AgentDispatcher
 # ---- 测试用 Mock Agent ----
 
 class MockSearchAgent(BaseAgent):
-    # 使用 "researcher" 以匹配 _quick_match 快速路由返回的 agent 名称
+    # 使用 researcher，模拟“深度研究任务”分发目标
     name = "researcher"
     description = "搜索信息"
     capabilities = ["web_search"]
@@ -38,9 +38,13 @@ class TestE2EDispatch:
         agent_registry = AgentRegistry()
         agent_registry.register(MockSearchAgent())
 
-        # 搜索类消息走 _quick_match 快速路由，只有人格格式化一次 LLM 调用
         router = AsyncMock()
-        router.complete = AsyncMock(return_value="Lapwing润色后的结果")
+        router.complete = AsyncMock(
+            side_effect=[
+                '{"agent": "researcher", "mode": "default", "reason": "用户要求深度研究"}',
+                "Lapwing润色后的结果",
+            ]
+        )
 
         # 构建 memory mock
         memory = AsyncMock()
@@ -53,13 +57,13 @@ class TestE2EDispatch:
                 router=router,
                 memory=memory,
             )
-            result = await dispatcher.try_dispatch("chat1", "帮我搜索Python")
+            result = await dispatcher.try_dispatch("chat1", "请深度研究 Python 生态并形成报告")
 
         # 验证结果是经人格格式化后的文本
         assert result == "Lapwing润色后的结果"
 
-        # 验证 router.complete 只调用了一次（_quick_match 跳过 LLM 分类，只有 persona format）
-        assert router.complete.call_count == 1
+        # 一次分类 + 一次人格格式化
+        assert router.complete.call_count == 2
 
     async def test_empty_registry_bypasses_llm_completely(self):
         """空注册表时，dispatcher 直接返回 None，完全不调用 LLM（零开销验证）。"""

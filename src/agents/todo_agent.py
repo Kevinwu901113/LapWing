@@ -24,7 +24,7 @@ class TodoAgent(BaseAgent):
         self._memory = memory
 
     async def execute(self, task: AgentTask, router) -> AgentResult:
-        command = await self._parse_command(task.user_message, router)
+        command = await self._parse_command(task.chat_id, task.user_message, router)
         action = str(command.get("action") or "").strip().lower()
         domain = str(command.get("domain") or "").strip().lower()
 
@@ -43,7 +43,7 @@ class TodoAgent(BaseAgent):
         message = command.get("reason") or "我这次没看懂待办操作。"
         return AgentResult(content=message, needs_persona_formatting=False)
 
-    async def _parse_command(self, user_message: str, router) -> dict:
+    async def _parse_command(self, chat_id: str, user_message: str, router) -> dict:
         now_local = datetime.now().astimezone()
         today = now_local.strftime("%Y-%m-%d")
         tz_name = now_local.tzname() or "UTC"
@@ -58,6 +58,8 @@ class TodoAgent(BaseAgent):
                 [{"role": "user", "content": prompt}],
                 purpose="tool",
                 max_tokens=320,
+                session_key=f"chat:{chat_id}",
+                origin="agent.todo.parse",
             )
         except Exception as exc:
             logger.warning(f"[todo] 解析待办命令失败: {exc}")

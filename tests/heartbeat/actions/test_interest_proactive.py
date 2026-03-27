@@ -104,6 +104,17 @@ class TestInterestProactiveAction:
             await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_bot)
         assert mock_brain.router.complete.call_args.kwargs["purpose"] == "heartbeat"
 
+    async def test_sanitizes_thinking_tags_before_send_and_store(self, mock_brain, mock_bot):
+        mock_brain.router.complete = AsyncMock(return_value="<think>内部</think>这条给你")
+        results = [{"title": "Python 文章", "url": "https://example.com/python", "snippet": "最新趋势"}]
+
+        with patch("src.heartbeat.actions.interest_proactive.load_prompt", return_value="{topic}\n{search_results}\n{user_facts_summary}"), \
+             patch("src.heartbeat.actions.interest_proactive.web_search.search", AsyncMock(return_value=results)):
+            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_bot)
+
+        mock_bot.send_message.assert_awaited_once_with(chat_id="c1", text="这条给你")
+        mock_brain.memory.append.assert_awaited_once_with("c1", "assistant", "这条给你")
+
     async def test_publishes_desktop_event(self, mock_brain, mock_bot):
         mock_brain.event_bus = MagicMock()
         mock_brain.event_bus.publish = AsyncMock()

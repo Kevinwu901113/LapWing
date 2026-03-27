@@ -1,6 +1,11 @@
-"""Lapwing 启动入口（薄适配层）。"""
+"""Lapwing 启动入口（薄适配层 + auth CLI）。"""
 
+from __future__ import annotations
+
+import argparse
+import json
 import logging
+from typing import Any
 
 from config.settings import (
     DB_PATH,
@@ -10,8 +15,7 @@ from config.settings import (
     TELEGRAM_PROXY_URL,
     TELEGRAM_TOKEN,
 )
-from src.app.container import AppContainer
-from src.app.telegram_app import TelegramApp
+from src.auth.service import AuthManager
 
 
 def setup_logging() -> logging.Logger:
@@ -27,12 +31,130 @@ def setup_logging() -> logging.Logger:
     return logging.getLogger("lapwing")
 
 
-def main() -> None:
-    logger = setup_logging()
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Lapwing CLI")
+    subparsers = parser.add_subparsers(dest="top_command")
+
+    auth_parser = subparsers.add_parser("auth", help="管理上游 provider auth")
+    auth_subparsers = auth_parser.add_subparsers(dest="auth_command", required=True)
+
+    list_parser = auth_subparsers.add_parser("list", help="列出 auth profiles")
+    list_parser.add_argument("--provider", default=None, help="按 provider 过滤，如 openai")
+
+    login_parser = auth_subparsers.add_parser("login", help="执行 OAuth 登录")
+    login_subparsers = login_parser.add_subparsers(dest="login_provider", required=True)
+    openai_login_parser = login_subparsers.add_parser(
+        "openai-codex",
+        help="通过 OpenAI/Codex OAuth (PKCE) 登录",
+    )
+    openai_login_parser.add_argument("--profile-id", default=None)
+    openai_login_parser.add_argument("--no-browser", action="store_true")
+
+    import_parser = auth_subparsers.add_parser(
+        "import",
+        help="导入现有 auth cache",
+    )
+    import_subparsers = import_parser.add_subparsers(dest="import_source", required=True)
+    codex_import_parser = import_subparsers.add_parser(
+        "codex-auth-json",
+        help="导入 ~/.codex/auth.json",
+    )
+    codex_import_parser.add_argument("--path", default="~/.codex/auth.json")
+    codex_import_parser.add_argument("--profile-id", default=None)
+
+    set_api_key_parser = auth_subparsers.add_parser(
+        "set-api-key",
+        help="保存 API key profile",
+    )
+    set_api_key_parser.add_argument("--provider", required=True)
+    set_api_key_parser.add_argument("--profile-id", default=None)
+    secret_group = set_api_key_parser.add_mutually_exclusive_group(required=True)
+    secret_group.add_argument("--literal", default=None)
+    secret_group.add_argument("--env", dest="env_name", default=None)
+    secret_group.add_argument("--command", dest="command_value", default=None)
+
+    bind_parser = auth_subparsers.add_parser("bind", help="绑定 purpose 到指定 profile")
+    bind_parser.add_argument(
+        "--purpose",
+        required=True,
+        choices=("default", "chat", "tool", "heartbeat"),
+    )
+    bind_parser.add_argument(
+        "--profile",
+        required=True,
+        help="profile id，例如 openai:default 或 openai:user@example.com",
+    )
+
+    unbind_parser = auth_subparsers.add_parser("unbind", help="取消 purpose 的显式绑定")
+    unbind_parser.add_argument(
+        "--purpose",
+        required=True,
+        choices=("default", "chat", "tool", "heartbeat"),
+    )
+
+    return parser
+
+
+def _print_json(payload: Any) -> None:
+    print(json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def handle_auth_command(args: argparse.Namespace) -> int:
+    auth = AuthManager()
+
+    if args.auth_command == "list":
+        _print_json(auth.list_profiles(provider=args.provider))
+        return 0
+
+    if args.auth_command == "login" and args.login_provider == "openai-codex":
+        profile_id, profile = auth.login_oauth(
+            provider="openai",
+            method="pkce",
+            profile_id=args.profile_id,
+            no_browser=args.no_browser,
+        )
+        _print_json({"success": True, "profileId": profile_id, "profile": profile})
+        return 0
+
+    if args.auth_command == "import" and args.import_source == "codex-auth-json":
+        profile_id, profile = auth.import_codex_auth_json(
+            path=args.path,
+            profile_id=args.profile_id,
+        )
+        _print_json({"success": True, "profileId": profile_id, "profile": profile})
+        return 0
+
+    if args.auth_command == "set-api-key":
+        profile_id, profile = auth.set_api_key(
+            provider=args.provider,
+            profile_id=args.profile_id,
+            literal=args.literal,
+            env_name=args.env_name,
+            command=args.command_value,
+        )
+        _print_json({"success": True, "profileId": profile_id, "profile": profile})
+        return 0
+
+    if args.auth_command == "bind":
+        profile_id = auth.bind_profile(purpose=args.purpose, profile_id=args.profile)
+        _print_json({"success": True, "purpose": args.purpose, "profileId": profile_id})
+        return 0
+
+    if args.auth_command == "unbind":
+        cleared = auth.unbind_profile(purpose=args.purpose)
+        _print_json({"success": True, "purpose": args.purpose, "cleared": cleared})
+        return 0
+
+    raise ValueError("未知 auth 子命令")
+
+
+def run_telegram_bot(logger: logging.Logger) -> int:
+    from src.app.container import AppContainer
+    from src.app.telegram_app import TelegramApp
 
     if not TELEGRAM_TOKEN:
         logger.error("TELEGRAM_TOKEN 未配置！请检查 config/.env")
-        raise SystemExit(1)
+        return 1
 
     logger.info("Lapwing 正在启动...")
     container = AppContainer(db_path=DB_PATH, data_dir=DATA_DIR)
@@ -45,6 +167,24 @@ def main() -> None:
     )
     app.run_polling(drop_pending_updates=True)
     logger.info("Lapwing 已关闭")
+    return 0
+
+
+def main() -> None:
+    logger = setup_logging()
+    parser = build_parser()
+    args = parser.parse_args()
+
+    try:
+        if args.top_command == "auth":
+            raise SystemExit(handle_auth_command(args))
+        raise SystemExit(run_telegram_bot(logger))
+    except KeyboardInterrupt:
+        logger.info("Lapwing 已取消")
+        raise SystemExit(130)
+    except Exception as exc:
+        logger.error("执行失败: %s", exc)
+        raise SystemExit(1) from exc
 
 
 if __name__ == "__main__":

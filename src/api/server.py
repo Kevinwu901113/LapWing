@@ -6,14 +6,20 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Query, Request, Response
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 import uvicorn
 
-from config.settings import DATA_DIR
+from config.settings import (
+    API_ALLOWED_ORIGINS,
+    API_HOST,
+    API_PORT,
+    API_SESSION_TTL_SECONDS,
+    DATA_DIR,
+)
 from src.core.latency_monitor import LatencyMonitor
 
 logger = logging.getLogger("lapwing.api")
@@ -31,6 +37,20 @@ class LatencyTelemetryRequest(BaseModel):
     metric: str
     samples_ms: list[float]
     client_timestamp: str | None = None
+
+
+class ApiSessionRequest(BaseModel):
+    bootstrap_token: str | None = None
+
+
+class CodexCacheImportRequest(BaseModel):
+    path: str | None = None
+    profile_id: str | None = None
+
+
+class OAuthStartRequest(BaseModel):
+    return_to: str | None = None
+    profile_id: str | None = None
 
 
 def _visible_user_facts(facts: list[dict]) -> list[dict]:
@@ -73,14 +93,121 @@ def create_app(
     app.state.task_view_store = task_view_store
     app.state.latency_monitor = latency_monitor
     app.state.started_at = datetime.now(timezone.utc).isoformat()
+    app.state.auth_manager = getattr(brain, "auth_manager", None)
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=API_ALLOWED_ORIGINS,
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def require_local_api_auth(request: Request, call_next):
+        path = request.url.path
+        if not path.startswith("/api/"):
+            return await call_next(request)
+        if path == "/api/auth/session":
+            return await call_next(request)
+
+        auth_manager = app.state.auth_manager
+        if auth_manager is None:
+            return await call_next(request)
+
+        session_token = request.cookies.get(auth_manager.api_sessions.cookie_name)
+        auth_header = request.headers.get("authorization", "")
+        bearer_token = ""
+        if auth_header.lower().startswith("bearer "):
+            bearer_token = auth_header[7:].strip()
+
+        if auth_manager.validate_api_session(session_token) or (
+            bearer_token and bearer_token == auth_manager.bootstrap_token()
+        ):
+            return await call_next(request)
+
+        return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+
+    @app.post("/api/auth/session")
+    async def post_api_session(payload: ApiSessionRequest, response: Response, request: Request):
+        auth_manager = app.state.auth_manager
+        if auth_manager is None:
+            raise HTTPException(status_code=503, detail="Auth manager not available")
+
+        auth_header = request.headers.get("authorization", "")
+        bootstrap_token = payload.bootstrap_token
+        if not bootstrap_token and auth_header.lower().startswith("bearer "):
+            bootstrap_token = auth_header[7:].strip()
+        if not bootstrap_token:
+            raise HTTPException(status_code=401, detail="Missing bootstrap token")
+
+        try:
+            session_token = auth_manager.create_api_session(bootstrap_token)
+        except ValueError as exc:
+            raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+        response.set_cookie(
+            key=auth_manager.api_sessions.cookie_name,
+            value=session_token,
+            httponly=True,
+            samesite="strict",
+            secure=False,
+            max_age=API_SESSION_TTL_SECONDS,
+            path="/",
+        )
+        return {"success": True}
+
+    @app.get("/api/auth/status")
+    async def get_auth_status():
+        auth_manager = app.state.auth_manager
+        if auth_manager is None:
+            raise HTTPException(status_code=503, detail="Auth manager not available")
+        return auth_manager.auth_status()
+
+    @app.post("/api/auth/import/codex-cache")
+    async def post_import_codex_cache(payload: CodexCacheImportRequest):
+        auth_manager = app.state.auth_manager
+        if auth_manager is None:
+            raise HTTPException(status_code=503, detail="Auth manager not available")
+        path = payload.path or str(Path.home() / ".codex" / "auth.json")
+        try:
+            profile_id, profile = auth_manager.import_codex_auth_json(
+                path=path,
+                profile_id=payload.profile_id,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return {
+            "success": True,
+            "profile_id": profile_id,
+            "profile": profile,
+        }
+
+    @app.post("/api/auth/oauth/openai-codex/start")
+    async def post_openai_codex_oauth_start(payload: OAuthStartRequest):
+        auth_manager = app.state.auth_manager
+        if auth_manager is None:
+            raise HTTPException(status_code=503, detail="Auth manager not available")
+        try:
+            session = auth_manager.start_oauth_login(
+                provider="openai",
+                method="pkce",
+                profile_id=payload.profile_id,
+                return_to=payload.return_to,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        return session
+
+    @app.get("/api/auth/oauth/sessions/{login_id}")
+    async def get_oauth_login_session(login_id: str):
+        auth_manager = app.state.auth_manager
+        if auth_manager is None:
+            raise HTTPException(status_code=503, detail="Auth manager not available")
+        try:
+            return auth_manager.get_oauth_login_session(login_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="OAuth login session not found") from exc
 
     @app.get("/api/chats")
     async def get_chats():
@@ -246,8 +373,8 @@ class LocalApiServer:
         event_bus,
         task_view_store=None,
         latency_monitor: LatencyMonitor | None = None,
-        host: str = "0.0.0.0",
-        port: int = 8765,
+        host: str = API_HOST,
+        port: int = API_PORT,
     ) -> None:
         self._brain = brain
         self._event_bus = event_bus

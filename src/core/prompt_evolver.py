@@ -61,6 +61,8 @@ class PromptEvolver:
                 [{"role": "user", "content": evolver_prompt}],
                 purpose="chat",  # 使用高质量模型
                 max_tokens=4096,
+                session_key="system:prompt_evolver",
+                origin="core.prompt_evolver",
             )
         except Exception as exc:
             logger.error(f"[prompt_evolver] LLM 调用失败: {exc}")

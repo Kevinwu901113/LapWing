@@ -66,6 +66,8 @@ class FileAgent(BaseAgent):
                 [{"role": "user", "content": prompt}],
                 purpose="tool",
                 max_tokens=512,
+                session_key=f"chat:{task.chat_id}",
+                origin="agent.file.parse",
             )
         except Exception as exc:
             logger.warning(f"[file] LLM 解析失败: {exc}")

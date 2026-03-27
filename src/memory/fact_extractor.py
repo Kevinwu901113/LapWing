@@ -112,7 +112,13 @@ class FactExtractor:
 
             # 用 tool 模型（低成本）执行提取
             messages = [{"role": "user", "content": prompt}]
-            response = await self._router.complete(messages, purpose="tool", max_tokens=512)
+            response = await self._router.complete(
+                messages,
+                purpose="tool",
+                max_tokens=512,
+                session_key=f"chat:{chat_id}",
+                origin="memory.fact_extractor.extract",
+            )
 
             # 解析并存储提取结果
             facts = self._parse_result(response)

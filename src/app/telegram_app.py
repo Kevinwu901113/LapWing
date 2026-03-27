@@ -8,6 +8,7 @@ import re
 from typing import Any
 
 from config.settings import MAX_REPLY_LENGTH, MESSAGE_BUFFER_SECONDS, SKILLS_COMMANDS_ENABLED
+from src.core.reasoning_tags import strip_internal_thinking_tags
 
 logger = logging.getLogger("lapwing.app.telegram")
 
@@ -72,6 +73,8 @@ class TelegramApp:
         app.add_handler(CommandHandler("memory", self.cmd_memory))
         app.add_handler(CommandHandler("interests", self.cmd_interests))
         app.add_handler(CommandHandler("skill", self.cmd_skill))
+        app.add_handler(CommandHandler("model", self.cmd_model))
+        app.add_handler(CommandHandler("models", self.cmd_model))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self.handle_voice))
 
@@ -219,7 +222,110 @@ class TelegramApp:
             user_input=user_input,
         )
 
+    async def cmd_model(self, update, context) -> None:
+        message = update.message
+        if message is None:
+            return
+
+        chat_id = str(message.chat_id)
+        args = [str(item).strip() for item in (context.args or []) if str(item).strip()]
+        keyword = args[0].lower() if args else ""
+
+        try:
+            if not args or keyword == "list":
+                options = self._container.brain.list_model_options()
+                status = self._container.brain.model_status(chat_id)
+                await message.reply_text(self._format_model_list(options, status))
+                return
+
+            if keyword == "status":
+                status = self._container.brain.model_status(chat_id)
+                await message.reply_text(self._format_model_status(status))
+                return
+
+            if keyword == "default":
+                result = self._container.brain.reset_model(chat_id)
+                cleared = int(result.get("cleared", 0))
+                await message.reply_text(f"已恢复默认模型（清除 {cleared} 个会话覆盖）。")
+                return
+
+            selector = " ".join(args).strip()
+            result = self._container.brain.switch_model(chat_id, selector)
+            await message.reply_text(self._format_model_switch_result(result))
+        except ValueError as exc:
+            await message.reply_text(f"模型切换失败：{exc}")
+        except Exception as exc:
+            logger.warning("[model] 处理 /model 失败: %s", exc)
+            await message.reply_text("模型切换失败，请稍后再试。")
+
+    def _format_model_list(self, options: list[dict[str, Any]], status: dict[str, Any]) -> str:
+        if not options:
+            return "当前没有可用模型，请先配置 LLM_MODEL_ALLOWLIST。"
+
+        lines = ["可用模型（会话级）："]
+        for option in options:
+            alias = str(option.get("alias") or "").strip()
+            ref = str(option.get("ref") or "").strip()
+            index = option.get("index")
+            if alias:
+                lines.append(f"{index}. {alias} -> {ref}")
+            else:
+                lines.append(f"{index}. {ref}")
+
+        purpose_status = dict(status.get("purposes", {}) or {})
+        if purpose_status:
+            lines.append("")
+            lines.append("当前生效：")
+            for purpose in ("chat", "tool", "heartbeat"):
+                detail = purpose_status.get(purpose) or {}
+                effective = str(detail.get("effective") or "").strip()
+                if not effective:
+                    continue
+                if detail.get("override"):
+                    lines.append(f"- {purpose}: {effective} (override)")
+                else:
+                    lines.append(f"- {purpose}: {effective}")
+        return "\n".join(lines)
+
+    def _format_model_status(self, status: dict[str, Any]) -> str:
+        purpose_status = dict(status.get("purposes", {}) or {})
+        lines = ["当前模型状态（会话级）："]
+        for purpose in ("chat", "tool", "heartbeat"):
+            detail = purpose_status.get(purpose) or {}
+            default_model = str(detail.get("default") or "")
+            effective_model = str(detail.get("effective") or "")
+            override_model = detail.get("override")
+            override_text = str(override_model) if override_model else "（无）"
+            lines.append(f"- {purpose}:")
+            lines.append(f"  default: {default_model}")
+            lines.append(f"  effective: {effective_model}")
+            lines.append(f"  override: {override_text}")
+        return "\n".join(lines)
+
+    def _format_model_switch_result(self, result: dict[str, Any]) -> str:
+        selected = dict(result.get("selected", {}) or {})
+        selected_ref = str(selected.get("ref") or "")
+        applied = dict(result.get("applied", {}) or {})
+        skipped = dict(result.get("skipped", {}) or {})
+
+        lines = [f"已选择模型：{selected_ref}"]
+        if applied:
+            applied_parts = ", ".join(
+                f"{purpose}={model_ref}"
+                for purpose, model_ref in applied.items()
+            )
+            lines.append(f"已应用：{applied_parts}")
+        else:
+            lines.append("没有 purpose 应用该模型。")
+
+        if skipped:
+            lines.append("未切换：")
+            for purpose, reason in skipped.items():
+                lines.append(f"- {purpose}: {reason}")
+        return "\n".join(lines)
+
     async def _send_reply(self, message, reply: str) -> None:
+        reply = strip_internal_thinking_tags(reply)
         if len(reply) <= MAX_REPLY_LENGTH:
             await message.reply_text(reply)
             return

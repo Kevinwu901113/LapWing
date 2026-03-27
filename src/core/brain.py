@@ -2,10 +2,12 @@
 
 import logging
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from src.core.prompt_loader import load_prompt
+from src.auth.service import AuthManager
 from src.core.llm_router import LLMRouter
+from src.core.prompt_loader import load_prompt
+from src.core.reasoning_tags import strip_internal_thinking_tags
 from src.core.task_runtime import RuntimeDeps, TaskRuntime
 from src.core.shell_policy import (
     ExecutionSessionState,
@@ -19,6 +21,7 @@ from src.tools.registry import build_default_tool_registry
 from src.tools.shell_executor import execute as execute_shell
 from src.tools.types import ToolExecutionRequest
 from config.settings import (
+    CHAT_WEB_TOOLS_ENABLED,
     MAX_HISTORY_TURNS,
     SHELL_ALLOW_SUDO,
     SHELL_DEFAULT_CWD,
@@ -40,7 +43,8 @@ class LapwingBrain:
     """管理 LLM 调用和对话上下文。"""
 
     def __init__(self, db_path: Path):
-        self.router = LLMRouter()
+        self.auth_manager = AuthManager()
+        self.router = LLMRouter(auth_manager=self.auth_manager)
         self.tool_registry = build_default_tool_registry()
         self.task_runtime = TaskRuntime(router=self.router, tool_registry=self.tool_registry)
         self.memory = ConversationMemory(db_path)
@@ -96,6 +100,24 @@ class LapwingBrain:
         if self.skill_manager is None:
             return
         self.skill_manager.reload()
+
+    def _chat_session_key(self, chat_id: str) -> str:
+        return f"chat:{chat_id}"
+
+    def list_model_options(self) -> list[dict[str, Any]]:
+        return self.router.list_model_options()
+
+    def model_status(self, chat_id: str) -> dict[str, Any]:
+        return self.router.model_status(session_key=self._chat_session_key(chat_id))
+
+    def switch_model(self, chat_id: str, selector: str) -> dict[str, Any]:
+        return self.router.switch_session_model(
+            session_key=self._chat_session_key(chat_id),
+            selector=selector,
+        )
+
+    def reset_model(self, chat_id: str) -> dict[str, Any]:
+        return self.router.clear_session_model(session_key=self._chat_session_key(chat_id))
 
     def _split_facts(self, facts: list[dict]) -> tuple[list[dict], list[dict]]:
         """将普通事实与 memory summary 分离。"""
@@ -157,8 +179,10 @@ class LapwingBrain:
         return "\n".join(lines)
 
     def _tool_runtime_instruction(self) -> str:
+        sections: list[str] = []
+
         if SHELL_ENABLED:
-            return (
+            sections.append(
                 "## 本地执行规则\n\n"
                 "你拥有 execute_shell、read_file、write_file 工具，可以在当前服务器上执行真实的操作。\n\n"
                 "### 执行原则\n"
@@ -177,13 +201,35 @@ class LapwingBrain:
                 f"当前工作目录：{SHELL_DEFAULT_CWD}\n"
                 f"当前用户：可用 whoami 确认\n"
             )
+        else:
+            sections.append(
+                "## 本地执行规则\n\n"
+                "本地 shell 执行当前已禁用。"
+                "如果用户要求你在当前机器上执行命令或修改本地文件，"
+                "必须明确说明执行功能当前关闭，不能编造结果。"
+            )
 
-        return (
-            "## 本地执行规则\n\n"
-            "本地 shell 执行当前已禁用。"
-            "如果用户要求你在当前机器上执行命令或修改本地文件，"
-            "必须明确说明执行功能当前关闭，不能编造结果。"
-        )
+        if CHAT_WEB_TOOLS_ENABLED:
+            sections.append(
+                "## 联网检索规则\n\n"
+                "你拥有 web_search 和 web_fetch 工具，可以联网检索并阅读网页内容。\n\n"
+                "### 何时应优先联网\n"
+                "- 用户明确要求你“查一下/搜一下/看最新/今天/最近”时，优先调用 web_search\n"
+                "- 涉及时效性强的信息（新闻、行情、公告、比分、票价、政策变化）时，优先联网后再回答\n"
+                "- 当你对事实不确定时，不要猜测，先联网验证\n\n"
+                "### 联网执行原则\n"
+                "- 先用 web_search 找来源，再用 web_fetch 阅读关键页面后给结论\n"
+                "- 如果结果冲突或不充分，继续补充搜索/抓取，直到可以给出可信结论\n"
+                "- 如果最终仍无法确认，要明确说明“未检索到可靠结果”，不要编造\n"
+                "- 只要本轮调用过 web 工具，最终回答末尾必须附上可点击 URL 来源列表\n"
+            )
+        else:
+            sections.append(
+                "## 联网检索规则\n\n"
+                "联网工具当前已禁用。若用户要求最新网页信息，需明确说明无法联网检索。"
+            )
+
+        return "\n\n".join(sections)
 
     async def _complete_chat(
         self,
@@ -200,6 +246,7 @@ class LapwingBrain:
         )
         tools = self.task_runtime.chat_tools(
             shell_enabled=SHELL_ENABLED,
+            web_enabled=CHAT_WEB_TOOLS_ENABLED,
             skill_activation_enabled=include_skill_activation_tool,
         )
         services = {}
@@ -351,6 +398,7 @@ class LapwingBrain:
             await self.memory.append(chat_id, "assistant", reply)
             return reply
 
+        dialogue_generated = skill.command_dispatch != "tool"
         try:
             if skill.command_dispatch == "tool":
                 reply = await self._run_skill_direct_dispatch(skill=skill, user_input=user_input)
@@ -365,6 +413,10 @@ class LapwingBrain:
         except Exception as exc:
             logger.warning("[skills] 执行技能 `%s` 失败: %s", skill.name, exc)
             reply = f"技能 `{skill.name}` 执行失败：{exc}"
+
+        # 仅对模型对话分支清洗，工具直派分支保留原始工具输出。
+        if dialogue_generated:
+            reply = strip_internal_thinking_tags(reply)
 
         await self.memory.append(chat_id, "assistant", reply)
         return reply
@@ -514,6 +566,7 @@ class LapwingBrain:
             try:
                 agent_reply = await self.dispatcher.try_dispatch(chat_id, effective_user_message)
                 if agent_reply is not None:
+                    agent_reply = strip_internal_thinking_tags(agent_reply)
                     await self.memory.append(chat_id, "assistant", agent_reply)
                     return agent_reply
             except Exception as e:
@@ -543,6 +596,7 @@ class LapwingBrain:
                 include_skill_activation_tool=self._skill_activation_tool_enabled(),
                 status_callback=status_callback,
             )
+            reply = strip_internal_thinking_tags(reply)
             await self.memory.append(chat_id, "assistant", reply)
             logger.debug(f"[{chat_id}] 回复生成成功，长度: {len(reply)}")
             return reply

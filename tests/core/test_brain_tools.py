@@ -9,6 +9,7 @@ import pytest
 
 from src.core.shell_policy import PendingShellConfirmation, VerificationStatus
 from src.tools.shell_executor import ShellResult
+from src.tools.web_fetcher import FetchResult
 
 
 def _tool_turn(
@@ -58,6 +59,30 @@ class TestBrainTools:
             assert result == "LLM 回复"
             brain.router.complete_with_tools.assert_called_once()
             brain.memory.append.assert_any_call("chat1", "assistant", "LLM 回复")
+
+    async def test_think_strips_internal_thinking_tags_before_store_and_return(self):
+        with patch("src.core.brain.load_prompt", return_value="prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"):
+            from src.core.brain import LapwingBrain
+
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.append = AsyncMock()
+            brain.memory.get = AsyncMock(return_value=[])
+            brain.memory.get_user_facts = AsyncMock(return_value=[])
+            brain.memory.remove_last = AsyncMock()
+            brain.fact_extractor = MagicMock()
+            brain.fact_extractor.notify = MagicMock()
+            brain.router.complete_with_tools = AsyncMock(
+                return_value=_tool_turn(text="可见<think>内部思考</think>内容")
+            )
+
+            result = await brain.think("chat1", "你好")
+
+            assert "<think>" not in result.lower()
+            assert "内部思考" not in result
+            assert result == "可见内容"
+            brain.memory.append.assert_any_call("chat1", "assistant", "可见内容")
 
     async def test_openai_style_tool_loop_executes_shell_and_returns_final_text(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
@@ -180,7 +205,8 @@ class TestBrainTools:
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
              patch("src.core.brain.ConversationMemory"), \
-             patch("src.core.brain.SHELL_ENABLED", False):
+             patch("src.core.brain.SHELL_ENABLED", False), \
+             patch("src.core.brain.CHAT_WEB_TOOLS_ENABLED", False):
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
@@ -198,6 +224,95 @@ class TestBrainTools:
             brain.router.complete.assert_called_once()
             messages = brain.router.complete.call_args.args[0]
             assert "本地 shell 执行当前已禁用" in messages[0]["content"]
+
+    async def test_web_tool_loop_search_then_fetch_returns_final_reply(self):
+        with patch("src.core.brain.load_prompt", return_value="prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"), \
+             patch("src.core.brain.SHELL_ENABLED", False), \
+             patch("src.core.brain.CHAT_WEB_TOOLS_ENABLED", True), \
+             patch("src.tools.registry.web_search.search", new_callable=AsyncMock) as mock_search, \
+             patch("src.tools.registry.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
+            from src.core.brain import LapwingBrain
+
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.append = AsyncMock()
+            brain.memory.get = AsyncMock(return_value=[])
+            brain.memory.get_user_facts = AsyncMock(return_value=[])
+            brain.memory.remove_last = AsyncMock()
+            brain.fact_extractor = MagicMock()
+            brain.fact_extractor.notify = MagicMock()
+
+            mock_search.return_value = [
+                {
+                    "title": "A股收盘快讯",
+                    "url": "https://finance.example/a-share-close",
+                    "snippet": "上证指数今日收盘上涨。",
+                }
+            ]
+            mock_fetch.return_value = FetchResult(
+                url="https://finance.example/a-share-close",
+                title="A股收盘快讯",
+                text="上证指数收于 3200 点，沪深两市成交额放大。",
+                success=True,
+                error="",
+            )
+            brain.router.complete_with_tools = AsyncMock(
+                side_effect=[
+                    _tool_turn(
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call_web_1",
+                                name="web_search",
+                                arguments={"query": "今天 A股 收盘", "max_results": 3},
+                            )
+                        ],
+                        continuation_message={
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{"id": "call_web_1"}],
+                        },
+                    ),
+                    _tool_turn(
+                        tool_calls=[
+                            SimpleNamespace(
+                                id="call_web_2",
+                                name="web_fetch",
+                                arguments={"url": "https://finance.example/a-share-close"},
+                            )
+                        ],
+                        continuation_message={
+                            "role": "assistant",
+                            "content": "",
+                            "tool_calls": [{"id": "call_web_2"}],
+                        },
+                    ),
+                    _tool_turn(text="今天A股已收盘，来源：https://finance.example/a-share-close"),
+                ]
+            )
+            brain.router.build_tool_result_message = MagicMock(
+                side_effect=[
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_web_1",
+                        "name": "web_search",
+                        "content": "{}",
+                    },
+                    {
+                        "role": "tool",
+                        "tool_call_id": "call_web_2",
+                        "name": "web_fetch",
+                        "content": "{}",
+                    },
+                ]
+            )
+
+            result = await brain.think("chat1", "查一下今天A股收盘信息")
+
+            assert "https://finance.example/a-share-close" in result
+            mock_search.assert_awaited_once_with("今天 A股 收盘", max_results=3)
+            mock_fetch.assert_awaited_once_with("https://finance.example/a-share-close")
+            assert brain.router.complete_with_tools.await_count == 3
 
     async def test_blocked_shell_result_returns_non_fabricated_fallback(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
@@ -941,6 +1056,7 @@ class TestBrainTools:
 
             brain.task_runtime.chat_tools.assert_called_once_with(
                 shell_enabled=True,
+                web_enabled=True,
                 skill_activation_enabled=True,
             )
 
@@ -974,3 +1090,69 @@ class TestBrainTools:
             )
 
             assert "不允许用户直接调用" in reply
+
+    async def test_run_skill_command_sanitizes_dialogue_reply(self):
+        with patch("src.core.brain.load_prompt", return_value="prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"):
+            from src.core.brain import LapwingBrain
+
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.append = AsyncMock()
+            brain.memory.get = AsyncMock(return_value=[])
+            brain.memory.get_user_facts = AsyncMock(return_value=[])
+            brain.fact_extractor = MagicMock()
+            brain.fact_extractor.notify = MagicMock()
+
+            skill = SimpleNamespace(
+                name="demo",
+                user_invocable=True,
+                command_dispatch=None,
+            )
+            brain.skill_manager = MagicMock()
+            brain.skill_manager.enabled = True
+            brain.skill_manager.get.return_value = skill
+            brain._run_skill_dialogue = AsyncMock(return_value="<think>隐藏</think>展示")
+
+            reply = await brain.run_skill_command(
+                chat_id="chat1",
+                raw_user_message="/skill demo",
+                skill_name="demo",
+                user_input="",
+            )
+
+            assert reply == "展示"
+            brain.memory.append.assert_any_call("chat1", "assistant", "展示")
+
+    async def test_run_skill_command_keeps_raw_direct_dispatch_output(self):
+        with patch("src.core.brain.load_prompt", return_value="prompt"), \
+             patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.ConversationMemory"):
+            from src.core.brain import LapwingBrain
+
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.memory.append = AsyncMock()
+            brain.memory.get = AsyncMock(return_value=[])
+            brain.memory.get_user_facts = AsyncMock(return_value=[])
+            brain.fact_extractor = MagicMock()
+            brain.fact_extractor.notify = MagicMock()
+
+            skill = SimpleNamespace(
+                name="demo",
+                user_invocable=True,
+                command_dispatch="tool",
+            )
+            brain.skill_manager = MagicMock()
+            brain.skill_manager.enabled = True
+            brain.skill_manager.get.return_value = skill
+            brain._run_skill_direct_dispatch = AsyncMock(return_value="<think>raw</think>工具输出")
+
+            reply = await brain.run_skill_command(
+                chat_id="chat1",
+                raw_user_message="/skill demo",
+                skill_name="demo",
+                user_input="pwd",
+            )
+
+            assert reply == "<think>raw</think>工具输出"
+            brain.memory.append.assert_any_call("chat1", "assistant", "<think>raw</think>工具输出")

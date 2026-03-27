@@ -125,3 +125,119 @@ async def test_handle_message_skill_shortcut_bypasses_buffer(app_with_container)
 
     mock_run_skill.assert_awaited_once()
     mock_enqueue.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_cmd_model_list_shows_options_and_effective_models(app_with_container):
+    app, container = app_with_container
+    message = make_message(text="/model")
+    update = SimpleNamespace(message=message)
+    context = SimpleNamespace(args=[])
+
+    container.brain.list_model_options = MagicMock(
+        return_value=[
+            {"index": 1, "alias": "codex", "ref": "openai-codex/gpt-5.4"},
+            {"index": 2, "alias": "minimax", "ref": "MiniMax-M2.7"},
+        ]
+    )
+    container.brain.model_status = MagicMock(
+        return_value={
+            "purposes": {
+                "chat": {"effective": "openai-codex/gpt-5.4", "override": "openai-codex/gpt-5.4"},
+                "tool": {"effective": "MiniMax-M2.7", "override": None},
+                "heartbeat": {"effective": "MiniMax-M2.7", "override": None},
+            }
+        }
+    )
+
+    await app.cmd_model(update, context)
+
+    container.brain.list_model_options.assert_called_once_with()
+    container.brain.model_status.assert_called_once_with("42")
+    text = message.reply_text.await_args.args[0]
+    assert "可用模型（会话级）" in text
+    assert "1. codex -> openai-codex/gpt-5.4" in text
+    assert "chat: openai-codex/gpt-5.4 (override)" in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_model_status_routes_to_brain_status(app_with_container):
+    app, container = app_with_container
+    message = make_message(text="/model status")
+    update = SimpleNamespace(message=message)
+    context = SimpleNamespace(args=["status"])
+    container.brain.model_status = MagicMock(
+        return_value={
+            "purposes": {
+                "chat": {"default": "a", "effective": "b", "override": "b"},
+                "tool": {"default": "c", "effective": "c", "override": None},
+                "heartbeat": {"default": "d", "effective": "d", "override": None},
+            }
+        }
+    )
+
+    await app.cmd_model(update, context)
+
+    container.brain.model_status.assert_called_once_with("42")
+    text = message.reply_text.await_args.args[0]
+    assert "当前模型状态（会话级）" in text
+    assert "default: a" in text
+    assert "effective: b" in text
+
+
+@pytest.mark.asyncio
+async def test_cmd_model_switch_and_default(app_with_container):
+    app, container = app_with_container
+    message = make_message(text="/model 2")
+    update = SimpleNamespace(message=message)
+    context = SimpleNamespace(args=["2"])
+    container.brain.switch_model = MagicMock(
+        return_value={
+            "selected": {"ref": "MiniMax-M2.7"},
+            "applied": {"chat": "MiniMax-M2.7", "tool": "MiniMax-M2.7"},
+            "skipped": {"heartbeat": "缺少 openai oauth profile"},
+        }
+    )
+
+    await app.cmd_model(update, context)
+
+    container.brain.switch_model.assert_called_once_with("42", "2")
+    switch_text = message.reply_text.await_args.args[0]
+    assert "已选择模型：MiniMax-M2.7" in switch_text
+    assert "未切换" in switch_text
+
+    message_default = make_message(text="/model default")
+    update_default = SimpleNamespace(message=message_default)
+    context_default = SimpleNamespace(args=["default"])
+    container.brain.reset_model = MagicMock(return_value={"cleared": 2})
+
+    await app.cmd_model(update_default, context_default)
+
+    container.brain.reset_model.assert_called_once_with("42")
+    default_text = message_default.reply_text.await_args.args[0]
+    assert "已恢复默认模型" in default_text
+
+
+@pytest.mark.asyncio
+async def test_cmd_model_handles_value_error(app_with_container):
+    app, container = app_with_container
+    message = make_message(text="/model unknown")
+    update = SimpleNamespace(message=message)
+    context = SimpleNamespace(args=["unknown"])
+    container.brain.switch_model = MagicMock(side_effect=ValueError("模型不在 allowlist"))
+
+    await app.cmd_model(update, context)
+
+    container.brain.switch_model.assert_called_once_with("42", "unknown")
+    text = message.reply_text.await_args.args[0]
+    assert "模型切换失败" in text
+
+
+@pytest.mark.asyncio
+async def test_send_reply_strips_thinking_tags(app_with_container):
+    app, _ = app_with_container
+    message = make_message()
+
+    await app._send_reply(message, "<think>内部</think>可见")
+
+    message.reply_text.assert_awaited_once_with("可见")

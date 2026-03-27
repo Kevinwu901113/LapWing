@@ -3,35 +3,30 @@
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Awaitable, Callable
 
+from src.auth.service import AuthManager
+from src.core.openai_codex_runtime import OpenAICodexRuntime
 from config.settings import (
-    LLM_API_KEY,
     LLM_BASE_URL,
     LLM_MODEL,
-    LLM_CHAT_API_KEY,
+    LLM_MODEL_ALLOWLIST,
     LLM_CHAT_BASE_URL,
     LLM_CHAT_MODEL,
-    LLM_TOOL_API_KEY,
     LLM_TOOL_BASE_URL,
     LLM_TOOL_MODEL,
-    NIM_API_KEY,
     NIM_BASE_URL,
     NIM_MODEL,
 )
 
 logger = logging.getLogger("lapwing.llm_router")
 
-# purpose -> (api_key, base_url, model) 的映射配置
-_PURPOSE_ENV: dict[str, tuple[str, str, str]] = {
-    "chat": (LLM_CHAT_API_KEY, LLM_CHAT_BASE_URL, LLM_CHAT_MODEL),
-    "tool": (LLM_TOOL_API_KEY, LLM_TOOL_BASE_URL, LLM_TOOL_MODEL),
-    "heartbeat": (NIM_API_KEY, NIM_BASE_URL, NIM_MODEL),
-}
+_RECOVERABLE_FAILURES = {"auth", "rate_limit", "timeout", "billing"}
 
 _MINIMAX_MAX_COMPLETION_TOKENS = 2048
 _MINIMAX_DEFAULT_TEMPERATURE = 1.0
 _MINIMAX_DEFAULT_TOP_P = 0.95
+_MODEL_PURPOSES: tuple[str, ...] = ("chat", "tool", "heartbeat")
 
 
 @dataclass
@@ -52,8 +47,28 @@ class ToolTurnResult:
     continuation_message: dict[str, Any] | None = None
 
 
-def _detect_api_type(base_url: str) -> str:
+@dataclass(frozen=True)
+class ModelOption:
+    index: int
+    ref: str
+    alias: str | None = None
+
+
+def _extract_openai_codex_model(model: str) -> str | None:
+    normalized = str(model or "").strip()
+    if not normalized:
+        return None
+    prefix = "openai-codex/"
+    if not normalized.lower().startswith(prefix):
+        return None
+    resolved = normalized[len(prefix):].strip()
+    return resolved or None
+
+
+def _detect_api_type(base_url: str, model: str | None = None) -> str:
     """根据 base_url 判断当前 provider 走哪种兼容协议。"""
+    if _extract_openai_codex_model(model or "") is not None:
+        return "openai_codex"
     return "anthropic" if "/anthropic" in base_url.lower() else "openai"
 
 
@@ -267,53 +282,208 @@ def _extract_anthropic_tool_calls(response: Any) -> list[ToolCallRequest]:
 class LLMRouter:
     """按 purpose 路由到对应 LLM client。"""
 
-    def __init__(self) -> None:
+    def __init__(self, auth_manager: AuthManager | None = None) -> None:
+        self._auth_manager = auth_manager or AuthManager()
+        self._codex_runtime = OpenAICodexRuntime()
         self._clients: dict[str, Any] = {}
         self._models: dict[str, str] = {}
         self._api_types: dict[str, str] = {}
         self._base_urls: dict[str, str] = {}
+        self._session_model_overrides: dict[tuple[str, str], str] = {}
+        self._model_options: list[ModelOption] = []
+        self._model_options_by_ref: dict[str, ModelOption] = {}
+        self._model_options_by_alias: dict[str, ModelOption] = {}
         self._setup_clients()
+        self._setup_model_options()
 
     def _setup_clients(self) -> None:
-        """根据配置初始化各 purpose 的 client，未配置时回退到通用 LLM_*。"""
-        if not LLM_API_KEY or not LLM_BASE_URL or not LLM_MODEL:
+        """记录各 purpose 的基础路由配置；credential 改由 auth_manager 按请求解析。"""
+        if not LLM_BASE_URL or not LLM_MODEL:
             raise ValueError(
                 "LLM 通用配置不完整，请检查 config/.env 中的 "
-                "LLM_API_KEY、LLM_BASE_URL、LLM_MODEL"
+                "LLM_BASE_URL、LLM_MODEL"
             )
 
-        for purpose, (api_key, base_url, model) in _PURPOSE_ENV.items():
-            if api_key and base_url and model:
-                resolved_api_key = api_key
-                resolved_base_url = base_url
-                resolved_model = model
-                source = "专用"
-            else:
-                resolved_api_key = LLM_API_KEY
-                resolved_base_url = LLM_BASE_URL
-                resolved_model = LLM_MODEL
-                source = "通用回退"
+        purpose_configs = {
+            "chat": (LLM_CHAT_BASE_URL or LLM_BASE_URL, LLM_CHAT_MODEL or LLM_MODEL),
+            "tool": (LLM_TOOL_BASE_URL or LLM_BASE_URL, LLM_TOOL_MODEL or LLM_MODEL),
+            "heartbeat": (NIM_BASE_URL or LLM_BASE_URL, NIM_MODEL or LLM_MODEL),
+        }
 
-            api_type = _detect_api_type(resolved_base_url)
-            if api_type == "anthropic":
-                client = self._build_anthropic_client(
-                    api_key=resolved_api_key,
-                    base_url=resolved_base_url,
-                )
-            else:
-                client = self._build_openai_client(
-                    api_key=resolved_api_key,
-                    base_url=resolved_base_url,
-                )
-
-            self._clients[purpose] = client
+        for purpose, (resolved_base_url, resolved_model) in purpose_configs.items():
+            api_type = _detect_api_type(resolved_base_url, resolved_model)
+            self._clients.setdefault(purpose, None)
             self._models[purpose] = resolved_model
             self._api_types[purpose] = api_type
             self._base_urls[purpose] = resolved_base_url
             logger.info(
-                f"[{purpose}] 使用{source}模型: "
+                f"[{purpose}] 已注册模型路由: "
                 f"{resolved_model} ({resolved_base_url}, {api_type})"
             )
+
+    def _setup_model_options(self) -> None:
+        options: list[ModelOption] = []
+        options_by_ref: dict[str, ModelOption] = {}
+        options_by_alias: dict[str, ModelOption] = {}
+
+        for alias, ref in LLM_MODEL_ALLOWLIST:
+            normalized_ref = str(ref or "").strip()
+            if not normalized_ref or normalized_ref in options_by_ref:
+                continue
+
+            normalized_alias = str(alias or "").strip() or None
+            option = ModelOption(
+                index=len(options) + 1,
+                ref=normalized_ref,
+                alias=normalized_alias,
+            )
+            options.append(option)
+            options_by_ref[normalized_ref] = option
+            if normalized_alias:
+                options_by_alias.setdefault(normalized_alias.lower(), option)
+
+        self._model_options = options
+        self._model_options_by_ref = options_by_ref
+        self._model_options_by_alias = options_by_alias
+
+    def _effective_model_for_purpose(self, purpose: str, *, session_key: str | None = None) -> str:
+        if session_key:
+            override = self._session_model_overrides.get((session_key, purpose))
+            if override:
+                return override
+        return self._models.get(purpose, LLM_MODEL)
+
+    def list_model_options(self) -> list[dict[str, Any]]:
+        return [
+            {"index": option.index, "alias": option.alias, "ref": option.ref}
+            for option in self._model_options
+        ]
+
+    def _resolve_model_option(self, selector: str) -> ModelOption:
+        normalized = str(selector or "").strip()
+        if not normalized:
+            raise ValueError("模型选择不能为空。")
+        if not self._model_options:
+            raise ValueError("当前没有可用模型，请先配置 LLM_MODEL_ALLOWLIST。")
+
+        if normalized.isdigit():
+            index = int(normalized)
+            if 1 <= index <= len(self._model_options):
+                return self._model_options[index - 1]
+            raise ValueError(f"模型编号超出范围：{index}")
+
+        by_alias = self._model_options_by_alias.get(normalized.lower())
+        if by_alias is not None:
+            return by_alias
+
+        by_ref = self._model_options_by_ref.get(normalized)
+        if by_ref is not None:
+            return by_ref
+
+        raise ValueError("模型不在 allowlist 中，请先执行 /model list 查看可选项。")
+
+    def _codex_compatibility_error(
+        self,
+        *,
+        purpose: str,
+        session_key: str | None,
+    ) -> str | None:
+        try:
+            candidates = self._auth_manager.resolve_candidates(
+                purpose=purpose,
+                session_key=session_key,
+                allow_failover=False,
+                origin="model.switch.compatibility",
+            )
+        except Exception:
+            return "缺少 openai oauth profile"
+
+        if not candidates:
+            return "缺少 openai oauth profile"
+
+        candidate = candidates[0]
+        provider = str(getattr(candidate, "provider", "") or "")
+        profile_type = str(getattr(candidate, "profile_type", "") or "")
+        access_token = str(getattr(candidate, "auth_value", "") or "").strip()
+        if provider == "openai" and profile_type == "oauth" and access_token:
+            return None
+        return "缺少 openai oauth profile"
+
+    def switch_session_model(
+        self,
+        *,
+        session_key: str,
+        selector: str,
+    ) -> dict[str, Any]:
+        if not session_key.strip():
+            raise ValueError("session_key 不能为空。")
+        option = self._resolve_model_option(selector)
+        applied: dict[str, str] = {}
+        skipped: dict[str, str] = {}
+
+        for purpose in _MODEL_PURPOSES:
+            compatibility_error: str | None = None
+            if _extract_openai_codex_model(option.ref) is not None:
+                compatibility_error = self._codex_compatibility_error(
+                    purpose=purpose,
+                    session_key=session_key,
+                )
+            if compatibility_error is not None:
+                skipped[purpose] = compatibility_error
+                continue
+
+            self._session_model_overrides[(session_key, purpose)] = option.ref
+            applied[purpose] = option.ref
+
+        return {
+            "selected": {"index": option.index, "alias": option.alias, "ref": option.ref},
+            "applied": applied,
+            "skipped": skipped,
+            "status": self.model_status(session_key=session_key),
+        }
+
+    def clear_session_model(self, *, session_key: str) -> dict[str, Any]:
+        if not session_key.strip():
+            raise ValueError("session_key 不能为空。")
+
+        removed = 0
+        for purpose in _MODEL_PURPOSES:
+            key = (session_key, purpose)
+            if key in self._session_model_overrides:
+                removed += 1
+                self._session_model_overrides.pop(key, None)
+
+        return {
+            "cleared": removed,
+            "status": self.model_status(session_key=session_key),
+        }
+
+    def model_status(self, *, session_key: str | None = None) -> dict[str, Any]:
+        purposes: dict[str, dict[str, Any]] = {}
+        overrides: dict[str, str] = {}
+        for purpose in _MODEL_PURPOSES:
+            default_model = self._models.get(purpose, LLM_MODEL)
+            override = (
+                self._session_model_overrides.get((session_key, purpose))
+                if session_key
+                else None
+            )
+            effective_model = override or default_model
+            base_url = self._base_urls.get(purpose, LLM_BASE_URL)
+            api_type = _detect_api_type(base_url, effective_model)
+            if override:
+                overrides[purpose] = override
+            purposes[purpose] = {
+                "default": default_model,
+                "effective": effective_model,
+                "override": override,
+                "apiType": api_type,
+            }
+        return {
+            "sessionKey": session_key,
+            "overrides": overrides,
+            "purposes": purposes,
+        }
 
     def _build_anthropic_client(self, *, api_key: str, base_url: str) -> Any:
         try:
@@ -342,24 +512,47 @@ class LLMRouter:
             base_url=base_url,
         )
 
-    def _resolve_client(self, purpose: str) -> tuple[Any, str, str]:
-        client = self._clients.get(purpose)
-        if client is None:
-            logger.warning(f"[{purpose}] 未知的 purpose，回退到 chat 模型")
-            return (
-                self._clients["chat"],
-                self._models.get("chat", LLM_MODEL),
-                self._api_types.get("chat", _detect_api_type(LLM_BASE_URL)),
-            )
+    def _resolve_client(
+        self,
+        purpose: str,
+        auth_value: str | None = None,
+        *,
+        model_override: str | None = None,
+    ) -> tuple[Any, str, str]:
+        client_override = self._clients.get(purpose)
+        model = model_override or self._models.get(purpose, LLM_MODEL)
+        base_url = self._base_urls.get(purpose, LLM_BASE_URL)
+        if model_override is None:
+            api_type = self._api_types.get(purpose, _detect_api_type(base_url, model))
+        else:
+            api_type = _detect_api_type(base_url, model)
 
-        return (
-            client,
-            self._models.get(purpose, LLM_MODEL),
-            self._api_types.get(purpose, _detect_api_type(LLM_BASE_URL)),
-        )
+        if client_override is not None:
+            return client_override, model, api_type
+
+        if not auth_value:
+            raise ValueError(f"[{purpose}] 当前请求没有可用 credential。")
+
+        if api_type == "openai_codex":
+            raise RuntimeError("openai-codex 模型不应走 OpenAI SDK client 分支。")
+
+        if api_type == "anthropic":
+            client = self._build_anthropic_client(
+                api_key=auth_value,
+                base_url=base_url,
+            )
+        else:
+            client = self._build_openai_client(
+                api_key=auth_value,
+                base_url=base_url,
+            )
+        return client, model, api_type
 
     def _is_minimax_openai(self, purpose: str) -> bool:
-        api_type = self._api_types.get(purpose, _detect_api_type(LLM_BASE_URL))
+        api_type = self._api_types.get(
+            purpose,
+            _detect_api_type(LLM_BASE_URL, self._models.get(purpose, LLM_MODEL)),
+        )
         base_url = self._base_urls.get(purpose, LLM_BASE_URL)
         return api_type == "openai" and _is_minimax_base_url(base_url)
 
@@ -420,56 +613,196 @@ class LLMRouter:
             )
         return normalized
 
-    def model_for(self, purpose: str) -> str:
+    def model_for(self, purpose: str, *, session_key: str | None = None) -> str:
         """返回指定 purpose 实际使用的模型名。"""
-        return self._models.get(purpose, LLM_MODEL)
+        return self._effective_model_for_purpose(purpose, session_key=session_key)
+
+    def _ensure_openai_codex_candidate(self, candidate: Any, *, purpose: str) -> str | None:
+        provider = str(getattr(candidate, "provider", "") or "")
+        profile_type = str(getattr(candidate, "profile_type", "") or "")
+        access_token = str(getattr(candidate, "auth_value", "") or "").strip()
+        metadata = dict(getattr(candidate, "metadata", {}) or {})
+        account_id = str(metadata.get("accountId") or "").strip() or None
+
+        if provider != "openai" or profile_type != "oauth" or not access_token:
+            raise PermissionError(
+                (
+                    f"[{purpose}] unauthorized: `openai-codex/*` 仅支持已绑定的 "
+                    "OpenAI OAuth profile（provider=openai, type=oauth）。"
+                )
+            )
+        return account_id
+
+    async def _with_routing_retry(
+        self,
+        *,
+        purpose: str,
+        session_key: str | None,
+        allow_failover: bool,
+        origin: str | None,
+        runner: Callable[[Any, Any, str, str], Awaitable[Any]],
+    ) -> Any:
+        excluded_profiles: set[str] = set()
+        last_exc: Exception | None = None
+        session_model_override = (
+            self._session_model_overrides.get((session_key, purpose))
+            if session_key
+            else None
+        )
+        client_override = self._clients.get(purpose)
+
+        while True:
+            candidates = self._auth_manager.resolve_candidates(
+                purpose=purpose,
+                session_key=session_key,
+                allow_failover=allow_failover,
+                exclude_profiles=excluded_profiles,
+                origin=origin,
+            )
+            if not candidates:
+                if last_exc is not None:
+                    raise last_exc
+                raise RuntimeError(f"[{purpose}] 没有可用的 auth candidate。")
+
+            for candidate in candidates:
+                refresh_attempted = False
+                current_candidate = candidate
+                while True:
+                    try:
+                        candidate_model = str(getattr(current_candidate, "model", "") or "").strip()
+                        if session_model_override:
+                            model_for_attempt = session_model_override
+                            use_model_override = True
+                        elif client_override is None and candidate_model:
+                            model_for_attempt = candidate_model
+                            use_model_override = True
+                        else:
+                            model_for_attempt = self._models.get(purpose, LLM_MODEL)
+                            use_model_override = False
+
+                        resolved_codex_model = _extract_openai_codex_model(model_for_attempt)
+                        if resolved_codex_model is not None:
+                            client = None
+                            model = resolved_codex_model
+                            api_type = "openai_codex"
+                        else:
+                            client, model, api_type = self._resolve_client(
+                                purpose,
+                                auth_value=current_candidate.auth_value,
+                                model_override=model_for_attempt if use_model_override else None,
+                            )
+                        result = await runner(current_candidate, client, model, api_type)
+                        self._auth_manager.mark_success(current_candidate)
+                        return result
+                    except Exception as exc:
+                        failure_kind = _classify_provider_exception(exc)
+                        last_exc = exc
+                        if (
+                            failure_kind == "auth"
+                            and current_candidate.profile_id
+                            and current_candidate.profile_type == "oauth"
+                            and not refresh_attempted
+                        ):
+                            try:
+                                current_candidate = self._auth_manager.refresh_candidate(current_candidate)
+                                refresh_attempted = True
+                                logger.info("[%s] OAuth profile `%s` 已刷新，重试本次请求。", purpose, current_candidate.profile_id)
+                                continue
+                            except Exception as refresh_exc:
+                                logger.warning(
+                                    "[%s] OAuth profile `%s` 刷新失败: %s",
+                                    purpose,
+                                    current_candidate.profile_id,
+                                    refresh_exc,
+                                )
+
+                        self._auth_manager.mark_failure(current_candidate, failure_kind)
+                        if (
+                            allow_failover
+                            and current_candidate.profile_id
+                            and failure_kind in _RECOVERABLE_FAILURES
+                        ):
+                            excluded_profiles.add(current_candidate.profile_id)
+                            logger.warning(
+                                "[%s] auth candidate `%s` 失败(%s)，尝试下一个 profile。",
+                                purpose,
+                                current_candidate.profile_id,
+                                failure_kind,
+                            )
+                            break
+                        raise
+
+            if last_exc is not None:
+                raise last_exc
 
     async def complete(
         self,
         messages: list[dict],
         purpose: str = "chat",
         max_tokens: int = 1024,
+        *,
+        session_key: str | None = None,
+        allow_failover: bool = True,
+        origin: str | None = None,
     ) -> str:
         """向对应 purpose 的模型发送请求，返回回复文本。"""
-        client, model, api_type = self._resolve_client(purpose)
+        async def _runner(candidate, client, model, api_type):
+            if api_type == "openai_codex":
+                account_id = self._ensure_openai_codex_candidate(candidate, purpose=purpose)
+                turn = await self._codex_runtime.complete(
+                    model=model,
+                    messages=messages,
+                    tools=[],
+                    access_token=candidate.auth_value,
+                    account_id=account_id,
+                )
+                return turn.text
 
-        if api_type == "anthropic":
-            system, anthropic_messages = _split_system_messages(messages)
+            if api_type == "anthropic":
+                system, anthropic_messages = _split_system_messages(messages)
+                request_kwargs: dict[str, Any] = {
+                    "model": model,
+                    "max_tokens": max_tokens,
+                    "messages": anthropic_messages,
+                }
+                if system is not None:
+                    request_kwargs["system"] = system
+
+                response = await client.messages.create(**request_kwargs)
+                text = _extract_anthropic_text(response)
+                if text:
+                    return text
+
+                if not text and _has_anthropic_thinking(response):
+                    retry_max_tokens = max(max_tokens * 4, 512)
+                    if retry_max_tokens > max_tokens:
+                        logger.info(
+                            f"[{purpose}] Anthropic 响应仅返回 thinking，"
+                            f"自动重试并提升 max_tokens 到 {retry_max_tokens}"
+                        )
+                        retry_kwargs = dict(request_kwargs)
+                        retry_kwargs["max_tokens"] = retry_max_tokens
+                        retry_response = await client.messages.create(**retry_kwargs)
+                        return _extract_anthropic_text(retry_response)
+
+                return text
+
             request_kwargs: dict[str, Any] = {
                 "model": model,
                 "max_tokens": max_tokens,
-                "messages": anthropic_messages,
+                "messages": messages,
             }
-            if system is not None:
-                request_kwargs["system"] = system
+            request_kwargs = self._normalize_minimax_openai_request(purpose, request_kwargs)
+            response = await client.chat.completions.create(**request_kwargs)
+            return response.choices[0].message.content or ""
 
-            response = await client.messages.create(**request_kwargs)
-            text = _extract_anthropic_text(response)
-            if text:
-                return text
-
-            if not text and _has_anthropic_thinking(response):
-                retry_max_tokens = max(max_tokens * 4, 512)
-                if retry_max_tokens > max_tokens:
-                    logger.info(
-                        f"[{purpose}] Anthropic 响应仅返回 thinking，"
-                        f"自动重试并提升 max_tokens 到 {retry_max_tokens}"
-                    )
-                    retry_kwargs = dict(request_kwargs)
-                    retry_kwargs["max_tokens"] = retry_max_tokens
-                    retry_response = await client.messages.create(**retry_kwargs)
-                    return _extract_anthropic_text(retry_response)
-
-            return text
-
-        request_kwargs: dict[str, Any] = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "messages": messages,
-        }
-        request_kwargs = self._normalize_minimax_openai_request(purpose, request_kwargs)
-        response = await client.chat.completions.create(**request_kwargs)
-        return response.choices[0].message.content or ""
+        return await self._with_routing_retry(
+            purpose=purpose,
+            session_key=session_key,
+            allow_failover=allow_failover,
+            origin=origin,
+            runner=_runner,
+        )
 
     async def complete_with_tools(
         self,
@@ -477,76 +810,137 @@ class LLMRouter:
         tools: list[dict[str, Any]],
         purpose: str = "chat",
         max_tokens: int = 1024,
+        *,
+        session_key: str | None = None,
+        allow_failover: bool = True,
+        origin: str | None = None,
     ) -> ToolTurnResult:
         """向模型发送支持工具的一轮请求，并统一返回 tool call 结构。"""
-        client, model, api_type = self._resolve_client(purpose)
+        async def _runner(candidate, client, model, api_type):
+            if api_type == "openai_codex":
+                account_id = self._ensure_openai_codex_candidate(candidate, purpose=purpose)
+                turn = await self._codex_runtime.complete(
+                    model=model,
+                    messages=messages,
+                    tools=tools,
+                    access_token=candidate.auth_value,
+                    account_id=account_id,
+                )
+                tool_calls = [
+                    ToolCallRequest(
+                        id=item.id,
+                        name=item.name,
+                        arguments=item.arguments,
+                    )
+                    for item in turn.tool_calls
+                ]
+                continuation_message = None
+                if tool_calls:
+                    continuation_message = {
+                        "role": "assistant",
+                        "content": turn.text,
+                        "tool_calls": [
+                            {
+                                "id": item.id,
+                                "type": "function",
+                                "function": {
+                                    "name": item.name,
+                                    "arguments": item.raw_arguments,
+                                },
+                            }
+                            for item in turn.tool_calls
+                        ],
+                    }
+                return ToolTurnResult(
+                    text=turn.text,
+                    tool_calls=tool_calls,
+                    continuation_message=continuation_message,
+                )
 
-        if api_type == "anthropic":
-            system, anthropic_messages = _split_system_messages(messages)
-            request_kwargs: dict[str, Any] = {
+            if api_type == "anthropic":
+                system, anthropic_messages = _split_system_messages(messages)
+                request_kwargs: dict[str, Any] = {
+                    "model": model,
+                    "max_tokens": max_tokens,
+                    "messages": anthropic_messages,
+                    "tools": _normalize_anthropic_tools(tools),
+                    "tool_choice": {
+                        "type": "auto",
+                        "disable_parallel_tool_use": True,
+                    },
+                }
+                if system is not None:
+                    request_kwargs["system"] = system
+
+                response = await client.messages.create(**request_kwargs)
+                tool_calls = _extract_anthropic_tool_calls(response)
+                continuation_message = None
+                if tool_calls:
+                    continuation_message = {
+                        "role": "assistant",
+                        "content": list(getattr(response, "content", None) or []),
+                    }
+
+                return ToolTurnResult(
+                    text=_extract_anthropic_text(response),
+                    tool_calls=tool_calls,
+                    continuation_message=continuation_message,
+                )
+
+            request_kwargs = {
                 "model": model,
                 "max_tokens": max_tokens,
-                "messages": anthropic_messages,
-                "tools": _normalize_anthropic_tools(tools),
-                "tool_choice": {
-                    "type": "auto",
-                    "disable_parallel_tool_use": True,
-                },
+                "messages": messages,
+                "tools": _normalize_openai_tools(tools),
+                "tool_choice": "auto",
+                "parallel_tool_calls": False,
             }
-            if system is not None:
-                request_kwargs["system"] = system
-
-            response = await client.messages.create(**request_kwargs)
-            tool_calls = _extract_anthropic_tool_calls(response)
+            request_kwargs = self._normalize_minimax_openai_request(purpose, request_kwargs)
+            response = await client.chat.completions.create(**request_kwargs)
+            message = response.choices[0].message
+            tool_calls, raw_tool_calls = _extract_openai_tool_calls(message)
             continuation_message = None
             if tool_calls:
                 continuation_message = {
                     "role": "assistant",
-                    "content": list(getattr(response, "content", None) or []),
+                    "content": message.content or "",
+                    "tool_calls": raw_tool_calls,
                 }
 
             return ToolTurnResult(
-                text=_extract_anthropic_text(response),
+                text=message.content or "",
                 tool_calls=tool_calls,
                 continuation_message=continuation_message,
             )
 
-        request_kwargs = {
-            "model": model,
-            "max_tokens": max_tokens,
-            "messages": messages,
-            "tools": _normalize_openai_tools(tools),
-            "tool_choice": "auto",
-            "parallel_tool_calls": False,
-        }
-        request_kwargs = self._normalize_minimax_openai_request(purpose, request_kwargs)
-        response = await client.chat.completions.create(**request_kwargs)
-        message = response.choices[0].message
-        tool_calls, raw_tool_calls = _extract_openai_tool_calls(message)
-        continuation_message = None
-        if tool_calls:
-            continuation_message = {
-                "role": "assistant",
-                "content": message.content or "",
-                "tool_calls": raw_tool_calls,
-            }
-
-        return ToolTurnResult(
-            text=message.content or "",
-            tool_calls=tool_calls,
-            continuation_message=continuation_message,
+        return await self._with_routing_retry(
+            purpose=purpose,
+            session_key=session_key,
+            allow_failover=allow_failover,
+            origin=origin,
+            runner=_runner,
         )
 
     def build_tool_result_message(
         self,
         purpose: str,
         tool_results: list[tuple[ToolCallRequest, str]],
+        *,
+        session_key: str | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """根据 provider 生成下一轮 continuation message。"""
         if not tool_results:
             raise ValueError("tool_results 不能为空")
 
-        _, _, api_type = self._resolve_client(purpose)
+        effective_model = self._effective_model_for_purpose(
+            purpose,
+            session_key=session_key,
+        )
+        base_url = self._base_urls.get(purpose, LLM_BASE_URL)
+        if session_key and self._session_model_overrides.get((session_key, purpose)):
+            api_type = _detect_api_type(base_url, effective_model)
+        else:
+            api_type = self._api_types.get(purpose, _detect_api_type(base_url, effective_model))
 
         if api_type == "anthropic":
             return {
@@ -573,3 +967,34 @@ class LLMRouter:
         if len(messages) == 1:
             return messages[0]
         return messages
+
+
+def _classify_provider_exception(exc: Exception) -> str:
+    class_name = exc.__class__.__name__.lower()
+    message = str(exc).lower()
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+
+    if status_code in {401, 403} or "authentication" in class_name or "unauthorized" in message:
+        return "auth"
+    if (
+        status_code == 429
+        or "ratelimit" in class_name
+        or "rate limit" in message
+        or "stop reason: error" in message
+        or "unhandled stop reason: error" in message
+    ):
+        return "rate_limit"
+    if (
+        status_code == 402
+        or "insufficient credits" in message
+        or "credit balance" in message
+        or "billing" in message
+        or "quota" in message
+    ):
+        return "billing"
+    if "timeout" in class_name or "timed out" in message or "reason: error" in message:
+        return "timeout"
+    return "other"

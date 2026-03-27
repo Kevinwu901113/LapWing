@@ -60,6 +60,14 @@ class TestProactiveMessageAction:
         await ProactiveMessageAction().execute(ctx, mock_brain, mock_bot)
         assert mock_brain.router.complete.call_args.kwargs.get("purpose") == "heartbeat"
 
+    async def test_sanitizes_thinking_tags_before_send_and_store(self, ctx, mock_brain, mock_bot):
+        mock_brain.router.complete = AsyncMock(return_value="<think>内部</think>你好")
+
+        await ProactiveMessageAction().execute(ctx, mock_brain, mock_bot)
+
+        mock_bot.send_message.assert_awaited_once_with(chat_id="c1", text="你好")
+        mock_brain.memory.append.assert_awaited_once_with("c1", "assistant", "你好")
+
     async def test_silent_on_llm_failure(self, ctx, mock_brain, mock_bot):
         mock_brain.router.complete = AsyncMock(side_effect=Exception("API error"))
         await ProactiveMessageAction().execute(ctx, mock_brain, mock_bot)
@@ -163,3 +171,25 @@ class TestReminderDispatchAction:
         await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_bot)
 
         mock_bot.send_message.assert_awaited_once_with(chat_id="c1", text="提醒你：喝水")
+
+    async def test_reminder_sanitizes_model_message(self, minute_ctx, mock_brain, mock_bot):
+        mock_brain.memory.get_due_reminders = AsyncMock(return_value=[
+            {
+                "id": 101,
+                "chat_id": "c1",
+                "content": "出门散步",
+                "recurrence_type": "once",
+                "next_trigger_at": minute_ctx.now.isoformat(),
+                "weekday": None,
+                "time_of_day": None,
+                "active": True,
+                "created_at": minute_ctx.now.isoformat(),
+                "last_triggered_at": None,
+                "cancelled_at": None,
+            }
+        ])
+        mock_brain.router.complete = AsyncMock(return_value="<think>内部</think>提醒你去散步")
+
+        await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_bot)
+
+        mock_bot.send_message.assert_awaited_once_with(chat_id="c1", text="提醒你去散步")

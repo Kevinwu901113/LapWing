@@ -44,6 +44,8 @@ class MemoryConsolidationAction(HeartbeatAction):
                 [{"role": "user", "content": prompt}],
                 purpose="heartbeat",
                 max_tokens=200,
+                session_key=f"chat:{ctx.chat_id}",
+                origin="heartbeat.consolidation",
             )
 
             date_str = ctx.now.strftime("%Y-%m-%d")

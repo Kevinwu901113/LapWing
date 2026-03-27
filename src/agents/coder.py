@@ -41,7 +41,7 @@ class CoderAgent(BaseAgent):
         return await self._execute_snippet(task, router)
 
     async def _execute_snippet(self, task: AgentTask, router) -> AgentResult:
-        code = await self._generate_code(task.user_message, router)
+        code = await self._generate_code(task.chat_id, task.user_message, router)
         if code is None:
             return AgentResult(
                 content="代码生成失败，请重新描述你的需求。",
@@ -81,6 +81,7 @@ class CoderAgent(BaseAgent):
 
                 logger.info("[coder] snippet 执行失败，开始第 %s 次修复", attempt)
                 fixed_code = await self._fix_code(
+                    chat_id=task.chat_id,
                     code=code,
                     error=verify_result.reason or result.stderr,
                     router=router,
@@ -107,6 +108,7 @@ class CoderAgent(BaseAgent):
 
                 logger.info("[coder] snippet 执行失败，开始第 %s 次修复", attempt)
                 fixed_code = await self._fix_code(
+                    chat_id=task.chat_id,
                     code=code,
                     error=verify_result.reason or result.stderr,
                     router=router,
@@ -139,7 +141,7 @@ class CoderAgent(BaseAgent):
         )
 
     async def _execute_workspace_patch(self, task: AgentTask, router) -> AgentResult:
-        plan = await self._plan_workspace(task.user_message, router)
+        plan = await self._plan_workspace(task.chat_id, task.user_message, router)
         if plan is None:
             return AgentResult(
                 content="我没有生成出可执行的多文件修改计划，请补充更具体的目标文件和修改内容。",
@@ -184,6 +186,7 @@ class CoderAgent(BaseAgent):
                         )
                         return TaskLoopStep(stop=True)
                     next_plan = await self._fix_workspace_plan(
+                        chat_id=task.chat_id,
                         user_message=task.user_message,
                         previous_plan=plan,
                         failure_reason=failure_reason,
@@ -210,6 +213,7 @@ class CoderAgent(BaseAgent):
                     return TaskLoopStep(stop=True)
 
                 next_plan = await self._fix_workspace_plan(
+                    chat_id=task.chat_id,
                     user_message=task.user_message,
                     previous_plan=plan,
                     failure_reason=verify_result.reason or "验证失败",
@@ -243,21 +247,22 @@ class CoderAgent(BaseAgent):
                             reason=failure_reason,
                         )
                         break
-                    next_plan = await self._fix_workspace_plan(
-                        user_message=task.user_message,
-                        previous_plan=plan,
-                        failure_reason=failure_reason,
-                        router=router,
+                next_plan = await self._fix_workspace_plan(
+                    chat_id=task.chat_id,
+                    user_message=task.user_message,
+                    previous_plan=plan,
+                    failure_reason=failure_reason,
+                    router=router,
+                )
+                if next_plan is None:
+                    verify_result = verifier.VerificationResult(
+                        passed=False,
+                        status="failed",
+                        reason=failure_reason,
                     )
-                    if next_plan is None:
-                        verify_result = verifier.VerificationResult(
-                            passed=False,
-                            status="failed",
-                            reason=failure_reason,
-                        )
-                        break
-                    plan = next_plan
-                    continue
+                    break
+                plan = next_plan
+                continue
 
                 verify_result = await verifier.verify_workspace(
                     changed_files=changed_files,
@@ -271,6 +276,7 @@ class CoderAgent(BaseAgent):
                     break
 
                 next_plan = await self._fix_workspace_plan(
+                    chat_id=task.chat_id,
                     user_message=task.user_message,
                     previous_plan=plan,
                     failure_reason=verify_result.reason or "验证失败",
@@ -400,20 +406,22 @@ class CoderAgent(BaseAgent):
             artifacts=[str(item) for item in (payload.get("artifacts") or [])],
         )
 
-    async def _generate_code(self, user_message: str, router) -> str | None:
+    async def _generate_code(self, chat_id: str, user_message: str, router) -> str | None:
         prompt = load_prompt("coder_generate").replace("{user_message}", user_message)
         try:
             raw = await router.complete(
                 [{"role": "user", "content": prompt}],
                 purpose="tool",
                 max_tokens=1024,
+                session_key=f"chat:{chat_id}",
+                origin="agent.coder.generate_code",
             )
             return _extract_code(raw)
         except Exception as exc:
             logger.warning(f"[coder] 代码生成出错: {exc}")
             return None
 
-    async def _fix_code(self, code: str, error: str, router) -> str | None:
+    async def _fix_code(self, *, chat_id: str, code: str, error: str, router) -> str | None:
         prompt = (
             load_prompt("coder_fix")
             .replace("{code}", code)
@@ -424,19 +432,23 @@ class CoderAgent(BaseAgent):
                 [{"role": "user", "content": prompt}],
                 purpose="tool",
                 max_tokens=1024,
+                session_key=f"chat:{chat_id}",
+                origin="agent.coder.fix_code",
             )
             return _extract_code(raw)
         except Exception as exc:
             logger.warning(f"[coder] 代码修复出错: {exc}")
             return None
 
-    async def _plan_workspace(self, user_message: str, router) -> dict[str, Any] | None:
+    async def _plan_workspace(self, chat_id: str, user_message: str, router) -> dict[str, Any] | None:
         prompt = load_prompt("coder_workspace_plan").replace("{user_message}", user_message)
         try:
             raw = await router.complete(
                 [{"role": "user", "content": prompt}],
                 purpose="tool",
                 max_tokens=1400,
+                session_key=f"chat:{chat_id}",
+                origin="agent.coder.plan_workspace",
             )
         except Exception as exc:
             logger.warning(f"[coder] workspace 计划生成失败: {exc}")
@@ -446,6 +458,7 @@ class CoderAgent(BaseAgent):
     async def _fix_workspace_plan(
         self,
         *,
+        chat_id: str,
         user_message: str,
         previous_plan: dict[str, Any],
         failure_reason: str,
@@ -462,6 +475,8 @@ class CoderAgent(BaseAgent):
                 [{"role": "user", "content": prompt}],
                 purpose="tool",
                 max_tokens=1400,
+                session_key=f"chat:{chat_id}",
+                origin="agent.coder.fix_workspace_plan",
             )
         except Exception as exc:
             logger.warning(f"[coder] workspace 修复计划生成失败: {exc}")

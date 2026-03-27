@@ -204,6 +204,8 @@ class ProactiveRuntime:
                 ],
                 purpose="heartbeat",
                 max_tokens=256,
+                session_key=f"chat:{ctx.chat_id}",
+                origin=f"heartbeat.decision.{ctx.beat_type}",
             )
             return self._parse_decision(response)
         except Exception as exc:

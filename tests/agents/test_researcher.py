@@ -50,7 +50,7 @@ class TestExtractQueries:
         with patch("src.agents.researcher.load_prompt", return_value="prompt {user_message}"):
             router = make_router([FAKE_QUERIES_JSON])
             agent = ResearcherAgent(memory=make_memory())
-            queries = await agent._extract_queries("Python 3.13 有什么新特性？", router)
+            queries = await agent._extract_queries("42", "Python 3.13 有什么新特性？", router)
 
         assert queries == ["Python 3.13 新特性", "Python 3.13 release notes"]
 
@@ -61,19 +61,31 @@ class TestExtractQueries:
         with patch("src.agents.researcher.load_prompt", return_value="prompt {user_message}"):
             router = make_router([wrapped])
             agent = ResearcherAgent(memory=make_memory())
-            queries = await agent._extract_queries("问题", router)
+            queries = await agent._extract_queries("42", "问题", router)
 
         assert queries == ["kw1", "kw2"]
 
     @pytest.mark.asyncio
-    async def test_returns_empty_list_on_invalid_json(self):
-        """LLM 返回无效 JSON 时，返回空列表而不是崩溃。"""
+    async def test_extracts_json_array_from_mixed_text(self):
+        """LLM 输出混杂文本时，仍能从中提取 JSON 数组。"""
+        mixed = "先分析一下\n[\"kw1\", \"kw2\"]\n以上是建议"
         with patch("src.agents.researcher.load_prompt", return_value="prompt {user_message}"):
-            router = make_router(["不是 JSON"])
+            router = make_router([mixed])
             agent = ResearcherAgent(memory=make_memory())
-            queries = await agent._extract_queries("问题", router)
+            queries = await agent._extract_queries("42", "问题", router)
 
-        assert queries == []
+        assert queries == ["kw1", "kw2"]
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_plain_text_queries_when_invalid_json(self):
+        """LLM 返回无效 JSON 时，降级为文本切分结果。"""
+        with patch("src.agents.researcher.load_prompt", return_value="prompt {user_message}"):
+            router = make_router(["今天a股收盘信息"])
+            agent = ResearcherAgent(memory=make_memory())
+            queries = await agent._extract_queries("42", "问题", router)
+
+        assert queries
+        assert "今天a股收盘信息" in queries[0]
 
     @pytest.mark.asyncio
     async def test_returns_empty_list_on_router_exception(self):
@@ -82,7 +94,7 @@ class TestExtractQueries:
             router = MagicMock()
             router.complete = AsyncMock(side_effect=RuntimeError("API error"))
             agent = ResearcherAgent(memory=make_memory())
-            queries = await agent._extract_queries("问题", router)
+            queries = await agent._extract_queries("42", "问题", router)
 
         assert queries == []
 
@@ -154,17 +166,54 @@ class TestExecute:
         memory.add_discovery.assert_not_awaited()
 
     @pytest.mark.asyncio
-    async def test_execute_returns_friendly_message_when_query_extraction_fails(self):
-        """关键词提取失败（空列表）时，返回提示而不是崩溃。"""
+    async def test_execute_uses_fallback_query_when_query_extraction_fails(self):
+        """关键词提取失败时，仍会用兜底词继续搜索。"""
         memory = make_memory()
-        router = make_router(["not json"])  # 故意返回无效 JSON
+        router = make_router(["not json", FAKE_SUMMARY])
 
-        with patch("src.agents.researcher.load_prompt", return_value="p {user_message}"):
+        async def mock_search(query, max_results=5):
+            if "Python 3.13" in query:
+                return FAKE_RESULTS
+            return []
+
+        with patch("src.agents.researcher.load_prompt", return_value="p {user_message} {search_results}"), \
+             patch("src.agents.researcher.web_search.search", side_effect=mock_search), \
+             patch("src.agents.researcher.web_fetcher.fetch", AsyncMock(return_value=FetchResult(
+                 url="https://example.com/py313",
+                 title="Python 3.13 新特性",
+                 text="完整正文",
+                 success=True,
+                 error="",
+             ))):
             agent = ResearcherAgent(memory=memory)
             result = await agent.execute(make_task(), router)
 
-        assert result.content  # 有内容
-        assert "提取失败" in result.content
+        assert result.content == FAKE_SUMMARY
+
+    @pytest.mark.asyncio
+    async def test_execute_tries_all_query_candidates_until_hit(self):
+        """搜索会按候选词顺序尝试，不再只限前两个。"""
+        memory = make_memory()
+        router = make_router(['["q1", "q2", "q3"]', FAKE_SUMMARY])
+
+        async def mock_search(query, max_results=5):
+            if query == "q3":
+                return FAKE_RESULTS
+            return []
+
+        with patch("src.agents.researcher.load_prompt", return_value="p {user_message} {search_results}"), \
+             patch("src.agents.researcher.web_search.search", side_effect=mock_search), \
+             patch("src.agents.researcher.web_fetcher.fetch", AsyncMock(return_value=FetchResult(
+                 url="https://example.com/py313",
+                 title="Python 3.13 新特性",
+                 text="完整正文",
+                 success=True,
+                 error="",
+             ))):
+            agent = ResearcherAgent(memory=memory)
+            result = await agent.execute(make_task(), router)
+
+        assert result.content == FAKE_SUMMARY
 
     @pytest.mark.asyncio
     async def test_discovery_saved_with_truncated_summary(self):

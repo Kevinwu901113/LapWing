@@ -10,21 +10,6 @@ from src.core.prompt_loader import load_prompt
 
 logger = logging.getLogger(__name__)
 
-# 触发 researcher 的搜索意图关键词模式
-_SEARCH_PATTERNS = [
-    # 有明确前缀："帮我搜X" / "帮我查X" / "帮我找X"
-    r"(?:帮我|帮忙|麻烦)(?:搜|查|找|检索)(.{2,})",
-    # 有连词："搜一下X" / "查一查X"（连词存在即为明确搜索指令）
-    r"(?:搜|查|找|检索)(?:索|一下|一搜|一查|一查|一找)(.{2,})",
-    # 明确的搜索词汇："搜索X" / "查询X" / "搜搜X"
-    r"(?:搜索|查询|查找|检索|查一查|搜一搜|搜搜)(.{2,})",
-    # "X的最新/最近消息/信息/新闻"
-    r"(.{2,}?)(?:的)?(?:最新|最近)(?:的)?(?:消息|新闻|信息|动态|情况|进展)",
-    # "X今天/今日的行情/价格" 或 "今天X行情"
-    r"(.{2,}?)(?:今天|今日|现在|当前)(?:的)?(?:行情|价格|股价|汇率|状态|情况)",
-    r"(?:今天|今日|现在|当前)(.{2,}?)(?:的)?(?:行情|价格|股价|汇率|状态|情况)",
-]
-
 _WEATHER_PATTERNS = [
     r"(?:帮我|帮忙|麻烦|请|想知道|告诉我|查下|查一下|看下|看一下|问下).{0,8}(?:天气|气温|温度|风速)",
     r"[\u4e00-\u9fffA-Za-z·\-\s]{2,20}(?:今天|明天|后天|现在|当前)?(?:的)?(?:天气|气温|温度|风速)(?:怎么样|如何|呢)?",
@@ -76,7 +61,7 @@ class AgentDispatcher:
 
         try:
             # 2. 分类：判断需要哪个 Agent（如果有的话）
-            decision = await self._classify(user_message)
+            decision = await self._classify(chat_id, user_message)
             if decision is None:
                 return None
 
@@ -102,7 +87,7 @@ class AgentDispatcher:
 
             # 6. 按需进行人格格式化
             if result.needs_persona_formatting:
-                return await self._format_with_persona(result.content)
+                return await self._format_with_persona(chat_id, result.content)
             return result.content
 
         except Exception as e:
@@ -110,7 +95,7 @@ class AgentDispatcher:
             return None
 
     def _quick_match(self, user_message: str) -> DispatchDecision | None:
-        """关键词快速匹配：跳过 LLM，直接派发明确的搜索意图。"""
+        """关键词快速匹配：仅处理 weather/todo，搜索交给主对话工具闭环。"""
         if any(re.search(pattern, user_message, flags=re.IGNORECASE) for pattern in _WEATHER_PATTERNS):
             logger.info(f"[dispatcher] 关键词快速匹配 → weather")
             return DispatchDecision(agent_name="weather", mode="default")
@@ -118,14 +103,9 @@ class AgentDispatcher:
         if any(re.search(pattern, user_message, flags=re.IGNORECASE) for pattern in _TODO_PATTERNS):
             logger.info(f"[dispatcher] 关键词快速匹配 → todo")
             return DispatchDecision(agent_name="todo", mode="default")
-
-        for pattern in _SEARCH_PATTERNS:
-            if re.search(pattern, user_message):
-                logger.info(f"[dispatcher] 关键词快速匹配 → researcher")
-                return DispatchDecision(agent_name="researcher", mode="default")
         return None
 
-    async def _classify(self, user_message: str) -> DispatchDecision | None:
+    async def _classify(self, chat_id: str, user_message: str) -> DispatchDecision | None:
         """使用 LLM（tool 模型）判断用户消息是否需要 Agent 处理。
 
         Returns:
@@ -150,6 +130,8 @@ class AgentDispatcher:
             [{"role": "user", "content": prompt}],
             purpose="tool",
             max_tokens=512,
+            session_key=f"chat:{chat_id}",
+            origin="core.dispatcher.classify",
         )
         return self._parse_decision(raw)
 
@@ -203,11 +185,16 @@ class AgentDispatcher:
             for pattern in _SHELL_COMMAND_PATTERNS
         )
 
-    async def _format_with_persona(self, content: str) -> str:
+    async def _format_with_persona(self, chat_id: str, content: str) -> str:
         """通过 Lapwing 的人格对原始 Agent 输出进行润色转述。"""
         messages = [
             {"role": "system", "content": self._persona_prompt},
             {"role": "user", "content": f"请用你的风格将以下内容转述给用户：\n\n{content}"},
         ]
-        result = await self._router.complete(messages, purpose="chat")
+        result = await self._router.complete(
+            messages,
+            purpose="chat",
+            session_key=f"chat:{chat_id}",
+            origin="core.dispatcher.persona_format",
+        )
         return result if result else content

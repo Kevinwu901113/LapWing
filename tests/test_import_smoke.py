@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import sys
 from unittest.mock import patch
@@ -100,8 +101,15 @@ def test_llm_router_anthropic_path_reports_missing_dependency():
         clear=True,
     ), patch.dict(sys.modules, {"anthropic": None}):
         module = importlib.import_module("src.core.llm_router")
+        router = module.LLMRouter()
         try:
-            module.LLMRouter()
+            asyncio.run(
+                router.complete(
+                    [{"role": "user", "content": "hello"}],
+                    purpose="chat",
+                    allow_failover=False,
+                )
+            )
             assert False, "expected ModuleNotFoundError"
         except ModuleNotFoundError as exc:
             assert "pip install anthropic" in str(exc)

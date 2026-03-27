@@ -3,7 +3,7 @@
 import hashlib
 import json
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, call
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 
@@ -69,6 +69,16 @@ async def test_chat_tools_from_registry():
     runtime = TaskRuntime(router=MagicMock(), tool_registry=build_default_tool_registry())
 
     tools = runtime.chat_tools(shell_enabled=True)
+    names = {item["function"]["name"] for item in tools}
+
+    assert names == {"execute_shell", "read_file", "write_file", "web_search", "web_fetch"}
+
+
+@pytest.mark.asyncio
+async def test_chat_tools_excludes_web_when_disabled():
+    runtime = TaskRuntime(router=MagicMock(), tool_registry=build_default_tool_registry())
+
+    tools = runtime.chat_tools(shell_enabled=True, web_enabled=False)
     names = {item["function"]["name"] for item in tools}
 
     assert names == {"execute_shell", "read_file", "write_file"}
@@ -279,6 +289,77 @@ async def test_complete_chat_executes_multiple_tool_calls_in_one_turn_serially()
         message for message in second_turn_messages if message.get("role") == "tool"
     ]
     assert [item["tool_call_id"] for item in second_turn_tool_messages] == ["call_1", "call_2"]
+
+
+@pytest.mark.asyncio
+async def test_complete_chat_supports_web_tool_call_and_tool_result_roundtrip():
+    router = MagicMock()
+    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry())
+    constraints = extract_execution_constraints("查一下今天A股收盘")
+
+    router.complete_with_tools = AsyncMock(
+        side_effect=[
+            SimpleNamespace(
+                text="",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="call_web_1",
+                        name="web_search",
+                        arguments={"query": "今天 A股 收盘", "max_results": 3},
+                    ),
+                ],
+                continuation_message={
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "call_web_1"}],
+                },
+            ),
+            SimpleNamespace(
+                text="我查到了并整理好了来源。",
+                tool_calls=[],
+                continuation_message=None,
+            ),
+        ]
+    )
+    router.build_tool_result_message = MagicMock(
+        return_value={
+            "role": "tool",
+            "tool_call_id": "call_web_1",
+            "name": "web_search",
+            "content": '{"count": 1}',
+        }
+    )
+
+    with patch("src.tools.registry.web_search.search", new_callable=AsyncMock) as mock_search:
+        mock_search.return_value = [
+            {
+                "title": "A股收盘快讯",
+                "url": "https://finance.example/a-share-close",
+                "snippet": "上证指数收盘上涨。",
+            }
+        ]
+        result = await runtime.complete_chat(
+            chat_id="chat_1",
+            messages=[{"role": "user", "content": "查一下今天A股收盘"}],
+            constraints=constraints,
+            tools=runtime.chat_tools(shell_enabled=False, web_enabled=True),
+            deps=RuntimeDeps(
+                execute_shell=AsyncMock(),
+                policy=_make_policy(AsyncMock()),
+                shell_default_cwd="/tmp",
+                shell_allow_sudo=True,
+            ),
+            event_bus=None,
+        )
+
+    assert result == "我查到了并整理好了来源。"
+    mock_search.assert_awaited_once_with("今天 A股 收盘", max_results=3)
+    assert router.complete_with_tools.await_count == 2
+    second_turn_messages = router.complete_with_tools.await_args_list[1].args[0]
+    second_turn_tool_messages = [
+        message for message in second_turn_messages if message.get("role") == "tool"
+    ]
+    assert [item["tool_call_id"] for item in second_turn_tool_messages] == ["call_web_1"]
 
 
 @pytest.mark.asyncio

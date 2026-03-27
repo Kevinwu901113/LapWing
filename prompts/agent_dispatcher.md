@@ -11,11 +11,13 @@
 ## 判断规则
 
 1. **绝大多数消息是日常对话** — 聊天、问候、情绪表达、闲聊、对某个话题的看法，一律由 Lapwing 直接回应，返回 null。
-2. **只有当用户明确需要 Agent 的专项能力时才分发** — 例如"帮我搜索一下……"、"帮我写一段代码……"、"查一查……的最新信息"。
-3. **区分"聊某个话题"和"做某件事"** — "我想聊聊 Python"是日常对话；"帮我写一个 Python 脚本"才是任务。
-4. **存疑时返回 null** — 误判为 Agent 任务会打断对话体验，误判为对话则顶多少个功能，后者代价更低。
-5. **只匹配列表中存在的 Agent** — 不要凭空发明 Agent 名称。
-6. **Agent 列表为空时，直接返回 null** — 无可用 Agent，一律由 Lapwing 直接回应。
+2. **只有当用户明确需要 Agent 的专项能力时才分发** — 例如"帮我写一段代码……"、"读取这个本地文件……"、"帮我做一份深度研究报告……"。
+3. **普通搜索请求默认不分发 researcher** — "帮我搜一下/查一下/看最新" 这类请求返回 null，让主对话通过 web_search/web_fetch 工具闭环处理。
+4. **只有“深度研究任务”才分发 researcher** — 当用户明确要深度研究、报告撰写、多来源对比分析、结构化结论时，才分发 researcher。
+5. **区分"聊某个话题"和"做某件事"** — "我想聊聊 Python"是日常对话；"帮我写一个 Python 脚本"才是任务。
+6. **存疑时返回 null** — 误判为 Agent 任务会打断对话体验，误判为对话则顶多少个功能，后者代价更低。
+7. **只匹配列表中存在的 Agent** — 不要凭空发明 Agent 名称。
+8. **Agent 列表为空时，直接返回 null** — 无可用 Agent，一律由 Lapwing 直接回应。
 
 ## 示例
 
@@ -24,11 +26,15 @@
 - 用户说："总结一下这个网址在讲什么 https://example.com/post"
   返回：`{"agent": "browser", "mode": "default", "reason": "用户希望直接浏览指定网页并提取内容"}`
 - 用户说："查一下 Python 3.13 的最新信息，参考这个链接 https://python.org"
-  返回：`{"agent": "researcher", "mode": "default", "reason": "任务本质是搜索和整理最新信息，不是只阅读单个链接"}`
+  返回：`{"agent": null}`
 - 用户说："帮我搜一下华南理工大学最近的消息"
-  返回：`{"agent": "researcher", "mode": "default", "reason": "用户明确要求搜索信息"}`
+  返回：`{"agent": null}`
 - 用户说："搜索今天A股行情"
-  返回：`{"agent": "researcher", "mode": "default", "reason": "用户请求搜索实时信息"}`
+  返回：`{"agent": null}`
+- 用户说："基于至少 5 个来源，做一份 A 股今日收盘后的深度研究报告，含数据对比和风险分析"
+  返回：`{"agent": "researcher", "mode": "default", "reason": "用户要求深度研究报告与多来源对比分析"}`
+- 用户说："请你深度研究 OpenClaw、PiAgent 和 harness 的架构差异，给出结构化结论"
+  返回：`{"agent": "researcher", "mode": "default", "reason": "任务是深度研究与对比分析，不是普通搜索"}`
 - 用户说："帮我看看你的人格 prompt 是怎么写的"
   返回：`{"agent": "file", "mode": "default", "reason": "用户要求读取 prompts/lapwing.md 文件"}`
 - 用户说："列出 prompts 目录下有哪些文件"

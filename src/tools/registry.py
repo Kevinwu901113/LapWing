@@ -8,9 +8,9 @@ import shlex
 from pathlib import Path
 from typing import Any
 
-from config.settings import ROOT_DIR
+from config.settings import ROOT_DIR, SEARCH_MAX_RESULTS
 from src.core import verifier
-from src.tools import code_runner, file_editor
+from src.tools import code_runner, file_editor, web_fetcher, web_search
 from src.tools.types import (
     ToolExecutionContext,
     ToolExecutionRequest,
@@ -19,6 +19,9 @@ from src.tools.types import (
 )
 
 logger = logging.getLogger("lapwing.tools.registry")
+
+_WEB_SEARCH_MAX_RESULTS_CAP = 10
+_WEB_FETCH_MAX_CHARS_CAP = 4000
 
 
 def _blocked_payload(*, reason: str, cwd: str, command: str = "") -> dict[str, Any]:
@@ -122,6 +125,116 @@ async def _write_file_tool(
         payload=payload,
         reason=result.reason or "",
         shell_result=result,
+    )
+
+
+def _clamp_web_search_max_results(raw: Any) -> int:
+    try:
+        resolved = int(raw)
+    except (TypeError, ValueError):
+        resolved = SEARCH_MAX_RESULTS
+    return max(1, min(_WEB_SEARCH_MAX_RESULTS_CAP, resolved))
+
+
+def _clamp_web_fetch_max_chars(raw: Any) -> int:
+    try:
+        resolved = int(raw)
+    except (TypeError, ValueError):
+        return _WEB_FETCH_MAX_CHARS_CAP
+    return max(1, min(_WEB_FETCH_MAX_CHARS_CAP, resolved))
+
+
+async def _web_search_tool(
+    request: ToolExecutionRequest,
+    context: ToolExecutionContext,
+) -> ToolExecutionResult:
+    del context
+
+    query = str(request.arguments.get("query", "")).strip()
+    if not query:
+        payload = {
+            "query": "",
+            "count": 0,
+            "results": [],
+        }
+        return ToolExecutionResult(
+            success=False,
+            payload=payload,
+            reason="缺少 query 参数",
+        )
+
+    max_results = _clamp_web_search_max_results(request.arguments.get("max_results"))
+    try:
+        results = await web_search.search(query, max_results=max_results)
+    except Exception as exc:
+        payload = {"query": query, "count": 0, "results": []}
+        return ToolExecutionResult(
+            success=False,
+            payload=payload,
+            reason=f"web_search 执行失败: {exc}",
+        )
+
+    payload = {
+        "query": query,
+        "count": len(results),
+        "results": [
+            {
+                "title": str(item.get("title", "")),
+                "url": str(item.get("url", "")),
+                "snippet": str(item.get("snippet", "")),
+            }
+            for item in results
+        ],
+    }
+    return ToolExecutionResult(success=True, payload=payload, reason="")
+
+
+async def _web_fetch_tool(
+    request: ToolExecutionRequest,
+    context: ToolExecutionContext,
+) -> ToolExecutionResult:
+    del context
+
+    url = str(request.arguments.get("url", "")).strip()
+    if not url:
+        payload = {
+            "url": "",
+            "title": "",
+            "text": "",
+            "success": False,
+            "error": "缺少 url 参数",
+        }
+        return ToolExecutionResult(success=False, payload=payload, reason="缺少 url 参数")
+
+    try:
+        fetched = await web_fetcher.fetch(url)
+    except Exception as exc:
+        payload = {
+            "url": url,
+            "title": "",
+            "text": "",
+            "success": False,
+            "error": f"web_fetch 执行失败: {exc}",
+        }
+        return ToolExecutionResult(
+            success=False,
+            payload=payload,
+            reason=payload["error"],
+        )
+
+    max_chars = _clamp_web_fetch_max_chars(request.arguments.get("max_chars"))
+    text = fetched.text[:max_chars]
+    payload = {
+        "url": fetched.url,
+        "title": fetched.title,
+        "text": text,
+        "success": fetched.success,
+        "error": fetched.error,
+    }
+    return ToolExecutionResult(
+        success=fetched.success,
+        payload=payload,
+        reason=fetched.error,
     )
 
 
@@ -522,6 +635,54 @@ def build_default_tool_registry() -> ToolRegistry:
             executor=_write_file_tool,
             capability="shell",
             risk_level="high",
+        )
+    )
+
+    registry.register(
+        ToolSpec(
+            name="web_search",
+            description="联网搜索网页信息。输入 query，返回标题、链接和摘要结果列表。",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "搜索关键词或问题",
+                    },
+                    "max_results": {
+                        "type": "integer",
+                        "description": "可选，返回结果数量（1-10，默认使用 SEARCH_MAX_RESULTS）",
+                    },
+                },
+                "required": ["query"],
+            },
+            executor=_web_search_tool,
+            capability="web",
+            risk_level="medium",
+        )
+    )
+
+    registry.register(
+        ToolSpec(
+            name="web_fetch",
+            description="抓取指定 URL 的标题与正文文本，用于进一步阅读与总结。",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "需要抓取的网页 URL（http/https）",
+                    },
+                    "max_chars": {
+                        "type": "integer",
+                        "description": "可选，正文最大字符数（默认 4000）",
+                    },
+                },
+                "required": ["url"],
+            },
+            executor=_web_fetch_tool,
+            capability="web",
+            risk_level="medium",
         )
     )
 

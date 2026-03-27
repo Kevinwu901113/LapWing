@@ -77,6 +77,8 @@ class InterestTracker:
                 [{"role": "user", "content": prompt}],
                 purpose="tool",
                 max_tokens=256,
+                session_key=f"chat:{chat_id}",
+                origin="memory.interest_tracker.extract",
             )
             topics = self._parse_result(response)
             for item in topics:

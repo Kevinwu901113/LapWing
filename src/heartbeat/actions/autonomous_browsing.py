@@ -81,6 +81,8 @@ class AutonomousBrowsingAction(HeartbeatAction):
                 [{"role": "user", "content": prompt}],
                 purpose="heartbeat",
                 max_tokens=300,
+                session_key=f"chat:{ctx.chat_id}",
+                origin="heartbeat.autonomous_browsing",
             )
             summary = summary.strip()
             if not summary:

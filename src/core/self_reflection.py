@@ -70,6 +70,8 @@ class SelfReflection:
                 [{"role": "user", "content": prompt}],
                 purpose="tool",
                 max_tokens=512,
+                session_key=f"chat:{chat_id}",
+                origin="core.self_reflection.daily",
             )
         except Exception as exc:
             logger.warning(f"[self_reflection] LLM 调用失败: {exc}")
@@ -113,6 +115,8 @@ class SelfReflection:
                 [{"role": "user", "content": prompt}],
                 purpose="tool",
                 max_tokens=128,
+                session_key=f"chat:{chat_id}",
+                origin="core.self_reflection.correction",
             )
         except Exception as exc:
             logger.warning(f"[self_reflection] 纠正摘要失败: {exc}")

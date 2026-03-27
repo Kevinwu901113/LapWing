@@ -96,16 +96,21 @@ class TestAgentDispatcher:
         registry.register(agent)
 
         router = AsyncMock()
-        # 搜索类消息走 _quick_match 快速路由，跳过 LLM 分类，只有一次人格格式化调用
-        router.complete = AsyncMock(return_value="这是经过人格格式化后的搜索结果。")
+        router.complete = AsyncMock(
+            side_effect=[
+                '{"agent": "researcher", "mode": "default", "reason": "用户要求深度研究"}',
+                "这是经过人格格式化后的搜索结果。",
+            ]
+        )
 
         dispatcher = make_dispatcher(registry=registry, router=router)
 
         with patch("src.core.dispatcher.load_prompt", side_effect=_mock_load):
-            result = await dispatcher.try_dispatch("chat1", "帮我搜索一下Python教程")
+            result = await dispatcher.try_dispatch("chat1", "请深度研究 Python 教程路线并给总结")
 
         assert result == "这是经过人格格式化后的搜索结果。"
-        assert router.complete.call_count == 1
+        # 一次分类 + 一次人格转述
+        assert router.complete.call_count == 2
 
     # 4. needs_persona_formatting=False → 直接返回 content，不调用 _format_with_persona
     async def test_routes_to_agent_without_persona_format(self):
@@ -216,7 +221,7 @@ class TestAgentDispatcher:
         assert task.user_message == "帮我搜索"
         assert task.mode == "default"
 
-    async def test_quick_match_routes_weather_before_researcher(self):
+    async def test_quick_match_routes_weather_without_llm_classify(self):
         registry = AgentRegistry()
         registry.register(FakeResearcherAgent())
         registry.register(FakeWeatherAgent())
@@ -228,6 +233,19 @@ class TestAgentDispatcher:
 
         assert result == "北京当前天气晴朗"
         router.complete.assert_not_called()
+
+    async def test_search_request_no_longer_quick_matches_researcher(self):
+        registry = AgentRegistry()
+        registry.register(FakeResearcherAgent())
+
+        router = AsyncMock()
+        router.complete = AsyncMock(return_value='{"agent": null}')
+        dispatcher = make_dispatcher(registry=registry, router=router)
+
+        result = await dispatcher.try_dispatch("chat1", "帮我搜一下华南理工大学最近消息")
+
+        assert result is None
+        router.complete.assert_called_once()
 
     async def test_quick_match_routes_todo_without_llm_classify(self):
         registry = AgentRegistry()

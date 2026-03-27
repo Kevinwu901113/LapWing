@@ -4,6 +4,7 @@ import logging
 
 from src.core.heartbeat import HeartbeatAction, SenseContext
 from src.core.prompt_loader import load_prompt
+from src.core.reasoning_tags import strip_internal_thinking_tags
 from src.tools import web_search
 
 logger = logging.getLogger("lapwing.heartbeat.interest_proactive")
@@ -55,7 +56,12 @@ class InterestProactiveAction(HeartbeatAction):
                 [{"role": "user", "content": prompt}],
                 purpose="heartbeat",
                 max_tokens=300,
+                session_key=f"chat:{ctx.chat_id}",
+                origin="heartbeat.interest_proactive",
             )
+            if not message:
+                return
+            message = strip_internal_thinking_tags(message)
             if not message:
                 return
 

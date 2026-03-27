@@ -121,3 +121,18 @@ class TestMemoryCommand:
 
         await app.cmd_memory(update, context)
         update.message.reply_text.assert_awaited_once_with("没有这条记忆")
+
+
+@pytest.mark.asyncio
+class TestModelCommand:
+    async def test_cmd_model_default_resets_session_override(self, telegram_app):
+        app, brain = telegram_app
+        brain.reset_model = MagicMock(return_value={"cleared": 3})
+        update = make_update()
+        context = MagicMock(args=["default"])
+
+        await app.cmd_model(update, context)
+
+        brain.reset_model.assert_called_once_with("42")
+        reply = update.message.reply_text.await_args.args[0]
+        assert "已恢复默认模型" in reply

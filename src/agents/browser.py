@@ -50,6 +50,8 @@ class BrowserAgent(BaseAgent):
                 [{"role": "user", "content": prompt}],
                 purpose="tool",
                 max_tokens=1024,
+                session_key=f"chat:{task.chat_id}",
+                origin="agent.browser.summary",
             )
         except Exception as exc:
             logger.warning(f"[browser] 网页总结失败: {exc}")

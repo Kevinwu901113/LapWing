@@ -16,6 +16,7 @@ from src.core.latency_monitor import LatencyMonitor
 @pytest.fixture
 def mock_brain():
     brain = MagicMock()
+    brain.auth_manager = None
     brain.memory = MagicMock()
     brain.memory.get_all_chat_ids = AsyncMock(return_value=["c2", "c1"])
 

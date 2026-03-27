@@ -9,6 +9,37 @@ except ModuleNotFoundError:
     def load_dotenv(*args, **kwargs):  # type: ignore[no-redef]
         return False
 
+
+def _parse_model_allowlist(raw: str) -> tuple[tuple[str | None, str], ...]:
+    entries: list[tuple[str | None, str]] = []
+    seen_refs: set[str] = set()
+    seen_aliases: set[str] = set()
+    for item in str(raw or "").split(","):
+        chunk = item.strip()
+        if not chunk:
+            continue
+
+        alias: str | None = None
+        ref = chunk
+        if "=" in chunk:
+            alias_text, ref_text = chunk.split("=", 1)
+            alias_text = alias_text.strip()
+            ref = ref_text.strip()
+            if not alias_text:
+                continue
+            alias_key = alias_text.lower()
+            alias = alias_text if alias_key not in seen_aliases else None
+            if alias is not None:
+                seen_aliases.add(alias_key)
+        else:
+            ref = chunk.strip()
+
+        if not ref or ref in seen_refs:
+            continue
+        seen_refs.add(ref)
+        entries.append((alias, ref))
+    return tuple(entries)
+
 # 项目根目录
 ROOT_DIR = Path(__file__).parent.parent
 CONFIG_DIR = ROOT_DIR / "config"
@@ -16,6 +47,10 @@ PROMPTS_DIR = ROOT_DIR / "prompts"
 LOGS_DIR = ROOT_DIR / "logs"
 DATA_DIR = ROOT_DIR / "data"
 DB_PATH = DATA_DIR / "lapwing.db"
+LAPWING_HOME = Path(os.getenv("LAPWING_HOME", str(Path.home() / ".lapwing")))
+AUTH_DIR = LAPWING_HOME / "auth"
+AUTH_PROFILES_PATH = AUTH_DIR / "auth-profiles.json"
+API_BOOTSTRAP_TOKEN_PATH = AUTH_DIR / "api-bootstrap-token"
 
 # 加载环境变量
 load_dotenv(CONFIG_DIR / ".env")
@@ -29,20 +64,92 @@ SEARCH_PROXY_URL: str = os.getenv("SEARCH_PROXY_URL", "") or TELEGRAM_PROXY_URL
 LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
 LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "")
 LLM_MODEL: str = os.getenv("LLM_MODEL", "glm-4-flash")
+LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "").strip().lower()
 
 # 多模型路由配置（可选，不配置时回退到通用 LLM_* 配置）
 LLM_CHAT_API_KEY: str = os.getenv("LLM_CHAT_API_KEY", "")
 LLM_CHAT_BASE_URL: str = os.getenv("LLM_CHAT_BASE_URL", "")
 LLM_CHAT_MODEL: str = os.getenv("LLM_CHAT_MODEL", "")
+LLM_CHAT_PROVIDER: str = os.getenv("LLM_CHAT_PROVIDER", "").strip().lower()
 
 LLM_TOOL_API_KEY: str = os.getenv("LLM_TOOL_API_KEY", "")
 LLM_TOOL_BASE_URL: str = os.getenv("LLM_TOOL_BASE_URL", "")
 LLM_TOOL_MODEL: str = os.getenv("LLM_TOOL_MODEL", "")
+LLM_TOOL_PROVIDER: str = os.getenv("LLM_TOOL_PROVIDER", "").strip().lower()
 
 # NVIDIA NIM（心跳专用模型，可选）
 NIM_API_KEY: str = os.getenv("NIM_API_KEY", "")
 NIM_BASE_URL: str = os.getenv("NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
 NIM_MODEL: str = os.getenv("NIM_MODEL", "meta/llama-3.1-8b-instruct")
+NIM_PROVIDER: str = os.getenv("NIM_PROVIDER", "").strip().lower()
+LLM_HEARTBEAT_PROVIDER: str = (
+    os.getenv("LLM_HEARTBEAT_PROVIDER", "").strip().lower()
+    or NIM_PROVIDER
+)
+LLM_MODEL_ALLOWLIST_RAW: str = os.getenv("LLM_MODEL_ALLOWLIST", "")
+_default_model_allowlist_raw = ",".join(
+    [
+        LLM_CHAT_MODEL or LLM_MODEL,
+        LLM_TOOL_MODEL or LLM_MODEL,
+        NIM_MODEL or LLM_MODEL,
+    ]
+)
+LLM_MODEL_ALLOWLIST: tuple[tuple[str | None, str], ...] = (
+    _parse_model_allowlist(LLM_MODEL_ALLOWLIST_RAW)
+    or _parse_model_allowlist(_default_model_allowlist_raw)
+)
+
+# OpenAI / Codex OAuth（ChatGPT 登录）
+OPENAI_CODEX_AUTH_AUTHORIZE_URL: str = os.getenv(
+    "OPENAI_CODEX_AUTH_AUTHORIZE_URL",
+    "https://auth.openai.com/oauth/authorize",
+)
+OPENAI_CODEX_AUTH_TOKEN_URL: str = os.getenv(
+    "OPENAI_CODEX_AUTH_TOKEN_URL",
+    "https://auth.openai.com/oauth/token",
+)
+OPENAI_CODEX_AUTH_PROXY_URL: str = (
+    os.getenv("OPENAI_CODEX_AUTH_PROXY_URL", "")
+    or SEARCH_PROXY_URL
+    or TELEGRAM_PROXY_URL
+)
+OPENAI_CODEX_AUTH_ORIGINATOR: str = os.getenv(
+    "OPENAI_CODEX_AUTH_ORIGINATOR",
+    "codex_cli_rs",
+)
+OPENAI_CODEX_AUTH_CLIENT_ID: str = os.getenv(
+    "OPENAI_CODEX_AUTH_CLIENT_ID",
+    "app_EMoamEEZ73f0CkXaXp7hrann",
+)
+OPENAI_CODEX_AUTH_REDIRECT_HOST: str = os.getenv(
+    "OPENAI_CODEX_AUTH_REDIRECT_HOST",
+    "localhost",
+)
+OPENAI_CODEX_AUTH_REDIRECT_PORT: int = int(
+    os.getenv("OPENAI_CODEX_AUTH_REDIRECT_PORT", "1455")
+)
+OPENAI_CODEX_AUTH_REDIRECT_PATH: str = os.getenv(
+    "OPENAI_CODEX_AUTH_REDIRECT_PATH",
+    "/auth/callback",
+)
+AUTH_REFRESH_SKEW_SECONDS: int = int(os.getenv("AUTH_REFRESH_SKEW_SECONDS", "300"))
+OPENAI_CODEX_RUNTIME_BASE_URL: str = os.getenv(
+    "OPENAI_CODEX_RUNTIME_BASE_URL",
+    "https://chatgpt.com/backend-api/codex",
+)
+OPENAI_CODEX_RUNTIME_PROXY_URL: str = (
+    os.getenv("OPENAI_CODEX_RUNTIME_PROXY_URL", "")
+    or OPENAI_CODEX_AUTH_PROXY_URL
+    or SEARCH_PROXY_URL
+    or TELEGRAM_PROXY_URL
+)
+OPENAI_CODEX_RUNTIME_CLIENT_VERSION: str = os.getenv(
+    "OPENAI_CODEX_RUNTIME_CLIENT_VERSION",
+    "",
+)
+OPENAI_CODEX_RUNTIME_TIMEOUT_SECONDS: int = int(
+    os.getenv("OPENAI_CODEX_RUNTIME_TIMEOUT_SECONDS", "60")
+)
 
 # 心跳配置
 HEARTBEAT_ENABLED: bool = os.getenv("HEARTBEAT_ENABLED", "true").lower() == "true"
@@ -132,6 +239,8 @@ LOOP_DETECTION_DETECTOR_KNOWN_POLL_NO_PROGRESS: bool = (
 
 if TASK_MAX_TOOL_ROUNDS <= 0:
     raise ValueError("TASK_MAX_TOOL_ROUNDS 必须是正整数。")
+if OPENAI_CODEX_RUNTIME_TIMEOUT_SECONDS <= 0:
+    raise ValueError("OPENAI_CODEX_RUNTIME_TIMEOUT_SECONDS 必须是正整数。")
 if TOOL_LOOP_SLO_SHELL_P95_MS <= 0:
     raise ValueError("TOOL_LOOP_SLO_SHELL_P95_MS 必须是正整数。")
 if TOOL_LOOP_SLO_WEB_P95_MS <= 0:
@@ -168,6 +277,25 @@ SELF_REFLECTION_HOUR: int = int(os.getenv("SELF_REFLECTION_HOUR", "2"))  # 每�
 
 # 搜索配置
 SEARCH_MAX_RESULTS: int = int(os.getenv("SEARCH_MAX_RESULTS", "5"))
+CHAT_WEB_TOOLS_ENABLED: bool = os.getenv("CHAT_WEB_TOOLS_ENABLED", "true").lower() == "true"
+
+# 本地 API Auth
+API_HOST: str = os.getenv("API_HOST", "127.0.0.1")
+API_PORT: int = int(os.getenv("API_PORT", "8765"))
+API_SESSION_COOKIE_NAME: str = os.getenv("API_SESSION_COOKIE_NAME", "lapwing_session")
+API_SESSION_TTL_SECONDS: int = int(os.getenv("API_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
+_API_ALLOWED_ORIGINS_DEFAULT = "http://localhost:1420,http://127.0.0.1:1420,http://127.0.0.1:8765"
+API_ALLOWED_ORIGINS: list[str] = [
+    item.strip()
+    for item in os.getenv(
+        "API_ALLOWED_ORIGINS",
+        (
+            _API_ALLOWED_ORIGINS_DEFAULT
+            + ",tauri://localhost,http://tauri.localhost,https://tauri.localhost"
+        ),
+    ).split(",")
+    if item.strip()
+]
 
 # 日志
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

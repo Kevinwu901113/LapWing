@@ -193,12 +193,15 @@ class TaskRuntime:
         self,
         shell_enabled: bool,
         *,
+        web_enabled: bool = True,
         skill_activation_enabled: bool = False,
     ) -> list[dict[str, Any]]:
-        """chat 场景工具集：按需暴露 shell 与 activate_skill。"""
+        """chat 场景工具集：按需暴露 shell / web / activate_skill。"""
         tool_names: set[str] = set()
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
+        if web_enabled:
+            tool_names.update({"web_search", "web_fetch"})
         if skill_activation_enabled:
             tool_names.add("activate_skill")
         if not tool_names:
@@ -252,7 +255,12 @@ class TaskRuntime:
         profile: str | RuntimeProfile = "chat_shell",
     ) -> str:
         if not tools:
-            return await self._router.complete(messages, purpose="chat")
+            return await self._router.complete(
+                messages,
+                purpose="chat",
+                session_key=f"chat:{chat_id}",
+                origin="task_runtime.chat",
+            )
 
         profile_obj = self._resolve_profile(profile)
         state = ExecutionSessionState(constraints=constraints)
@@ -285,6 +293,8 @@ class TaskRuntime:
                 self._with_shell_state_context(messages, state),
                 tools=tools,
                 purpose="chat",
+                session_key=f"chat:{chat_id}",
+                origin="task_runtime.chat",
             )
 
             if not turn.tool_calls:
@@ -522,6 +532,7 @@ class TaskRuntime:
             result_message = self._router.build_tool_result_message(
                 purpose="chat",
                 tool_results=tool_results,
+                session_key=f"chat:{chat_id}",
             )
             if isinstance(result_message, list):
                 messages.extend(result_message)

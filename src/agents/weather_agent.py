@@ -49,7 +49,7 @@ class WeatherAgent(BaseAgent):
     capabilities = ["查询天气", "查询温度", "查询风速"]
 
     async def execute(self, task: AgentTask, router) -> AgentResult:
-        city = await self._extract_city(task.user_message, router)
+        city = await self._extract_city(task.chat_id, task.user_message, router)
         if city is None:
             return AgentResult(
                 content="你想查哪个城市的天气？",
@@ -75,7 +75,7 @@ class WeatherAgent(BaseAgent):
             metadata={"city": city},
         )
 
-    async def _extract_city(self, user_message: str, router) -> str | None:
+    async def _extract_city(self, chat_id: str, user_message: str, router) -> str | None:
         for pattern in _CITY_PATTERNS:
             match = pattern.search(user_message)
             if match:
@@ -89,6 +89,8 @@ class WeatherAgent(BaseAgent):
                 [{"role": "user", "content": prompt}],
                 purpose="tool",
                 max_tokens=128,
+                session_key=f"chat:{chat_id}",
+                origin="agent.weather.extract_city",
             )
         except Exception as exc:
             logger.warning(f"[weather] 城市提取失败: {exc}")
