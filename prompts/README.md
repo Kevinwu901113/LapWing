@@ -54,8 +54,4 @@
 | `heartbeat_autonomous_browsing.md` | 自主浏览决策 Prompt |
 | `interest_extract.md` | 兴趣提取 Prompt |
 
-## 其他
 
-| 文件 | 用途 |
-|------|------|
-| `prompt_evolver.md` | 旧版全量进化 Prompt（已弃用，配套 `prompt_evolver.py` 保留） |

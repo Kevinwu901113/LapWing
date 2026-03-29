@@ -171,6 +171,10 @@ class ConversationMemory:
         except Exception as e:
             logger.error(f"对话消息写入数据库失败: {e}")
 
+    def replace_history(self, channel_id: str, new_history: list[dict]) -> None:
+        """替换指定频道的内存缓存（不修改数据库，供 Compactor 使用）。"""
+        self._store[channel_id] = new_history
+
     async def remove_last(self, channel_id: str) -> None:
         """移除指定频道的最后一条消息（LLM 调用失败时回滚用）。"""
         history = self._store.get(channel_id, [])

@@ -24,7 +24,6 @@ from src.core.latency_monitor import LatencyMonitor
 
 logger = logging.getLogger("lapwing.api")
 
-_LEARNINGS_DIR = JOURNAL_DIR
 _DIST_DIR = Path(__file__).parent.parent.parent / "desktop" / "dist"
 
 
@@ -266,7 +265,7 @@ def create_app(
 
     @app.get("/api/learnings")
     async def get_learnings():
-        items = await asyncio.to_thread(_read_learning_entries, _LEARNINGS_DIR)
+        items = await asyncio.to_thread(_read_learning_entries, JOURNAL_DIR)
         return {"items": items}
 
     @app.post("/api/evolve")

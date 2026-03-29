@@ -9,8 +9,6 @@ from src.core.prompt_loader import load_prompt
 
 logger = logging.getLogger("lapwing.self_reflection")
 
-_LEARNINGS_DIR = JOURNAL_DIR
-
 
 class SelfReflection:
     """Lapwing 的自省引擎。
@@ -21,7 +19,7 @@ class SelfReflection:
     def __init__(self, memory, router) -> None:
         self._memory = memory
         self._router = router
-        _LEARNINGS_DIR.mkdir(parents=True, exist_ok=True)
+        JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
 
     async def reflect_on_day(self, chat_id: str, date_str: str) -> str | None:
         """回顾指定日期的对话，提取经验，写入 JOURNAL_DIR/YYYY-MM-DD.md。
@@ -67,7 +65,7 @@ class SelfReflection:
 
     def _write_learning(self, date_str: str, content: str) -> None:
         """写入学习日志（同步，在线程中调用）。"""
-        path = _LEARNINGS_DIR / f"{date_str}.md"
+        path = JOURNAL_DIR / f"{date_str}.md"
         header = f"# {date_str} 学习笔记\n\n"
         if path.exists():
             existing = path.read_text(encoding="utf-8")

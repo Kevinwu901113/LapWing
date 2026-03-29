@@ -140,6 +140,10 @@ class InterestTracker:
                 else:
                     text_new = text[:next_section] + new_entries + "\n\n" + text[next_section:]
                 INTERESTS_PATH.write_text(text_new, encoding="utf-8")
+            else:
+                logger.warning(f"interests.md 中找不到 '## Kevin 的兴趣' 段落，追加到文件末尾")
+                text_new = text.rstrip() + "\n" + new_entries + "\n"
+                INTERESTS_PATH.write_text(text_new, encoding="utf-8")
 
         try:
             await asyncio.to_thread(_update)

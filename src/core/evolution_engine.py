@@ -229,7 +229,6 @@ class EvolutionEngine:
             return _BACKUP_DIR / "soul_missing.md"
         ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         backup_path = _BACKUP_DIR / f"soul_{ts}.md"
-        _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         await asyncio.to_thread(shutil.copy2, SOUL_PATH, backup_path)
         return backup_path
 

@@ -10,25 +10,25 @@ from src.core.prompt_loader import load_prompt
 logger = logging.getLogger("lapwing.tactical_rules")
 
 
-def _might_be_correction(text: str) -> bool:
-    """粗粒度判断是否可能是纠正。宁可多触发，不可漏。"""
-    indicators = [
-        "不要", "别", "不用", "不需要", "停", "够了",
-        "错了", "不对", "不是", "搞错",
-        "以后", "下次", "记住",
-        "don't", "stop", "wrong", "no ",
-        "？", "?",
-    ]
-    text_lower = text.lower()
-    return any(ind in text_lower for ind in indicators)
-
-
 class TacticalRules:
     """管理从经验中学到的行为规则。"""
 
     def __init__(self, router):
         self._router = router
         RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def might_be_correction(text: str) -> bool:
+        """粗粒度判断是否可能是纠正。宁可多触发，不可漏。"""
+        indicators = [
+            "不要", "别", "不用", "不需要", "停", "够了",
+            "错了", "不对", "不是", "搞错",
+            "以后", "下次", "记住",
+            "don't", "stop", "wrong", "no ",
+            "？", "?",
+        ]
+        text_lower = text.lower()
+        return any(ind in text_lower for ind in indicators)
 
     async def analyze_correction(
         self,

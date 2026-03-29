@@ -43,34 +43,27 @@ class TestMemoryConsolidationAction:
     def test_name(self):
         assert MemoryConsolidationAction().name == "memory_consolidation"
 
-    async def test_stores_summary_as_user_fact(self, ctx, mock_brain):
-        await MemoryConsolidationAction().execute(ctx, mock_brain, MagicMock())
-        mock_brain.memory.set_user_fact.assert_called_once()
-        key = mock_brain.memory.set_user_fact.call_args.args[1]
-        assert key.startswith("memory_summary_")
-
     async def test_calls_force_extraction(self, ctx, mock_brain):
         await MemoryConsolidationAction().execute(ctx, mock_brain, MagicMock())
         mock_brain.fact_extractor.force_extraction.assert_called_once_with("c1")
 
-    async def test_upserts_summary_to_vector_store(self, ctx, mock_brain):
+    async def test_does_not_generate_llm_summary(self, ctx, mock_brain):
+        """摘要生成已移交给 Compactor，这里不再调用 LLM。"""
         await MemoryConsolidationAction().execute(ctx, mock_brain, MagicMock())
-        mock_brain.vector_store.upsert.assert_awaited_once()
-        call_args = mock_brain.vector_store.upsert.call_args
-        assert call_args.args[0] == "c1"
-        assert call_args.args[1].startswith("summary_")
+        mock_brain.router.complete.assert_not_called()
 
-    async def test_uses_heartbeat_purpose(self, ctx, mock_brain):
+    async def test_does_not_write_memory_summary_fact(self, ctx, mock_brain):
+        """memory_summary_* fact 由 Compactor 管理，不再写入 SQLite。"""
         await MemoryConsolidationAction().execute(ctx, mock_brain, MagicMock())
-        assert mock_brain.router.complete.call_args.kwargs.get("purpose") == "heartbeat"
+        mock_brain.memory.set_user_fact.assert_not_called()
 
     async def test_skips_when_no_history(self, ctx, mock_brain):
         mock_brain.memory.get = AsyncMock(return_value=[])
         await MemoryConsolidationAction().execute(ctx, mock_brain, MagicMock())
         mock_brain.router.complete.assert_not_called()
-        mock_brain.memory.set_user_fact.assert_not_called()
+        mock_brain.fact_extractor.force_extraction.assert_not_called()
 
-    async def test_silent_on_llm_failure(self, ctx, mock_brain):
-        mock_brain.router.complete = AsyncMock(side_effect=Exception("API error"))
+    async def test_silent_on_force_extraction_failure(self, ctx, mock_brain):
+        mock_brain.fact_extractor.force_extraction = AsyncMock(side_effect=Exception("DB error"))
+        # Should not raise
         await MemoryConsolidationAction().execute(ctx, mock_brain, MagicMock())
-        mock_brain.memory.set_user_fact.assert_not_called()

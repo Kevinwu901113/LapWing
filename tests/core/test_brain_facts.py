@@ -77,8 +77,8 @@ class TestBuildSystemPrompt:
             result = await brain._build_system_prompt("chat1")
             assert result.index("基础人格 prompt") < result.index("偏好_食物_不吃辣")
 
-    async def test_memory_summaries_are_placed_in_separate_section(self):
-        """memory_summary_* 不应混在普通 facts 段落里。"""
+    async def test_memory_summary_facts_not_injected_in_system_prompt(self):
+        """memory_summary_* facts 不再注入 system prompt（摘要由 Compactor 的文件管理）。"""
         with make_brain():
             from src.core.brain import LapwingBrain
             brain = LapwingBrain(db_path=Path("test.db"))
@@ -87,41 +87,25 @@ class TestBuildSystemPrompt:
                 {"fact_key": "memory_summary_2026-03-23", "fact_value": "今天聊了面试和睡眠。", "updated_at": "2026-03-23"},
             ])
             result = await brain._build_system_prompt("chat1")
+            # 普通 fact 仍然注入
             assert "## 补充信息（自动提取）" in result
-            assert "## 最近聊过的事" in result
-            assert "- 2026-03-23: 今天聊了面试和睡眠。" in result
-            user_section = result.split("## 最近聊过的事")[0]
-            assert "memory_summary_2026-03-23" not in user_section
+            assert "偏好_食物_不吃辣" in result
+            # memory_summary_* 不再出现
+            assert "## 最近聊过的事" not in result
+            assert "memory_summary_2026-03-23" not in result
 
-    async def test_only_latest_three_memory_summaries_are_kept(self):
-        """最近聊过的事只保留最新三条。"""
+    async def test_memory_summary_facts_ignored_not_shown_in_facts_section(self):
+        """facts 段落不含 memory_summary_* 条目。"""
         with make_brain():
             from src.core.brain import LapwingBrain
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.get_user_facts = AsyncMock(return_value=[
-                {"fact_key": "memory_summary_2026-03-20", "fact_value": "20", "updated_at": "2026-03-20"},
-                {"fact_key": "memory_summary_2026-03-21", "fact_value": "21", "updated_at": "2026-03-21"},
-                {"fact_key": "memory_summary_2026-03-22", "fact_value": "22", "updated_at": "2026-03-22"},
-                {"fact_key": "memory_summary_2026-03-23", "fact_value": "23", "updated_at": "2026-03-23"},
-            ])
-            result = await brain._build_system_prompt("chat1")
-            assert "- 2026-03-23: 23" in result
-            assert "- 2026-03-22: 22" in result
-            assert "- 2026-03-21: 21" in result
-            assert "- 2026-03-20: 20" not in result
-
-    async def test_returns_base_plus_recent_section_when_only_memory_summaries_exist(self):
-        """只有 memory summaries 时，也应注入最近聊过的事段落。"""
-        with make_brain():
-            from src.core.brain import LapwingBrain
-            brain = LapwingBrain(db_path=Path("test.db"))
-            brain.memory.get_user_facts = AsyncMock(return_value=[
-                {"fact_key": "memory_summary_2026-03-23", "fact_value": "今天聊了工作安排。", "updated_at": "2026-03-23"},
+                {"fact_key": "memory_summary_2026-03-23", "fact_value": "只有 summary", "updated_at": "2026-03-23"},
             ])
             result = await brain._build_system_prompt("chat1")
             assert result.startswith("基础人格 prompt")
-            assert "## 最近聊过的事" in result
             assert "## 补充信息（自动提取）" not in result
+            assert "只有 summary" not in result
 
     async def test_appends_related_history_section_from_vector_hits(self):
         with make_brain():
@@ -143,7 +127,8 @@ class TestBuildSystemPrompt:
             assert "- 2026-03-20: 之前聊过 RAG 和论文选题。" in result
             brain.vector_store.search.assert_awaited_once_with("chat1", "我想继续聊论文", n_results=2)
 
-    async def test_skips_related_history_when_date_already_in_recent_summaries(self):
+    async def test_vector_hits_appear_regardless_of_memory_summary_facts(self):
+        """memory_summary_* facts 不再做 summary_dates 去重，向量命中正常显示。"""
         with make_brain():
             from src.core.brain import LapwingBrain
             brain = LapwingBrain(db_path=Path("test.db"))
@@ -161,7 +146,8 @@ class TestBuildSystemPrompt:
 
             result = await brain._build_system_prompt("chat1", "继续聊工作")
 
-            assert "## 相关历史记忆" not in result
+            # 向量命中不再被 memory_summary 去重，应当出现
+            assert "## 相关历史记忆" in result
 
     async def test_related_history_search_failure_is_ignored(self):
         with make_brain():

@@ -1,6 +1,7 @@
 """Lapwing 的大脑 - LLM 调用与对话管理。"""
 
 import asyncio
+import dataclasses
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -47,6 +48,17 @@ if TYPE_CHECKING:
 logger = logging.getLogger("lapwing.brain")
 
 _RELATED_MEMORY_LIMIT = 300
+
+
+@dataclasses.dataclass
+class _ThinkCtx:
+    """think() / think_conversational() 共享前置逻辑的结果。"""
+    messages: list[dict]
+    effective_user_message: str
+    approved_directory: str | None
+    early_reply: str | None = None
+
+
 class LapwingBrain:
     """管理 LLM 调用和对话上下文。"""
 
@@ -284,24 +296,19 @@ class LapwingBrain:
         sections.append(self.system_prompt)
 
         # Layer 1: 行为规则（从经验中学到的）
-        if RULES_PATH.exists():
-            rules = await read_memory_file(RULES_PATH, max_chars=800)
-            if rules and "暂无规则" not in rules:
-                sections.append(f"## 你从经验中学到的规则\n\n{rules}")
+        rules = await read_memory_file(RULES_PATH, max_chars=800)
+        if rules and "暂无规则" not in rules:
+            sections.append(f"## 你从经验中学到的规则\n\n{rules}")
 
         # Layer 2: 对 Kevin 的了解（文件化记忆）
-        if KEVIN_NOTES_PATH.exists():
-            kevin_notes = await read_memory_file(KEVIN_NOTES_PATH, max_chars=1000)
-            if kevin_notes:
-                sections.append(f"## 你对他的了解\n\n{kevin_notes}")
+        kevin_notes = await read_memory_file(KEVIN_NOTES_PATH, max_chars=1000)
+        if kevin_notes:
+            sections.append(f"## 你对他的了解\n\n{kevin_notes}")
 
         # Layer 2.5: SQLite facts 补充（保留兼容）
         facts = await self.memory.get_user_facts(chat_id)
-        summary_dates: set[str] = set()
         if facts:
-            regular_facts, memory_summaries = self._split_facts(facts)
-            summary_dates = self._summary_dates(memory_summaries)
-
+            regular_facts, _ = self._split_facts(facts)
             if regular_facts:
                 facts_text = "\n".join(
                     f"- {fact['fact_key']}: {fact['fact_value']}" for fact in regular_facts[:10]
@@ -309,15 +316,6 @@ class LapwingBrain:
                 sections.append(
                     "## 补充信息（自动提取）\n\n"
                     f"{facts_text}"
-                )
-
-            if memory_summaries:
-                summaries_text = self._format_recent_memory_summaries(memory_summaries)
-                sections.append(
-                    "## 最近聊过的事\n\n"
-                    "以下是你们最近几次对话的重要脉络。"
-                    "当用户延续之前的话题时，可以自然接上。\n\n"
-                    f"{summaries_text}"
                 )
 
         # Layer 3: 文件化对话摘要
@@ -332,7 +330,7 @@ class LapwingBrain:
             except Exception as exc:
                 logger.warning(f"[{chat_id}] 检索相关历史记忆失败: {exc}")
             else:
-                related_text = self._format_related_history_hits(hits, summary_dates)
+                related_text = self._format_related_history_hits(hits, set())
                 if related_text:
                     sections.append(
                         "## 相关历史记忆\n\n"
@@ -568,6 +566,78 @@ class LapwingBrain:
             return str(result.get("content", "")).strip()
         return f"技能 `{skill_name}` 已执行完成。"
 
+    async def _prepare_think(
+        self,
+        chat_id: str,
+        user_message: str,
+        send_fn=None,
+    ) -> "_ThinkCtx":
+        """共享前置逻辑：记忆写入、纠正检测、agent dispatch、context 组装。
+
+        send_fn 非空时，immediate_reply / agent_reply 会通过它发送（用于 conversational 模式）。
+        返回 _ThinkCtx；若 early_reply 非 None 则表示已完成回复，调用方直接返回该值即可。
+        """
+        await self.memory.append(chat_id, "user", user_message)
+
+        self.fact_extractor.notify(chat_id)
+        if self.interest_tracker is not None:
+            self.interest_tracker.notify(chat_id)
+
+        effective_user_message, approved_directory, immediate_reply = (
+            self.task_runtime.resolve_pending_confirmation(chat_id, user_message)
+        )
+        if immediate_reply is not None:
+            await self.memory.append(chat_id, "assistant", immediate_reply)
+            if send_fn is not None:
+                await send_fn(immediate_reply)
+            return _ThinkCtx(messages=[], effective_user_message=effective_user_message,
+                             approved_directory=approved_directory, early_reply=immediate_reply)
+
+        # 实时纠正检测：异步触发规则提取，不阻塞主回复流程
+        if self.tactical_rules is not None:
+            if self.tactical_rules.might_be_correction(user_message):
+                history = await self.memory.get(chat_id)
+                asyncio.create_task(
+                    self.tactical_rules.process_correction(
+                        chat_id, user_message, list(history)
+                    )
+                )
+
+        # Agent dispatch 优先
+        if self.dispatcher is not None:
+            try:
+                agent_reply = await self.dispatcher.try_dispatch(chat_id, effective_user_message)
+                if agent_reply is not None:
+                    agent_reply = strip_internal_thinking_tags(agent_reply)
+                    await self.memory.append(chat_id, "assistant", agent_reply)
+                    if send_fn is not None:
+                        await send_fn(agent_reply)
+                    return _ThinkCtx(messages=[], effective_user_message=effective_user_message,
+                                     approved_directory=approved_directory, early_reply=agent_reply)
+            except Exception as e:
+                logger.warning(f"[{chat_id}] Agent dispatch failed, falling back: {e}")
+
+        # 压缩 + 组装 messages
+        await self.compactor.try_compact(chat_id)
+        history = await self.memory.get(chat_id)
+        recent_messages = self._recent_messages(
+            history,
+            user_message=effective_user_message,
+            original_user_message=user_message,
+        )
+        system_content = await self._build_system_prompt(chat_id, effective_user_message)
+        messages = [
+            {"role": "system", "content": system_content},
+            *recent_messages,
+        ]
+        self._inject_voice_reminder(messages)
+
+        return _ThinkCtx(
+            messages=messages,
+            effective_user_message=effective_user_message,
+            approved_directory=approved_directory,
+        )
+
     async def think(self, chat_id: str, user_message: str, status_callback=None) -> str:
         """处理用户消息，返回 Lapwing 的回复。
 
@@ -578,69 +648,16 @@ class LapwingBrain:
         Returns:
             Lapwing 的回复文本
         """
-        await self.memory.append(chat_id, "user", user_message)
-
-        # 通知提取器有新消息（异步触发轮次/空闲计时逻辑）
-        self.fact_extractor.notify(chat_id)
-        if self.interest_tracker is not None:
-            self.interest_tracker.notify(chat_id)
-
-        effective_user_message, approved_directory, immediate_reply = (
-            self.task_runtime.resolve_pending_confirmation(chat_id, user_message)
-        )
-        if immediate_reply is not None:
-            await self.memory.append(chat_id, "assistant", immediate_reply)
-            return immediate_reply
-
-        # 实时纠正检测：异步触发规则提取，不阻塞主回复流程
-        if self.tactical_rules is not None:
-            from src.core.tactical_rules import _might_be_correction
-            if _might_be_correction(user_message):
-                history = await self.memory.get(chat_id)
-                asyncio.create_task(
-                    self.tactical_rules.process_correction(
-                        chat_id, user_message, list(history)
-                    )
-                )
-
-        # Try agent dispatch first
-        if self.dispatcher is not None:
-            try:
-                agent_reply = await self.dispatcher.try_dispatch(chat_id, effective_user_message)
-                if agent_reply is not None:
-                    agent_reply = strip_internal_thinking_tags(agent_reply)
-                    await self.memory.append(chat_id, "assistant", agent_reply)
-                    return agent_reply
-            except Exception as e:
-                logger.warning(f"[{chat_id}] Agent dispatch failed, falling back: {e}")
-
-        history = await self.memory.get(chat_id)
-        # 检查是否需要压缩对话
-        await self.compactor.try_compact(chat_id)
-        # 压缩后重新获取 history（可能已变化）
-        history = await self.memory.get(chat_id)
-        recent_messages = self._recent_messages(
-            history,
-            user_message=effective_user_message,
-            original_user_message=user_message,
-        )
-
-        # 动态组合 system prompt（基础人格 + 用户画像 + 知识笔记）
-        system_content = await self._build_system_prompt(chat_id, effective_user_message)
-
-        messages = [
-            {"role": "system", "content": system_content},
-            *recent_messages,
-        ]
-
-        self._inject_voice_reminder(messages)
+        ctx = await self._prepare_think(chat_id, user_message)
+        if ctx.early_reply is not None:
+            return ctx.early_reply
 
         try:
             reply = await self._complete_chat(
                 chat_id,
-                messages,
-                effective_user_message,
-                approved_directory=approved_directory,
+                ctx.messages,
+                ctx.effective_user_message,
+                approved_directory=ctx.approved_directory,
                 include_skill_activation_tool=self._skill_activation_tool_enabled(),
                 status_callback=status_callback,
             )
@@ -674,60 +691,9 @@ class LapwingBrain:
         Returns:
             完整回复文本（所有中间文字 + 最终文字拼接），用于记录到记忆
         """
-        await self.memory.append(chat_id, "user", user_message)
-        self.fact_extractor.notify(chat_id)
-        if self.interest_tracker is not None:
-            self.interest_tracker.notify(chat_id)
-
-        effective_user_message, approved_directory, immediate_reply = (
-            self.task_runtime.resolve_pending_confirmation(chat_id, user_message)
-        )
-        if immediate_reply is not None:
-            await self.memory.append(chat_id, "assistant", immediate_reply)
-            await send_fn(immediate_reply)
-            return immediate_reply
-
-        # 实时纠正检测
-        if self.tactical_rules is not None:
-            from src.core.tactical_rules import _might_be_correction
-            if _might_be_correction(user_message):
-                history = await self.memory.get(chat_id)
-                asyncio.create_task(
-                    self.tactical_rules.process_correction(
-                        chat_id, user_message, list(history)
-                    )
-                )
-
-        # Agent dispatch 优先
-        if self.dispatcher is not None:
-            try:
-                agent_reply = await self.dispatcher.try_dispatch(chat_id, effective_user_message)
-                if agent_reply is not None:
-                    agent_reply = strip_internal_thinking_tags(agent_reply)
-                    await self.memory.append(chat_id, "assistant", agent_reply)
-                    await send_fn(agent_reply)
-                    return agent_reply
-            except Exception as e:
-                logger.warning(f"[{chat_id}] Agent dispatch failed, falling back: {e}")
-
-        history = await self.memory.get(chat_id)
-        # 检查是否需要压缩对话
-        await self.compactor.try_compact(chat_id)
-        # 压缩后重新获取 history（可能已变化）
-        history = await self.memory.get(chat_id)
-        recent_messages = self._recent_messages(
-            history,
-            user_message=effective_user_message,
-            original_user_message=user_message,
-        )
-        system_content = await self._build_system_prompt(chat_id, effective_user_message)
-
-        messages = [
-            {"role": "system", "content": system_content},
-            *recent_messages,
-        ]
-
-        self._inject_voice_reminder(messages)
+        ctx = await self._prepare_think(chat_id, user_message, send_fn=send_fn)
+        if ctx.early_reply is not None:
+            return ctx.early_reply
 
         # 跟踪通过流式回调已发出的文字片段
         parts_sent: list[str] = []
@@ -748,9 +714,9 @@ class LapwingBrain:
         try:
             full_reply = await self._complete_chat(
                 chat_id,
-                messages,
-                effective_user_message,
-                approved_directory=approved_directory,
+                ctx.messages,
+                ctx.effective_user_message,
+                approved_directory=ctx.approved_directory,
                 include_skill_activation_tool=self._skill_activation_tool_enabled(),
                 status_callback=status_callback,
                 on_interim_text=on_interim_text,

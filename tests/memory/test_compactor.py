@@ -19,6 +19,7 @@ def mock_memory():
     memory = MagicMock()
     memory._store = {}
     memory.get = AsyncMock(return_value=[])
+    memory.replace_history = MagicMock(side_effect=lambda cid, h: memory._store.update({cid: h}))
     return memory
 
 

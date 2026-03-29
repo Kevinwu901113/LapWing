@@ -95,8 +95,8 @@ class ConversationCompactor:
         }
         new_history = [summary_message] + to_keep
 
-        # 直接替换内存缓存（不删除数据库中的旧记录，只更新缓存）
-        self._memory._store[chat_id] = new_history
+        # 替换内存缓存（不删除数据库中的旧记录，只更新缓存）
+        self._memory.replace_history(chat_id, new_history)
 
         logger.info(
             f"[{chat_id}] Compaction 完成：压缩 {compact_count} 条 → 保留 {len(to_keep)} 条 + 1 条摘要"

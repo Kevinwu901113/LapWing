@@ -101,7 +101,7 @@ class TestLocalApi:
         learnings_dir = tmp_path / "learnings"
         learnings_dir.mkdir()
         (learnings_dir / "2026-03-24.md").write_text("# note\nhello", encoding="utf-8")
-        monkeypatch.setattr("src.api.server._LEARNINGS_DIR", learnings_dir)
+        monkeypatch.setattr("src.api.server.JOURNAL_DIR", learnings_dir)
 
         app = create_app(mock_brain, DesktopEventBus())
         transport = httpx.ASGITransport(app=app)
