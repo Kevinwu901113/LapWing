@@ -153,35 +153,12 @@ class LapwingBrain:
     def reset_model(self, chat_id: str) -> dict[str, Any]:
         return self.router.clear_session_model(session_key=self._chat_session_key(chat_id))
 
-    def _split_facts(self, facts: list[dict]) -> tuple[list[dict], list[dict]]:
-        """将普通事实与 memory summary 分离。"""
-        regular_facts: list[dict] = []
-        memory_summaries: list[dict] = []
-        for fact in facts:
-            if str(fact.get("fact_key", "")).startswith("memory_summary_"):
-                memory_summaries.append(fact)
-            else:
-                regular_facts.append(fact)
-        return regular_facts, memory_summaries
-
-    def _format_recent_memory_summaries(self, summaries: list[dict]) -> str:
-        """格式化最近聊过的事摘要。"""
-        latest = sorted(
-            summaries,
-            key=lambda item: str(item.get("fact_key", "")),
-            reverse=True,
-        )[:3]
-        return "\n".join(
-            f"- {item['fact_key'].removeprefix('memory_summary_')}: {item['fact_value']}"
-            for item in latest
-        )
-
-    def _summary_dates(self, summaries: list[dict]) -> set[str]:
-        return {
-            str(item.get("fact_key", "")).removeprefix("memory_summary_")
-            for item in summaries
-            if str(item.get("fact_key", "")).startswith("memory_summary_")
-        }
+    def _split_facts(self, facts: list[dict]) -> list[dict]:
+        """过滤掉 memory_summary_* 条目，返回普通事实列表。"""
+        return [
+            fact for fact in facts
+            if not str(fact.get("fact_key", "")).startswith("memory_summary_")
+        ]
 
     def _truncate_related_memory(self, text: str) -> str:
         stripped = text.strip()
@@ -308,7 +285,7 @@ class LapwingBrain:
         # Layer 2.5: SQLite facts 补充（保留兼容）
         facts = await self.memory.get_user_facts(chat_id)
         if facts:
-            regular_facts, _ = self._split_facts(facts)
+            regular_facts = self._split_facts(facts)
             if regular_facts:
                 facts_text = "\n".join(
                     f"- {fact['fact_key']}: {fact['fact_value']}" for fact in regular_facts[:10]
