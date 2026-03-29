@@ -101,7 +101,7 @@ class TodoAgent(BaseAgent):
         suffix = f"（截止 {due_date}）" if due_date else ""
         return AgentResult(
             content=f"已添加待办 #{todo_id}：{content}{suffix}",
-            needs_persona_formatting=False,
+            needs_persona_formatting=True,
         )
 
     async def _handle_list(self, chat_id: str) -> AgentResult:
@@ -124,7 +124,7 @@ class TodoAgent(BaseAgent):
         success = await self._memory.mark_todo_done(chat_id, todo_id)
         if not success:
             return AgentResult(content="没有这条待办。", needs_persona_formatting=False)
-        return AgentResult(content=f"已完成待办 #{todo_id}。", needs_persona_formatting=False)
+        return AgentResult(content=f"已完成待办 #{todo_id}。", needs_persona_formatting=True)
 
     async def _handle_delete(self, chat_id: str, command: dict) -> AgentResult:
         todo_id = self._parse_id(command.get("todo_id"))
@@ -134,7 +134,7 @@ class TodoAgent(BaseAgent):
         success = await self._memory.delete_todo(chat_id, todo_id)
         if not success:
             return AgentResult(content="没有这条待办。", needs_persona_formatting=False)
-        return AgentResult(content=f"已删除待办 #{todo_id}。", needs_persona_formatting=False)
+        return AgentResult(content=f"已删除待办 #{todo_id}。", needs_persona_formatting=True)
 
     async def _handle_reminder(self, chat_id: str, command: dict, action: str) -> AgentResult:
         normalized_action = action
@@ -214,7 +214,7 @@ class TodoAgent(BaseAgent):
                 f"已添加提醒 #{reminder_id}：{content}"
                 f"（{recurrence_text}，下次触发 {next_local.strftime('%Y-%m-%d %H:%M')}）"
             ),
-            needs_persona_formatting=False,
+            needs_persona_formatting=True,
         )
 
     async def _handle_list_reminders(self, chat_id: str) -> AgentResult:
@@ -244,7 +244,7 @@ class TodoAgent(BaseAgent):
         success = await self._memory.cancel_reminder(chat_id, reminder_id)
         if not success:
             return AgentResult(content="没有这条提醒。", needs_persona_formatting=False)
-        return AgentResult(content=f"已取消提醒 #{reminder_id}。", needs_persona_formatting=False)
+        return AgentResult(content=f"已取消提醒 #{reminder_id}。", needs_persona_formatting=True)
 
     def _is_reminder_command(self, command: dict, domain: str, action: str) -> bool:
         if domain == "reminder":

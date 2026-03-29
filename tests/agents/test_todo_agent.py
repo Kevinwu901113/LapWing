@@ -43,7 +43,7 @@ class TestTodoAgent:
 
         memory.add_todo.assert_awaited_once_with("42", "交周报", "2026-03-25")
         assert result.content == "已添加待办 #3：交周报（截止 2026-03-25）"
-        assert result.needs_persona_formatting is False
+        assert result.needs_persona_formatting is True
 
     async def test_list_todos_formats_stable_ids(self):
         memory = make_memory()
