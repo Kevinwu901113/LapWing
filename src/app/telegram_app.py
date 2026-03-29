@@ -399,21 +399,11 @@ class TelegramApp:
             return
         if self._active_status_tokens.get(chat_id) != task_token:
             return
-
-        text = self._format_progress_text(raw_text)
-        if not text:
-            return
-        if self._should_skip_status(chat_id, text, force=force):
-            return
-
+        # 只发 typing indicator，不发文字状态消息
         try:
-            await send_telegram_text_to_chat(
-                bot=self._bot,
-                chat_id=self._chat_id_for_api(chat_id),
-                text=text,
+            await self._bot.send_chat_action(
+                chat_id=self._chat_id_for_api(chat_id), action="typing"
             )
-            self._status_last_text[chat_id] = text
-            self._status_last_sent_at[chat_id] = time.monotonic()
         except Exception:
             pass
 
@@ -435,13 +425,27 @@ class TelegramApp:
             self._status_last_sent_at.pop(chat_id, None)
             try:
                 await message.chat.send_action("typing")
-                await self._emit_status(chat_id, task_token, "stage:received", force=True)
-                reply = await self._container.brain.think(
+
+                async def send_fn(text: str) -> None:
+                    await send_telegram_text_to_chat(
+                        bot=self._bot,
+                        chat_id=self._chat_id_for_api(chat_id),
+                        text=text,
+                    )
+
+                async def typing_fn() -> None:
+                    try:
+                        await message.chat.send_action("typing")
+                    except Exception:
+                        pass
+
+                reply = await self._container.brain.think_conversational(
                     chat_id,
                     user_text,
+                    send_fn=send_fn,
+                    typing_fn=typing_fn,
                     status_callback=self._build_status_sender(task_token=task_token),
                 )
-                await self._send_reply(message, reply)
                 logger.info("已回复 [%s]，长度: %s", chat_id, len(reply))
             finally:
                 if self._active_status_tokens.get(chat_id) == task_token:
@@ -463,7 +467,6 @@ class TelegramApp:
             self._status_last_sent_at.pop(chat_id, None)
             try:
                 await message.chat.send_action("typing")
-                await self._emit_status(chat_id, task_token, "stage:received", force=True)
                 reply = await self._container.brain.run_skill_command(
                     chat_id=chat_id,
                     raw_user_message=raw_user_message,

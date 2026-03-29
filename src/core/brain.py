@@ -84,16 +84,18 @@ class LapwingBrain:
 
     @property
     def system_prompt(self) -> str:
-        """懒加载 system prompt（基础人格）。"""
+        """懒加载 system prompt（核心人格 soul）。"""
         if self._system_prompt is None:
-            self._system_prompt = load_prompt("lapwing")
+            self._system_prompt = load_prompt("lapwing_soul")
             logger.info("已加载 Lapwing 人格 prompt")
         return self._system_prompt
 
     def reload_persona(self) -> None:
-        """重新加载人格 prompt（修改 prompts/lapwing.md 后调用）。"""
+        """重新加载人格 prompt（修改 prompts/lapwing_soul.md 后调用）。"""
         from src.core.prompt_loader import reload_prompt
-        self._system_prompt = reload_prompt("lapwing")
+        self._system_prompt = reload_prompt("lapwing_soul")
+        reload_prompt("lapwing_voice")
+        reload_prompt("lapwing_capabilities")
         logger.info("已重新加载 Lapwing 人格 prompt")
 
     def reload_skills(self) -> None:
@@ -179,54 +181,30 @@ class LapwingBrain:
         return "\n".join(lines)
 
     def _tool_runtime_instruction(self) -> str:
+        """返回动态运行时状态说明（工具开关、当前目录等）。行为规则已移至 lapwing_capabilities.md。"""
         sections: list[str] = []
 
         if SHELL_ENABLED:
             sections.append(
-                "## 本地执行规则\n\n"
-                "你拥有 execute_shell、read_file、write_file 工具，可以在当前服务器上执行真实的操作。\n\n"
-                "### 执行原则\n"
-                "- 用户要求你做任何涉及文件、命令、系统操作的事情时，**立刻调用工具去做**，不要先回复文字再等下一轮\n"
-                "- **绝对不要**把选择题抛给用户。遇到问题（比如权限不够）自己判断最合理的替代方案直接执行\n"
-                "- **绝对不要**伪造命令输出。你必须真正调用工具，用真实结果回复\n"
-                "- 如果遇到权限错误（Permission denied），**立刻用 `sudo` 重试同一条命令**，不要询问用户\n"
-                "- 如果一个命令失败了，分析错误原因，换一种方式重试，直到完成为止\n"
-                "- 复杂任务需要多个步骤时，连续调用多次工具一口气做完\n"
-                "- 做完后简短告知结果：'搞定了，文件在 /home/xxx。' 不需要列出你执行的每一条命令\n\n"
-                "### 禁止行为\n"
-                "- 禁止回复 '有两个方案：1. xxx 2. xxx，你选哪个？'\n"
-                "- 禁止回复 '我来帮你检查一下' 然后就没有下文了\n"
-                "- 禁止回复 '遇到了权限问题，你想怎么处理？' —— 自己换路径解决\n"
-                "- 禁止在回复中展示命令代码块但不实际执行\n\n"
-                f"当前工作目录：{SHELL_DEFAULT_CWD}\n"
-                f"当前用户：可用 whoami 确认\n"
+                "## 本地执行状态\n\n"
+                f"Shell 工具已启用（execute_shell、read_file、write_file）。\n"
+                f"当前工作目录：{SHELL_DEFAULT_CWD}"
             )
         else:
             sections.append(
-                "## 本地执行规则\n\n"
-                "本地 shell 执行当前已禁用。"
-                "如果用户要求你在当前机器上执行命令或修改本地文件，"
-                "必须明确说明执行功能当前关闭，不能编造结果。"
+                "## 本地执行状态\n\n"
+                "Shell 工具当前已禁用。如果被要求执行命令或修改本地文件，必须明确说明执行功能已关闭，不能编造结果。"
             )
 
         if CHAT_WEB_TOOLS_ENABLED:
             sections.append(
-                "## 联网检索规则\n\n"
-                "你拥有 web_search 和 web_fetch 工具，可以联网检索并阅读网页内容。\n\n"
-                "### 何时应优先联网\n"
-                "- 用户明确要求你“查一下/搜一下/看最新/今天/最近”时，优先调用 web_search\n"
-                "- 涉及时效性强的信息（新闻、行情、公告、比分、票价、政策变化）时，优先联网后再回答\n"
-                "- 当你对事实不确定时，不要猜测，先联网验证\n\n"
-                "### 联网执行原则\n"
-                "- 先用 web_search 找来源，再用 web_fetch 阅读关键页面后给结论\n"
-                "- 如果结果冲突或不充分，继续补充搜索/抓取，直到可以给出可信结论\n"
-                "- 如果最终仍无法确认，要明确说明“未检索到可靠结果”，不要编造\n"
-                "- 只要本轮调用过 web 工具，最终回答末尾必须附上可点击 URL 来源列表\n"
+                "## 联网状态\n\n"
+                "联网工具已启用（web_search、web_fetch）。"
             )
         else:
             sections.append(
-                "## 联网检索规则\n\n"
-                "联网工具当前已禁用。若用户要求最新网页信息，需明确说明无法联网检索。"
+                "## 联网状态\n\n"
+                "联网工具当前已禁用。若被要求查询最新网页信息，需明确说明无法联网检索。"
             )
 
         return "\n\n".join(sections)
@@ -239,6 +217,8 @@ class LapwingBrain:
         approved_directory: str | None = None,
         include_skill_activation_tool: bool = False,
         status_callback=None,
+        on_interim_text=None,
+        on_typing=None,
     ) -> str:
         constraints = extract_execution_constraints(
             user_message,
@@ -270,6 +250,8 @@ class LapwingBrain:
             event_bus=self.event_bus,
             on_consent_required=lambda state: self.task_runtime.record_pending_confirmation(chat_id, state),
             services=services,
+            on_interim_text=on_interim_text,
+            on_typing=on_typing,
         )
 
     async def _build_system_prompt(self, chat_id: str, user_message: str = "") -> str:
@@ -341,6 +323,9 @@ class LapwingBrain:
                     "以下是当前可用的技能，你可以在确实需要时调用 `activate_skill` 按需加载。\n\n"
                     f"{skills_catalog}"
                 )
+
+        # 能力描述与做事规则（包含查询行为指导）
+        sections.append(load_prompt("lapwing_capabilities"))
 
         if user_message:
             sections.append(self._tool_runtime_instruction())
@@ -454,6 +439,11 @@ class LapwingBrain:
             {"role": "system", "content": system_content},
             *recent_messages,
         ]
+
+        # 深度注入：追加到 system prompt 末尾
+        voice_reminder = load_prompt("lapwing_voice")
+        messages[0]["content"] = messages[0]["content"] + "\n\n" + voice_reminder
+
         return await self._complete_chat(
             chat_id,
             messages,
@@ -587,6 +577,10 @@ class LapwingBrain:
             *recent_messages,
         ]
 
+        # 深度注入：将人格强化追加到 system prompt 末尾（MiniMax 不允许 system role 在中间）
+        voice_reminder = load_prompt("lapwing_voice")
+        messages[0]["content"] = messages[0]["content"] + "\n\n" + voice_reminder
+
         try:
             reply = await self._complete_chat(
                 chat_id,
@@ -605,3 +599,125 @@ class LapwingBrain:
             logger.error(f"LLM 调用失败: {e}")
             await self.memory.remove_last(chat_id)
             return "抱歉，我刚才走神了一下。你能再说一次吗？"
+
+    async def think_conversational(
+        self,
+        chat_id: str,
+        user_message: str,
+        send_fn,
+        typing_fn=None,
+        status_callback=None,
+    ) -> str:
+        """边查边说模式：中间文字通过 send_fn 实时发出，供 Telegram 对话使用。
+
+        Args:
+            chat_id: Telegram 对话 ID
+            user_message: 用户消息（已经过消息合并）
+            send_fn: 发送一条消息给用户的异步回调
+            typing_fn: 发送 typing indicator 的异步回调
+            status_callback: 桌面端状态回调（透传给 task_runtime）
+
+        Returns:
+            完整回复文本（所有中间文字 + 最终文字拼接），用于记录到记忆
+        """
+        await self.memory.append(chat_id, "user", user_message)
+        self.fact_extractor.notify(chat_id)
+        if self.interest_tracker is not None:
+            self.interest_tracker.notify(chat_id)
+
+        effective_user_message, approved_directory, immediate_reply = (
+            self.task_runtime.resolve_pending_confirmation(chat_id, user_message)
+        )
+        if immediate_reply is not None:
+            await self.memory.append(chat_id, "assistant", immediate_reply)
+            await send_fn(immediate_reply)
+            return immediate_reply
+
+        # 实时纠正检测
+        if self.self_reflection is not None:
+            from src.core.self_reflection import is_correction
+            if is_correction(user_message):
+                import asyncio
+                history = await self.memory.get(chat_id)
+                asyncio.create_task(
+                    self.self_reflection.reflect_on_correction(
+                        chat_id, user_message, list(history)
+                    )
+                )
+
+        # Agent dispatch 优先
+        if self.dispatcher is not None:
+            try:
+                agent_reply = await self.dispatcher.try_dispatch(chat_id, effective_user_message)
+                if agent_reply is not None:
+                    agent_reply = strip_internal_thinking_tags(agent_reply)
+                    await self.memory.append(chat_id, "assistant", agent_reply)
+                    await send_fn(agent_reply)
+                    return agent_reply
+            except Exception as e:
+                logger.warning(f"[{chat_id}] Agent dispatch failed, falling back: {e}")
+
+        history = await self.memory.get(chat_id)
+        recent_messages = self._recent_messages(
+            history,
+            user_message=effective_user_message,
+            original_user_message=user_message,
+        )
+        system_content = await self._build_system_prompt(chat_id, effective_user_message)
+
+        messages = [
+            {"role": "system", "content": system_content},
+            *recent_messages,
+        ]
+
+        # 深度注入：追加到 system prompt 末尾
+        voice_reminder = load_prompt("lapwing_voice")
+        messages[0]["content"] = messages[0]["content"] + "\n\n" + voice_reminder
+
+        # 跟踪通过流式回调已发出的文字片段
+        parts_sent: list[str] = []
+
+        async def on_interim_text(text: str) -> None:
+            stripped = strip_internal_thinking_tags(text)
+            if stripped:
+                await send_fn(stripped)
+                parts_sent.append(stripped)
+
+        async def on_typing() -> None:
+            if typing_fn is not None:
+                try:
+                    await typing_fn()
+                except Exception:
+                    pass
+
+        try:
+            full_reply = await self._complete_chat(
+                chat_id,
+                messages,
+                effective_user_message,
+                approved_directory=approved_directory,
+                include_skill_activation_tool=self._skill_activation_tool_enabled(),
+                status_callback=status_callback,
+                on_interim_text=on_interim_text,
+                on_typing=on_typing,
+            )
+            full_reply = strip_internal_thinking_tags(full_reply)
+
+            # 如果最终回复没有通过流式发出（无工具场景 / 特殊状态消息），则现在发送
+            if not parts_sent or full_reply != parts_sent[-1]:
+                if full_reply:
+                    await send_fn(full_reply)
+                    parts_sent.append(full_reply)
+
+            # 合并所有片段存入记忆
+            memory_text = "\n\n".join(parts_sent) if parts_sent else full_reply
+            await self.memory.append(chat_id, "assistant", memory_text)
+            logger.debug(f"[{chat_id}] 流式回复完成，片段数: {len(parts_sent)}")
+            return memory_text
+
+        except Exception as e:
+            logger.error(f"LLM 调用失败（conversational）: {e}")
+            await self.memory.remove_last(chat_id)
+            error_msg = "抱歉，我刚才走神了一下。你能再说一次吗？"
+            await send_fn(error_msg)
+            return error_msg

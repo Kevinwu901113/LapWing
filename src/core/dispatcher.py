@@ -47,7 +47,7 @@ class AgentDispatcher:
         self._registry = registry
         self._router = router
         self._memory = memory
-        self._persona_prompt = load_prompt("lapwing")
+        self._persona_prompt = load_prompt("lapwing_soul")
 
     async def try_dispatch(self, chat_id: str, user_message: str) -> str | None:
         """尝试将用户消息分发给合适的 Agent。
@@ -187,9 +187,18 @@ class AgentDispatcher:
 
     async def _format_with_persona(self, chat_id: str, content: str) -> str:
         """通过 Lapwing 的人格对原始 Agent 输出进行润色转述。"""
+        voice_prompt = load_prompt("lapwing_voice")
         messages = [
-            {"role": "system", "content": self._persona_prompt},
-            {"role": "user", "content": f"请用你的风格将以下内容转述给用户：\n\n{content}"},
+            {"role": "system", "content": voice_prompt},
+            {
+                "role": "user",
+                "content": (
+                    "把以下信息用你自己的方式告诉用户，像和一个亲近的人聊天一样说。"
+                    "不要用列表、分隔线、加粗标题。不要说'根据搜索结果'、'以下是'。"
+                    "只说最有意思的一两条，加入你的反应。\n\n"
+                    f"{content}"
+                ),
+            },
         ]
         result = await self._router.complete(
             messages,

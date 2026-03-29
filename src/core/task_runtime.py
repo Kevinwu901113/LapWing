@@ -253,6 +253,8 @@ class TaskRuntime:
         on_consent_required: Callable[[ExecutionSessionState], str] | None = None,
         services: dict[str, Any] | None = None,
         profile: str | RuntimeProfile = "chat_shell",
+        on_interim_text: Callable[[str], "Awaitable[None]"] | None = None,
+        on_typing: Callable[[], "Awaitable[None]"] | None = None,
     ) -> str:
         async def _emit_status(text: str) -> None:
             if status_callback is None:
@@ -296,6 +298,7 @@ class TaskRuntime:
 
         last_payload: dict[str, Any] | None = None
         final_reply: str | None = None
+        interim_parts: list[str] = []  # 收集已通过 on_interim_text 发出的中间文字
         loop_detection_state = self._new_loop_detection_state()
 
         async def _step_runner(round_index: int) -> TaskLoopStep:
@@ -311,6 +314,14 @@ class TaskRuntime:
 
             if not turn.tool_calls:
                 await _emit_status("stage:finalizing")
+                # 最终文字也通过 on_interim_text 发出（若已建立流式通道）
+                final_text = (turn.text or "").strip()
+                if final_text and on_interim_text is not None:
+                    try:
+                        await on_interim_text(final_text)
+                        interim_parts.append(final_text)
+                    except Exception:
+                        pass
                 final_reply = await self._finalize_without_tool_calls(
                     chat_id=chat_id,
                     task_id=task_id,
@@ -321,6 +332,15 @@ class TaskRuntime:
                     on_consent_required=on_consent_required,
                 )
                 return TaskLoopStep(completed=True, payload=last_payload)
+
+            # LLM 返回了 tool_call，文字部分是中间回复（"等一下，我看看"）
+            interim_text = (turn.text or "").strip()
+            if interim_text and on_interim_text is not None:
+                try:
+                    await on_interim_text(interim_text)
+                    interim_parts.append(interim_text)
+                except Exception:
+                    pass
 
             tool_names = [tool_call.name for tool_call in turn.tool_calls]
             executed_tool_names: list[str] = []
@@ -459,17 +479,46 @@ class TaskRuntime:
                     **tool_event_common,
                 )
 
+                # 工具执行前触发 typing indicator
+                if on_typing is not None:
+                    try:
+                        await on_typing()
+                    except Exception:
+                        pass
+
+                # 长时间等待兜底：超过 10 秒且还没发过中间文字时，发一条简短的人格消息
+                _thinking_sent = False
+
+                async def _send_thinking_message_after_delay() -> None:
+                    nonlocal _thinking_sent
+                    import asyncio as _asyncio
+                    import random as _random
+                    _THINKING_MESSAGES = ["等一下，我看看。", "我找找。", "嗯……"]
+                    await _asyncio.sleep(10)
+                    if on_interim_text is not None and not interim_parts and not _thinking_sent:
+                        _thinking_sent = True
+                        try:
+                            await on_interim_text(_random.choice(_THINKING_MESSAGES))
+                        except Exception:
+                            pass
+
+                import asyncio as _asyncio_module
+                _thinking_task = _asyncio_module.create_task(_send_thinking_message_after_delay())
+
                 tool_started_at = time.perf_counter()
-                tool_result_text, payload, execution_success = await self._execute_tool_call(
-                    tool_call=tool_call,
-                    state=state,
-                    deps=deps,
-                    task_id=task_id,
-                    chat_id=chat_id,
-                    event_bus=event_bus,
-                    profile=profile_obj,
-                    services=services,
-                )
+                try:
+                    tool_result_text, payload, execution_success = await self._execute_tool_call(
+                        tool_call=tool_call,
+                        state=state,
+                        deps=deps,
+                        task_id=task_id,
+                        chat_id=chat_id,
+                        event_bus=event_bus,
+                        profile=profile_obj,
+                        services=services,
+                    )
+                finally:
+                    _thinking_task.cancel()
                 duration_ms = max(int((time.perf_counter() - tool_started_at) * 1000), 0)
                 stdout_bytes = self._text_utf8_bytes(payload.get("stdout"))
                 stderr_bytes = self._text_utf8_bytes(payload.get("stderr"))

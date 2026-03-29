@@ -14,7 +14,7 @@ from src.core.prompt_loader import load_prompt, reload_prompt
 logger = logging.getLogger("lapwing.prompt_evolver")
 
 _PROMPTS_DIR = ROOT_DIR / "prompts"
-_LAPWING_PROMPT_PATH = _PROMPTS_DIR / "lapwing.md"
+_LAPWING_PROMPT_PATH = _PROMPTS_DIR / "lapwing_soul.md"
 _BACKUP_DIR = DATA_DIR / "backups" / "prompts"
 _LEARNINGS_DIR = DATA_DIR / "learnings"
 
@@ -100,7 +100,7 @@ class PromptEvolver:
 
         # 写入新版本
         await asyncio.to_thread(_LAPWING_PROMPT_PATH.write_text, new_prompt, encoding="utf-8")
-        reload_prompt("lapwing")
+        reload_prompt("lapwing_soul")
 
         logger.info(f"[prompt_evolver] prompt 已更新，备份: {backup_path.name}")
         logger.info(f"[prompt_evolver] 变更摘要: {changes_summary}")
@@ -117,7 +117,11 @@ class PromptEvolver:
         Returns:
             {"success": bool, "reverted_to": str, "error": str}
         """
-        backups = sorted(_BACKUP_DIR.glob("lapwing_*.md"), reverse=True)
+        backups = sorted(
+            list(_BACKUP_DIR.glob("lapwing_soul_*.md")) + list(_BACKUP_DIR.glob("lapwing_*.md")),
+            key=lambda p: p.name,
+            reverse=True,
+        )
         if not backups:
             return {"success": False, "error": "没有找到备份文件。"}
 
@@ -127,7 +131,7 @@ class PromptEvolver:
         # 写入前先备份当前版本（以防反悔）
         await asyncio.to_thread(self._backup_current)
         await asyncio.to_thread(_LAPWING_PROMPT_PATH.write_text, content, encoding="utf-8")
-        reload_prompt("lapwing")
+        reload_prompt("lapwing_soul")
 
         logger.info(f"[prompt_evolver] 已回滚到: {latest.name}")
         return {"success": True, "reverted_to": latest.name}
