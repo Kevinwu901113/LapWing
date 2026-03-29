@@ -260,14 +260,29 @@ async def test_status_sender_ignores_stale_task_token(app_with_container):
 @pytest.mark.asyncio
 async def test_status_sender_formats_report_stage(app_with_container):
     app, _ = app_with_container
-    app._bot = SimpleNamespace(send_message=AsyncMock())
+    app._bot = SimpleNamespace(send_message=AsyncMock(), send_chat_action=AsyncMock())
     app._active_status_tokens["42"] = "token-1"
 
     sender = app._build_status_sender(task_token="token-1")
-    await sender("42", "stage:executing:web_search:1:2")
+    with patch("config.settings.TELEGRAM_PROGRESS_STYLE", "report"):
+        await sender("42", "stage:executing:web_search:1:2")
 
     app._bot.send_message.assert_awaited_once()
     sent = app._bot.send_message.await_args.kwargs
     assert sent["chat_id"] == 42
     assert sent["parse_mode"] == "HTML"
     assert "执行中：web_search（1/2）" in sent["text"]
+
+
+@pytest.mark.asyncio
+async def test_status_sender_silent_only_sends_typing(app_with_container):
+    app, _ = app_with_container
+    app._bot = SimpleNamespace(send_message=AsyncMock(), send_chat_action=AsyncMock())
+    app._active_status_tokens["42"] = "token-1"
+
+    sender = app._build_status_sender(task_token="token-1")
+    with patch("config.settings.TELEGRAM_PROGRESS_STYLE", "silent"):
+        await sender("42", "stage:executing:web_search:1:2")
+
+    app._bot.send_chat_action.assert_awaited_once()
+    app._bot.send_message.assert_not_called()

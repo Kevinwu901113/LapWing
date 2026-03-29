@@ -62,7 +62,7 @@ SEARCH_PROXY_URL: str = os.getenv("SEARCH_PROXY_URL", "") or TELEGRAM_PROXY_URL
 TELEGRAM_TEXT_MODE: str = os.getenv("TELEGRAM_TEXT_MODE", "markdown").strip().lower()
 TELEGRAM_MARKDOWN_TABLE_MODE: str = os.getenv("TELEGRAM_MARKDOWN_TABLE_MODE", "code").strip().lower()
 TELEGRAM_HTML_CHUNK_LIMIT: int = int(os.getenv("TELEGRAM_HTML_CHUNK_LIMIT", "4000"))
-TELEGRAM_PROGRESS_STYLE: str = os.getenv("TELEGRAM_PROGRESS_STYLE", "report").strip().lower()
+TELEGRAM_PROGRESS_STYLE: str = os.getenv("TELEGRAM_PROGRESS_STYLE", "silent").strip().lower()
 TELEGRAM_PROGRESS_DEDUP: bool = os.getenv("TELEGRAM_PROGRESS_DEDUP", "true").lower() == "true"
 TELEGRAM_PROGRESS_THROTTLE_SECONDS: float = float(
     os.getenv("TELEGRAM_PROGRESS_THROTTLE_SECONDS", "1.0")
@@ -287,8 +287,8 @@ if TELEGRAM_HTML_CHUNK_LIMIT <= 0:
     raise ValueError("TELEGRAM_HTML_CHUNK_LIMIT 必须是正整数。")
 if TELEGRAM_HTML_CHUNK_LIMIT > 4096:
     raise ValueError("TELEGRAM_HTML_CHUNK_LIMIT 不能超过 Telegram 限制 4096。")
-if TELEGRAM_PROGRESS_STYLE not in {"report"}:
-    raise ValueError("TELEGRAM_PROGRESS_STYLE 当前仅支持 report。")
+if TELEGRAM_PROGRESS_STYLE not in {"report", "silent"}:
+    raise ValueError("TELEGRAM_PROGRESS_STYLE 仅支持 report 或 silent。")
 if TELEGRAM_PROGRESS_THROTTLE_SECONDS < 0:
     raise ValueError("TELEGRAM_PROGRESS_THROTTLE_SECONDS 不能小于 0。")
 

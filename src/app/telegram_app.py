@@ -9,12 +9,10 @@ import time
 import uuid
 from typing import Any
 
+import config.settings as _cfg
 from config.settings import (
     MESSAGE_BUFFER_SECONDS,
     SKILLS_COMMANDS_ENABLED,
-    TELEGRAM_PROGRESS_DEDUP,
-    TELEGRAM_PROGRESS_STYLE,
-    TELEGRAM_PROGRESS_THROTTLE_SECONDS,
 )
 from src.app.telegram_delivery import send_telegram_reply_text, send_telegram_text_to_chat
 from src.core.reasoning_tags import strip_internal_thinking_tags
@@ -355,7 +353,7 @@ class TelegramApp:
         text = str(raw_text or "").strip()
         if not text:
             return ""
-        if TELEGRAM_PROGRESS_STYLE != "report":
+        if _cfg.TELEGRAM_PROGRESS_STYLE != "report":
             return text
         if not text.startswith("stage:"):
             return text
@@ -383,11 +381,11 @@ class TelegramApp:
         last_sent_at = self._status_last_sent_at.get(chat_id, 0.0)
         now = time.monotonic()
 
-        if TELEGRAM_PROGRESS_DEDUP and text == last_text:
+        if _cfg.TELEGRAM_PROGRESS_DEDUP and text == last_text:
             return True
         if (
-            TELEGRAM_PROGRESS_THROTTLE_SECONDS > 0
-            and now - last_sent_at < TELEGRAM_PROGRESS_THROTTLE_SECONDS
+            _cfg.TELEGRAM_PROGRESS_THROTTLE_SECONDS > 0
+            and now - last_sent_at < _cfg.TELEGRAM_PROGRESS_THROTTLE_SECONDS
             and text.startswith("执行中：")
             and last_text.startswith("执行中：")
         ):
@@ -399,10 +397,26 @@ class TelegramApp:
             return
         if self._active_status_tokens.get(chat_id) != task_token:
             return
-        # 只发 typing indicator，不发文字状态消息
         try:
             await self._bot.send_chat_action(
                 chat_id=self._chat_id_for_api(chat_id), action="typing"
+            )
+        except Exception:
+            pass
+        if _cfg.TELEGRAM_PROGRESS_STYLE != "report":
+            return
+        text = self._format_progress_text(raw_text)
+        if not text:
+            return
+        if self._should_skip_status(chat_id, text, force=force):
+            return
+        self._status_last_text[chat_id] = text
+        self._status_last_sent_at[chat_id] = time.monotonic()
+        try:
+            await self._bot.send_message(
+                chat_id=self._chat_id_for_api(chat_id),
+                text=text,
+                parse_mode="HTML",
             )
         except Exception:
             pass

@@ -332,6 +332,19 @@ class LapwingBrain:
 
         return "\n\n".join(sections)
 
+    def _inject_voice_reminder(self, messages: list[dict]) -> None:
+        """深度注入：在对话历史倒数第 3 条位置插入 voice reminder。
+
+        使用 user role 包裹 [System Note] 标签，兼容所有模型（包括 MiniMax）。
+        对话太短时退化为追加到 system prompt 末尾。
+        """
+        voice_reminder = load_prompt("lapwing_voice")
+        if len(messages) >= 4:
+            voice_msg = {"role": "user", "content": f"[System Note]\n{voice_reminder}\n[/System Note]"}
+            messages.insert(len(messages) - 2, voice_msg)
+        else:
+            messages[0]["content"] = messages[0]["content"] + "\n\n" + voice_reminder
+
     def _recent_messages(
         self,
         history: list[dict],
@@ -440,9 +453,7 @@ class LapwingBrain:
             *recent_messages,
         ]
 
-        # 深度注入：追加到 system prompt 末尾
-        voice_reminder = load_prompt("lapwing_voice")
-        messages[0]["content"] = messages[0]["content"] + "\n\n" + voice_reminder
+        self._inject_voice_reminder(messages)
 
         return await self._complete_chat(
             chat_id,
@@ -577,9 +588,7 @@ class LapwingBrain:
             *recent_messages,
         ]
 
-        # 深度注入：将人格强化追加到 system prompt 末尾（MiniMax 不允许 system role 在中间）
-        voice_reminder = load_prompt("lapwing_voice")
-        messages[0]["content"] = messages[0]["content"] + "\n\n" + voice_reminder
+        self._inject_voice_reminder(messages)
 
         try:
             reply = await self._complete_chat(
@@ -670,9 +679,7 @@ class LapwingBrain:
             *recent_messages,
         ]
 
-        # 深度注入：追加到 system prompt 末尾
-        voice_reminder = load_prompt("lapwing_voice")
-        messages[0]["content"] = messages[0]["content"] + "\n\n" + voice_reminder
+        self._inject_voice_reminder(messages)
 
         # 跟踪通过流式回调已发出的文字片段
         parts_sent: list[str] = []
