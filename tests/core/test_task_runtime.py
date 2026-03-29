@@ -292,6 +292,70 @@ async def test_complete_chat_executes_multiple_tool_calls_in_one_turn_serially()
 
 
 @pytest.mark.asyncio
+async def test_complete_chat_status_callback_uses_stage_messages():
+    router = MagicMock()
+    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry())
+    constraints = extract_execution_constraints("看看当前目录")
+
+    router.complete_with_tools = AsyncMock(
+        side_effect=[
+            SimpleNamespace(
+                text="",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="call_1",
+                        name="execute_shell",
+                        arguments={"command": "pwd"},
+                    ),
+                ],
+                continuation_message={
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "call_1"}],
+                },
+            ),
+            SimpleNamespace(
+                text="当前目录是 /tmp。",
+                tool_calls=[],
+                continuation_message=None,
+            ),
+        ]
+    )
+    router.build_tool_result_message = MagicMock(
+        return_value={
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "execute_shell",
+            "content": '{"stdout": "/tmp"}',
+        }
+    )
+
+    deps = RuntimeDeps(
+        execute_shell=AsyncMock(return_value=ShellResult(stdout="/tmp\n", stderr="", return_code=0, cwd="/tmp")),
+        policy=_make_policy(AsyncMock()),
+        shell_default_cwd="/tmp",
+        shell_allow_sudo=True,
+    )
+    status_callback = AsyncMock()
+
+    result = await runtime.complete_chat(
+        chat_id="chat_1",
+        messages=[{"role": "user", "content": "看看当前目录"}],
+        constraints=constraints,
+        tools=runtime.chat_tools(shell_enabled=True),
+        deps=deps,
+        status_callback=status_callback,
+        event_bus=None,
+    )
+
+    assert result == "当前目录是 /tmp。"
+    status_texts = [call.args[1] for call in status_callback.await_args_list]
+    assert status_texts[0] == "stage:planning"
+    assert "stage:executing:execute_shell:1:1" in status_texts
+    assert status_texts[-1] == "stage:finalizing"
+
+
+@pytest.mark.asyncio
 async def test_complete_chat_supports_web_tool_call_and_tool_result_roundtrip():
     router = MagicMock()
     runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry())

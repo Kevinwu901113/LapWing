@@ -240,4 +240,34 @@ async def test_send_reply_strips_thinking_tags(app_with_container):
 
     await app._send_reply(message, "<think>内部</think>可见")
 
-    message.reply_text.assert_awaited_once_with("可见")
+    message.reply_text.assert_awaited_once()
+    assert message.reply_text.await_args.args[0] == "可见"
+    assert message.reply_text.await_args.kwargs["parse_mode"] == "HTML"
+
+
+@pytest.mark.asyncio
+async def test_status_sender_ignores_stale_task_token(app_with_container):
+    app, _ = app_with_container
+    app._bot = SimpleNamespace(send_message=AsyncMock())
+    app._active_status_tokens["42"] = "active-token"
+
+    sender = app._build_status_sender(task_token="stale-token")
+    await sender("42", "stage:planning")
+
+    app._bot.send_message.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_status_sender_formats_report_stage(app_with_container):
+    app, _ = app_with_container
+    app._bot = SimpleNamespace(send_message=AsyncMock())
+    app._active_status_tokens["42"] = "token-1"
+
+    sender = app._build_status_sender(task_token="token-1")
+    await sender("42", "stage:executing:web_search:1:2")
+
+    app._bot.send_message.assert_awaited_once()
+    sent = app._bot.send_message.await_args.kwargs
+    assert sent["chat_id"] == 42
+    assert sent["parse_mode"] == "HTML"
+    assert "执行中：web_search（1/2）" in sent["text"]

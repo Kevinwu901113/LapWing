@@ -65,7 +65,11 @@ class TestProactiveMessageAction:
 
         await ProactiveMessageAction().execute(ctx, mock_brain, mock_bot)
 
-        mock_bot.send_message.assert_awaited_once_with(chat_id="c1", text="你好")
+        mock_bot.send_message.assert_awaited_once()
+        sent = mock_bot.send_message.await_args.kwargs
+        assert sent["chat_id"] == "c1"
+        assert sent["text"] == "你好"
+        assert sent["parse_mode"] == "HTML"
         mock_brain.memory.append.assert_awaited_once_with("c1", "assistant", "你好")
 
     async def test_silent_on_llm_failure(self, ctx, mock_brain, mock_bot):
@@ -143,7 +147,11 @@ class TestReminderDispatchAction:
 
         await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_bot)
 
-        mock_bot.send_message.assert_awaited_once_with(chat_id="c1", text="提醒你：起身活动一下")
+        mock_bot.send_message.assert_awaited_once()
+        sent = mock_bot.send_message.await_args.kwargs
+        assert sent["chat_id"] == "c1"
+        assert sent["text"] == "提醒你：起身活动一下"
+        assert sent["parse_mode"] == "HTML"
         mock_brain.memory.complete_or_reschedule_reminder.assert_awaited_once_with(12, now=minute_ctx.now)
         mock_brain.event_bus.publish.assert_awaited_once_with(
             "reminder_message",
@@ -170,7 +178,11 @@ class TestReminderDispatchAction:
 
         await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_bot)
 
-        mock_bot.send_message.assert_awaited_once_with(chat_id="c1", text="提醒你：喝水")
+        mock_bot.send_message.assert_awaited_once()
+        sent = mock_bot.send_message.await_args.kwargs
+        assert sent["chat_id"] == "c1"
+        assert sent["text"] == "提醒你：喝水"
+        assert sent["parse_mode"] == "HTML"
 
     async def test_reminder_sanitizes_model_message(self, minute_ctx, mock_brain, mock_bot):
         mock_brain.memory.get_due_reminders = AsyncMock(return_value=[
@@ -192,4 +204,8 @@ class TestReminderDispatchAction:
 
         await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_bot)
 
-        mock_bot.send_message.assert_awaited_once_with(chat_id="c1", text="提醒你去散步")
+        mock_bot.send_message.assert_awaited_once()
+        sent = mock_bot.send_message.await_args.kwargs
+        assert sent["chat_id"] == "c1"
+        assert sent["text"] == "提醒你去散步"
+        assert sent["parse_mode"] == "HTML"

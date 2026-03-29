@@ -5,9 +5,18 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import time
+import uuid
 from typing import Any
 
-from config.settings import MAX_REPLY_LENGTH, MESSAGE_BUFFER_SECONDS, SKILLS_COMMANDS_ENABLED
+from config.settings import (
+    MESSAGE_BUFFER_SECONDS,
+    SKILLS_COMMANDS_ENABLED,
+    TELEGRAM_PROGRESS_DEDUP,
+    TELEGRAM_PROGRESS_STYLE,
+    TELEGRAM_PROGRESS_THROTTLE_SECONDS,
+)
+from src.app.telegram_delivery import send_telegram_reply_text, send_telegram_text_to_chat
 from src.core.reasoning_tags import strip_internal_thinking_tags
 
 logger = logging.getLogger("lapwing.app.telegram")
@@ -22,6 +31,10 @@ class TelegramApp:
         self._message_buffers: dict[str, list[str]] = {}
         self._buffer_tasks: dict[str, asyncio.Task] = {}
         self._buffer_updates: dict[str, object] = {}
+        self._chat_locks: dict[str, asyncio.Lock] = {}
+        self._active_status_tokens: dict[str, str] = {}
+        self._status_last_text: dict[str, str] = {}
+        self._status_last_sent_at: dict[str, float] = {}
         self._skill_shortcut_pattern = re.compile(r"^/([a-z0-9-]+):(.*)$", flags=re.IGNORECASE)
 
     @staticmethod
@@ -324,38 +337,115 @@ class TelegramApp:
                 lines.append(f"- {purpose}: {reason}")
         return "\n".join(lines)
 
-    async def _send_reply(self, message, reply: str) -> None:
-        reply = strip_internal_thinking_tags(reply)
-        if len(reply) <= MAX_REPLY_LENGTH:
-            await message.reply_text(reply)
+    def _chat_lock(self, chat_id: str) -> asyncio.Lock:
+        lock = self._chat_locks.get(chat_id)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._chat_locks[chat_id] = lock
+        return lock
+
+    @staticmethod
+    def _chat_id_for_api(chat_id: str) -> int | str:
+        try:
+            return int(chat_id)
+        except Exception:
+            return chat_id
+
+    def _format_progress_text(self, raw_text: str) -> str:
+        text = str(raw_text or "").strip()
+        if not text:
+            return ""
+        if TELEGRAM_PROGRESS_STYLE != "report":
+            return text
+        if not text.startswith("stage:"):
+            return text
+
+        parts = text.split(":")
+        stage = parts[1] if len(parts) > 1 else ""
+        if stage == "received":
+            return "已接收，开始处理你的请求。"
+        if stage == "planning":
+            return "正在规划执行步骤..."
+        if stage == "finalizing":
+            return "正在整理最终结果..."
+        if stage == "executing":
+            tool_name = parts[2] if len(parts) > 2 else "tool"
+            step = parts[3] if len(parts) > 3 else "?"
+            total = parts[4] if len(parts) > 4 else "?"
+            return f"执行中：{tool_name}（{step}/{total}）"
+        return text
+
+    def _should_skip_status(self, chat_id: str, text: str, *, force: bool) -> bool:
+        if force:
+            return False
+
+        last_text = self._status_last_text.get(chat_id, "")
+        last_sent_at = self._status_last_sent_at.get(chat_id, 0.0)
+        now = time.monotonic()
+
+        if TELEGRAM_PROGRESS_DEDUP and text == last_text:
+            return True
+        if (
+            TELEGRAM_PROGRESS_THROTTLE_SECONDS > 0
+            and now - last_sent_at < TELEGRAM_PROGRESS_THROTTLE_SECONDS
+            and text.startswith("执行中：")
+            and last_text.startswith("执行中：")
+        ):
+            return True
+        return False
+
+    async def _emit_status(self, chat_id: str, task_token: str, raw_text: str, *, force: bool = False) -> None:
+        if self._bot is None:
+            return
+        if self._active_status_tokens.get(chat_id) != task_token:
             return
 
-        chunks = [reply[i: i + MAX_REPLY_LENGTH] for i in range(0, len(reply), MAX_REPLY_LENGTH)]
-        for index, chunk in enumerate(chunks):
-            if index == 0:
-                await message.reply_text(chunk)
-            else:
-                await message.chat.send_message(chunk)
+        text = self._format_progress_text(raw_text)
+        if not text:
+            return
+        if self._should_skip_status(chat_id, text, force=force):
+            return
 
-    def _build_status_sender(self):
+        try:
+            await send_telegram_text_to_chat(
+                bot=self._bot,
+                chat_id=self._chat_id_for_api(chat_id),
+                text=text,
+            )
+            self._status_last_text[chat_id] = text
+            self._status_last_sent_at[chat_id] = time.monotonic()
+        except Exception:
+            pass
+
+    async def _send_reply(self, message, reply: str) -> None:
+        reply = strip_internal_thinking_tags(reply)
+        await send_telegram_reply_text(message=message, text=reply)
+
+    def _build_status_sender(self, *, task_token: str):
         async def _send_status(cid: str, text: str) -> None:
-            if self._bot:
-                try:
-                    await self._bot.send_message(chat_id=int(cid), text=text)
-                except Exception:
-                    pass
+            await self._emit_status(str(cid), task_token, text)
 
         return _send_status
 
     async def _think_and_reply(self, message, chat_id: str, user_text: str) -> None:
-        await message.chat.send_action("typing")
-        reply = await self._container.brain.think(
-            chat_id,
-            user_text,
-            status_callback=self._build_status_sender(),
-        )
-        await self._send_reply(message, reply)
-        logger.info("已回复 [%s]，长度: %s", chat_id, len(reply))
+        async with self._chat_lock(chat_id):
+            task_token = uuid.uuid4().hex
+            self._active_status_tokens[chat_id] = task_token
+            self._status_last_text.pop(chat_id, None)
+            self._status_last_sent_at.pop(chat_id, None)
+            try:
+                await message.chat.send_action("typing")
+                await self._emit_status(chat_id, task_token, "stage:received", force=True)
+                reply = await self._container.brain.think(
+                    chat_id,
+                    user_text,
+                    status_callback=self._build_status_sender(task_token=task_token),
+                )
+                await self._send_reply(message, reply)
+                logger.info("已回复 [%s]，长度: %s", chat_id, len(reply))
+            finally:
+                if self._active_status_tokens.get(chat_id) == task_token:
+                    self._active_status_tokens.pop(chat_id, None)
 
     async def _run_skill_command(
         self,
@@ -366,15 +456,25 @@ class TelegramApp:
         skill_name: str,
         user_input: str,
     ) -> None:
-        await message.chat.send_action("typing")
-        reply = await self._container.brain.run_skill_command(
-            chat_id=chat_id,
-            raw_user_message=raw_user_message,
-            skill_name=skill_name,
-            user_input=user_input,
-            status_callback=self._build_status_sender(),
-        )
-        await self._send_reply(message, reply)
+        async with self._chat_lock(chat_id):
+            task_token = uuid.uuid4().hex
+            self._active_status_tokens[chat_id] = task_token
+            self._status_last_text.pop(chat_id, None)
+            self._status_last_sent_at.pop(chat_id, None)
+            try:
+                await message.chat.send_action("typing")
+                await self._emit_status(chat_id, task_token, "stage:received", force=True)
+                reply = await self._container.brain.run_skill_command(
+                    chat_id=chat_id,
+                    raw_user_message=raw_user_message,
+                    skill_name=skill_name,
+                    user_input=user_input,
+                    status_callback=self._build_status_sender(task_token=task_token),
+                )
+                await self._send_reply(message, reply)
+            finally:
+                if self._active_status_tokens.get(chat_id) == task_token:
+                    self._active_status_tokens.pop(chat_id, None)
 
     def _parse_skill_shortcut(self, text: str) -> tuple[str, str] | None:
         if not SKILLS_COMMANDS_ENABLED:

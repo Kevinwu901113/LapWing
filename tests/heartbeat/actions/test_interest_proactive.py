@@ -112,7 +112,11 @@ class TestInterestProactiveAction:
              patch("src.heartbeat.actions.interest_proactive.web_search.search", AsyncMock(return_value=results)):
             await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_bot)
 
-        mock_bot.send_message.assert_awaited_once_with(chat_id="c1", text="这条给你")
+        mock_bot.send_message.assert_awaited_once()
+        sent = mock_bot.send_message.await_args.kwargs
+        assert sent["chat_id"] == "c1"
+        assert sent["text"] == "这条给你"
+        assert sent["parse_mode"] == "HTML"
         mock_brain.memory.append.assert_awaited_once_with("c1", "assistant", "这条给你")
 
     async def test_publishes_desktop_event(self, mock_brain, mock_bot):

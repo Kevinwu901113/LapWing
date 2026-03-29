@@ -254,17 +254,29 @@ class TaskRuntime:
         services: dict[str, Any] | None = None,
         profile: str | RuntimeProfile = "chat_shell",
     ) -> str:
+        async def _emit_status(text: str) -> None:
+            if status_callback is None:
+                return
+            try:
+                await status_callback(chat_id, text)
+            except Exception:
+                pass
+
         if not tools:
-            return await self._router.complete(
+            await _emit_status("stage:planning")
+            reply = await self._router.complete(
                 messages,
                 purpose="chat",
                 session_key=f"chat:{chat_id}",
                 origin="task_runtime.chat",
             )
+            await _emit_status("stage:finalizing")
+            return reply
 
         profile_obj = self._resolve_profile(profile)
         state = ExecutionSessionState(constraints=constraints)
         task_id = f"task_{uuid.uuid4().hex[:12]}"
+        await _emit_status("stage:planning")
         await self._publish_task_event(
             event_bus,
             "task.started",
@@ -298,6 +310,7 @@ class TaskRuntime:
             )
 
             if not turn.tool_calls:
+                await _emit_status("stage:finalizing")
                 final_reply = await self._finalize_without_tool_calls(
                     chat_id=chat_id,
                     task_id=task_id,
@@ -328,15 +341,12 @@ class TaskRuntime:
             if turn.continuation_message is not None:
                 messages.append(turn.continuation_message)
 
-            if status_callback and round_index >= 1:
-                try:
-                    await status_callback(chat_id, f"第 {round_index} 步完成，继续处理中...")
-                except Exception:
-                    pass
-
             tool_results: list[tuple[ToolCallRequest, str]] = []
             last_tool_name: str | None = None
             for tool_index, tool_call in enumerate(turn.tool_calls):
+                await _emit_status(
+                    f"stage:executing:{tool_call.name}:{tool_index + 1}:{len(turn.tool_calls)}"
+                )
                 tool_args_hash = self._tool_args_hash(tool_call.arguments)
                 tool_signature = (tool_call.name, tool_args_hash)
                 generic_repeat_count = self._generic_repeat_count(
@@ -421,6 +431,7 @@ class TaskRuntime:
                         "检测到无进展重复循环（同一工具与参数连续重复），"
                         "我已停止当前自动执行，需用户介入。请提供新的策略或更具体的指令后我再继续。"
                     )
+                    await _emit_status("stage:finalizing")
                     _record_round_latency()
                     return TaskLoopStep(completed=True, payload=last_payload)
 
@@ -523,6 +534,7 @@ class TaskRuntime:
                         final_reply = on_consent_required(state)
                     else:
                         final_reply = state.consent_message()
+                    await _emit_status("stage:finalizing")
                     _record_round_latency()
                     return TaskLoopStep(completed=True, payload=last_payload)
 
@@ -550,6 +562,7 @@ class TaskRuntime:
                     tool_name=last_tool_name,
                 )
                 final_reply = state.success_message()
+                await _emit_status("stage:finalizing")
                 _record_round_latency()
                 return TaskLoopStep(completed=True, payload=last_payload)
 
@@ -589,7 +602,9 @@ class TaskRuntime:
                 reason=state.failure_reason or "需要用户确认",
             )
             if on_consent_required is not None:
+                await _emit_status("stage:finalizing")
                 return on_consent_required(state)
+            await _emit_status("stage:finalizing")
             return state.consent_message()
 
         if state.completed:
@@ -601,6 +616,7 @@ class TaskRuntime:
                 phase="completed",
                 text="任务执行并验证完成。",
             )
+            await _emit_status("stage:finalizing")
             return state.success_message()
 
         if state.constraints.is_write_request and state.constraints.objective != "generic":
@@ -613,6 +629,7 @@ class TaskRuntime:
                 text="任务未完成。",
                 reason=state.failure_reason or loop_result.reason or "tool 循环超过上限",
             )
+            await _emit_status("stage:finalizing")
             return state.failure_message()
 
         await self._publish_task_event(
@@ -624,6 +641,7 @@ class TaskRuntime:
             text="任务未在轮次上限内完成，返回兜底结果。",
             reason="tool 循环超过上限",
         )
+        await _emit_status("stage:finalizing")
         return self.tool_fallback_reply(loop_result.last_payload)
 
     async def _finalize_without_tool_calls(

@@ -59,6 +59,14 @@ load_dotenv(CONFIG_DIR / ".env")
 TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN", "")
 TELEGRAM_PROXY_URL: str = os.getenv("TELEGRAM_PROXY_URL", "")
 SEARCH_PROXY_URL: str = os.getenv("SEARCH_PROXY_URL", "") or TELEGRAM_PROXY_URL
+TELEGRAM_TEXT_MODE: str = os.getenv("TELEGRAM_TEXT_MODE", "markdown").strip().lower()
+TELEGRAM_MARKDOWN_TABLE_MODE: str = os.getenv("TELEGRAM_MARKDOWN_TABLE_MODE", "code").strip().lower()
+TELEGRAM_HTML_CHUNK_LIMIT: int = int(os.getenv("TELEGRAM_HTML_CHUNK_LIMIT", "4000"))
+TELEGRAM_PROGRESS_STYLE: str = os.getenv("TELEGRAM_PROGRESS_STYLE", "report").strip().lower()
+TELEGRAM_PROGRESS_DEDUP: bool = os.getenv("TELEGRAM_PROGRESS_DEDUP", "true").lower() == "true"
+TELEGRAM_PROGRESS_THROTTLE_SECONDS: float = float(
+    os.getenv("TELEGRAM_PROGRESS_THROTTLE_SECONDS", "1.0")
+)
 
 # LLM（OpenAI 兼容格式）
 LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
@@ -271,6 +279,18 @@ if LOOP_DETECTION_CRITICAL_THRESHOLD >= LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_TH
     raise ValueError(
         "LOOP_DETECTION_CRITICAL_THRESHOLD 必须小于 LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD。"
     )
+if TELEGRAM_TEXT_MODE not in {"markdown", "html"}:
+    raise ValueError("TELEGRAM_TEXT_MODE 仅支持 markdown 或 html。")
+if TELEGRAM_MARKDOWN_TABLE_MODE not in {"code", "bullets", "off"}:
+    raise ValueError("TELEGRAM_MARKDOWN_TABLE_MODE 仅支持 code、bullets、off。")
+if TELEGRAM_HTML_CHUNK_LIMIT <= 0:
+    raise ValueError("TELEGRAM_HTML_CHUNK_LIMIT 必须是正整数。")
+if TELEGRAM_HTML_CHUNK_LIMIT > 4096:
+    raise ValueError("TELEGRAM_HTML_CHUNK_LIMIT 不能超过 Telegram 限制 4096。")
+if TELEGRAM_PROGRESS_STYLE not in {"report"}:
+    raise ValueError("TELEGRAM_PROGRESS_STYLE 当前仅支持 report。")
+if TELEGRAM_PROGRESS_THROTTLE_SECONDS < 0:
+    raise ValueError("TELEGRAM_PROGRESS_THROTTLE_SECONDS 不能小于 0。")
 
 # 自省与进化
 SELF_REFLECTION_HOUR: int = int(os.getenv("SELF_REFLECTION_HOUR", "2"))  # 每日自省时间（小时）
