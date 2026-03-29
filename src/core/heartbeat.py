@@ -301,11 +301,6 @@ class HeartbeatEngine:
             self._running_tasks.add(task)
             task.add_done_callback(self._running_tasks.discard)
 
-    async def _run_beat(self, beat_type: str) -> None:
-        """兼容旧命名。"""
-
-        await self._run_tick(beat_type)
-
     async def _process_user(self, chat_id: str, beat_type: str) -> None:
         try:
             await self._runtime.process(chat_id=chat_id, beat_type=beat_type)

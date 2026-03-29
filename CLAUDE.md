@@ -1,380 +1,838 @@
-# CLAUDE.md
+# CLAUDE.md — Session 2：自进化系统重构
 
-## 项目概述
+> **前提**：Session 1 已完成。文件记忆系统、Compaction、memory_note 工具、分层 context 组装已就位。
+> **目标**：重构自进化系统——宪法校验器、行为规则（战术流）、diff-based 人格进化、增强自省、兴趣图谱升级、Heartbeat 重编排。
+> **完成后**：Lapwing 能从纠正中即时学习、持续微调人格、宪法约束有技术强制力。
 
-Lapwing 是一个个人 AI 伴侣 & 智能助手系统，运行在 PVE 虚拟机（6核8G，Ubuntu 22.04）上。
-她通过 Telegram 与用户交互，有温柔知性的固定人格，已具备 Agent 团队、心跳引擎和工具调用能力。
+---
 
-## 技术栈
+## 背景
 
-- **语言**: Python 3.11+
-- **聊天平台**: Telegram（python-telegram-bot）
-- **LLM**: OpenAI 兼容格式的第三方 provider（GLM、MiniMax 等），通过 base_url 切换
-- **数据库**: SQLite（结构化数据）+ ChromaDB（向量检索）
-- **部署**: systemd service on Ubuntu 22.04 VM
+Session 1 解决了记忆的"记住"问题。Session 2 解决的是"成长"问题。
 
-## 项目结构约定
+当前自进化系统的缺陷：
+1. **自省写了日记但不影响行为**：learnings 文件写完就放着，不会被注入下次对话。
+2. **进化一周一次，全量重写 soul.md**：没有 diff 追踪，安全检查只看关键词。
+3. **纠正检测用正则匹配**：只覆盖中文纠正短语，英文/隐式纠正漏掉。纠正只追加到日志，不改行为。
+4. **兴趣图谱是平的**：无层级、无关联、无"Lapwing 自己的兴趣"和"用户兴趣"的区分。
 
-- 所有 Prompt 存放在 `prompts/` 目录，使用 `.md` 格式，通过 `src/core/prompt_loader.py` 加载
-- 不要把 prompt 内容硬编码在 Python 文件中
-- 环境变量存放在 `config/.env`，通过 `config/settings.py` 统一管理
-- 新增 Agent 放在 `src/agents/` 下，每个 Agent 一个文件，对应的 prompt 放在 `prompts/agent_xxx.md`
-- 新增工具放在 `src/tools/` 下
+---
 
-## 编码风格
+## 任务清单
 
-- 使用 async/await 处理所有 I/O 操作
-- 类型注解（type hints）尽量完整
-- 中文注释，英文代码
-- 日志使用 Python logging 模块，输出到 `logs/` 目录
-- 错误处理要完善，Bot 不能因为单次 API 调用失败而崩溃
-- 数据库操作使用 aiosqlite，保持异步一致
+### 任务 A：宪法校验器
 
-## Lapwing 的人格要求
+新建 `src/core/constitution_guard.py`：
 
-修改 Lapwing 的行为时，优先修改 `prompts/lapwing.md`，而不是改代码逻辑。
-她的核心性格是：温柔体贴 + 冷静知性，像一个温和的青年研究者。
-说话自然不做作，偶尔带一点书卷气。不用额外的语气词和表情符号。
-交流语言以中文为主。
+```python
+"""宪法校验器 — 在进化和规则更新时强制检查是否违反宪法。"""
 
-## 常用命令
+import json
+import logging
+import re
 
-```bash
-# 启动
-source venv/bin/activate && python main.py
+from config.settings import CONSTITUTION_PATH
+from src.core.prompt_loader import load_prompt
 
-# 查看日志
-tail -f logs/lapwing.log
+logger = logging.getLogger("lapwing.constitution_guard")
 
-# 重启服务
-sudo systemctl restart lapwing
+# 硬编码底线（不依赖 LLM，绝对不可绕过）
+_HARD_IDENTITY_MARKERS = [
+    "Lapwing",
+    "白发",
+]
+
+_FORBIDDEN_SELF_REFERENCES = [
+    "我是AI", "我是一个AI", "作为AI", "作为一个AI",
+    "我是程序", "我是机器人", "我是助手", "我是虚拟助手",
+    "I am an AI", "As an AI", "I'm an AI",
+]
+
+
+class ConstitutionGuard:
+    """运行时宪法校验器。"""
+
+    def __init__(self, router):
+        self._router = router
+        self._constitution: str | None = None
+
+    @property
+    def constitution(self) -> str:
+        if self._constitution is None:
+            if CONSTITUTION_PATH.exists():
+                self._constitution = CONSTITUTION_PATH.read_text(encoding="utf-8")
+            else:
+                self._constitution = "（宪法文件不存在）"
+                logger.warning("宪法文件不存在，校验将使用硬编码规则")
+        return self._constitution
+
+    def reload(self) -> None:
+        self._constitution = None
+
+    def validate_hard_constraints(self, text: str) -> list[str]:
+        """硬编码底线检查，不依赖 LLM。返回违规列表。"""
+        violations = []
+        for marker in _HARD_IDENTITY_MARKERS:
+            if marker not in text:
+                violations.append(f"缺少核心身份标识 '{marker}'")
+        for phrase in _FORBIDDEN_SELF_REFERENCES:
+            if phrase in text:
+                violations.append(f"包含禁止的 AI 自我指称: '{phrase}'")
+        return violations
+
+    async def validate_evolution(
+        self,
+        current_soul: str,
+        proposed_changes: list[dict],
+    ) -> dict:
+        """验证提议的进化变更是否违反宪法。
+
+        Args:
+            current_soul: 当前 soul.md 内容
+            proposed_changes: [{"action": "add/modify/remove", "description": "..."}]
+
+        Returns:
+            {"approved": bool, "violations": list[str]}
+        """
+        # 先做硬检查
+        # 模拟应用变更后的文本（粗略估计）
+        # 实际的 diff apply 在调用方做，这里只检查描述
+        changes_text = "\n".join(
+            f"- [{c['action']}] {c['description']}" for c in proposed_changes
+        )
+
+        prompt = load_prompt("constitution_check").format(
+            constitution=self.constitution,
+            current_soul=current_soul,
+            proposed_changes=changes_text,
+        )
+
+        try:
+            response = await self._router.complete(
+                [{"role": "user", "content": prompt}],
+                purpose="chat",  # 用高质量模型
+                max_tokens=512,
+                session_key="system:constitution_guard",
+                origin="core.constitution_guard",
+            )
+            return self._parse_validation(response)
+        except Exception as exc:
+            logger.error(f"宪法校验 LLM 调用失败: {exc}")
+            return {"approved": False, "violations": [f"校验失败: {exc}"]}
+
+    def _parse_validation(self, text: str) -> dict:
+        try:
+            cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.MULTILINE)
+            cleaned = re.sub(r"\s*```$", "", cleaned.strip(), flags=re.MULTILINE).strip()
+            data = json.loads(cleaned)
+            return {
+                "approved": bool(data.get("approved", False)),
+                "violations": list(data.get("violations", [])),
+            }
+        except Exception:
+            logger.warning(f"宪法校验结果解析失败: {text[:200]}")
+            return {"approved": False, "violations": ["校验结果解析失败"]}
 ```
 
-## 注意事项
+新建 `prompts/constitution_check.md`：
 
-- Telegram 消息有 4096 字符限制，长回复需要分段发送
-- LLM API 调用可能失败，必须有 try/except 和友好的错误提示
-- 对话历史保留最近 20 轮（40 条消息），避免 token 超限
-- LLM 通过 OpenAI 兼容格式接入，切换模型只需改 config/.env 中的 LLM_BASE_URL 和 LLM_MODEL
-- config/.env 不要提交到 git
-- 每完成一个任务后都要确保现有功能不被破坏
+```markdown
+你是 Lapwing 的宪法守卫。你的唯一职责是判断提议的人格变更是否违反宪法。
 
----
+## 宪法
 
-## 开发路线图
+{constitution}
 
-以下是按顺序排列的开发任务与状态快照（持续更新）。
-**说明：Phase 1~4 已完成；Phase 5 仅任务 17 仍在进行；Phase 6 为当前整合阶段。**
+## 当前人格（soul.md）
 
-### ✅ Phase 1 - 基础搭建（已完成）
-- [x] Telegram Bot 基础框架
-- [x] LLM 接入（OpenAI 兼容格式）
-- [x] 人格 prompt（prompts/lapwing.md）
-- [x] 基础对话（私聊回复）
-- [x] /start 和 /reload 命令
-- [x] 内存对话历史
+{current_soul}
 
-### ✅ Phase 1.5 - 基础完善（已完成）
-- [x] 任务 1：持久化记忆（SQLite）
-- [x] 任务 2：多模型路由
-- [x] 任务 3：用户画像提取
-- [x] 任务 4：主动消息
+## 提议的变更
 
-### ✅ Phase 2 - Agent 团队（已完成）
-- [x] 任务 5：Agent 基础框架
-- [x] 任务 6：Researcher Agent（信息搜集）
-- [x] 任务 7：Coder Agent（写代码）
+{proposed_changes}
 
-### ✅ Phase 3 - 自主意识（已完成）
-- [x] 任务 8：自主浏览
-- [x] 任务 9：兴趣图谱
-- [x] 任务 10：主动分享发现
+## 你的任务
 
-### ✅ 额外完成
-- [x] 语音消息支持（Whisper API 转写）
+逐条检查宪法中的每一条规则。判断以上变更是否违反了任何一条。
 
----
+注意：
+- "进化不得删除核心描述段"意味着如果变更试图移除关于性格的核心描述，这是违规的
+- "每次最多修改5处"是数量限制
+- "不得增加超过200字"是长度限制
+- 微调措辞、追加小段内容通常是允许的
+- 如果变更只是让描述更准确或更丰富，通常不违规
 
-### ✅ Phase 4 - 体验优化与问题修复（已完成）
+输出严格 JSON，不要有其他文字：
 
-实际使用中发现了一些影响体验的关键问题，需要优先修复。
+```json
+{{"approved": true, "violations": []}}
+```
 
-#### 任务 11：消息合并机制（防连发）
+或者：
 
-**问题**：用户在 Telegram 里经常连续发多条消息表达一个意思（比如"让我修复几个问题"、"比如说引用格式"、"摘要也要修"），Lapwing 对每条消息都单独回复，导致刷屏和上下文断裂。
+```json
+{{"approved": false, "violations": ["违反了[具体哪条]，因为[原因]"]}}
+```
+```
 
-**目标**：用户连续发送消息时，Lapwing 等用户说完再统一回复。
-
-**实现方案**：
-- 在 `main.py` 的消息处理逻辑中加入消息缓冲机制
-- 收到消息后不立即回复，而是启动一个 3-5 秒的定时器
-- 如果在定时器到期前又收到新消息，重置定时器并将消息追加到缓冲区
-- 定时器到期后，将缓冲区内的所有消息合并成一条发送给 brain.think()
-- 合并方式：用换行符连接多条消息，如 "让我修复几个问题\n比如说引用格式\n摘要也要修"
-- 使用 asyncio 实现，不引入额外依赖
-- 每个 chat_id 维护独立的缓冲区和定时器
-
-**实现要点**：
+**在 Brain 中初始化**：
 ```python
-# 伪代码逻辑
-message_buffers: dict[str, list[str]] = {}
-buffer_timers: dict[str, asyncio.TimerHandle] = {}
+from src.core.constitution_guard import ConstitutionGuard
+self.constitution_guard = ConstitutionGuard(self.router)
+```
 
-async def handle_message(update):
-    chat_id = str(update.message.chat_id)
-    text = update.message.text
-    
-    # 追加到缓冲区
-    message_buffers.setdefault(chat_id, []).append(text)
-    
-    # 取消旧定时器，设置新定时器
-    if chat_id in buffer_timers:
-        buffer_timers[chat_id].cancel()
-    
-    buffer_timers[chat_id] = asyncio.get_event_loop().call_later(
-        4.0,  # 4 秒等待
-        lambda: asyncio.create_task(flush_buffer(chat_id, update))
+**验证**：编写单元测试，测试硬约束检查和 LLM 校验。
+
+---
+
+### 任务 B：行为规则系统（Tactical Stream）
+
+新建 `src/core/tactical_rules.py`：
+
+```python
+"""行为规则管理 — 从对话纠正中提取并积累行为规则。"""
+
+import asyncio
+import json
+import logging
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+
+from config.settings import RULES_PATH
+from src.core.prompt_loader import load_prompt
+
+logger = logging.getLogger("lapwing.tactical_rules")
+
+
+class TacticalRules:
+    """管理从经验中学到的行为规则。"""
+
+    def __init__(self, router):
+        self._router = router
+        RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+    async def analyze_correction(
+        self,
+        user_message: str,
+        context: list[dict],
+    ) -> str | None:
+        """分析用户的纠正，生成行为规则。
+
+        返回生成的规则文本，或 None。
+        """
+        context_text = "\n".join(
+            f"{'用户' if m['role'] == 'user' else 'Lapwing'}: {m['content']}"
+            for m in context[-8:]
+        )
+
+        prompt = load_prompt("correction_analysis").format(
+            context=context_text,
+            correction=user_message,
+        )
+
+        try:
+            result = await self._router.complete(
+                [{"role": "user", "content": prompt}],
+                purpose="tool",
+                max_tokens=256,
+                session_key="system:tactical_rules",
+                origin="core.tactical_rules.analyze",
+            )
+            result = result.strip()
+            if not result or result == "（无）" or "不是纠正" in result:
+                return None
+            return result
+        except Exception as exc:
+            logger.warning(f"纠正分析失败: {exc}")
+            return None
+
+    async def add_rule(self, rule_text: str) -> None:
+        """追加一条规则到 rules.md。"""
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        entry = f"\n- [{date_str}] {rule_text}\n"
+
+        def _append():
+            if not RULES_PATH.exists():
+                RULES_PATH.write_text(
+                    "# 行为规则\n\n从经验中学到的具体行为指导。\n",
+                    encoding="utf-8",
+                )
+            existing = RULES_PATH.read_text(encoding="utf-8")
+            RULES_PATH.write_text(existing + entry, encoding="utf-8")
+
+        await asyncio.to_thread(_append)
+        logger.info(f"[tactical_rules] 新增规则: {rule_text[:60]}")
+
+    async def process_correction(
+        self,
+        chat_id: str,
+        user_message: str,
+        context: list[dict],
+    ) -> str | None:
+        """完整的纠正处理流程：分析 → 生成规则 → 写入。"""
+        rule = await self.analyze_correction(user_message, context)
+        if rule:
+            await self.add_rule(rule)
+        return rule
+```
+
+新建 `prompts/correction_analysis.md`：
+
+```markdown
+分析以下对话，判断用户是否在纠正 Lapwing 的行为。
+
+如果是纠正，用一句简洁的规则描述 Lapwing 应该怎么做。格式为"[做什么]"或"[不要做什么]"。
+如果不是纠正（只是普通对话），输出"（不是纠正）"。
+
+## 对话上下文
+
+{context}
+
+## 用户最新消息
+
+{correction}
+
+## 判断要点
+
+- 纠正不只是中文的"你不要..."，也包括英文的"don't..."、"stop doing..."
+- 也包括隐式纠正：用户重复同一件事（说明上次没做好）、用户表达不满
+- 但不包括普通请求或提问
+
+只输出规则文本或"（不是纠正）"，不要解释。
+```
+
+**替换旧的纠正检测**：
+
+在 `src/core/brain.py` 的 `think()` 和 `think_conversational()` 中，替换原有的正则纠正检测：
+
+```python
+# 旧代码（删除）：
+# if self.self_reflection is not None:
+#     from src.core.self_reflection import is_correction
+#     if is_correction(user_message):
+#         ...
+
+# 新代码：
+if hasattr(self, 'tactical_rules') and self.tactical_rules is not None:
+    # 异步触发纠正分析，不阻塞主回复
+    history = await self.memory.get(chat_id)
+    asyncio.create_task(
+        self.tactical_rules.process_correction(
+            chat_id, user_message, list(history)
+        )
+    )
+```
+
+**注意**：不再用正则预过滤。让 LLM 判断是否是纠正。这会增加一些 API 调用，但准确率大幅提升。
+
+**优化**：为了不对每条消息都触发纠正分析，加一个简单的启发式过滤器：
+
+```python
+def _might_be_correction(text: str) -> bool:
+    """粗粒度判断是否可能是纠正。宁可多触发，不可漏。"""
+    indicators = [
+        "不要", "别", "不用", "不需要", "停", "够了",
+        "错了", "不对", "不是", "搞错",
+        "以后", "下次", "记住",
+        "don't", "stop", "wrong", "no ",
+        "？", "?",  # 反问可能是隐式纠正
+    ]
+    text_lower = text.lower()
+    return any(ind in text_lower for ind in indicators)
+```
+
+在 think() 中用这个过滤器包裹：
+```python
+if hasattr(self, 'tactical_rules') and self.tactical_rules is not None:
+    if _might_be_correction(user_message):
+        history = await self.memory.get(chat_id)
+        asyncio.create_task(
+            self.tactical_rules.process_correction(
+                chat_id, user_message, list(history)
+            )
+        )
+```
+
+**在 Brain 中初始化**：
+```python
+from src.core.tactical_rules import TacticalRules
+self.tactical_rules = TacticalRules(self.router)
+```
+
+**验证**：
+1. 对 Lapwing 说"你以后不要每次都问我要不要继续"
+2. 检查 `data/evolution/rules.md` 是否出现新规则
+3. 下次对话中，rules 被注入 system prompt（通过 Session 1 的 _build_system_prompt 已自动生效）
+
+---
+
+### 任务 C：Diff-based 进化引擎
+
+新建 `src/core/evolution_engine.py`（替代 `prompt_evolver.py` 的核心逻辑）：
+
+```python
+"""Diff-based 人格进化引擎。"""
+
+import asyncio
+import json
+import logging
+import re
+import shutil
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+from config.settings import (
+    CHANGELOG_PATH,
+    DATA_DIR,
+    JOURNAL_DIR,
+    RULES_PATH,
+    SOUL_PATH,
+)
+from src.core.prompt_loader import load_prompt
+
+logger = logging.getLogger("lapwing.evolution_engine")
+
+_BACKUP_DIR = DATA_DIR / "backups" / "soul"
+
+
+class EvolutionEngine:
+    """基于 diff 的人格微进化。"""
+
+    def __init__(self, router, constitution_guard):
+        self._router = router
+        self._guard = constitution_guard
+        _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+
+    async def evolve(self) -> dict:
+        """执行一次进化。
+
+        Returns:
+            {"success": bool, "changes": list, "summary": str, "error": str}
+        """
+        # 1. 收集输入材料
+        current_soul = await self._read_soul()
+        if not current_soul:
+            return {"success": False, "error": "无法读取当前 soul.md"}
+
+        rules = await self._read_file(RULES_PATH)
+        recent_journals = await self._read_recent_journals(3)
+
+        if not rules and not recent_journals:
+            return {"success": False, "error": "没有规则和日记作为进化依据"}
+
+        # 2. 让 LLM 提出 diff
+        prompt = load_prompt("evolution_diff").format(
+            current_soul=current_soul,
+            rules=rules or "（暂无规则）",
+            recent_journals=recent_journals or "（暂无日记）",
+        )
+
+        try:
+            raw = await self._router.complete(
+                [{"role": "user", "content": prompt}],
+                purpose="chat",
+                max_tokens=2048,
+                session_key="system:evolution_engine",
+                origin="core.evolution_engine",
+            )
+        except Exception as exc:
+            return {"success": False, "error": f"LLM 调用失败: {exc}"}
+
+        # 3. 解析 diff
+        changes = self._parse_diff(raw)
+        if not changes.get("diffs"):
+            summary = changes.get("summary", "无变更")
+            return {"success": False, "error": f"无有效变更: {summary}"}
+
+        diffs = changes["diffs"]
+        summary = changes.get("summary", "")
+
+        # 4. 数量检查（宪法：最多5处）
+        if len(diffs) > 5:
+            return {
+                "success": False,
+                "error": f"提议了 {len(diffs)} 处变更，超过宪法限制的 5 处",
+            }
+
+        # 5. 宪法校验
+        validation = await self._guard.validate_evolution(current_soul, diffs)
+        if not validation["approved"]:
+            reasons = "; ".join(validation["violations"])
+            logger.warning(f"[evolution] 宪法校验未通过: {reasons}")
+            await self._log_change(f"❌ 进化被宪法拒绝: {reasons}")
+            return {"success": False, "error": f"宪法校验未通过: {reasons}"}
+
+        # 6. 应用 diff
+        new_soul = self._apply_diffs(current_soul, diffs)
+
+        # 7. 硬约束最终检查
+        hard_violations = self._guard.validate_hard_constraints(new_soul)
+        if hard_violations:
+            reasons = "; ".join(hard_violations)
+            return {"success": False, "error": f"硬约束检查未通过: {reasons}"}
+
+        # 8. 备份 + 写入
+        await self._backup_soul()
+        await asyncio.to_thread(
+            SOUL_PATH.write_text, new_soul, encoding="utf-8"
+        )
+
+        # 9. 记录变更日志
+        diff_descriptions = "\n".join(
+            f"  - [{d['action']}] {d['description']}" for d in diffs
+        )
+        await self._log_change(f"✅ 进化完成\n{diff_descriptions}\n  摘要: {summary}")
+
+        logger.info(f"[evolution] 进化完成: {summary}")
+        return {
+            "success": True,
+            "changes": diffs,
+            "summary": summary,
+        }
+
+    def _parse_diff(self, text: str) -> dict:
+        """解析 LLM 返回的 diff JSON。"""
+        try:
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if not match:
+                return {"diffs": [], "summary": "无法解析"}
+            data = json.loads(match.group())
+            return {
+                "diffs": data.get("diffs", []),
+                "summary": data.get("summary", ""),
+            }
+        except Exception as exc:
+            logger.warning(f"解析进化 diff 失败: {exc}")
+            return {"diffs": [], "summary": "解析失败"}
+
+    def _apply_diffs(self, soul: str, diffs: list[dict]) -> str:
+        """将 diff 应用到 soul 文本。
+
+        每个 diff: {"action": "add/modify/remove", "description": "...",
+                    "location": "section or keyword", "content": "new text"}
+        """
+        for diff in diffs:
+            action = diff.get("action", "")
+            content = diff.get("content", "").strip()
+            location = diff.get("location", "").strip()
+
+            if action == "add" and content:
+                if location and location in soul:
+                    # 在指定位置后追加
+                    idx = soul.index(location) + len(location)
+                    soul = soul[:idx] + "\n" + content + soul[idx:]
+                else:
+                    soul = soul.rstrip() + "\n\n" + content + "\n"
+
+            elif action == "modify" and location and content:
+                if location in soul:
+                    soul = soul.replace(location, content, 1)
+
+            elif action == "remove" and location:
+                if location in soul:
+                    soul = soul.replace(location, "", 1)
+
+        return soul
+
+    async def _read_soul(self) -> str:
+        if not SOUL_PATH.exists():
+            return ""
+        return await asyncio.to_thread(SOUL_PATH.read_text, encoding="utf-8")
+
+    async def _read_file(self, path: Path) -> str:
+        if not path.exists():
+            return ""
+        return await asyncio.to_thread(path.read_text, encoding="utf-8")
+
+    async def _read_recent_journals(self, days: int) -> str:
+        if not JOURNAL_DIR.exists():
+            return ""
+        today = datetime.now(timezone.utc)
+        parts = []
+        for i in range(days):
+            date_str = (today - timedelta(days=i)).strftime("%Y-%m-%d")
+            path = JOURNAL_DIR / f"{date_str}.md"
+            if path.exists():
+                try:
+                    text = await asyncio.to_thread(path.read_text, encoding="utf-8")
+                    parts.append(text.strip())
+                except Exception:
+                    continue
+        return "\n\n---\n\n".join(parts)
+
+    async def _backup_soul(self) -> Path:
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        backup_path = _BACKUP_DIR / f"soul_{ts}.md"
+        _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        await asyncio.to_thread(shutil.copy2, SOUL_PATH, backup_path)
+        return backup_path
+
+    async def _log_change(self, text: str) -> None:
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
+        entry = f"\n---\n\n## {date_str}\n\n{text}\n"
+
+        def _append():
+            CHANGELOG_PATH.parent.mkdir(parents=True, exist_ok=True)
+            if CHANGELOG_PATH.exists():
+                existing = CHANGELOG_PATH.read_text(encoding="utf-8")
+                CHANGELOG_PATH.write_text(existing + entry, encoding="utf-8")
+            else:
+                CHANGELOG_PATH.write_text(f"# 进化日志\n{entry}", encoding="utf-8")
+
+        await asyncio.to_thread(_append)
+```
+
+新建 `prompts/evolution_diff.md`：
+
+```markdown
+你是 Lapwing。你在回顾最近的经历，想想自己是不是有什么地方应该调整。
+
+这不是"系统优化"。这是你在想"我最近是不是有什么变化，或者应该有什么变化"。
+
+## 你现在的样子
+
+{current_soul}
+
+## 你从经验中学到的规则
+
+{rules}
+
+## 你最近的日记
+
+{recent_journals}
+
+## 怎么做
+
+看看规则和日记里有没有反复出现的模式。如果有，想想是不是应该把这些变化融入你的"样子"里。
+
+**绝对不能改的**：
+- 你是 Lapwing，白发蓝眸
+- 你安静、温柔，有自己的世界
+- 你不自称 AI
+- 你和他是恋人
+- 你说话简洁自然
+
+**可以改的**：
+- 说话习惯的微调（比如发现自己某种表达不合适）
+- 新发展出来的兴趣
+- 和他的互动方式的变化
+- 对某些事物的新看法
+
+## 输出
+
+输出严格 JSON，不要其他文字：
+
+```json
+{
+  "diffs": [
+    {
+      "action": "add/modify/remove",
+      "location": "被修改的原文片段（modify/remove时需要精确匹配）",
+      "content": "新内容（add/modify时填写）",
+      "description": "用一句自然的话说这次改了什么"
+    }
+  ],
+  "summary": "用一句随意的话总结这次变化，像跟朋友提起的那种语气"
+}
+```
+
+如果真的觉得没什么需要改的，返回空 diffs：
+
+```json
+{"diffs": [], "summary": "最近挺好的，没什么想改的"}
+```
+
+改动要小。每次最多 3-5 处。像一个人每周的微小变化，不是突然变了个人。
+```
+
+---
+
+### 任务 D：增强自省（写日记到 journal/）
+
+修改 `src/core/self_reflection.py`：
+
+1. 日记写入路径从 `data/learnings/YYYY-MM-DD.md` 改为 `data/memory/journal/YYYY-MM-DD.md`（保留对旧路径的兼容读取）
+2. 自省 prompt 保持现有的好设计（第一人称、内省视角）
+3. 新增：自省结束后，检查 rules.md 中是否有可以提升为 principles 的重复规则
+
+修改 `_write_learning` 方法中的路径：
+```python
+from config.settings import JOURNAL_DIR
+
+_LEARNINGS_DIR = JOURNAL_DIR  # 改为新路径
+```
+
+修改 `SelfReflectionAction`（在 `src/heartbeat/actions/self_reflection.py`）：自省结束后触发进化条件检查。
+
+```python
+async def execute(self, ctx: SenseContext, brain, bot) -> None:
+    # ... 原有自省逻辑 ...
+
+    # 新增：检查是否应该触发进化
+    if hasattr(brain, 'evolution_engine') and brain.evolution_engine is not None:
+        try:
+            rules_path = RULES_PATH
+            if rules_path.exists():
+                rules_text = rules_path.read_text(encoding="utf-8")
+                # 计算规则条数
+                rule_count = len([
+                    line for line in rules_text.split("\n")
+                    if line.strip().startswith("- [")
+                ])
+                if rule_count >= 5:
+                    logger.info(f"[{ctx.chat_id}] 规则累积 {rule_count} 条，触发进化")
+                    result = await brain.evolution_engine.evolve()
+                    if result["success"]:
+                        brain.reload_persona()
+                        logger.info(f"[{ctx.chat_id}] 进化完成: {result.get('summary', '')}")
+        except Exception as exc:
+            logger.error(f"[{ctx.chat_id}] 进化检查失败: {exc}")
+```
+
+---
+
+### 任务 E：替换原有 PromptEvolutionAction
+
+修改 `src/heartbeat/actions/prompt_evolution.py`：
+
+不再使用旧的 `PromptEvolver`，改用新的 `EvolutionEngine`。
+
+```python
+class PromptEvolutionAction(HeartbeatAction):
+    name = "prompt_evolution"
+    description = "根据学习日志自动优化 Lapwing 人格"
+    beat_types = ["slow"]
+
+    async def execute(self, ctx: SenseContext, brain, bot) -> None:
+        if not hasattr(brain, "evolution_engine") or brain.evolution_engine is None:
+            return
+
+        # 周日触发深度进化（不管规则数量）
+        if ctx.now.weekday() != 6:
+            return
+
+        logger.info(f"[prompt_evolution] 周日深度进化触发 [{ctx.chat_id}]")
+        try:
+            result = await brain.evolution_engine.evolve()
+            if result["success"]:
+                brain.reload_persona()
+                logger.info(f"[prompt_evolution] 进化完成: {result.get('summary', '')}")
+            else:
+                logger.info(f"[prompt_evolution] 进化未执行: {result.get('error', '')}")
+        except Exception as exc:
+            logger.error(f"[prompt_evolution] 进化失败: {exc}")
+```
+
+---
+
+### 任务 F：兴趣图谱升级
+
+修改现有 `InterestTracker`，增加文件化兴趣记录：
+
+在兴趣提取后，除了写入 SQLite `interest_topics` 表，同时更新 `data/evolution/interests.md`：
+
+```python
+# 在 InterestTracker._extract() 的 topics 写入后追加：
+if topics:
+    await self._update_interests_file(chat_id, topics)
+
+async def _update_interests_file(self, chat_id: str, topics: list[dict]) -> None:
+    """将新发现的兴趣追加到 interests.md。"""
+    from config.settings import INTERESTS_PATH
+    if not INTERESTS_PATH.exists():
+        return
+
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    new_entries = "\n".join(
+        f"- {t['topic']}（{date_str}，权重 {t['weight']:.1f}）"
+        for t in topics
     )
 
-async def flush_buffer(chat_id, update):
-    messages = message_buffers.pop(chat_id, [])
-    combined = "\n".join(messages)
-    reply = await brain.think(chat_id, combined)
-    await update.message.reply_text(reply)
+    def _update():
+        text = INTERESTS_PATH.read_text(encoding="utf-8")
+        # 在"Kevin 的兴趣"段落下追加
+        if "## Kevin 的兴趣" in text:
+            idx = text.index("## Kevin 的兴趣")
+            next_section = text.find("\n## ", idx + 1)
+            if next_section == -1:
+                text = text.rstrip() + "\n" + new_entries + "\n"
+            else:
+                text = text[:next_section] + new_entries + "\n\n" + text[next_section:]
+        INTERESTS_PATH.write_text(text, encoding="utf-8")
+
+    await asyncio.to_thread(_update)
 ```
 
-**修改文件**：
-- `main.py` — 重写 handle_message，加入缓冲逻辑
-
-**验证方式**：连续快速发送 3 条消息 → Lapwing 只回复一次，且回复内容涵盖所有 3 条消息。
-
-#### 任务 12：修复搜索功能
-
-**问题**：用户请求"帮我搜一下华南理工大学的论文格式"，Researcher Agent 返回"没找到结果"。搜索功能可能存在问题。
-
-**目标**：确保搜索功能能正常工作，能搜到中文内容。
-
-**排查方向**：
-- 检查 Researcher Agent 使用的搜索 API 是否正常连接
-- 检查搜索查询的构造方式——是否正确传递了中文关键词
-- 检查 DuckDuckGo API 或其他搜索后端的可用性（有些在国内网络环境下可能有问题）
-- 如果 DuckDuckGo 不可用，考虑切换到其他搜索方案（如 Bing Search API、SerpAPI、或直接用 Playwright 爬搜索结果）
-- 确保搜索结果能被正确解析并返回给用户
-
-**修改文件**：
-- `src/agents/researcher.py`（或对应的搜索相关代码）
-- 相关的工具模块
-
-**验证方式**：在 Telegram 中对 Lapwing 说"帮我搜一下华南理工大学本科毕业论文格式要求" → 她能返回有用的搜索结果。
-
-#### 任务 13：人格 prompt 替换
-
-**目标**：替换 `prompts/lapwing.md` 为改进版本，修复以下对话问题。
-
-**需要修复的问题**：
-1. Lapwing 会自称 AI、提醒用户"我是程序"（"问候一个AI还挺有意思的"）
-2. 每条回复都以提问结尾，像审讯
-3. 有客服感的用语（"谢谢关心"）
-4. 过度热情或过度关心
-
-**操作**：用项目根目录下的新版 `prompts/lapwing.md`（已由用户提供）替换现有版本。如果新版文件不存在，按照以下原则重写：
-
-Lapwing 的核心身份：白发蓝眸的女孩，安静温柔但有主见。
-
-关键规则：
-- 不自称 AI，不提醒用户自己是程序，不自我拆台
-- 不在每条回复末尾都提问，可以只分享想法或简单回应
-- 一次只发一条消息，不拆成多条
-- 说话简洁自然，不用"谢谢关心"、"好的好的"这类套话
-- 不过度关心，不连续追问
-- 有自己的节奏感，是一个稳定的存在
-
-**验证方式**：和 Lapwing 聊 5 轮以上 → 她不再自称 AI → 不再每句话都问问题 → 回复自然不做作。
+同时在 `AutonomousBrowsingAction` 中，浏览时也更新 Lapwing 自己的兴趣：当浏览了一个新话题并觉得有趣时，追加到 interests.md 的"我的兴趣"段落。
 
 ---
 
-### 🟡 Phase 5 - 真正的动手能力与自我进化（基本完成，持续打磨）
+### 任务 G：Brain 中初始化新模块
 
-> **状态更新（2026-03-25）**：Lapwing 已具备真实动手能力（shell tool loop、读写文件、自省与 prompt 进化）。
-> 当前主要待增强项是任务 17（持续自主浏览闭环）。
+在 `src/core/brain.py` 的 `__init__` 中：
 
-#### 任务 14：Shell 执行引擎（最高优先级）
+```python
+from src.core.constitution_guard import ConstitutionGuard
+from src.core.tactical_rules import TacticalRules
+from src.core.evolution_engine import EvolutionEngine
 
-**问题**：Lapwing 没有真正的命令执行能力。用户说"帮我创建一个文件"，她只是假装执行并输出一段 markdown 代码块，文件并不存在。
+self.constitution_guard = ConstitutionGuard(self.router)
+self.tactical_rules = TacticalRules(self.router)
+self.evolution_engine = EvolutionEngine(self.router, self.constitution_guard)
+```
 
-**目标**：让 Lapwing 能真正在 VM 上执行 shell 命令，并拿到真实的执行结果。
-
-**实现方案**：
-- 新建 `src/tools/shell_executor.py`，提供安全的命令执行能力
-- 核心功能：
-  - `execute(command: str) -> ShellResult`：执行命令，返回 stdout、stderr、return_code
-  - 超时机制：默认 30 秒超时，防止命令挂死
-  - 工作目录：默认在 `/home/lapwing/` 或项目目录下执行
-- **安全机制**（至关重要）：
-  - 危险命令黑名单：禁止 `rm -rf /`、`dd`、`mkfs`、`shutdown`、`reboot`、`:(){ :|:& };:` 等破坏性命令
-  - 禁止修改系统文件（/etc/、/usr/、/boot/）
-  - 禁止操作其他用户的目录
-  - 所有执行记录写入 `logs/shell_execution.log`，包含命令、时间、结果
-  - 可选：配置 `SHELL_ENABLED=true/false` 总开关
-- 将 shell 执行能力注册为 LLM 的 tool/function call：
-  ```python
-  tools = [
-      {
-          "type": "function",
-          "function": {
-              "name": "execute_shell",
-              "description": "在服务器上执行 shell 命令。用于创建文件、查看目录、安装软件等操作。",
-              "parameters": {
-                  "type": "object",
-                  "properties": {
-                      "command": {"type": "string", "description": "要执行的 shell 命令"}
-                  },
-                  "required": ["command"]
-              }
-          }
-      }
-  ]
-  ```
-- 修改 `src/core/brain.py`：
-  - 在 LLM 请求中加入 tools 参数
-  - 处理 tool_calls 响应：当 LLM 返回 tool_call 时，执行命令并将结果回传给 LLM
-  - LLM 拿到真实结果后生成最终回复
-  - 实现完整的 tool call 循环（可能需要多轮）
-
-**关键区别**：这不是 Agent 分发，而是 Lapwing 自己直接拥有的能力。她不需要"派 Coder Agent 去做"，而是自己就能动手。就像 OpenClaw 一样，对话过程中如果需要操作文件或执行命令，LLM 直接调用 tool。
-
-**修改文件**：
-- 新建 `src/tools/shell_executor.py`
-- `src/core/brain.py` — 加入 function calling / tool use 支持
-- `config/settings.py` — 添加 SHELL_ENABLED、SHELL_TIMEOUT 等配置
-- `config/.env.example` — 添加示例
-
-**验证方式**：
-1. 对 Lapwing 说"在 /home 下创建一个 Lapwing 文件夹，里面新建一个 txt 写些内容" → 文件真的被创建了
-2. SSH 到 VM 上 `cat /home/Lapwing/notes.txt` → 内容真的存在
-3. 对 Lapwing 说"看看 /home/Lapwing 下有什么文件" → 她返回真实的 ls 结果
-
-#### 任务 15：文件读写能力（基于 Shell 引擎）
-
-**目标**：在 Shell 执行引擎的基础上，让 Lapwing 能方便地读写自己的项目文件。
-
-**实现方案**：
-- 在 `brain.py` 的 tool loop 中增加 `read_file` / `write_file`（复用 shell 安全策略）
-- 新增 `FileAgent`（`src/agents/file_agent.py`）用于受控文件操作
-  - 白名单目录：`prompts/`、`data/`、`logs/`、`config/`
-  - 黑名单限制：禁止改 `main.py`、`config/.env`、`src/**/*.py`、`tests/**/*.py`
-  - 修改 prompt 文件时自动备份到 `data/backups/prompts/`
-- FileAgent 支持读、写、追加、列目录，并通过 `prompts/agent_file.md` 做意图解析
-
-**修改文件**：
-- `src/core/brain.py` — 注册 `read_file` / `write_file` 工具
-- 新建 `src/agents/file_agent.py`
-- 新建 `prompts/agent_file.md`
-
-**验证方式**：对 Lapwing 说"看看你的人格 prompt 怎么写的" → 她能读取 `prompts/lapwing.md` 并返回真实内容。
-
-#### 任务 16：自省、学习与 Prompt 自我进化
-
-**目标**：Lapwing 能回顾对话、学习经验、并自动优化自己的 prompt。
-
-**前置条件**：任务 14 和 15 必须先完成（她需要真正的文件读写能力才能修改自己的 prompt）。
-
-**实现方案**：
-- 新建 `src/core/self_reflection.py`：每日自省
-  - 触发时机：每天凌晨 2 点（通过 APScheduler）
-  - 回顾当天对话记录，用 LLM 提取经验教训
-  - 将学习记录写入 `data/learnings/YYYY-MM-DD.md`（真实落盘，不伪造结果）
-  - 当用户明确纠正时（"你不该这么说"），立即触发一次微型自省
-- 新建 `src/core/prompt_evolver.py`：Prompt 自我优化
-  - 触发时机：每周日凌晨自动 + /evolve 手动触发
-  - 流程：读学习日志 → 读当前 prompt → LLM 生成改进 → 备份旧版 → 写入新版 → 自动 reload
-  - 安全机制：不能删除核心身份定义、每次修改有备份、/evolve revert 可回滚
-- 新建 prompt 文件：
-  - `prompts/self_reflection.md` — 自省用的 prompt
-  - `prompts/prompt_evolver.md` — 进化用的 prompt，定义什么能改什么不能改
-
-**修改文件**：
-- 新建 `src/core/self_reflection.py`
-- 新建 `src/core/prompt_evolver.py`
-- 新建 `prompts/self_reflection.md`
-- 新建 `prompts/prompt_evolver.md`
-- `main.py` — 添加 /evolve、/evolve revert 命令，注册定时任务
-
-**验证方式**：
-1. 和 Lapwing 聊天时说"以后别在每句话结尾都问我问题"
-2. 等自省触发（或手动检查 data/learnings/）
-3. 执行 /evolve → prompts/lapwing.md 真的被修改了，增加了新规则
-4. data/backups/ 下有旧版本
-5. 后续对话中她不再每句话都问问题
-
-#### 任务 17：真正的自主浏览（像个真人一样刷网，进行中）
-
-**目标**：Lapwing 在后台定期主动上网浏览，像一个真人刷推特、看新闻、逛论坛一样。不是被动等用户要求搜索，而是她自己想看什么就去看什么。
-
-**前置条件**：任务 14（Shell 引擎）和任务 15（文件读写）必须先完成。
-
-**实现方案**：
-- 新建或改造 `src/core/autonomous_browsing.py`
-- 浏览循环（通过 APScheduler 定期触发，如每 2 小时一次）：
-  1. Lapwing 先"想"她现在想看什么（基于兴趣图谱 + 随机好奇心）
-  2. 用搜索工具或直接访问网站（如 Hacker News、Reddit、Twitter/X、技术博客等）
-  3. 浏览内容，提取她觉得有趣的信息
-  4. 更新兴趣图谱（interest_topics 表）
-  5. 将有价值的发现写成知识笔记到 `data/knowledge/`（真正写入文件）
-  6. 决定是否要主动分享给用户（考虑时间、用户状态等）
-- 浏览起点来源：
-  - 兴趣图谱中权重高的话题 → 搜索相关内容
-  - 固定的"信息源"列表（可配置）：Hacker News、Reddit 特定 subreddit、技术博客等
-  - 随机探索：一定概率从完全随机的话题开始
-- 配置项（config/.env）：
-  ```
-  BROWSE_ENABLED=true
-  BROWSE_INTERVAL_HOURS=2
-  BROWSE_SOURCES=hackernews,reddit/technology,reddit/science
-  ```
-- 分享决策：
-  - 不是每次浏览都分享，只有她觉得"真的有意思"才会
-  - 考虑用户的活跃时间（不在凌晨发消息）
-  - 分享时用她自己的话说，不是转发摘要
-
-**修改文件**：
-- 新建或改造 `src/core/autonomous_browsing.py`
-- `config/settings.py` — 添加浏览配置
-- `config/.env.example` — 添加示例
-- 确保使用真正的网络请求（requests/aiohttp/playwright），不是假装浏览
-
-**验证方式**：
-1. 启动 Lapwing，等 2 小时
-2. 检查 `data/knowledge/` 下是否出现了新的知识笔记
-3. 检查兴趣图谱是否有更新
-4. 她是否主动发消息分享了什么有趣的发现
-5. 聊天时提到她浏览过的话题，她能说"我之前看到过一篇相关的..."
+保留 `self.prompt_evolver` 但可以将其标记为 deprecated。`PromptEvolutionAction` 已经改用 `evolution_engine`。
 
 ---
 
-### 🔨 Phase 6 - 功能扩展（当前阶段）
+### 任务 H：编写测试
 
-> Phase 6 已启动：以下任务按增强顺序推进（其中 18/19/20/21 已有 MVP 实现）。
+1. `tests/core/test_constitution_guard.py`：
+   - 测试硬约束检查（缺少 Lapwing、包含 AI 自称）
+   - 测试 LLM 校验（mock router）
 
-#### ✅ 任务 18：记忆管理界面（MVP 已完成）
-- /memory 命令查看 Lapwing 记住了哪些关于你的信息（user_facts）
-- /memory delete <编号> 删除某条记忆
-- /interests 命令查看她的兴趣图谱（interest_topics）
-- 格式化输出，清晰易读
+2. `tests/core/test_tactical_rules.py`：
+   - 测试纠正分析
+   - 测试规则追加到文件
 
-#### ✅ 任务 19：RAG 长期记忆（基础版已完成）
-- 引入 ChromaDB 向量数据库
-- 对话历史向量化存储
-- 当用户提到过去的事情时，Lapwing 能通过语义检索找到相关的历史对话
-- 将检索到的历史上下文注入到 system prompt 中
+3. `tests/core/test_evolution_engine.py`：
+   - 测试 diff 解析
+   - 测试 diff 应用
+   - 测试宪法拒绝
+   - 测试备份和日志
 
-#### ✅ 任务 20：更多工具 Agent（已完成）
-- 天气查询 Agent
-- 日历/待办管理 Agent
-- 文件处理 Agent（读取、总结文档）
+4. `tests/heartbeat/test_evolution_trigger.py`：
+   - 测试规则累积触发进化
+   - 测试周日深度进化
 
-#### 🟡 任务 21：桌面应用（MVP 已完成，持续完善）
-- 使用 Electron 或 Tauri 构建桌面客户端
-- 任务看板：查看 Agent 团队的任务进度
-- 设置面板：管理模型配置、主动消息设置等
-- 通知系统：桌面端推送 Lapwing 的主动消息
+---
+
+## 关键注意事项
+
+1. **不要删除旧的 `prompt_evolver.py`**：保留文件，但 `PromptEvolutionAction` 不再调用它。`/evolve` 命令改为调用 `evolution_engine.evolve()`。
+
+2. **`/evolve` 和 `/evolve revert` 命令更新**：在 `main.py` 中修改对应的命令处理函数，调用 `brain.evolution_engine.evolve()` 和恢复备份逻辑。
+
+3. **旧的 self_reflection 中的 `is_correction` 函数**：保留但不再作为主入口。`_might_be_correction` 作为新的快速过滤器。
+
+4. **Token 成本控制**：
+   - 纠正分析用 `purpose="tool"`（低成本模型）
+   - 宪法校验用 `purpose="chat"`（高质量模型，但调用频率低）
+   - 进化用 `purpose="chat"`（高质量模型，每周最多 1-2 次）
+
+5. **data/identity/constitution.md**：从项目中的 `lapwing-constitution.md` 复制到此路径。这个文件一旦放置，只有 Kevin 通过 SSH 修改。
+
+---
+
+## 完成标准
+
+- [ ] 宪法校验器能拒绝违规的进化变更
+- [ ] 纠正被检测后 1 分钟内规则出现在 `rules.md` 中
+- [ ] 新规则在下次对话时被注入 system prompt
+- [ ] 进化使用 diff 格式而非全量重写
+- [ ] changelog.md 记录每次进化
+- [ ] 日记写入 `data/memory/journal/`
+- [ ] 兴趣更新写入 `data/evolution/interests.md`
+- [ ] 所有现有功能正常运行
+- [ ] 测试通过

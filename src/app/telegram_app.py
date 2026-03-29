@@ -121,13 +121,14 @@ class TelegramApp:
             return
 
         brain = self._container.brain
-        if not hasattr(brain, "prompt_evolver") or brain.prompt_evolver is None:
-            await update.message.reply_text("prompt 进化功能尚未启用。")
+        args = context.args or []
+
+        if not (hasattr(brain, "evolution_engine") and brain.evolution_engine is not None):
+            await update.message.reply_text("进化功能尚未启用。")
             return
 
-        args = context.args or []
         if args and args[0] == "revert":
-            result = await brain.prompt_evolver.revert()
+            result = await brain.evolution_engine.revert()
             if result["success"]:
                 brain.reload_persona()
                 await update.message.reply_text(f"已回滚到: {result['reverted_to']}")
@@ -135,15 +136,15 @@ class TelegramApp:
                 await update.message.reply_text(f"回滚失败: {result.get('error', '未知错误')}")
             return
 
-        await update.message.reply_text("开始分析学习日志，优化人格 prompt……")
-        result = await brain.prompt_evolver.evolve()
+        await update.message.reply_text("开始分析学习日志和行为规则，微调人格……")
+        result = await brain.evolution_engine.evolve()
         if result["success"]:
             brain.reload_persona()
             await update.message.reply_text(
-                f"优化完成。\n变更摘要: {result.get('changes_summary', '（无）')}"
+                f"进化完成。\n摘要: {result.get('summary', '（无）')}"
             )
         else:
-            await update.message.reply_text(f"优化未完成: {result.get('error', '未知错误')}")
+            await update.message.reply_text(f"进化未完成: {result.get('error', '未知错误')}")
 
     async def cmd_interests(self, update, context) -> None:
         if not update.message:

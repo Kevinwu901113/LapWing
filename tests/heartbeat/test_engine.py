@@ -174,11 +174,11 @@ class TestProactiveRuntime:
 
 
 class TestHeartbeatEngine:
-    async def test_run_beat_silent_when_no_actions(self, mock_brain):
+    async def test_run_tick_silent_when_no_actions(self, mock_brain):
         mock_brain.router.complete = AsyncMock(return_value='{"actions": [], "reason": "静默"}')
         bot = MagicMock()
         engine = HeartbeatEngine(brain=mock_brain, bot=bot)
         engine.registry.register(FakeFastAction())
-        await engine._run_beat("fast")
+        await engine._run_tick("fast")
         await asyncio.gather(*engine._running_tasks, return_exceptions=True)
         bot.send_message.assert_not_called()

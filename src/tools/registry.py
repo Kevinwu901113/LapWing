@@ -872,4 +872,50 @@ def build_default_tool_registry() -> ToolRegistry:
         )
     )
 
+    async def _execute_memory_note(
+        request: ToolExecutionRequest,
+        context: ToolExecutionContext,
+    ) -> ToolExecutionResult:
+        from src.tools.memory_note import write_note
+
+        target = str(request.arguments.get("target", "")).strip()
+        content = str(request.arguments.get("content", "")).strip()
+        result = await write_note(target, content)
+
+        return ToolExecutionResult(
+            success=result.get("success", False),
+            reason=result.get("reason", ""),
+            payload=result,
+        )
+
+    registry.register(
+        ToolSpec(
+            name="memory_note",
+            description=(
+                "记下重要的事情。当你觉得对话中有值得记住的信息时使用。"
+                "target='kevin' 记录关于他的事（偏好、经历、重要信息）。"
+                "target='self' 记录你自己的想法和感受。"
+                "不需要每句话都记，只记真正重要的。"
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "target": {
+                        "type": "string",
+                        "enum": ["kevin", "self"],
+                        "description": "写入目标：kevin=关于他的事，self=你自己的想法",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "要记下的内容，用自然的语言写",
+                    },
+                },
+                "required": ["target", "content"],
+            },
+            executor=_execute_memory_note,
+            capability="memory",
+            risk_level="low",
+        )
+    )
+
     return registry

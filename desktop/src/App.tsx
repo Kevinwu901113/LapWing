@@ -787,7 +787,7 @@ export default function App() {
             <h2>学习日志</h2>
           </div>
           <div className="learning-list">
-            {learnings.length === 0 ? <p className="empty">`data/learnings/` 里还没有日志。</p> : null}
+            {learnings.length === 0 ? <p className="empty">`data/memory/journal/` 里还没有日志。</p> : null}
             {learnings.map((item) => (
               <article key={item.filename} className="learning-item">
                 <div className="learning-head">

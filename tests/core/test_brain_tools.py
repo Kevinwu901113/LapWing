@@ -201,7 +201,8 @@ class TestBrainTools:
             mock_execute.assert_awaited_once_with("ls")
             brain.router.build_tool_result_message.assert_called_once()
 
-    async def test_shell_disabled_falls_back_to_plain_complete(self):
+    async def test_shell_disabled_no_shell_tools_in_prompt(self):
+        """shell 和 web 禁用时，system prompt 中包含禁用状态说明，工具循环仍可用于 memory_note。"""
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
              patch("src.core.brain.ConversationMemory"), \
@@ -214,16 +215,18 @@ class TestBrainTools:
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
             brain.memory.remove_last = AsyncMock()
-            brain.router.complete = AsyncMock(return_value="普通回复")
+            brain.router.complete_with_tools = AsyncMock(
+                return_value=SimpleNamespace(text="普通回复", tool_calls=[], continuation_message=None)
+            )
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
 
             result = await brain.think("chat1", "请执行 pwd")
 
             assert result == "普通回复"
-            brain.router.complete.assert_called_once()
-            messages = brain.router.complete.call_args.args[0]
-            assert "本地 shell 执行当前已禁用" in messages[0]["content"]
+            # system prompt 应包含禁用状态说明
+            call_messages = brain.router.complete_with_tools.call_args.args[0]
+            assert "Shell 工具当前已禁用" in call_messages[0]["content"]
 
     async def test_web_tool_loop_search_then_fetch_returns_final_reply(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \

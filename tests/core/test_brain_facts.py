@@ -1,11 +1,14 @@
 """brain.py 用户画像注入相关测试。"""
 
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+_NONEXISTENT = Path("/nonexistent")
 
 
 @pytest.fixture(autouse=True)
@@ -20,23 +23,39 @@ def reset_module_cache():
             del sys.modules[mod]
 
 
+def _mock_load_prompt(name, **kwargs):
+    """按 prompt 名称返回不同 mock 内容，隔离 load_prompt 副作用。"""
+    if name == "lapwing_soul":
+        return "基础人格 prompt"
+    return ""
+
+
+def make_brain():
+    """创建隔离的 LapwingBrain 实例，所有文件路径指向不存在的位置。"""
+    stack = ExitStack()
+    stack.enter_context(patch("src.core.brain.load_prompt", side_effect=_mock_load_prompt))
+    stack.enter_context(patch("src.core.brain.LLMRouter"))
+    stack.enter_context(patch("src.core.brain.ConversationMemory"))
+    stack.enter_context(patch("src.core.brain.SOUL_PATH", _NONEXISTENT / "soul.md"))
+    stack.enter_context(patch("src.core.brain.RULES_PATH", _NONEXISTENT / "rules.md"))
+    stack.enter_context(patch("src.core.brain.KEVIN_NOTES_PATH", _NONEXISTENT / "kevin.md"))
+    stack.enter_context(patch("src.core.brain.CONVERSATION_SUMMARIES_DIR", _NONEXISTENT / "summaries"))
+    return stack
+
+
 class TestBuildSystemPrompt:
     async def test_returns_base_prompt_when_no_facts(self):
-        """没有用户 facts 时，返回未修改的基础 prompt。"""
-        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
-             patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+        """没有用户 facts 时，基础 prompt 出现在结果开头。"""
+        with make_brain() as stack:
             from src.core.brain import LapwingBrain
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.get_user_facts = AsyncMock(return_value=[])
             result = await brain._build_system_prompt("chat1")
-            assert result == "基础人格 prompt"
+            assert result.startswith("基础人格 prompt")
 
     async def test_appends_user_facts_section_when_facts_exist(self):
         """有用户 facts 时，在基础 prompt 后追加用户画像段落。"""
-        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
-             patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+        with make_brain():
             from src.core.brain import LapwingBrain
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.get_user_facts = AsyncMock(return_value=[
@@ -49,9 +68,7 @@ class TestBuildSystemPrompt:
 
     async def test_base_prompt_appears_before_facts(self):
         """基础 prompt 在 facts 段落之前。"""
-        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
-             patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+        with make_brain():
             from src.core.brain import LapwingBrain
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.get_user_facts = AsyncMock(return_value=[
@@ -62,9 +79,7 @@ class TestBuildSystemPrompt:
 
     async def test_memory_summaries_are_placed_in_separate_section(self):
         """memory_summary_* 不应混在普通 facts 段落里。"""
-        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
-             patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+        with make_brain():
             from src.core.brain import LapwingBrain
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.get_user_facts = AsyncMock(return_value=[
@@ -72,7 +87,7 @@ class TestBuildSystemPrompt:
                 {"fact_key": "memory_summary_2026-03-23", "fact_value": "今天聊了面试和睡眠。", "updated_at": "2026-03-23"},
             ])
             result = await brain._build_system_prompt("chat1")
-            assert "## 你对这个用户的了解" in result
+            assert "## 补充信息（自动提取）" in result
             assert "## 最近聊过的事" in result
             assert "- 2026-03-23: 今天聊了面试和睡眠。" in result
             user_section = result.split("## 最近聊过的事")[0]
@@ -80,9 +95,7 @@ class TestBuildSystemPrompt:
 
     async def test_only_latest_three_memory_summaries_are_kept(self):
         """最近聊过的事只保留最新三条。"""
-        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
-             patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+        with make_brain():
             from src.core.brain import LapwingBrain
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.get_user_facts = AsyncMock(return_value=[
@@ -99,9 +112,7 @@ class TestBuildSystemPrompt:
 
     async def test_returns_base_plus_recent_section_when_only_memory_summaries_exist(self):
         """只有 memory summaries 时，也应注入最近聊过的事段落。"""
-        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
-             patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+        with make_brain():
             from src.core.brain import LapwingBrain
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.get_user_facts = AsyncMock(return_value=[
@@ -110,12 +121,10 @@ class TestBuildSystemPrompt:
             result = await brain._build_system_prompt("chat1")
             assert result.startswith("基础人格 prompt")
             assert "## 最近聊过的事" in result
-            assert "## 你对这个用户的了解" not in result
+            assert "## 补充信息（自动提取）" not in result
 
     async def test_appends_related_history_section_from_vector_hits(self):
-        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
-             patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+        with make_brain():
             from src.core.brain import LapwingBrain
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -135,9 +144,7 @@ class TestBuildSystemPrompt:
             brain.vector_store.search.assert_awaited_once_with("chat1", "我想继续聊论文", n_results=2)
 
     async def test_skips_related_history_when_date_already_in_recent_summaries(self):
-        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
-             patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+        with make_brain():
             from src.core.brain import LapwingBrain
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.get_user_facts = AsyncMock(return_value=[
@@ -157,9 +164,7 @@ class TestBuildSystemPrompt:
             assert "## 相关历史记忆" not in result
 
     async def test_related_history_search_failure_is_ignored(self):
-        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
-             patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+        with make_brain():
             from src.core.brain import LapwingBrain
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -169,12 +174,10 @@ class TestBuildSystemPrompt:
             result = await brain._build_system_prompt("chat1", "继续聊")
 
             assert result.startswith("基础人格 prompt")
-            assert "## 本地执行规则" in result
+            assert "## 本地执行状态" in result
 
     async def test_injects_skill_catalog_when_skills_available(self):
-        with patch("src.core.brain.load_prompt", return_value="基础人格 prompt"), \
-             patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+        with make_brain():
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
@@ -195,9 +198,7 @@ class TestBuildSystemPrompt:
 class TestThinkNotifiesExtractor:
     async def test_think_calls_fact_extractor_notify(self):
         """think() 每次调用时通知 fact_extractor。"""
-        with patch("src.core.brain.load_prompt", return_value="prompt"), \
-             patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+        with make_brain():
             from src.core.brain import LapwingBrain
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.append = AsyncMock()
@@ -220,9 +221,7 @@ class TestThinkNotifiesExtractor:
 
     async def test_think_calls_interest_tracker_notify_when_present(self):
         """配置了 interest_tracker 时，think() 也会通知它。"""
-        with patch("src.core.brain.load_prompt", return_value="prompt"), \
-             patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+        with make_brain():
             from src.core.brain import LapwingBrain
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.append = AsyncMock()

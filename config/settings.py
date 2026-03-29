@@ -47,6 +47,25 @@ PROMPTS_DIR = ROOT_DIR / "prompts"
 LOGS_DIR = ROOT_DIR / "logs"
 DATA_DIR = ROOT_DIR / "data"
 DB_PATH = DATA_DIR / "lapwing.db"
+
+# 文件记忆路径
+IDENTITY_DIR = DATA_DIR / "identity"
+MEMORY_DIR = DATA_DIR / "memory"
+EVOLUTION_DIR = DATA_DIR / "evolution"
+JOURNAL_DIR = MEMORY_DIR / "journal"
+CONVERSATION_SUMMARIES_DIR = MEMORY_DIR / "conversations" / "summaries"
+CONSTITUTION_PATH = IDENTITY_DIR / "constitution.md"
+SOUL_PATH = IDENTITY_DIR / "soul.md"
+SELF_NOTES_PATH = MEMORY_DIR / "SELF.md"
+KEVIN_NOTES_PATH = MEMORY_DIR / "KEVIN.md"
+RULES_PATH = EVOLUTION_DIR / "rules.md"
+INTERESTS_PATH = EVOLUTION_DIR / "interests.md"
+CHANGELOG_PATH = EVOLUTION_DIR / "changelog.md"
+
+# Compaction 配置
+COMPACTION_TRIGGER_RATIO = float(os.getenv("COMPACTION_TRIGGER_RATIO", "0.8"))
+COMPACTION_SUMMARY_MAX_TOKENS = 300
+
 LAPWING_HOME = Path(os.getenv("LAPWING_HOME", str(Path.home() / ".lapwing")))
 AUTH_DIR = LAPWING_HOME / "auth"
 AUTH_PROFILES_PATH = AUTH_DIR / "auth-profiles.json"

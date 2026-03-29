@@ -18,13 +18,13 @@ from config.settings import (
     API_HOST,
     API_PORT,
     API_SESSION_TTL_SECONDS,
-    DATA_DIR,
+    JOURNAL_DIR,
 )
 from src.core.latency_monitor import LatencyMonitor
 
 logger = logging.getLogger("lapwing.api")
 
-_LEARNINGS_DIR = DATA_DIR / "learnings"
+_LEARNINGS_DIR = JOURNAL_DIR
 _DIST_DIR = Path(__file__).parent.parent.parent / "desktop" / "dist"
 
 
@@ -271,10 +271,10 @@ def create_app(
 
     @app.post("/api/evolve")
     async def post_evolve():
-        if not hasattr(brain, "prompt_evolver") or brain.prompt_evolver is None:
-            return {"success": False, "error": "prompt 进化功能尚未启用。"}
+        if not hasattr(brain, "evolution_engine") or brain.evolution_engine is None:
+            return {"success": False, "error": "进化功能尚未启用。"}
 
-        result = await brain.prompt_evolver.evolve()
+        result = await brain.evolution_engine.evolve()
         if result.get("success"):
             brain.reload_persona()
         return result

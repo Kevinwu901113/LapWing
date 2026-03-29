@@ -196,16 +196,14 @@ class TaskRuntime:
         web_enabled: bool = True,
         skill_activation_enabled: bool = False,
     ) -> list[dict[str, Any]]:
-        """chat 场景工具集：按需暴露 shell / web / activate_skill。"""
-        tool_names: set[str] = set()
+        """chat 场景工具集：按需暴露 shell / web / activate_skill，memory_note 始终可用。"""
+        tool_names: set[str] = {"memory_note"}  # memory_note 始终可用
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
         if web_enabled:
             tool_names.update({"web_search", "web_fetch"})
         if skill_activation_enabled:
             tool_names.add("activate_skill")
-        if not tool_names:
-            return []
         return self._tool_registry.function_tools(
             include_internal=False,
             tool_names=tool_names,

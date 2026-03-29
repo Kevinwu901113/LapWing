@@ -6,8 +6,9 @@ import asyncio
 import json
 import logging
 import re
+from datetime import datetime, timezone
 
-from config.settings import INTEREST_EXTRACT_TURN_THRESHOLD
+from config.settings import INTEREST_EXTRACT_TURN_THRESHOLD, INTERESTS_PATH
 from src.core.prompt_loader import load_prompt
 
 logger = logging.getLogger("lapwing.interest_tracker")
@@ -86,6 +87,7 @@ class InterestTracker:
 
             if topics:
                 logger.info(f"[{chat_id}] 提取了 {len(topics)} 个兴趣话题")
+                await self._update_interests_file(chat_id, topics)
         except Exception as exc:
             logger.warning(f"[{chat_id}] 兴趣提取失败: {exc}")
         finally:
@@ -116,6 +118,33 @@ class InterestTracker:
         except Exception as exc:
             logger.debug(f"解析兴趣提取结果失败: {exc!r}")
             return []
+
+    async def _update_interests_file(self, chat_id: str, topics: list[dict]) -> None:
+        """将新发现的兴趣追加到 interests.md。"""
+        if not INTERESTS_PATH.exists():
+            return
+
+        date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        new_entries = "\n".join(
+            f"- {t['topic']}（{date_str}，权重 {t['weight']:.1f}）"
+            for t in topics
+        )
+
+        def _update():
+            text = INTERESTS_PATH.read_text(encoding="utf-8")
+            if "## Kevin 的兴趣" in text:
+                idx = text.index("## Kevin 的兴趣")
+                next_section = text.find("\n## ", idx + 1)
+                if next_section == -1:
+                    text_new = text.rstrip() + "\n" + new_entries + "\n"
+                else:
+                    text_new = text[:next_section] + new_entries + "\n\n" + text[next_section:]
+                INTERESTS_PATH.write_text(text_new, encoding="utf-8")
+
+        try:
+            await asyncio.to_thread(_update)
+        except Exception as exc:
+            logger.warning(f"[{chat_id}] 更新兴趣文件失败: {exc}")
 
     async def shutdown(self) -> None:
         for task in self._tasks:

@@ -21,6 +21,7 @@ from src.core.brain import LapwingBrain
 from src.core.heartbeat import HeartbeatEngine
 from src.core.latency_monitor import LatencyMonitor
 from src.heartbeat.actions.autonomous_browsing import AutonomousBrowsingAction
+from src.heartbeat.actions.compaction_check import CompactionCheckAction
 from src.heartbeat.actions.consolidation import MemoryConsolidationAction
 from src.heartbeat.actions.interest_proactive import InterestProactiveAction
 from src.heartbeat.actions.proactive import ProactiveMessageAction, ReminderDispatchAction
@@ -118,7 +119,6 @@ class AppContainer:
         from src.agents.weather_agent import WeatherAgent
         from src.core.dispatcher import AgentDispatcher
         from src.core.knowledge_manager import KnowledgeManager
-        from src.core.prompt_evolver import PromptEvolver
         from src.core.skills import SkillManager
         from src.core.self_reflection import SelfReflection
         from src.memory.interest_tracker import InterestTracker
@@ -167,13 +167,20 @@ class AppContainer:
             memory=self.brain.memory,
             router=self.brain.router,
         )
-        self.brain.prompt_evolver = PromptEvolver(
-            memory=self.brain.memory,
-            router=self.brain.router,
+
+        from src.core.constitution_guard import ConstitutionGuard
+        from src.core.tactical_rules import TacticalRules
+        from src.core.evolution_engine import EvolutionEngine
+
+        self.brain.constitution_guard = ConstitutionGuard(self.brain.router)
+        self.brain.tactical_rules = TacticalRules(self.brain.router)
+        self.brain.evolution_engine = EvolutionEngine(
+            self.brain.router, self.brain.constitution_guard
         )
 
     def _build_heartbeat(self, bot) -> HeartbeatEngine:
         heartbeat = HeartbeatEngine(brain=self.brain, bot=bot)
+        heartbeat.registry.register(CompactionCheckAction())
         heartbeat.registry.register(ProactiveMessageAction())
         heartbeat.registry.register(ReminderDispatchAction())
         heartbeat.registry.register(AutonomousBrowsingAction())

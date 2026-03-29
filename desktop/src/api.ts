@@ -264,7 +264,7 @@ export async function reloadPersona() {
 }
 
 export async function evolvePrompt() {
-  return fetchJson<{ success: boolean; changes_summary?: string; error?: string }>(
+  return fetchJson<{ success: boolean; summary?: string; error?: string }>(
     "/api/evolve",
     {
       method: "POST",

@@ -1,5 +1,6 @@
 """Lapwing 的大脑 - LLM 调用与对话管理。"""
 
+import asyncio
 import logging
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -22,11 +23,15 @@ from src.tools.shell_executor import execute as execute_shell
 from src.tools.types import ToolExecutionRequest
 from config.settings import (
     CHAT_WEB_TOOLS_ENABLED,
+    CONVERSATION_SUMMARIES_DIR,
+    KEVIN_NOTES_PATH,
     MAX_HISTORY_TURNS,
+    RULES_PATH,
     SHELL_ALLOW_SUDO,
     SHELL_DEFAULT_CWD,
     SHELL_ENABLED,
     SKILLS_DISPATCH_TOOL_WHITELIST,
+    SOUL_PATH,
 )
 
 if TYPE_CHECKING:
@@ -35,6 +40,9 @@ if TYPE_CHECKING:
     from src.core.self_reflection import SelfReflection
     from src.core.knowledge_manager import KnowledgeManager
     from src.memory.vector_store import VectorStore
+    from src.core.constitution_guard import ConstitutionGuard
+    from src.core.tactical_rules import TacticalRules
+    from src.core.evolution_engine import EvolutionEngine
 
 logger = logging.getLogger("lapwing.brain")
 
@@ -49,6 +57,8 @@ class LapwingBrain:
         self.task_runtime = TaskRuntime(router=self.router, tool_registry=self.tool_registry)
         self.memory = ConversationMemory(db_path)
         self.fact_extractor = FactExtractor(self.memory, self.router)
+        from src.memory.compactor import ConversationCompactor
+        self.compactor = ConversationCompactor(self.memory, self.router)
         self.interest_tracker: InterestTracker | None = None
         self.self_reflection: SelfReflection | None = None
         self.knowledge_manager: KnowledgeManager | None = None
@@ -57,6 +67,9 @@ class LapwingBrain:
         self.event_bus = None
         self._system_prompt: str | None = None
         self.dispatcher = None  # Set externally by main.py (AgentDispatcher | None)
+        self.constitution_guard: ConstitutionGuard | None = None
+        self.tactical_rules: TacticalRules | None = None
+        self.evolution_engine: EvolutionEngine | None = None
 
     async def init_db(self) -> None:
         """初始化数据库连接和表结构。"""
@@ -84,16 +97,23 @@ class LapwingBrain:
 
     @property
     def system_prompt(self) -> str:
-        """懒加载 system prompt（核心人格 soul）。"""
+        """懒加载 system prompt（核心人格 soul）。优先从 data/identity/soul.md 加载。"""
         if self._system_prompt is None:
-            self._system_prompt = load_prompt("lapwing_soul")
-            logger.info("已加载 Lapwing 人格 prompt")
+            if SOUL_PATH.exists():
+                self._system_prompt = SOUL_PATH.read_text(encoding="utf-8")
+                logger.info(f"已从 {SOUL_PATH} 加载 Lapwing 人格 prompt")
+            else:
+                self._system_prompt = load_prompt("lapwing_soul")
+                logger.info("已从 prompts/lapwing_soul.md 加载 Lapwing 人格 prompt（fallback）")
         return self._system_prompt
 
     def reload_persona(self) -> None:
-        """重新加载人格 prompt（修改 prompts/lapwing_soul.md 后调用）。"""
+        """重新加载人格 prompt。"""
         from src.core.prompt_loader import reload_prompt
-        self._system_prompt = reload_prompt("lapwing_soul")
+        if SOUL_PATH.exists():
+            self._system_prompt = SOUL_PATH.read_text(encoding="utf-8")
+        else:
+            self._system_prompt = reload_prompt("lapwing_soul")
         reload_prompt("lapwing_voice")
         reload_prompt("lapwing_capabilities")
         logger.info("已重新加载 Lapwing 人格 prompt")
@@ -255,24 +275,39 @@ class LapwingBrain:
         )
 
     async def _build_system_prompt(self, chat_id: str, user_message: str = "") -> str:
-        """组合基础人格 prompt、用户画像信息和相关知识笔记。"""
-        base = self.system_prompt
-        facts = await self.memory.get_user_facts(chat_id)
-        sections = [base]
-        summary_dates: set[str] = set()
+        """按优先级分层组装 system prompt。"""
+        from src.memory.file_memory import read_memory_file, read_recent_summaries
 
+        sections: list[str] = []
+
+        # Layer 0: 核心人格
+        sections.append(self.system_prompt)
+
+        # Layer 1: 行为规则（从经验中学到的）
+        if RULES_PATH.exists():
+            rules = await read_memory_file(RULES_PATH, max_chars=800)
+            if rules and "暂无规则" not in rules:
+                sections.append(f"## 你从经验中学到的规则\n\n{rules}")
+
+        # Layer 2: 对 Kevin 的了解（文件化记忆）
+        if KEVIN_NOTES_PATH.exists():
+            kevin_notes = await read_memory_file(KEVIN_NOTES_PATH, max_chars=1000)
+            if kevin_notes:
+                sections.append(f"## 你对他的了解\n\n{kevin_notes}")
+
+        # Layer 2.5: SQLite facts 补充（保留兼容）
+        facts = await self.memory.get_user_facts(chat_id)
+        summary_dates: set[str] = set()
         if facts:
             regular_facts, memory_summaries = self._split_facts(facts)
             summary_dates = self._summary_dates(memory_summaries)
 
             if regular_facts:
                 facts_text = "\n".join(
-                    f"- {fact['fact_key']}: {fact['fact_value']}" for fact in regular_facts
+                    f"- {fact['fact_key']}: {fact['fact_value']}" for fact in regular_facts[:10]
                 )
                 sections.append(
-                    "## 你对这个用户的了解\n\n"
-                    "以下是你从之前对话中了解到的关于这个用户的信息。"
-                    "在合适的时候可以自然地引用，但不要刻意提起。\n\n"
+                    "## 补充信息（自动提取）\n\n"
                     f"{facts_text}"
                 )
 
@@ -285,6 +320,12 @@ class LapwingBrain:
                     f"{summaries_text}"
                 )
 
+        # Layer 3: 文件化对话摘要
+        recent_summaries = await read_recent_summaries(CONVERSATION_SUMMARIES_DIR)
+        if recent_summaries:
+            sections.append(f"## 最近的对话\n\n{recent_summaries}")
+
+        # Layer 4: 语义检索（保留原逻辑）
         if user_message and self.vector_store is not None:
             try:
                 hits = await self.vector_store.search(chat_id, user_message, n_results=2)
@@ -300,7 +341,7 @@ class LapwingBrain:
                         f"{related_text}"
                     )
 
-        # 注入相关知识笔记
+        # Layer 5: 知识笔记（保留原逻辑）
         if user_message and self.knowledge_manager is not None:
             notes = self.knowledge_manager.get_relevant_notes(user_message)
             if notes:
@@ -315,6 +356,7 @@ class LapwingBrain:
                     f"{notes_text}"
                 )
 
+        # Layer 6: 技能目录（保留原逻辑）
         if self.skill_manager is not None and self.skill_manager.has_model_visible_skills():
             skills_catalog = self.skill_manager.render_catalog_for_prompt()
             if skills_catalog:
@@ -324,7 +366,7 @@ class LapwingBrain:
                     f"{skills_catalog}"
                 )
 
-        # 能力描述与做事规则（包含查询行为指导）
+        # Layer 7: 能力描述与工具状态
         sections.append(load_prompt("lapwing_capabilities"))
 
         if user_message:
@@ -550,14 +592,13 @@ class LapwingBrain:
             await self.memory.append(chat_id, "assistant", immediate_reply)
             return immediate_reply
 
-        # 实时纠正检测：异步触发自省，不阻塞主回复流程
-        if self.self_reflection is not None:
-            from src.core.self_reflection import is_correction
-            if is_correction(user_message):
-                import asyncio
+        # 实时纠正检测：异步触发规则提取，不阻塞主回复流程
+        if self.tactical_rules is not None:
+            from src.core.tactical_rules import _might_be_correction
+            if _might_be_correction(user_message):
                 history = await self.memory.get(chat_id)
                 asyncio.create_task(
-                    self.self_reflection.reflect_on_correction(
+                    self.tactical_rules.process_correction(
                         chat_id, user_message, list(history)
                     )
                 )
@@ -573,6 +614,10 @@ class LapwingBrain:
             except Exception as e:
                 logger.warning(f"[{chat_id}] Agent dispatch failed, falling back: {e}")
 
+        history = await self.memory.get(chat_id)
+        # 检查是否需要压缩对话
+        await self.compactor.try_compact(chat_id)
+        # 压缩后重新获取 history（可能已变化）
         history = await self.memory.get(chat_id)
         recent_messages = self._recent_messages(
             history,
@@ -643,13 +688,12 @@ class LapwingBrain:
             return immediate_reply
 
         # 实时纠正检测
-        if self.self_reflection is not None:
-            from src.core.self_reflection import is_correction
-            if is_correction(user_message):
-                import asyncio
+        if self.tactical_rules is not None:
+            from src.core.tactical_rules import _might_be_correction
+            if _might_be_correction(user_message):
                 history = await self.memory.get(chat_id)
                 asyncio.create_task(
-                    self.self_reflection.reflect_on_correction(
+                    self.tactical_rules.process_correction(
                         chat_id, user_message, list(history)
                     )
                 )
@@ -666,6 +710,10 @@ class LapwingBrain:
             except Exception as e:
                 logger.warning(f"[{chat_id}] Agent dispatch failed, falling back: {e}")
 
+        history = await self.memory.get(chat_id)
+        # 检查是否需要压缩对话
+        await self.compactor.try_compact(chat_id)
+        # 压缩后重新获取 history（可能已变化）
         history = await self.memory.get(chat_id)
         recent_messages = self._recent_messages(
             history,

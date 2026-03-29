@@ -34,8 +34,8 @@ def mock_brain():
         {"fact_key": "memory_summary_2026-03-23", "fact_value": "聊了工作。", "updated_at": "2026-03-23"},
     ])
     brain.memory.delete_user_fact = AsyncMock(return_value=True)
-    brain.prompt_evolver = MagicMock()
-    brain.prompt_evolver.evolve = AsyncMock(return_value={"success": True, "changes_summary": "优化了语气"})
+    brain.evolution_engine = MagicMock()
+    brain.evolution_engine.evolve = AsyncMock(return_value={"success": True, "summary": "微调了语气"})
     brain.reload_persona = MagicMock()
     return brain
 

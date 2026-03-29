@@ -71,7 +71,7 @@ async def test_chat_tools_from_registry():
     tools = runtime.chat_tools(shell_enabled=True)
     names = {item["function"]["name"] for item in tools}
 
-    assert names == {"execute_shell", "read_file", "write_file", "web_search", "web_fetch"}
+    assert names == {"execute_shell", "read_file", "write_file", "web_search", "web_fetch", "memory_note"}
 
 
 @pytest.mark.asyncio
@@ -81,7 +81,7 @@ async def test_chat_tools_excludes_web_when_disabled():
     tools = runtime.chat_tools(shell_enabled=True, web_enabled=False)
     names = {item["function"]["name"] for item in tools}
 
-    assert names == {"execute_shell", "read_file", "write_file"}
+    assert names == {"execute_shell", "read_file", "write_file", "memory_note"}
 
 
 @pytest.mark.asyncio
