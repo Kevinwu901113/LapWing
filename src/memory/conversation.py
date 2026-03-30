@@ -123,6 +123,15 @@ class ConversationMemory:
         """)
         await self._db.commit()
 
+        # Migration: add channel column if missing
+        try:
+            await self._db.execute(
+                "ALTER TABLE conversations ADD COLUMN channel TEXT DEFAULT 'telegram'"
+            )
+            await self._db.commit()
+        except Exception:
+            pass  # Column already exists
+
     async def _load_recent_history(self) -> None:
         """从数据库加载每个对话的最近历史到内存缓存。"""
         max_messages = MAX_HISTORY_TURNS * 2
@@ -155,7 +164,7 @@ class ConversationMemory:
             self._store[channel_id] = []
         return self._store[channel_id]
 
-    async def append(self, channel_id: str, role: str, content: str) -> None:
+    async def append(self, channel_id: str, role: str, content: str, *, channel: str = "telegram") -> None:
         """追加一条消息到对话历史（先写缓存，再持久化）。"""
         if channel_id not in self._store:
             self._store[channel_id] = []
@@ -164,8 +173,8 @@ class ConversationMemory:
         try:
             timestamp = datetime.now(timezone.utc).isoformat()
             await self._db.execute(
-                "INSERT INTO conversations (chat_id, role, content, timestamp) VALUES (?, ?, ?, ?)",
-                (channel_id, role, content, timestamp),
+                "INSERT INTO conversations (chat_id, role, content, timestamp, channel) VALUES (?, ?, ?, ?, ?)",
+                (channel_id, role, content, timestamp, channel),
             )
             await self._db.commit()
         except Exception as e:
