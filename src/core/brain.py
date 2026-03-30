@@ -276,6 +276,16 @@ class LapwingBrain:
         rules = await read_memory_file(RULES_PATH, max_chars=800)
         if rules and "暂无规则" not in rules:
             sections.append(f"## 你从经验中学到的规则\n\n{rules}")
+        
+        # Layer 0.5: 当前时间
+        from datetime import datetime, timezone, timedelta
+        now_utc = datetime.now(timezone.utc)
+        taipei_tz = timezone(timedelta(hours=8))
+        now_taipei = now_utc.astimezone(taipei_tz)
+        sections.append(
+            f"## 现在\n\n"
+            f"现在是 {now_taipei.strftime('%Y年%m月%d日 %H:%M')}。"
+        )
 
         # Layer 2: 对 Kevin 的了解（文件化记忆）
         kevin_notes = await read_memory_file(KEVIN_NOTES_PATH, max_chars=1000)

@@ -484,39 +484,17 @@ class TaskRuntime:
                     except Exception:
                         pass
 
-                # 长时间等待兜底：超过 10 秒且还没发过中间文字时，发一条简短的人格消息
-                _thinking_sent = False
-
-                async def _send_thinking_message_after_delay() -> None:
-                    nonlocal _thinking_sent
-                    import asyncio as _asyncio
-                    import random as _random
-                    _THINKING_MESSAGES = ["等一下，我看看。", "我找找。", "嗯……"]
-                    await _asyncio.sleep(10)
-                    if on_interim_text is not None and not interim_parts and not _thinking_sent:
-                        _thinking_sent = True
-                        try:
-                            await on_interim_text(_random.choice(_THINKING_MESSAGES))
-                        except Exception:
-                            pass
-
-                import asyncio as _asyncio_module
-                _thinking_task = _asyncio_module.create_task(_send_thinking_message_after_delay())
-
                 tool_started_at = time.perf_counter()
-                try:
-                    tool_result_text, payload, execution_success = await self._execute_tool_call(
-                        tool_call=tool_call,
-                        state=state,
-                        deps=deps,
-                        task_id=task_id,
-                        chat_id=chat_id,
-                        event_bus=event_bus,
-                        profile=profile_obj,
-                        services=services,
-                    )
-                finally:
-                    _thinking_task.cancel()
+                tool_result_text, payload, execution_success = await self._execute_tool_call(
+                    tool_call=tool_call,
+                    state=state,
+                    deps=deps,
+                    task_id=task_id,
+                    chat_id=chat_id,
+                    event_bus=event_bus,
+                    profile=profile_obj,
+                    services=services,
+                )
                 duration_ms = max(int((time.perf_counter() - tool_started_at) * 1000), 0)
                 stdout_bytes = self._text_utf8_bytes(payload.get("stdout"))
                 stderr_bytes = self._text_utf8_bytes(payload.get("stderr"))

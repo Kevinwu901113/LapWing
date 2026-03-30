@@ -350,28 +350,14 @@ class TelegramApp:
         except Exception:
             return chat_id
 
-    def _format_progress_text(self, raw_text: str) -> str:
-        text = str(raw_text or "").strip()
+    def _format_progress_text(self, text: str) -> str:
+        """格式化进度文本。stage:* 消息全部静默，由 LLM 自己的中间文字充当进度提示。"""
         if not text:
             return ""
         if _cfg.TELEGRAM_PROGRESS_STYLE != "report":
             return text
-        if not text.startswith("stage:"):
-            return text
-
-        parts = text.split(":")
-        stage = parts[1] if len(parts) > 1 else ""
-        if stage == "received":
-            return "已接收，开始处理你的请求。"
-        if stage == "planning":
-            return "正在规划执行步骤..."
-        if stage == "finalizing":
-            return "正在整理最终结果..."
-        if stage == "executing":
-            tool_name = parts[2] if len(parts) > 2 else "tool"
-            step = parts[3] if len(parts) > 3 else "?"
-            total = parts[4] if len(parts) > 4 else "?"
-            return f"执行中：{tool_name}（{step}/{total}）"
+        if text.startswith("stage:"):
+            return ""
         return text
 
     def _should_skip_status(self, chat_id: str, text: str, *, force: bool) -> bool:
