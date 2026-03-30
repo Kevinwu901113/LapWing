@@ -33,7 +33,7 @@ QQ_FACE_MAP: dict[str, str] = {
     "[鄙视]": "49", "[委屈]": "55", "[亲亲]": "57",
     "[可怜]": "58", "[笑哭]": "182", "[doge]": "179",
     "[OK]": "324", "[爱心]": "66", "[心碎]": "67",
-    "[拥抱]": "49", "[强]": "76", "[弱]": "77",
+    "[强]": "76", "[弱]": "77",
     "[握手]": "78", "[胜利]": "79",
 }
 
@@ -174,8 +174,9 @@ class QQAdapter(BaseAdapter):
         if self.kevin_id and user_id != self.kevin_id:
             return
 
-        # 标记已读（私聊）
-        asyncio.create_task(self._mark_as_read(user_id))
+        # 标记已读（仅私聊）
+        if event.get("message_type") == "private":
+            asyncio.create_task(self._mark_as_read(user_id))
 
         text = self._extract_text(event)
         if not text:
@@ -247,6 +248,7 @@ class QQAdapter(BaseAdapter):
         try:
             numeric_id = int(user_id)
         except ValueError:
+            logger.warning("QQ user_id 非数字: %s", user_id)
             return {"status": "failed", "retcode": -3}
         return await self._call_api("send_private_msg", {
             "user_id": numeric_id,
