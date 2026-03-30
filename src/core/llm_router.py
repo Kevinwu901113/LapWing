@@ -15,6 +15,7 @@ from config.settings import (
     LLM_CHAT_MODEL,
     LLM_TOOL_BASE_URL,
     LLM_TOOL_MODEL,
+    MINIMAX_MAX_COMPLETION_TOKENS,
     NIM_BASE_URL,
     NIM_MODEL,
 )
@@ -23,7 +24,7 @@ logger = logging.getLogger("lapwing.llm_router")
 
 _RECOVERABLE_FAILURES = {"auth", "rate_limit", "timeout", "billing"}
 
-_MINIMAX_MAX_COMPLETION_TOKENS = 2048
+_MINIMAX_MAX_COMPLETION_TOKENS = MINIMAX_MAX_COMPLETION_TOKENS
 _MINIMAX_DEFAULT_TEMPERATURE = 1.0
 _MINIMAX_DEFAULT_TOP_P = 0.95
 _MODEL_PURPOSES: tuple[str, ...] = ("chat", "tool", "heartbeat")

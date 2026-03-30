@@ -21,7 +21,7 @@ from src.tools.types import (
 logger = logging.getLogger("lapwing.tools.registry")
 
 _WEB_SEARCH_MAX_RESULTS_CAP = 10
-_WEB_FETCH_MAX_CHARS_CAP = 4000
+_WEB_FETCH_MAX_CHARS_CAP = 8000
 
 
 def _blocked_payload(*, reason: str, cwd: str, command: str = "") -> dict[str, Any]:
@@ -186,6 +186,11 @@ async def _web_search_tool(
             for item in results
         ],
     }
+    payload["_system_hint"] = (
+        "以上是搜索摘要。如果这些摘要不包含回答用户问题所需的具体数据"
+        "（如具体排名、比分、日期、数字），请用 web_fetch 抓取相关 URL 获取完整内容后再回答。"
+        "不要用你的训练知识填补搜索结果中缺失的具体信息。"
+    )
     return ToolExecutionResult(success=True, payload=payload, reason="")
 
 

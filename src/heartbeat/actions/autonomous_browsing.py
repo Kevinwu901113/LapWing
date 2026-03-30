@@ -131,6 +131,12 @@ class AutonomousBrowsingAction(HeartbeatAction):
         return (now - last) >= timedelta(hours=interval_hours)
 
     async def _select_query(self, ctx: SenseContext, brain) -> str | None:
+        # 新增：从最近对话中提取话题（30% 概率使用）
+        if random.random() < 0.3:
+            recent_topic = await self._extract_recent_topic(ctx.chat_id, brain)
+            if recent_topic:
+                return recent_topic
+
         top_interests = await brain.memory.get_top_interests(ctx.chat_id, limit=5)
         if top_interests and random.random() < _INTEREST_PROBABILITY:
             topic = str(top_interests[0].get("topic", "")).strip()
@@ -146,6 +152,39 @@ class AutonomousBrowsingAction(HeartbeatAction):
             if fallback:
                 return fallback
         return None
+
+    async def _extract_recent_topic(self, chat_id: str, brain) -> str | None:
+        """从最近对话历史中提取一个可用于浏览的话题关键词。"""
+        try:
+            history = await brain.memory.get(chat_id)
+            if not history:
+                return None
+            # 取最近 10 条用户消息
+            user_msgs = [m["content"] for m in history if m.get("role") == "user"][-10:]
+            if not user_msgs:
+                return None
+
+            combined = "\n".join(user_msgs[-5:])  # 只取最近 5 条
+            prompt = (
+                "从以下对话中提取一个用户最近关注的具体话题，用于搜索最新动态。\n"
+                "只输出一个简短的搜索关键词（2-6个词），不要解释。\n"
+                "如果没有明确话题，只输出 null。\n\n"
+                f"{combined}"
+            )
+            result = await brain.router.complete(
+                [{"role": "user", "content": prompt}],
+                purpose="heartbeat",
+                max_tokens=50,
+                session_key=f"chat:{chat_id}",
+                origin="heartbeat.browsing.recent_topic",
+            )
+            result = result.strip().strip('"').strip()
+            if not result or result.lower() == "null" or len(result) > 30:
+                return None
+            return result
+        except Exception as exc:
+            logger.warning(f"[{chat_id}] 提取最近话题失败: {exc}")
+            return None
 
     def _query_from_source(self) -> str | None:
         if not BROWSE_SOURCES:

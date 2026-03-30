@@ -11,7 +11,7 @@ from config.settings import SEARCH_PROXY_URL
 
 logger = logging.getLogger("lapwing.tools.web_fetcher")
 
-_MAX_TEXT = 4000
+_MAX_TEXT = 8000
 _TIMEOUT = 10
 _USER_AGENT = "Lapwing/1.0 (personal assistant)"
 

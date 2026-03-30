@@ -8,6 +8,9 @@ from pathlib import Path
 from config.settings import (
     DATA_DIR,
     DB_PATH,
+    EXPERIENCE_SKILLS_DIR,
+    EXPERIENCE_SKILLS_ENABLED,
+    SKILL_TRACES_DIR,
     SKILLS_BUNDLED_DIR,
     SKILLS_ENABLED,
     SKILLS_EXTRA_DIRS,
@@ -177,6 +180,19 @@ class AppContainer:
         self.brain.evolution_engine = EvolutionEngine(
             self.brain.router, self.brain.constitution_guard
         )
+
+        # 经验技能系统（Lapwing 自身积累的工作经验）
+        if EXPERIENCE_SKILLS_ENABLED:
+            from src.core.experience_skills import ExperienceSkillManager
+            esm = ExperienceSkillManager(
+                skills_dir=EXPERIENCE_SKILLS_DIR,
+                traces_dir=SKILL_TRACES_DIR,
+                router=self.brain.router,
+            )
+            esm.ensure_directories()
+            esm.load_index()
+            self.brain.experience_skill_manager = esm
+            logger.info("经验技能系统已就绪")
 
     def _build_heartbeat(self, bot) -> HeartbeatEngine:
         heartbeat = HeartbeatEngine(brain=self.brain, bot=bot)

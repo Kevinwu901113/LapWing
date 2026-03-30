@@ -3,6 +3,7 @@
 import asyncio
 import dataclasses
 import logging
+import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -37,6 +38,8 @@ from config.settings import (
 
 if TYPE_CHECKING:
     from src.core.skills import SkillDefinition, SkillManager
+    from src.core.experience_skills import ExperienceSkill, ExperienceSkillManager
+    from src.core.trace_recorder import SkillUsageInfo, TraceRecorder
     from src.memory.interest_tracker import InterestTracker
     from src.core.self_reflection import SelfReflection
     from src.core.knowledge_manager import KnowledgeManager
@@ -57,6 +60,7 @@ class _ThinkCtx:
     effective_user_message: str
     approved_directory: str | None
     early_reply: str | None = None
+    matched_experience_skills: list | None = None  # list[ExperienceSkill]
 
 
 class LapwingBrain:
@@ -76,6 +80,7 @@ class LapwingBrain:
         self.knowledge_manager: KnowledgeManager | None = None
         self.vector_store: VectorStore | None = None
         self.skill_manager: SkillManager | None = None
+        self.experience_skill_manager: ExperienceSkillManager | None = None
         self.event_bus = None
         self._system_prompt: str | None = None
         self.dispatcher = None  # Set externally by main.py (AgentDispatcher | None)
@@ -277,14 +282,21 @@ class LapwingBrain:
         if rules and "暂无规则" not in rules:
             sections.append(f"## 你从经验中学到的规则\n\n{rules}")
         
-        # Layer 0.5: 当前时间
+        # Layer 0.5: 当前时间（增强版）
         from datetime import datetime, timezone, timedelta
         now_utc = datetime.now(timezone.utc)
         taipei_tz = timezone(timedelta(hours=8))
         now_taipei = now_utc.astimezone(taipei_tz)
+
+        weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
+        weekday = weekday_names[now_taipei.weekday()]
+        yesterday = (now_taipei - timedelta(days=1)).strftime('%m月%d日')
+
         sections.append(
             f"## 现在\n\n"
-            f"现在是 {now_taipei.strftime('%Y年%m月%d日 %H:%M')}。"
+            f"现在是 {now_taipei.strftime('%Y年%m月%d日 %H:%M')}，{weekday}。"
+            f"昨天是{yesterday}。\n"
+            f"当你提到时间时请基于这个时间判断，不要凭感觉推测。"
         )
 
         # Layer 2: 对 Kevin 的了解（文件化记忆）
@@ -613,6 +625,31 @@ class LapwingBrain:
             original_user_message=user_message,
         )
         system_content = await self._build_system_prompt(chat_id, effective_user_message)
+
+        # 经验技能检索与注入
+        matched_experience_skills = None
+        if self.experience_skill_manager is not None and effective_user_message:
+            try:
+                matched_experience_skills = await self.experience_skill_manager.retrieve(
+                    effective_user_message
+                )
+                if matched_experience_skills:
+                    from config.settings import EXPERIENCE_SKILLS_MAX_INJECT_TOKENS
+                    injection = self.experience_skill_manager.format_injection(
+                        matched_experience_skills,
+                        max_tokens=EXPERIENCE_SKILLS_MAX_INJECT_TOKENS,
+                    )
+                    if injection:
+                        system_content = f"{system_content}\n\n## 参考经验\n\n{injection}"
+                        logger.debug(
+                            "[%s] 注入 %d 个经验技能: %s",
+                            chat_id,
+                            len(matched_experience_skills),
+                            [s.meta.id for s in matched_experience_skills],
+                        )
+            except Exception as exc:
+                logger.warning("[%s] 经验技能检索失败: %s", chat_id, exc)
+
         messages = [
             {"role": "system", "content": system_content},
             *recent_messages,
@@ -623,6 +660,7 @@ class LapwingBrain:
             messages=messages,
             effective_user_message=effective_user_message,
             approved_directory=approved_directory,
+            matched_experience_skills=matched_experience_skills,
         )
 
     async def think(self, chat_id: str, user_message: str, status_callback=None) -> str:
@@ -639,6 +677,7 @@ class LapwingBrain:
         if ctx.early_reply is not None:
             return ctx.early_reply
 
+        start_time = time.monotonic()
         try:
             reply = await self._complete_chat(
                 chat_id,
@@ -651,6 +690,8 @@ class LapwingBrain:
             reply = strip_internal_thinking_tags(reply)
             await self.memory.append(chat_id, "assistant", reply)
             logger.debug(f"[{chat_id}] 回复生成成功，长度: {len(reply)}")
+            duration = time.monotonic() - start_time
+            self._schedule_trace_recording(user_message, reply, ctx.matched_experience_skills, duration)
             return reply
 
         except Exception as e:
@@ -698,6 +739,7 @@ class LapwingBrain:
                 except Exception:
                     pass
 
+        start_time = time.monotonic()
         try:
             full_reply = await self._complete_chat(
                 chat_id,
@@ -721,6 +763,8 @@ class LapwingBrain:
             memory_text = "\n\n".join(parts_sent) if parts_sent else full_reply
             await self.memory.append(chat_id, "assistant", memory_text)
             logger.debug(f"[{chat_id}] 流式回复完成，片段数: {len(parts_sent)}")
+            duration = time.monotonic() - start_time
+            self._schedule_trace_recording(user_message, memory_text, ctx.matched_experience_skills, duration)
             return memory_text
 
         except Exception as e:
@@ -729,3 +773,55 @@ class LapwingBrain:
             error_msg = "抱歉，我刚才走神了一下。你能再说一次吗？"
             await send_fn(error_msg)
             return error_msg
+
+    def _schedule_trace_recording(
+        self,
+        user_message: str,
+        reply: str,
+        matched_skills: list | None,
+        duration_seconds: float,
+    ) -> None:
+        """异步（非阻塞）记录执行轨迹和更新使用统计。"""
+        if self.experience_skill_manager is None:
+            return
+
+        esm = self.experience_skill_manager
+
+        async def _record() -> None:
+            try:
+                from src.core.trace_recorder import SkillUsageInfo
+
+                skill_usage: SkillUsageInfo | None = None
+                skill_id: str | None = None
+                match_level: str | None = None
+
+                if matched_skills:
+                    # 取第一个匹配技能作为主要技能记录
+                    first = matched_skills[0]
+                    skill_id = first.meta.id
+                    match_level = "quick"  # Phase 1 简化，Phase 2 从 MatchResult 获取
+                    skill_usage = SkillUsageInfo(
+                        id=skill_id,
+                        version=first.meta.version,
+                        match_level=match_level,
+                    )
+                    # 更新技能使用统计
+                    esm.update_skill_stats(skill_id, used=True)
+
+                trace = esm.trace_recorder.build_trace(
+                    user_request=user_message,
+                    output_summary=reply,
+                    duration_seconds=duration_seconds,
+                    skill_used=skill_usage,
+                )
+                esm.trace_recorder.record_trace(trace)
+
+                esm.registry_manager.record_execution(
+                    skill_id=skill_id,
+                    match_level=match_level,
+                    request_summary=user_message[:100],
+                )
+            except Exception as exc:
+                logger.warning("轨迹记录失败: %s", exc)
+
+        asyncio.create_task(_record())

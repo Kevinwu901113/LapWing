@@ -126,6 +126,8 @@ LLM_MODEL_ALLOWLIST: tuple[tuple[str | None, str], ...] = (
     or _parse_model_allowlist(_default_model_allowlist_raw)
 )
 
+MINIMAX_MAX_COMPLETION_TOKENS: int = int(os.getenv("MINIMAX_MAX_COMPLETION_TOKENS", "4096"))
+
 # OpenAI / Codex OAuth（ChatGPT 登录）
 OPENAI_CODEX_AUTH_AUTHORIZE_URL: str = os.getenv(
     "OPENAI_CODEX_AUTH_AUTHORIZE_URL",
@@ -236,6 +238,12 @@ SKILLS_DISPATCH_TOOL_WHITELIST: set[str] = {
     for item in os.getenv("SKILLS_DISPATCH_TOOL_WHITELIST", "execute_shell").split(",")
     if item.strip()
 }
+
+# Experience Skills（Lapwing 自身经验积累系统）
+EXPERIENCE_SKILLS_DIR: Path = ROOT_DIR / "skills"
+SKILL_TRACES_DIR: Path = ROOT_DIR / "skill_traces"
+EXPERIENCE_SKILLS_ENABLED: bool = os.getenv("EXPERIENCE_SKILLS_ENABLED", "true").lower() == "true"
+EXPERIENCE_SKILLS_MAX_INJECT_TOKENS: int = int(os.getenv("EXPERIENCE_SKILLS_MAX_INJECT_TOKENS", "4000"))
 
 # Latency / 体感 SLO（监控+告警）
 TOOL_LOOP_SLO_SHELL_P95_MS: int = int(os.getenv("TOOL_LOOP_SLO_SHELL_P95_MS", "2000"))
