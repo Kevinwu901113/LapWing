@@ -40,24 +40,22 @@ def mock_brain():
 
 
 @pytest.fixture
-def mock_bot():
-    bot = MagicMock()
-    bot.send_message = AsyncMock()
-    return bot
+def mock_send_fn():
+    return AsyncMock()
 
 
 @pytest.mark.asyncio
 class TestAutonomousBrowsingAction:
-    async def test_skips_when_browse_disabled(self, mock_brain, mock_bot):
+    async def test_skips_when_browse_disabled(self, mock_brain, mock_send_fn):
         action = AutonomousBrowsingAction()
         with patch("src.heartbeat.actions.autonomous_browsing.BROWSE_ENABLED", False), \
              patch("src.heartbeat.actions.autonomous_browsing.web_search.search", AsyncMock()) as mock_search:
-            await action.execute(make_ctx(), mock_brain, mock_bot)
+            await action.execute(make_ctx(), mock_brain, mock_send_fn)
 
         mock_search.assert_not_called()
         mock_brain.memory.add_discovery.assert_not_awaited()
 
-    async def test_respects_cooldown_per_chat(self, mock_brain, mock_bot):
+    async def test_respects_cooldown_per_chat(self, mock_brain, mock_send_fn):
         action = AutonomousBrowsingAction()
         results = [{"title": "t", "url": "https://example.com/1", "snippet": "s"}]
         fetch_result = FetchResult(
@@ -76,32 +74,32 @@ class TestAutonomousBrowsingAction:
              patch("src.heartbeat.actions.autonomous_browsing.web_fetcher.fetch", AsyncMock(return_value=fetch_result)):
             first = make_ctx(now=datetime(2026, 3, 25, 12, 0, tzinfo=timezone.utc))
             second = make_ctx(now=first.now + timedelta(minutes=30))
-            await action.execute(first, mock_brain, mock_bot)
-            await action.execute(second, mock_brain, mock_bot)
+            await action.execute(first, mock_brain, mock_send_fn)
+            await action.execute(second, mock_brain, mock_send_fn)
 
         mock_search.assert_awaited_once_with("Python", max_results=5)
 
-    async def test_uses_interest_query_when_probability_hit(self, mock_brain, mock_bot):
+    async def test_uses_interest_query_when_probability_hit(self, mock_brain, mock_send_fn):
         action = AutonomousBrowsingAction()
         with patch("src.heartbeat.actions.autonomous_browsing.BROWSE_ENABLED", True), \
              patch("src.heartbeat.actions.autonomous_browsing.random.random", return_value=0.2), \
              patch("src.heartbeat.actions.autonomous_browsing.web_search.search", AsyncMock(return_value=[])) as mock_search:
-            await action.execute(make_ctx(), mock_brain, mock_bot)
+            await action.execute(make_ctx(), mock_brain, mock_send_fn)
 
         mock_search.assert_awaited_once_with("Python", max_results=5)
 
-    async def test_uses_source_query_when_no_interests(self, mock_brain, mock_bot):
+    async def test_uses_source_query_when_no_interests(self, mock_brain, mock_send_fn):
         action = AutonomousBrowsingAction()
         mock_brain.memory.get_top_interests = AsyncMock(return_value=[])
 
         with patch("src.heartbeat.actions.autonomous_browsing.BROWSE_ENABLED", True), \
              patch("src.heartbeat.actions.autonomous_browsing.BROWSE_SOURCES", ["reddit/technology"]), \
              patch("src.heartbeat.actions.autonomous_browsing.web_search.search", AsyncMock(return_value=[])) as mock_search:
-            await action.execute(make_ctx(), mock_brain, mock_bot)
+            await action.execute(make_ctx(), mock_brain, mock_send_fn)
 
         mock_search.assert_awaited_once_with("Reddit r/technology hot posts", max_results=5)
 
-    async def test_fetch_retries_until_success(self, mock_brain, mock_bot):
+    async def test_fetch_retries_until_success(self, mock_brain, mock_send_fn):
         action = AutonomousBrowsingAction()
         results = [
             {"title": "t1", "url": "https://example.com/1", "snippet": "s1"},
@@ -117,13 +115,13 @@ class TestAutonomousBrowsingAction:
              patch("src.heartbeat.actions.autonomous_browsing.random.random", return_value=0.1), \
              patch("src.heartbeat.actions.autonomous_browsing.web_search.search", AsyncMock(return_value=results)), \
              patch("src.heartbeat.actions.autonomous_browsing.web_fetcher.fetch", AsyncMock(side_effect=[fail_1, fail_2, ok_3])) as mock_fetch:
-            await action.execute(make_ctx(), mock_brain, mock_bot)
+            await action.execute(make_ctx(), mock_brain, mock_send_fn)
 
         assert mock_fetch.await_count == 3
         call_kwargs = mock_brain.memory.add_discovery.call_args.kwargs
         assert call_kwargs["url"] == "https://example.com/3"
 
-    async def test_does_not_write_when_all_fetch_failed(self, mock_brain, mock_bot):
+    async def test_does_not_write_when_all_fetch_failed(self, mock_brain, mock_send_fn):
         action = AutonomousBrowsingAction()
         results = [
             {"title": "t1", "url": "https://example.com/1", "snippet": "s1"},
@@ -136,11 +134,11 @@ class TestAutonomousBrowsingAction:
              patch("src.heartbeat.actions.autonomous_browsing.random.random", return_value=0.1), \
              patch("src.heartbeat.actions.autonomous_browsing.web_search.search", AsyncMock(return_value=results)), \
              patch("src.heartbeat.actions.autonomous_browsing.web_fetcher.fetch", AsyncMock(side_effect=[fail, fail, fail])):
-            await action.execute(make_ctx(), mock_brain, mock_bot)
+            await action.execute(make_ctx(), mock_brain, mock_send_fn)
 
         mock_brain.memory.add_discovery.assert_not_awaited()
 
-    async def test_success_path_writes_all_side_effects(self, mock_brain, mock_bot):
+    async def test_success_path_writes_all_side_effects(self, mock_brain, mock_send_fn):
         action = AutonomousBrowsingAction()
         results = [{"title": "Python 新闻", "url": "https://example.com/python", "snippet": "s"}]
         fetch_result = FetchResult(
@@ -156,7 +154,7 @@ class TestAutonomousBrowsingAction:
              patch("src.heartbeat.actions.autonomous_browsing.random.random", return_value=0.1), \
              patch("src.heartbeat.actions.autonomous_browsing.web_search.search", AsyncMock(return_value=results)), \
              patch("src.heartbeat.actions.autonomous_browsing.web_fetcher.fetch", AsyncMock(return_value=fetch_result)):
-            await action.execute(make_ctx(), mock_brain, mock_bot)
+            await action.execute(make_ctx(), mock_brain, mock_send_fn)
 
         discovery_kwargs = mock_brain.memory.add_discovery.call_args.kwargs
         assert discovery_kwargs["source"] == "autonomous_browsing"
@@ -179,7 +177,7 @@ class TestAutonomousBrowsingAction:
             },
         )
 
-    async def test_never_sends_message_directly(self, mock_brain, mock_bot):
+    async def test_never_sends_message_directly(self, mock_brain, mock_send_fn):
         action = AutonomousBrowsingAction()
         results = [{"title": "Python 新闻", "url": "https://example.com/python", "snippet": "s"}]
         fetch_result = FetchResult(
@@ -195,6 +193,6 @@ class TestAutonomousBrowsingAction:
              patch("src.heartbeat.actions.autonomous_browsing.random.random", return_value=0.1), \
              patch("src.heartbeat.actions.autonomous_browsing.web_search.search", AsyncMock(return_value=results)), \
              patch("src.heartbeat.actions.autonomous_browsing.web_fetcher.fetch", AsyncMock(return_value=fetch_result)):
-            await action.execute(make_ctx(), mock_brain, mock_bot)
+            await action.execute(make_ctx(), mock_brain, mock_send_fn)
 
-        mock_bot.send_message.assert_not_called()
+        mock_send_fn.assert_not_called()

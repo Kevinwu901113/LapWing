@@ -41,7 +41,7 @@ class AutonomousBrowsingAction(HeartbeatAction):
             self._prompt_template = load_prompt("heartbeat_autonomous_browsing")
         return self._prompt_template
 
-    async def execute(self, ctx: SenseContext, brain, bot) -> None:
+    async def execute(self, ctx: SenseContext, brain, send_fn) -> None:
         if not BROWSE_ENABLED:
             return
         if not self._is_due(ctx.chat_id, ctx.now):
@@ -116,8 +116,8 @@ class AutonomousBrowsingAction(HeartbeatAction):
                 )
 
             # 显式不发消息：主动分享统一由 proactive_message 链路处理。
-            if bot is not None:
-                _ = bot
+            if send_fn is not None:
+                _ = send_fn
 
             logger.info(f"[{ctx.chat_id}] 自主浏览完成: {query!r} -> {title!r}")
         except Exception as exc:

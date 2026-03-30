@@ -2,7 +2,6 @@
 
 import logging
 
-from src.app.telegram_delivery import send_telegram_text_to_chat
 from src.core.heartbeat import HeartbeatAction, SenseContext
 from src.core.prompt_loader import load_prompt
 from src.core.reasoning_tags import strip_internal_thinking_tags
@@ -27,7 +26,7 @@ class InterestProactiveAction(HeartbeatAction):
             self._prompt_template = load_prompt("heartbeat_interest_proactive")
         return self._prompt_template
 
-    async def execute(self, ctx: SenseContext, brain, bot) -> None:
+    async def execute(self, ctx: SenseContext, brain, send_fn) -> None:
         if ctx.silence_hours < 2.0:
             return
         if ctx.now.hour >= 23 or ctx.now.hour < 7:
@@ -66,7 +65,7 @@ class InterestProactiveAction(HeartbeatAction):
             if not message:
                 return
 
-            await send_telegram_text_to_chat(bot=bot, chat_id=ctx.chat_id, text=message)
+            await send_fn(message)
             event_bus = brain.__dict__.get("event_bus") if hasattr(brain, "__dict__") else None
             if event_bus is not None:
                 await event_bus.publish(

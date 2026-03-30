@@ -54,7 +54,14 @@ class TelegramApp:
 
     async def _post_init(self, application) -> None:
         self._bot = application.bot
-        await self._container.start(bot=application.bot)
+
+        async def _telegram_send_to_kevin(text: str) -> None:
+            from src.app.telegram_delivery import send_telegram_text_to_chat
+            chat_ids = await self._container.brain.memory.get_all_chat_ids()
+            for chat_id in chat_ids:
+                await send_telegram_text_to_chat(bot=self._bot, chat_id=chat_id, text=text)
+
+        await self._container.start(send_fn=_telegram_send_to_kevin)
 
     async def _post_shutdown(self, application) -> None:
         await self._container.shutdown()
@@ -88,6 +95,15 @@ class TelegramApp:
         app.add_handler(CommandHandler("models", self.cmd_model))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self.handle_voice))
+        app.add_error_handler(self._error_handler)
+
+    async def _error_handler(self, update, context) -> None:
+        from telegram.error import TimedOut, NetworkError
+        err = context.error
+        if isinstance(err, (TimedOut, NetworkError)):
+            logger.warning("Telegram 网络错误（已忽略）: %s", err)
+        else:
+            logger.error("Telegram 未处理错误: %s", err, exc_info=err)
 
     async def cmd_start(self, update, context) -> None:
         if update.message:
@@ -425,7 +441,10 @@ class TelegramApp:
             self._status_last_text.pop(chat_id, None)
             self._status_last_sent_at.pop(chat_id, None)
             try:
-                await message.chat.send_action("typing")
+                try:
+                    await message.chat.send_action("typing")
+                except Exception:
+                    pass
 
                 async def send_fn(text: str) -> None:
                     await send_telegram_text_to_chat(
@@ -518,7 +537,10 @@ class TelegramApp:
             return
 
         combined = "\n".join(messages)
-        await self._think_and_reply(message_obj, chat_id, combined)
+        try:
+            await self._think_and_reply(message_obj, chat_id, combined)
+        except Exception as exc:
+            logger.warning("消息处理失败 [%s]: %s", chat_id, exc)
 
     def _enqueue_message(self, chat_id: str, text: str, message_obj: Any) -> None:
         self._message_buffers.setdefault(chat_id, []).append(text)

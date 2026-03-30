@@ -44,7 +44,10 @@ async def test_post_init_and_shutdown_bridge_container_lifecycle(app_with_contai
     await app._post_init(application)
     await app._post_shutdown(application)
 
-    container.start.assert_awaited_once_with(bot=application.bot)
+    container.start.assert_awaited_once()
+    call_kwargs = container.start.await_args.kwargs
+    assert "send_fn" in call_kwargs
+    assert callable(call_kwargs["send_fn"])
     container.shutdown.assert_awaited_once()
 
 

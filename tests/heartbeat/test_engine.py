@@ -21,7 +21,7 @@ class FakeFastAction(HeartbeatAction):
     description = "test fast action"
     beat_types = ["fast"]
 
-    async def execute(self, ctx, brain, bot):
+    async def execute(self, ctx, brain, send_fn):
         return None
 
 
@@ -31,7 +31,7 @@ class FakeMinuteAlwaysAction(HeartbeatAction):
     beat_types = ["minute"]
     selection_mode = "always"
 
-    async def execute(self, ctx, brain, bot):
+    async def execute(self, ctx, brain, send_fn):
         return None
 
 
@@ -109,7 +109,7 @@ class TestProactiveRuntime:
         sense = SenseLayer(mock_brain.memory)
         return ProactiveRuntime(
             brain=mock_brain,
-            bot=MagicMock(),
+            send_fn=AsyncMock(),
             registry=registry,
             sense=sense,
         )
@@ -176,9 +176,9 @@ class TestProactiveRuntime:
 class TestHeartbeatEngine:
     async def test_run_tick_silent_when_no_actions(self, mock_brain):
         mock_brain.router.complete = AsyncMock(return_value='{"actions": [], "reason": "静默"}')
-        bot = MagicMock()
-        engine = HeartbeatEngine(brain=mock_brain, bot=bot)
+        send_fn = AsyncMock()
+        engine = HeartbeatEngine(brain=mock_brain, send_fn=send_fn)
         engine.registry.register(FakeFastAction())
         await engine._run_tick("fast")
         await asyncio.gather(*engine._running_tasks, return_exceptions=True)
-        bot.send_message.assert_not_called()
+        send_fn.assert_not_called()

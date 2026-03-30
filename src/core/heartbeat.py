@@ -34,7 +34,7 @@ class HeartbeatAction(ABC):
     selection_mode: str = "decide"  # "decide" | "always"
 
     @abstractmethod
-    async def execute(self, ctx: SenseContext, brain, bot) -> None: ...
+    async def execute(self, ctx: SenseContext, brain, send_fn) -> None: ...
 
 
 class ActionRegistry:
@@ -129,9 +129,9 @@ class SenseLayer:
 class ProactiveRuntime:
     """心跳行为编排器：接收 tick，决定并执行 action。"""
 
-    def __init__(self, brain, bot, registry: ActionRegistry, sense: SenseLayer) -> None:
+    def __init__(self, brain, send_fn, registry: ActionRegistry, sense: SenseLayer) -> None:
         self._brain = brain
-        self._bot = bot
+        self._send_fn = send_fn
         self._registry = registry
         self._sense = sense
         self._decision_prompt: str | None = None
@@ -178,7 +178,7 @@ class ProactiveRuntime:
     async def _execute_actions(self, actions: list[HeartbeatAction], ctx: SenseContext) -> None:
         for action in actions:
             try:
-                await action.execute(ctx, self._brain, self._bot)
+                await action.execute(ctx, self._brain, self._send_fn)
             except Exception as exc:
                 logger.exception(f"[{ctx.chat_id}] action {action.name} 执行失败: {exc}")
 
@@ -230,12 +230,12 @@ class ProactiveRuntime:
 class HeartbeatEngine:
     """心跳引擎：仅负责 tick 调度与分发。"""
 
-    def __init__(self, brain, bot) -> None:
+    def __init__(self, brain, send_fn) -> None:
         self._brain = brain
-        self._bot = bot
+        self._send_fn = send_fn
         self._sense = SenseLayer(brain.memory)
         self.registry = ActionRegistry()
-        self._runtime = ProactiveRuntime(brain=brain, bot=bot, registry=self.registry, sense=self._sense)
+        self._runtime = ProactiveRuntime(brain=brain, send_fn=send_fn, registry=self.registry, sense=self._sense)
         self._scheduler = None
         self._running_tasks: set[asyncio.Task] = set()
 

@@ -83,14 +83,14 @@ class AppContainer:
         self._prepared = True
         logger.info("应用容器依赖装配完成")
 
-    async def start(self, *, bot=None) -> None:
+    async def start(self, *, send_fn=None) -> None:
         if self._started:
             return
 
         await self.prepare()
 
-        if bot is not None:
-            self.heartbeat = self._build_heartbeat(bot)
+        if send_fn is not None:
+            self.heartbeat = self._build_heartbeat(send_fn)
             self.heartbeat.start()
 
         await self.api_server.start()
@@ -194,8 +194,8 @@ class AppContainer:
             self.brain.experience_skill_manager = esm
             logger.info("经验技能系统已就绪")
 
-    def _build_heartbeat(self, bot) -> HeartbeatEngine:
-        heartbeat = HeartbeatEngine(brain=self.brain, bot=bot)
+    def _build_heartbeat(self, send_fn) -> HeartbeatEngine:
+        heartbeat = HeartbeatEngine(brain=self.brain, send_fn=send_fn)
         heartbeat.registry.register(CompactionCheckAction())
         heartbeat.registry.register(ProactiveMessageAction())
         heartbeat.registry.register(ReminderDispatchAction())

@@ -8,21 +8,21 @@ class FakeFastAction(HeartbeatAction):
     name = "fake_fast"
     description = "快心跳 action"
     beat_types = ["fast"]
-    async def execute(self, ctx, brain, bot): pass
+    async def execute(self, ctx, brain, send_fn): pass
 
 
 class FakeSlowAction(HeartbeatAction):
     name = "fake_slow"
     description = "慢心跳 action"
     beat_types = ["slow"]
-    async def execute(self, ctx, brain, bot): pass
+    async def execute(self, ctx, brain, send_fn): pass
 
 
 class FakeBothAction(HeartbeatAction):
     name = "fake_both"
     description = "快慢都有"
     beat_types = ["fast", "slow"]
-    async def execute(self, ctx, brain, bot): pass
+    async def execute(self, ctx, brain, send_fn): pass
 
 
 class FakeMinuteAlwaysAction(HeartbeatAction):
@@ -30,7 +30,7 @@ class FakeMinuteAlwaysAction(HeartbeatAction):
     description = "分钟常驻"
     beat_types = ["minute"]
     selection_mode = "always"
-    async def execute(self, ctx, brain, bot): pass
+    async def execute(self, ctx, brain, send_fn): pass
 
 
 @pytest.fixture

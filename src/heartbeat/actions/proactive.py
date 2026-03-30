@@ -4,7 +4,6 @@ import logging
 from datetime import datetime
 
 from config.settings import REMINDER_DISPATCH_GRACE_SECONDS, REMINDER_MAX_DUE_PER_CHAT
-from src.app.telegram_delivery import send_telegram_text_to_chat
 from src.core.heartbeat import HeartbeatAction, SenseContext
 from src.core.prompt_loader import load_prompt
 from src.core.reasoning_tags import strip_internal_thinking_tags
@@ -26,7 +25,7 @@ class ProactiveMessageAction(HeartbeatAction):
             self._prompt_template = load_prompt("heartbeat_proactive")
         return self._prompt_template
 
-    async def execute(self, ctx: SenseContext, brain, bot) -> None:
+    async def execute(self, ctx: SenseContext, brain, send_fn) -> None:
         try:
             discoveries = await brain.memory.get_unshared_discoveries(ctx.chat_id, limit=3)
             discoveries_summary = self._format_discoveries(discoveries)
@@ -52,7 +51,7 @@ class ProactiveMessageAction(HeartbeatAction):
             if not reply:
                 return
 
-            await send_telegram_text_to_chat(bot=bot, chat_id=ctx.chat_id, text=reply)
+            await send_fn(reply)
             await brain.memory.append(ctx.chat_id, "assistant", reply)
             event_bus = brain.__dict__.get("event_bus") if hasattr(brain, "__dict__") else None
             if event_bus is not None:
@@ -99,7 +98,7 @@ class ReminderDispatchAction(HeartbeatAction):
             self._prompt_template = load_prompt("heartbeat_proactive")
         return self._prompt_template
 
-    async def execute(self, ctx: SenseContext, brain, bot) -> None:
+    async def execute(self, ctx: SenseContext, brain, send_fn) -> None:
         reminders = await brain.memory.get_due_reminders(
             ctx.chat_id,
             now=ctx.now,
@@ -130,7 +129,7 @@ class ReminderDispatchAction(HeartbeatAction):
                 if not message:
                     message = f"提醒你：{reminder['content']}"
 
-                await send_telegram_text_to_chat(bot=bot, chat_id=ctx.chat_id, text=message)
+                await send_fn(message)
                 await brain.memory.append(ctx.chat_id, "assistant", message)
                 await brain.memory.complete_or_reschedule_reminder(reminder["id"], now=ctx.now)
 

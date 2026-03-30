@@ -34,7 +34,7 @@ async def test_start_and_shutdown_calls_lifecycle_components():
     heartbeat = SimpleNamespace(start=MagicMock(), shutdown=AsyncMock())
     with patch.object(container, "_configure_brain_dependencies", new=AsyncMock()), \
          patch.object(container, "_build_heartbeat", return_value=heartbeat):
-        await container.start(bot=MagicMock())
+        await container.start(send_fn=AsyncMock())
         await container.shutdown()
 
     brain.init_db.assert_awaited_once()
