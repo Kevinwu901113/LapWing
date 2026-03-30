@@ -1,0 +1,399 @@
+/* ---------- 页面布局 ---------- */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.page-title {
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+
+.page-subtitle {
+  color: var(--color-text-secondary);
+  margin-top: 0.3rem;
+  font-size: 0.9rem;
+}
+
+.page-header-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+/* ---------- Chat 选择器 ---------- */
+.chat-selector {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  padding: 0.55rem 1rem;
+  min-width: 200px;
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.chat-selector:focus {
+  border-color: var(--color-accent);
+}
+
+/* ---------- 统计卡片 grid ---------- */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+.stat-card {
+  padding: 1rem 1.1rem;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+  transition: box-shadow 0.2s;
+}
+.stat-card:hover {
+  box-shadow: var(--shadow-card-hover);
+}
+
+.stat-card-label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stat-card-value {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.stat-card-sub {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+/* ---------- DataCard ---------- */
+.data-card {
+  padding: 1.15rem 1.25rem;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.data-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.data-card-head h2 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.data-card-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* ---------- 双列布局 ---------- */
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 860px) {
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- 列表 ---------- */
+.list-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.list-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.7rem 0.85rem;
+  border-radius: var(--radius-sm);
+  background: rgba(246, 248, 251, 0.85);
+  gap: 0.75rem;
+}
+
+.list-row-block {
+  padding: 0.7rem 0.85rem;
+  border-radius: var(--radius-sm);
+  background: rgba(246, 248, 251, 0.85);
+}
+
+.list-row-key {
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+
+.list-row-muted {
+  color: var(--color-text-muted);
+  font-size: 0.82rem;
+}
+
+/* ---------- 记忆行 ---------- */
+.memory-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: var(--radius-sm);
+  background: rgba(246, 248, 251, 0.85);
+}
+
+.memory-row-content { flex: 1; }
+.memory-row-key { font-size: 0.82rem; color: var(--color-text-muted); margin-bottom: 0.2rem; }
+.memory-row-value { font-size: 0.9rem; margin-bottom: 0.25rem; }
+
+/* ---------- BarMeter ---------- */
+.bar-meter { padding: 0.6rem 0; }
+
+.bar-meter-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.875rem;
+  margin-bottom: 0.4rem;
+}
+
+.bar-meter-track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(22, 56, 95, 0.06);
+  overflow: hidden;
+}
+
+.bar-meter-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #ff9f68 0%, #4f87e8 100%);
+  transition: width 0.4s ease;
+}
+
+/* ---------- 任务行 ---------- */
+.task-row {
+  padding: 0.75rem 0.85rem;
+  border-radius: var(--radius-sm);
+  background: rgba(246, 248, 251, 0.85);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s;
+}
+.task-row:hover { border-color: var(--color-border-active); }
+.task-row--active { border-color: var(--color-accent); background: var(--color-accent-soft); }
+.task-row-id { font-size: 0.82rem; font-weight: 500; }
+.task-row-text { font-size: 0.9rem; margin: 0.2rem 0; }
+
+.task-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.task-status {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius-pill);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+.task-status--completed { background: var(--color-success-soft); color: var(--color-success); }
+.task-status--running { background: var(--color-accent-soft); color: var(--color-accent); }
+.task-status--failed { background: var(--color-danger-soft); color: var(--color-danger); }
+
+.task-detail-events {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+  font-family: "Outfit", "Noto Sans SC", monospace;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* ---------- 事件行 ---------- */
+.event-row {
+  padding: 0.75rem 0.85rem;
+  border-radius: var(--radius-sm);
+  background: rgba(246, 248, 251, 0.85);
+}
+.event-row-text { margin: 0.35rem 0; font-size: 0.9rem; }
+
+.event-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+/* ---------- 学习日志 ---------- */
+.learning-entry {
+  padding: 0.85rem;
+  border-radius: var(--radius-sm);
+  background: rgba(246, 248, 251, 0.85);
+}
+
+.learning-entry-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.learning-entry-body {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  font-family: "Outfit", "Noto Sans SC", sans-serif;
+}
+
+/* ---------- Auth ---------- */
+.auth-notice {
+  margin-top: 0.6rem;
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+}
+
+.auth-link {
+  color: var(--color-accent);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.auth-link:hover { text-decoration: underline; }
+
+.connection-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.9rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  font-size: 0.85rem;
+  border: 1px solid var(--color-border);
+}
+
+/* ---------- StatusDot ---------- */
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.status-dot--online {
+  background: var(--color-success);
+  box-shadow: 0 0 0 4px var(--color-success-soft);
+}
+.status-dot--offline {
+  background: var(--color-danger);
+  box-shadow: 0 0 0 4px var(--color-danger-soft);
+}
+
+/* ---------- 空状态 ---------- */
+.empty-state {
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+  padding: 1rem 0;
+}
+
+/* ---------- AuthGuard 页面 ---------- */
+.auth-guard-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 2rem;
+}
+
+.auth-guard-card {
+  max-width: 500px;
+  width: 100%;
+  padding: 2rem;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card-hover);
+  backdrop-filter: blur(16px);
+}
+
+.auth-guard-card h1 {
+  font-size: 1.5rem;
+  margin: 0.75rem 0 0;
+}
+
+.auth-guard-eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.auth-guard-hint {
+  color: var(--color-text-secondary);
+  margin-top: 0.6rem;
+  font-size: 0.9rem;
+}
+.auth-guard-hint code {
+  background: rgba(22, 56, 95, 0.06);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.82rem;
+}
+
+.auth-guard-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.auth-guard-form textarea {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 0.9rem;
+  background: rgba(255, 255, 255, 0.6);
+  resize: vertical;
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.auth-guard-form textarea:focus {
+  border-color: var(--color-accent);
+}

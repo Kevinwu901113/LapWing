@@ -1,0 +1,136 @@
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap");
+@import "./sidebar.css";
+@import "./pages.css";
+
+:root {
+  /* 色彩系统 */
+  --color-bg: #f5f1ea;
+  --color-surface: rgba(255, 255, 255, 0.72);
+  --color-surface-hover: rgba(255, 255, 255, 0.88);
+  --color-surface-solid: #ffffff;
+  --color-border: rgba(22, 56, 95, 0.08);
+  --color-border-active: rgba(22, 56, 95, 0.2);
+
+  --color-text-primary: #1a2332;
+  --color-text-secondary: #526075;
+  --color-text-muted: #8494a7;
+
+  --color-accent: #2d6be4;
+  --color-accent-soft: rgba(45, 107, 228, 0.1);
+  --color-success: #2f9e72;
+  --color-success-soft: rgba(47, 158, 114, 0.12);
+  --color-danger: #c44536;
+  --color-danger-soft: rgba(196, 69, 54, 0.1);
+  --color-warning: #d4940a;
+
+  /* 侧栏 */
+  --sidebar-width: 240px;
+  --sidebar-collapsed-width: 68px;
+  --sidebar-bg: rgba(26, 35, 50, 0.95);
+  --sidebar-text: rgba(255, 255, 255, 0.7);
+  --sidebar-text-active: #ffffff;
+  --sidebar-item-hover: rgba(255, 255, 255, 0.08);
+  --sidebar-item-active: rgba(45, 107, 228, 0.2);
+
+  /* 圆角 */
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-pill: 999px;
+
+  /* 阴影 */
+  --shadow-card: 0 2px 12px rgba(31, 43, 61, 0.06);
+  --shadow-card-hover: 0 8px 32px rgba(31, 43, 61, 0.1);
+  --shadow-sidebar: 4px 0 24px rgba(0, 0, 0, 0.08);
+
+  /* 排版 */
+  font-family: "Outfit", "Noto Sans SC", sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--color-text-primary);
+
+  /* 背景 */
+  color-scheme: light;
+  background:
+    radial-gradient(ellipse at 10% 0%, rgba(255, 184, 108, 0.35), transparent 50%),
+    radial-gradient(ellipse at 90% 10%, rgba(109, 181, 255, 0.3), transparent 40%),
+    var(--color-bg);
+  background-attachment: fixed;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+}
+
+body {
+  min-height: 100vh;
+  min-width: 320px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button, select, textarea, input {
+  font: inherit;
+  color: inherit;
+}
+
+/* ---------- 通用按钮 ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  padding: 0.6rem 1.1rem;
+  font-weight: 500;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  white-space: nowrap;
+}
+
+.btn:hover { transform: translateY(-1px); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+.btn-primary { background: var(--color-accent); color: #fff; }
+.btn-primary:hover { background: #2560d0; }
+
+.btn-soft {
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+}
+.btn-soft:hover { background: var(--color-surface-hover); border-color: var(--color-border-active); }
+
+.btn-danger { background: var(--color-danger); color: #fff; }
+.btn-danger-soft { background: var(--color-danger-soft); color: var(--color-danger); }
+
+.btn-sm { padding: 0.4rem 0.75rem; font-size: 0.8rem; }
+.btn-icon { padding: 0.5rem; border-radius: var(--radius-sm); }
+
+/* ---------- 动画 ---------- */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-in {
+  animation: fade-up 0.4s ease both;
+}
+
+/* 交错动画 */
+.stagger-1 { animation-delay: 0.05s; }
+.stagger-2 { animation-delay: 0.1s; }
+.stagger-3 { animation-delay: 0.15s; }
+.stagger-4 { animation-delay: 0.2s; }
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(22, 56, 95, 0.15); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(22, 56, 95, 0.25); }

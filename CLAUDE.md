@@ -1,842 +1,1888 @@
-# Lapwing Skill System — 完整实现蓝图
+# Lapwing Desktop Panel — 完整前端重构蓝图
 
-> 本文档是 Skill 系统的完整设计，供 Claude Code 实现参考。
-> 所有设计决策服务于一个原则：**Skill 是 Lapwing 自己的能力，不是用户安装的插件。**
-
----
-
-## 0. Skill 解决什么问题
-
-没有 Skill 的 Lapwing，面对每个任务都是"裸想"——每次从零理解需求、规划步骤、调度 Agent。
-这像一个聪明但没有工作经验的人，每件事都能做，但每次都要重新摸索。
-
-Skill 是**积累下来的经验**。她做过一次，下次就知道怎么做更好。
-
-关键认知：**Skill 不决定"能不能做"（没有 Skill 她照样能工作），而是决定"做得好不好、快不快、稳不稳"。**
-这意味着冷启动不是阻塞性问题——没有 Skill 的 Lapwing 和现在的行为完全一样，不会有任何退化。
+> 本文档是桌面前端的完整重构方案，供 Claude Code 实现。
+> 参考 AstrBot 的 sidebar + 分页架构，保留 React + Vite + Tauri 技术栈。
+> **不改动后端 API（`src/api/server.py`）**，只重构前端。
 
 ---
 
-## 1. 目录结构
+## 0. 问题与目标
 
-```
-lapwing/
-├── skills/                          # Skill 文件根目录
-│   ├── _index.json                  # 全局索引（自动生成，勿手动编辑）
-│   ├── _registry.json               # Skill 使用日志和统计
-│   ├── research/                    # 类别目录
-│   │   ├── literature_survey.md
-│   │   └── dataset_search.md
-│   ├── coding/
-│   │   ├── debug_python.md
-│   │   └── deploy_service.md
-│   ├── daily/
-│   │   ├── schedule_manage.md
-│   │   └── meeting_notes.md
-│   ├── content/
-│   │   └── document_writing.md
-│   └── system/
-│       └── server_maintenance.md
-│
-├── skill_traces/                    # 执行轨迹存储
-│   ├── 2026-03-28_literature_001.json
-│   └── 2026-03-28_general_002.json
-│
-├── prompts/                         # 现有 prompt 目录（不变）
-│   └── ...
-```
+### 当前问题
+- `App.tsx` 是 600 行的单文件巨石组件，所有面板堆在一个页面
+- 没有路由、没有导航、没有组件拆分
+- Auth 面板、记忆、兴趣、事件、任务、学习日志全平铺在 grid 中
+- 新增功能只能继续往下堆，无法扩展
 
-### 类别（可随 Skill 增长动态添加）
-
-初始类别建议：`research`、`coding`、`daily`、`content`、`system`。
-Lapwing 在孵化新 Skill 时如果觉得不属于任何现有类别，可以创建新的类别目录。
+### 目标
+- **Sidebar + 路由页面**架构（参考 AstrBot dashboard 的 FullLayout + 分页模式）
+- 拆分为 7 个独立页面组件
+- 提取可复用 UI 组件
+- 保持现有暖色调毛玻璃美学，但换掉 Space Grotesk 字体
+- 后端 API 零改动，所有现有端点保持原样
+- `api.ts` 零改动（类型和请求函数全部复用）
 
 ---
 
-## 2. Skill 文件格式
+## 1. 新增依赖
 
-每个 Skill 是一个 Markdown 文件，由 frontmatter 元数据 + 正文执行指南组成。
-
-### 2.1 完整 Schema
-
-```markdown
----
-id: string                    # 唯一标识，snake_case，和文件名一致
-name: string                  # 显示名称
-category: string              # 所属类别（对应目录名）
-status: draft | active | deprecated
-created: date                 # 创建日期
-updated: date                 # 最后更新日期
-source: trace | taught | preset | split | merged
-                              # trace=从轨迹孵化, taught=Kevin教的,
-                              # preset=预置/手动添加, split=从其他Skill分裂,
-                              # merged=从其他Skill合并
-parent_skills: [string]       # 如果是 split/merged，记录来源 Skill id
-version: integer              # 版本号，每次更新 +1
-use_count: integer            # 累计使用次数
-last_used: date | null        # 最后使用日期
-success_rate: float           # 0.0-1.0，基于用户反馈
-agents: [string]              # 依赖的 Agent 列表
-tools: [string]               # 依赖的工具列表
-triggers:                     # 触发条件
-  keywords: [string]          # 关键词列表
-  patterns: [string]          # 正则表达式（可选）
-  examples: [string]          # 典型请求示例（用于语义匹配阶段）
-size_tokens: integer          # 正文的大约 token 数（自动计算）
----
-```
-
-### 2.2 正文结构
-
-正文以 Lapwing **第一人称**写成，是她自己的工作笔记。
-
-```markdown
-# {name}
-
-## 什么时候用
-[描述触发场景，用自然语言。Brain 匹配时会参考这段。]
-
-## 前置条件
-[执行前需要满足的条件。Brain 在加载 Skill 后、执行前检查这些条件。]
-[不要在这里硬编码用户信息。如果需要引用用户偏好，写"Kevin 的 XX 偏好（从记忆中获取）"。]
-
-## 执行流程
-[具体步骤，编号列表。]
-[每一步说清楚做什么、调用什么 Agent/工具。]
-[允许条件分支："如果 XX 则 YY，否则 ZZ"。]
-
-## 注意事项
-[容易踩的坑、Kevin 的特殊偏好、经验教训。]
-
-## 失败处理
-[常见失败场景和应对方式。]
-[兜底策略：如果整个流程走不通怎么办。]
-
-## 变更日志
-[每次修改记一笔：日期 + 改了什么 + 为什么改。]
-```
-
-### 2.3 大小限制
-
-单个 Skill 正文不超过 **2000 token**。超过时应拆分为多个更具体的 Skill。
-
-原因：Skill 全文会注入 context，必须控制成本。2000 token 足以描述绝大多数任务流程。
-
-如果某个场景确实需要更长的指南，使用**摘要+详情**模式：
-- Skill 正文写摘要版（在 2000 token 内）
-- 在 Skill 同目录下放一个 `{id}_detail.md` 作为详细参考
-- 执行流程中标注"详细步骤见 {id}_detail.md"
-- Brain 只在需要时才加载详情文件
-
----
-
-## 3. 索引和检索
-
-### 3.1 `_index.json`
-
-自动生成，每次 Skill 文件变动时重建。
+在 `desktop/package.json` 中添加：
 
 ```json
 {
-  "version": 1,
-  "updated": "2026-03-28T23:00:00Z",
-  "skill_count": 12,
-  "categories": ["research", "coding", "daily", "content", "system"],
-  "skills": [
-    {
-      "id": "literature_survey",
-      "name": "文献调研",
-      "category": "research",
-      "status": "active",
-      "triggers": {
-        "keywords": ["论文", "调研", "文献", "综述", "最新研究"],
-        "patterns": ["最近.*论文", "调研.*论文"]
-      },
-      "summary": "调研学术话题，搜索筛选论文，整理文献综述",
-      "agents": ["researcher", "browser"],
-      "use_count": 7,
-      "last_used": "2026-03-28",
-      "success_rate": 0.85,
-      "size_tokens": 850
-    }
-  ]
-}
-```
-
-`skills` 数组默认按 `use_count` 降序排列（高频在前）。
-
-### 3.2 三级检索流程
-
-Brain 处理请求时，按以下顺序尝试匹配：
-
-#### Level 1: 快速匹配（关键词 + 正则）
-
-```python
-def quick_match(user_request: str, index: SkillIndex) -> list[str]:
-    """
-    对 user_request 做关键词和正则匹配。
-    返回命中的 skill id 列表（可能多个）。
-    只考虑 status=active 和 status=draft 的 Skill。
-    成本：几乎为零，纯字符串操作。
-    """
-```
-
-如果命中 1 个：直接加载该 Skill。
-如果命中多个：进入 Level 2 让 LLM 选择。
-如果命中 0 个：进入 Level 2。
-
-#### Level 2: 索引匹配（LLM 选择）
-
-将 `_index.json` 中所有 active/draft Skill 的 `name + summary` 列表（通常几百到一两千 token）注入 context，让 LLM 从中选择 0-3 个最相关的 Skill。
-
-```
-以下是我积累的经验列表。根据当前任务，我选择最相关的经验来参考（也可能没有合适的）：
-
-1. 文献调研 - 调研学术话题，搜索筛选论文，整理文献综述
-2. Python调试 - 诊断和修复 Python 代码问题
-3. 日程管理 - 管理日程、设置提醒、协调时间
-...
-
-当前任务：{user_request}
-我选择的经验（0-3个，按相关度排序）：
-```
-
-如果 LLM 选了 Skill：加载对应 Skill。
-如果 LLM 没选：进入无匹配流程。
-
-#### Level 3: 语义检索（后期扩展，Skill > 200 时启用）
-
-对所有 Skill 的 `summary + triggers.examples` 做 embedding，存入向量库。
-用户请求做 embedding 后检索 top 10 候选，再交给 LLM 精选。
-
-**当前阶段不实现。** 预留接口即可。
-
-#### 无匹配
-
-走通用能力处理（和没有 Skill 系统时完全一样）。
-记录执行轨迹，等待后续可能的 Skill 孵化。
-
-### 3.3 多 Skill 编排
-
-当匹配到多个 Skill 时，Brain 需要判断它们之间的关系：
-
-- **串行依赖**：一个 Skill 的输出是另一个的输入（如"文献调研"→"文档撰写"）。按依赖顺序逐个执行，前一个的输出作为后一个的输入。
-- **并行独立**：两个 Skill 互不依赖（如"查天气"+"查日程"）。可以同时调度 Agent 执行。
-- **竞争匹配**：两个 Skill 都能处理同一个请求（如"信息搜索"和"文献调研"都匹配"帮我查一下"）。选择更具体的那个。如果无法判断，选 `use_count` 更高的。
-
-Brain 的编排决策也由 LLM 完成——加载所有候选 Skill 的摘要，让 LLM 规划执行顺序。
-
----
-
-## 4. Skill 调用机制
-
-### 4.1 注入方式
-
-匹配到 Skill 后，将 Skill 全文作为一段"参考经验"注入当前请求的 context：
-
-```
----参考经验开始---
-[Skill 全文]
----参考经验结束---
-
-以上是我处理类似任务时积累的经验。我会参考它来处理当前任务，
-但会根据具体情况灵活调整——它是指南，不是必须严格遵循的脚本。
-如果某个步骤在当前场景下不适用，我会跳过或替换。
-```
-
-### 4.2 前置条件检查
-
-Brain 在加载 Skill 后、开始执行前，检查前置条件：
-
-- Skill 依赖的 Agent 是否可用
-- Skill 依赖的工具是否可用
-- 其他前置条件（如"需要网络可用"）
-
-如果前置条件不满足：
-1. 检查是否有替代方案（如 Researcher 不可用但 Browser 可用）
-2. 如果有替代方案，调整执行计划并告诉 Kevin
-3. 如果没有替代方案，告诉 Kevin 当前无法执行以及原因
-
-### 4.3 宪法约束检查
-
-执行过程中涉及敏感操作时，无论 Skill 中是否有说明，都要检查宪法约束：
-
-- 系统命令执行（尤其是删除、修改系统文件）
-- 对外通信（发送消息、发起请求）
-- 文件删除
-- 任何"重大操作"（由宪法定义）
-
-如果 Skill 流程会导致违宪，Brain 在执行前拦截，改为请求 Kevin 确认。
-
-### 4.4 Draft Skill 的确认机制
-
-当使用 `status: draft` 的 Skill 时：
-
-1. 按照 Skill 流程正常执行
-2. 任务完成后，在回复末尾自然地加一句反馈征求：
-   - "这次是按之前的经验处理的，这样可以吗？"
-   - 或者根据语境用更自然的表达
-3. 确认逻辑：
-   - Kevin 明确表示满意（"可以"、"好"、"没问题"、emoji 确认等）→ status 变为 active
-   - Kevin 给了修改意见 → 更新 Skill 内容，保持 draft
-   - Kevin 没有回应（下一次对话是不相关话题）→ 保持 draft，下次使用时再问
-   - 连续 3 次使用 draft Skill 且 Kevin 都没有负面反馈 → 自动升级为 active
-
----
-
-## 5. 执行轨迹
-
-### 5.1 轨迹格式
-
-每次任务执行（无论是否使用了 Skill）都记录轨迹：
-
-```json
-{
-  "trace_id": "2026-03-28_literature_001",
-  "timestamp": "2026-03-28T14:30:00Z",
-  "user_request": "帮我看看最近有没有什么新的RAG相关的论文",
-  "request_category": "research",
-  "intent_summary": "调研最近的RAG方向论文",
-
-  "skill_used": {
-    "id": "literature_survey",
-    "version": 3,
-    "match_level": "quick",
-    "deviated": false,
-    "deviation_notes": null
-  },
-
-  "execution": {
-    "agents_called": [
-      {
-        "agent": "researcher",
-        "task": "搜索arXiv和Semantic Scholar上最近的RAG论文",
-        "result_summary": "找到23篇候选，筛选后保留8篇",
-        "success": true,
-        "duration_seconds": 45
-      }
-    ],
-    "tools_called": ["web_search", "file_write"],
-    "total_duration_seconds": 120,
-    "llm_calls": 4,
-    "tokens_used": 8500
-  },
-
-  "output_summary": "整理了8篇RAG相关论文的综述，按主题分为三组",
-
-  "user_feedback": {
-    "type": "positive",
-    "details": "Kevin 说"挺好的"",
-    "timestamp": "2026-03-28T14:35:00Z"
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.0",
+    "lucide-react": "^0.460.0"
   }
 }
 ```
 
-### 5.2 无 Skill 时的轨迹
-
-当没有匹配到任何 Skill 时，`skill_used` 为 null，其他字段正常记录。
-这些轨迹是 Skill 孵化的主要原材料。
-
-### 5.3 轨迹存储
-
-- 存储位置：`skill_traces/` 目录
-- 文件名格式：`{date}_{category}_{sequence}.json`
-- 保留策略：最近 30 天的轨迹保留完整数据，更早的只保留摘要
-- 当 `skill_traces/` 目录下文件超过 500 个时，自动归档旧轨迹到 `skill_traces/archive/`
-
-### 5.4 偏离记录
-
-如果 Lapwing 在执行中偏离了 Skill 描述的流程（增加/跳过/替换步骤），在轨迹中记录：
-
-```json
-"skill_used": {
-  "id": "literature_survey",
-  "version": 3,
-  "deviated": true,
-  "deviation_notes": "搜索结果太少，额外增加了Google Scholar作为搜索源，不限于Skill中列出的arXiv和Semantic Scholar"
-}
-```
-
-偏离记录是 Skill 更新的重要信号——如果同一个偏离反复出现，说明 Skill 该更新了。
+只新增两个依赖：`react-router-dom`（路由）和 `lucide-react`（图标）。不引入任何 UI 框架。
 
 ---
 
-## 6. Skill 生命周期
-
-### 6.1 孵化（创建）
-
-#### 来源一：轨迹孵化
-
-在每晚自省环节，扫描 `skill_traces/` 中最近的轨迹，检查孵化条件：
-
-**条件 A：重复模式**
-- 最近 7 天内有 2 次以上相似的无 Skill 轨迹
-- "相似"由 LLM 判断：请求类型、调用的 Agent/工具、执行步骤是否高度重叠
-
-**条件 B：高质量单次执行**
-- 单次无 Skill 轨迹，但任务复杂（agents_called >= 2 或 total_duration >= 120s）
-- 且用户反馈为 positive
-
-满足任一条件时，LLM 从轨迹中提炼 Skill：
+## 2. 目录结构
 
 ```
-以下是我最近执行的一些任务轨迹：
-[轨迹内容]
-
-我发现这些任务有共同的模式。我要把这个经验记录下来。
-按照以下格式写一份 Skill 文件：
-[Skill 格式模板]
-
-注意：
-- 用第一人称写，这是我自己的工作笔记
-- 不要硬编码 Kevin 的具体信息，用"从记忆中获取"来引用
-- 触发关键词要覆盖 Kevin 可能的各种说法
-- 检查：这个 Skill 的触发条件是否和以下现有 Skill 冲突？
-  [现有 Skill 触发条件列表]
+desktop/src/
+├── main.tsx                     # 入口，挂载 RouterProvider
+├── api.ts                       # 【不改动】现有 API 客户端
+├── router.tsx                   # 路由定义
+├── styles/
+│   ├── globals.css              # 全局 CSS 变量 + reset + 字体
+│   ├── sidebar.css              # 侧栏样式
+│   └── pages.css                # 页面通用组件样式
+├── components/
+│   ├── AppShell.tsx             # 根布局：Sidebar + <Outlet />
+│   ├── Sidebar.tsx              # 侧栏导航
+│   ├── AuthGuard.tsx            # 鉴权守卫（bootstrap token 流程）
+│   ├── StatusDot.tsx            # 在线状态小圆点
+│   ├── StatCard.tsx             # 统计卡片
+│   ├── DataCard.tsx             # 通用数据展示卡片（标题 + 内容）
+│   ├── BarMeter.tsx             # 兴趣权重条
+│   ├── EmptyState.tsx           # 空状态占位
+│   └── EventBadge.tsx           # 事件类型标签
+├── hooks/
+│   ├── useSSE.ts                # SSE 连接 hook
+│   ├── usePolling.ts            # 定时轮询 hook
+│   └── useLatencyTelemetry.ts   # 延迟遥测 hook（从 App.tsx 提取）
+├── pages/
+│   ├── OverviewPage.tsx         # 总览：状态 + 快捷操作
+│   ├── MemoryPage.tsx           # 记忆管理 + 兴趣图谱
+│   ├── PersonaPage.tsx          # 人格进化 + 学习日志
+│   ├── TasksPage.tsx            # 任务视图 + 任务详情
+│   ├── EventsPage.tsx           # 实时事件流
+│   ├── AuthPage.tsx             # Auth 状态 + OAuth + Codex
+│   └── SettingsPage.tsx         # 系统设置（预留）
+└── vite-env.d.ts                # 【不改动】
 ```
-
-孵化的 Skill 标记为 `status: draft`，`source: trace`。
-
-#### 来源二：用户教授
-
-当 Brain 检测到 Kevin 的发言包含教授意图时触发：
-
-检测信号：
-- "以后帮我做 XX 的时候..."
-- "记住，这种情况下应该..."
-- "下次 XX 要按这个来"
-- "这个流程是：首先...然后..."
-
-Brain 提取教授内容，生成 Skill 草稿，回复 Kevin 确认：
-"好的，我记下来了——以后 [概述]。这样理解对吗？"
-
-确认后保存为 `status: active`（用户教授的直接 active，不需要 draft 阶段），`source: taught`。
-
-#### 来源三：手动导入
-
-Kevin 直接在 `skills/` 目录下创建 Markdown 文件。
-系统检测到新文件后自动读取、验证格式、更新 `_index.json`。
-标记为 `source: preset`，`status: active`。
-
-### 6.2 验证
-
-每次 Skill 被创建或更新时，执行验证：
-
-```python
-def validate_skill(skill: Skill, all_skills: list[Skill]) -> ValidationResult:
-    """
-    检查项：
-    1. 格式完整性：所有必需字段是否存在
-    2. 引用有效性：依赖的 agents 和 tools 是否在系统中注册
-    3. 触发冲突：triggers 是否和现有 Skill 严重重叠
-       - 如果重叠率 > 70%，警告可能需要合并或调整
-    4. 大小限制：正文是否超过 2000 token
-    5. 宪法合规：执行流程中是否包含可能违宪的步骤
-    """
-```
-
-验证失败不阻止保存，而是在 Skill 文件中添加 `_validation_warnings` 字段，
-在下次自省时由 Lapwing 处理。
-
-### 6.3 迭代更新
-
-Skill 更新的触发条件：
-
-**偏离累积**：同一个 Skill 在最近 5 次使用中有 3 次以上出现偏离 → 自省时检查偏离内容，判断是否要更新 Skill 步骤。
-
-**用户纠正**：Kevin 在某次执行后给了修改意见 → 立即更新 Skill 并记录变更日志。
-
-**成功率下降**：Skill 的 success_rate 跌到 0.5 以下 → 自省时重点审查，考虑大幅修改或 deprecated。
-
-**主动优化**：自省时 Lapwing 回顾某个高频 Skill，认为流程可以优化 → 更新 Skill 并在下次使用时留意效果。
-
-每次更新：version +1，updated 更新，变更日志追加。
-
-### 6.4 分裂
-
-当一个 Skill 变得太大（超过 2000 token）或覆盖场景太多时，自省中可能分裂：
-
-```
-我的"代码任务"Skill 覆盖了太多不同的场景——Python调试、服务部署、代码审查。
-这些场景的执行流程差异很大。我要把它拆成独立的 Skill。
-```
-
-分裂后：
-- 原 Skill 标记为 `status: deprecated`
-- 新 Skill 标记为 `source: split`，`parent_skills` 引用原 Skill
-- 原 Skill 的 `use_count` 按比例分配给新 Skill
-
-### 6.5 合并
-
-当几个 Skill 高度相似且 use_count 都很低时，自省中可能合并：
-
-```
-我有"搜新闻"和"搜资讯"两个 Skill，执行流程几乎一样。合成一个"信息搜索"Skill 更合理。
-```
-
-合并后：
-- 原 Skill 标记为 `status: deprecated`
-- 新 Skill 标记为 `source: merged`，`parent_skills` 引用所有原 Skill
-- 新 Skill 的 `use_count` = 原 Skill 的 use_count 之和
-
-### 6.6 废弃
-
-Skill 被标记为 `deprecated` 的条件：
-
-- 被分裂或合并（见上文）
-- 连续 60 天未被使用
-- success_rate 持续低于 0.3
-- Lapwing 在自省中主动判断"这个经验不再有用"
-
-Deprecated Skill 不会从文件系统删除，但不参与检索匹配。
-`_index.json` 中 deprecated Skill 不计入 `skill_count`，排在列表末尾。
 
 ---
 
-## 7. `_registry.json` — 使用日志和统计
+## 3. 路由定义
 
-```json
-{
-  "total_executions": 156,
-  "total_with_skill": 89,
-  "total_without_skill": 67,
-  "skill_match_rate": 0.57,
-  "match_level_distribution": {
-    "quick": 62,
-    "index": 24,
-    "semantic": 0,
-    "none": 67
+### `router.tsx`
+
+```tsx
+import { createBrowserRouter } from "react-router-dom";
+import AppShell from "./components/AppShell";
+import OverviewPage from "./pages/OverviewPage";
+import MemoryPage from "./pages/MemoryPage";
+import PersonaPage from "./pages/PersonaPage";
+import TasksPage from "./pages/TasksPage";
+import EventsPage from "./pages/EventsPage";
+import AuthPage from "./pages/AuthPage";
+import SettingsPage from "./pages/SettingsPage";
+
+export const router = createBrowserRouter([
+  {
+    path: "/",
+    element: <AppShell />,
+    children: [
+      { index: true, element: <OverviewPage /> },
+      { path: "memory", element: <MemoryPage /> },
+      { path: "persona", element: <PersonaPage /> },
+      { path: "tasks", element: <TasksPage /> },
+      { path: "events", element: <EventsPage /> },
+      { path: "auth", element: <AuthPage /> },
+      { path: "settings", element: <SettingsPage /> },
+    ],
   },
-  "daily_stats": [
-    {
-      "date": "2026-03-28",
-      "executions": 8,
-      "with_skill": 5,
-      "skills_created": 1,
-      "skills_updated": 0
-    }
-  ],
-  "recent_matches": [
-    {
-      "timestamp": "2026-03-28T14:30:00Z",
-      "request_summary": "调研RAG论文",
-      "skill_id": "literature_survey",
-      "match_level": "quick",
-      "success": true
-    }
-  ]
+]);
+```
+
+### `main.tsx`
+
+```tsx
+import { StrictMode } from "react";
+import { createRoot } from "react-dom/client";
+import { RouterProvider } from "react-router-dom";
+import { router } from "./router";
+import "./styles/globals.css";
+
+createRoot(document.getElementById("root")!).render(
+  <StrictMode>
+    <RouterProvider router={router} />
+  </StrictMode>,
+);
+```
+
+---
+
+## 4. 全局样式
+
+### `styles/globals.css`
+
+替换现有的 `styles.css`。
+
+**字体选择**：`"Outfit"` 作为主字体（geometric sans，比 Space Grotesk 更精致），`"Noto Sans SC"` 保持中文显示。
+
+```css
+@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap");
+
+:root {
+  /* 色彩系统 */
+  --color-bg: #f5f1ea;
+  --color-surface: rgba(255, 255, 255, 0.72);
+  --color-surface-hover: rgba(255, 255, 255, 0.88);
+  --color-surface-solid: #ffffff;
+  --color-border: rgba(22, 56, 95, 0.08);
+  --color-border-active: rgba(22, 56, 95, 0.2);
+
+  --color-text-primary: #1a2332;
+  --color-text-secondary: #526075;
+  --color-text-muted: #8494a7;
+
+  --color-accent: #2d6be4;
+  --color-accent-soft: rgba(45, 107, 228, 0.1);
+  --color-success: #2f9e72;
+  --color-success-soft: rgba(47, 158, 114, 0.12);
+  --color-danger: #c44536;
+  --color-danger-soft: rgba(196, 69, 54, 0.1);
+  --color-warning: #d4940a;
+
+  /* 侧栏 */
+  --sidebar-width: 240px;
+  --sidebar-collapsed-width: 68px;
+  --sidebar-bg: rgba(26, 35, 50, 0.95);
+  --sidebar-text: rgba(255, 255, 255, 0.7);
+  --sidebar-text-active: #ffffff;
+  --sidebar-item-hover: rgba(255, 255, 255, 0.08);
+  --sidebar-item-active: rgba(45, 107, 228, 0.2);
+
+  /* 圆角 */
+  --radius-sm: 8px;
+  --radius-md: 14px;
+  --radius-lg: 20px;
+  --radius-pill: 999px;
+
+  /* 阴影 */
+  --shadow-card: 0 2px 12px rgba(31, 43, 61, 0.06);
+  --shadow-card-hover: 0 8px 32px rgba(31, 43, 61, 0.1);
+  --shadow-sidebar: 4px 0 24px rgba(0, 0, 0, 0.08);
+
+  /* 排版 */
+  font-family: "Outfit", "Noto Sans SC", sans-serif;
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--color-text-primary);
+
+  /* 背景 */
+  color-scheme: light;
+  background:
+    radial-gradient(ellipse at 10% 0%, rgba(255, 184, 108, 0.35), transparent 50%),
+    radial-gradient(ellipse at 90% 10%, rgba(109, 181, 255, 0.3), transparent 40%),
+    var(--color-bg);
+  background-attachment: fixed;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+}
+
+body {
+  min-height: 100vh;
+  min-width: 320px;
+  -webkit-font-smoothing: antialiased;
+}
+
+button, select, textarea, input {
+  font: inherit;
+  color: inherit;
+}
+
+/* ---------- 通用按钮 ---------- */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  border: none;
+  border-radius: var(--radius-pill);
+  padding: 0.6rem 1.1rem;
+  font-weight: 500;
+  font-size: 0.875rem;
+  cursor: pointer;
+  transition: all 0.18s ease;
+  white-space: nowrap;
+}
+
+.btn:hover { transform: translateY(-1px); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+.btn-primary { background: var(--color-accent); color: #fff; }
+.btn-primary:hover { background: #2560d0; }
+
+.btn-soft {
+  background: var(--color-surface);
+  color: var(--color-text-primary);
+  border: 1px solid var(--color-border);
+}
+.btn-soft:hover { background: var(--color-surface-hover); border-color: var(--color-border-active); }
+
+.btn-danger { background: var(--color-danger); color: #fff; }
+.btn-danger-soft { background: var(--color-danger-soft); color: var(--color-danger); }
+
+.btn-sm { padding: 0.4rem 0.75rem; font-size: 0.8rem; }
+.btn-icon { padding: 0.5rem; border-radius: var(--radius-sm); }
+
+/* ---------- 动画 ---------- */
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.animate-in {
+  animation: fade-up 0.4s ease both;
+}
+
+/* 交错动画 */
+.stagger-1 { animation-delay: 0.05s; }
+.stagger-2 { animation-delay: 0.1s; }
+.stagger-3 { animation-delay: 0.15s; }
+.stagger-4 { animation-delay: 0.2s; }
+
+/* ---------- 滚动条 ---------- */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: rgba(22, 56, 95, 0.15); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: rgba(22, 56, 95, 0.25); }
+```
+
+---
+
+## 5. 核心组件
+
+### 5.1 `AppShell.tsx` — 根布局
+
+```tsx
+import { useState } from "react";
+import { Outlet } from "react-router-dom";
+import Sidebar from "./Sidebar";
+import AuthGuard from "./AuthGuard";
+
+export default function AppShell() {
+  const [collapsed, setCollapsed] = useState(false);
+
+  return (
+    <AuthGuard>
+      <div style={{
+        display: "flex",
+        minHeight: "100vh",
+      }}>
+        <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} />
+        <main style={{
+          flex: 1,
+          marginLeft: collapsed ? "var(--sidebar-collapsed-width)" : "var(--sidebar-width)",
+          padding: "1.5rem 2rem 3rem",
+          transition: "margin-left 0.25s ease",
+          maxWidth: "1100px",
+        }}>
+          <Outlet />
+        </main>
+      </div>
+    </AuthGuard>
+  );
 }
 ```
 
-`daily_stats` 保留最近 90 天。
-`recent_matches` 保留最近 50 条。
+### 5.2 `Sidebar.tsx` — 侧栏导航
 
----
+仿 AstrBot 的 `FullLayout.vue` 侧栏结构：logo + nav items + 底部状态。
 
-## 8. 冷启动流程
+```tsx
+import { NavLink, useLocation } from "react-router-dom";
+import {
+  LayoutDashboard,
+  Brain,
+  Sparkles,
+  ListTodo,
+  Radio,
+  Shield,
+  Settings,
+  PanelLeftClose,
+  PanelLeft,
+} from "lucide-react";
+import StatusDot from "./StatusDot";
 
-### 阶段零：空白状态
+type SidebarProps = {
+  collapsed: boolean;
+  onToggle: () => void;
+};
 
-系统部署后，`skills/` 目录只有空的类别子目录和空的 `_index.json`。
+const NAV_ITEMS = [
+  { to: "/", icon: LayoutDashboard, label: "总览", end: true },
+  { to: "/memory", icon: Brain, label: "记忆" },
+  { to: "/persona", icon: Sparkles, label: "人格" },
+  { to: "/tasks", icon: ListTodo, label: "任务" },
+  { to: "/events", icon: Radio, label: "事件" },
+  { to: "/auth", icon: Shield, label: "认证" },
+  { to: "/settings", icon: Settings, label: "设置" },
+] as const;
 
-所有请求走通用能力处理。和没有 Skill 系统时完全一样。
-**唯一的新行为：每次执行完毕，记录轨迹到 `skill_traces/`。**
+export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
+  return (
+    <aside className={`sidebar ${collapsed ? "sidebar--collapsed" : ""}`}>
+      {/* 顶部 Logo 区域 */}
+      <div className="sidebar-header">
+        {!collapsed && <span className="sidebar-logo">Lapwing</span>}
+        <button className="sidebar-toggle btn-icon" onClick={onToggle}>
+          {collapsed ? <PanelLeft size={18} /> : <PanelLeftClose size={18} />}
+        </button>
+      </div>
 
-这个阶段可能持续 1-2 周，取决于使用频率。
+      {/* 导航项 */}
+      <nav className="sidebar-nav">
+        {NAV_ITEMS.map(({ to, icon: Icon, label, ...rest }) => (
+          <NavLink
+            key={to}
+            to={to}
+            end={"end" in rest}
+            className={({ isActive }) =>
+              `sidebar-item ${isActive ? "sidebar-item--active" : ""}`
+            }
+            title={collapsed ? label : undefined}
+          >
+            <Icon size={20} strokeWidth={1.8} />
+            {!collapsed && <span>{label}</span>}
+          </NavLink>
+        ))}
+      </nav>
 
-### 阶段一：首批 Skill 孵化
-
-随着轨迹积累，自省环节开始检测到重复模式。
-预期在使用 1-2 周后，首批 3-5 个 Skill 自然孵化出来。
-
-这些 Skill 都是 draft 状态，经过 Kevin 确认后变为 active。
-
-如果 Kevin 想加速冷启动：
-- 可以手动写几个预置 Skill 放进 `skills/` 目录（source: preset）
-- 可以在对话中主动教她（"以后做 XX 按这个流程..."）
-
-但这**不是必须的**——系统设计为可以完全从零自然成长。
-
-### 阶段二：稳定增长
-
-当 active Skill 达到 10-20 个时，Skill 匹配率应稳定在 50-70%。
-大部分日常任务都能命中 Skill，执行质量和一致性明显提升。
-
-### 阶段三：成熟
-
-当 active Skill 达到 50+ 时，可能出现：
-- 触发冲突增多 → 需要更精确的检索
-- 部分 Skill 长期不用 → 自动 deprecated
-- 分裂/合并操作变频繁
-
-这是启用 Level 3 语义检索的时机。
-
----
-
-## 9. 与现有系统的集成
-
-### 9.1 与 Brain 的集成
-
-Brain 的 system prompt 中增加 Skill 相关指令：
-
-```markdown
-## Skill 系统
-
-我积累了一些处理特定任务的经验（Skill）。处理 Kevin 的请求时：
-
-1. 先检查是否有相关的 Skill
-2. 如果有，参考 Skill 中的经验来处理，但根据具体情况灵活调整
-3. 如果没有，用我的通用能力处理
-4. 无论是否使用 Skill，执行完毕后都记录轨迹
-
-Skill 是我的经验笔记，不是必须严格遵循的脚本。
+      {/* 底部状态 */}
+      <div className="sidebar-footer">
+        {!collapsed && (
+          <div className="sidebar-status">
+            <StatusDot online={true} />
+            <span>后端在线</span>
+          </div>
+        )}
+      </div>
+    </aside>
+  );
+}
 ```
 
-在实际请求处理流程中，Brain 在理解意图之后、开始执行之前，插入 Skill 检索步骤。
+### 5.3 `AuthGuard.tsx` — 鉴权守卫
 
-### 9.2 与 Agent Team 的关系
+从现有 `App.tsx` 提取 bootstrap token 逻辑，独立为守卫组件。包裹 `AppShell`，只在鉴权成功后渲染子组件。
 
-Skill 不改变 Agent 的接口和行为。Agent 仍然按原有方式接收任务和返回结果。
-Skill 只影响 Brain 如何拆解任务和调度 Agent——更有经验的调度。
+```tsx
+import { type FormEvent, useEffect, useState, type ReactNode } from "react";
+import { createApiSession, getAuthStatus } from "../api";
 
-### 9.3 与记忆系统的关系
+declare global {
+  interface Window {
+    __TAURI__?: {
+      invoke?: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
+    };
+  }
+}
 
-Skill 和记忆是互补的：
+async function readBootstrapToken(): Promise<string> {
+  const invoke = window.__TAURI__?.invoke;
+  if (!invoke) throw new Error("Tauri runtime unavailable");
+  const token = await invoke("read_bootstrap_token");
+  if (typeof token !== "string" || !token.trim()) throw new Error("Failed to read bootstrap token");
+  return token;
+}
 
-- **记忆**存的是关于 Kevin 的信息（偏好、习惯、背景）
-- **Skill**存的是关于任务的经验（怎么做、注意什么）
+export default function AuthGuard({ children }: { children: ReactNode }) {
+  const [ready, setReady] = useState(false);
+  const [error, setError] = useState("");
+  const [manualMode, setManualMode] = useState(false);
+  const [manualToken, setManualToken] = useState("");
+  const [submitting, setSubmitting] = useState(false);
 
-Skill 中可以引用记忆，但不硬编码。例如：
-- ✅ "参考 Kevin 的研究方向（从记忆中获取）来判断论文相关性"
-- ❌ "Kevin 的研究方向是 RAG，优先选择 RAG 相关论文"
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        // 先尝试现有 session
+        await getAuthStatus();
+        if (!cancelled) setReady(true);
+      } catch {
+        // 尝试 Tauri 自动获取 token
+        try {
+          const token = await readBootstrapToken();
+          await createApiSession(token);
+          if (!cancelled) setReady(true);
+        } catch {
+          // 非 Tauri 环境，进入手动输入模式
+          if (!cancelled) setManualMode(true);
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
-这样当 Kevin 的研究方向变了，Skill 不需要手动更新。
+  async function handleSubmit(e: FormEvent) {
+    e.preventDefault();
+    if (!manualToken.trim()) return;
+    setSubmitting(true);
+    try {
+      await createApiSession(manualToken.trim());
+      setReady(true);
+      setManualMode(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
-### 9.4 与自省系统的集成
+  if (ready) return <>{children}</>;
 
-现有的自省流程（每晚回顾对话、写日记、微调人格）扩展为：
-
-```
-原有自省流程：
-1. 回顾今天的对话
-2. 写日记
-3. 考虑是否微调人格 prompt
-
-扩展后：
-1. 回顾今天的对话
-2. 写日记
-3. 考虑是否微调人格 prompt
-4. 【新增】扫描今天的执行轨迹
-5. 【新增】检查是否有新的 Skill 可以孵化
-6. 【新增】检查现有 Skill 是否需要更新
-7. 【新增】更新 _registry.json 统计数据
-8. 【新增】重建 _index.json（如果有变动）
-```
-
-自省中的 Skill 相关操作的 token 成本估算：
-- 加载今天的轨迹摘要：~500 token
-- 加载现有 Skill 索引：~100 token / Skill
-- 孵化一个新 Skill 的 LLM 调用：~2000 token（input+output）
-- 更新一个 Skill 的 LLM 调用：~1500 token
-
-在 Skill 数量 < 50 的阶段，每晚自省增加的总成本约 5000-10000 token。
-
-### 9.5 与 Heartbeat 的关系
-
-Heartbeat（心跳/主动消息）系统不直接触发 Skill。
-但 Heartbeat 可以使用 Skill 来提升主动行为的质量。
-
-例如，如果 Lapwing 在 Heartbeat 中决定主动给 Kevin 分享一条新闻，
-她可以参考"信息搜索"Skill 来确保搜索质量。
-
----
-
-## 10. 可观测性
-
-### 10.1 对话查询
-
-Kevin 可以在 Telegram 中直接问她：
-
-- "你现在有哪些技能？" → 列出所有 active Skill 的名字和简述
-- "你最近学了什么新技能？" → 列出最近创建/更新的 Skill
-- "你的文献调研技能是怎么做的？" → 展示该 Skill 的执行流程
-- "你这个技能不太好，XX 地方要改" → 触发 Skill 更新
-
-### 10.2 日志
-
-每次 Skill 相关操作写入日志：
-
-- `[SKILL:MATCH]` Skill 匹配结果
-- `[SKILL:LOAD]` Skill 加载
-- `[SKILL:CREATE]` Skill 创建
-- `[SKILL:UPDATE]` Skill 更新
-- `[SKILL:DEPRECATE]` Skill 废弃
-- `[SKILL:VALIDATE]` Skill 验证结果
-
----
-
-## 11. 和宪法的关系（安全边界）
-
-### Skill 不受宪法保护
-
-Skill 是"枝叶"，可以被创建、修改、删除、废弃。
-Lapwing 自己可以管理所有 Skill（创建、更新、废弃）。
-
-### Skill 执行受宪法约束
-
-无论 Skill 中怎么写，执行结果都不能违反宪法。
-Brain 在执行流程的关键节点做宪法检查（见 4.3）。
-
-### Skill 不能修改宪法
-
-Skill 的执行流程中不能包含修改宪法文件的步骤。
-如果 Lapwing 尝试孵化这样的 Skill，验证步骤会拦截。
-
-### Skill 变更透明
-
-所有 Skill 变更都有日志。Kevin 问"你最近改了什么技能"时，
-Lapwing 如实汇报。不存在"偷偷改了 Skill"的可能。
-
----
-
-## 12. 实现顺序
-
-### Phase 1: 基础框架（优先实现）
-
-- [ ] `skills/` 目录结构创建
-- [ ] Skill 文件解析器（读 frontmatter + 正文）
-- [ ] `_index.json` 生成器
-- [ ] Level 1 快速匹配
-- [ ] Level 2 索引匹配（LLM 选择）
-- [ ] Skill 注入 Brain context 的流程
-- [ ] 执行轨迹记录器
-- [ ] `_registry.json` 更新逻辑
-
-### Phase 2: 生命周期管理
-
-- [ ] 自省环节的 Skill 孵化逻辑
-- [ ] Draft → Active 确认机制
-- [ ] 用户教授检测和 Skill 生成
-- [ ] Skill 验证器
-- [ ] Skill 更新逻辑（偏离检测 → 更新）
-
-### Phase 3: 成熟特性
-
-- [ ] Skill 分裂/合并
-- [ ] 自动 deprecated 检测
-- [ ] 频率排序优化
-- [ ] 摘要+详情模式
-- [ ] Level 3 语义检索（Skill > 200 时）
-
-### Phase 4: 可观测性
-
-- [ ] 对话查询接口（"你有哪些技能"）
-- [ ] 日志系统集成
-- [ ] `_registry.json` 统计展示
-
----
-
-## 附录 A: Skill 示例 — 文献调研
-
-```markdown
----
-id: literature_survey
-name: 文献调研
-category: research
-status: active
-created: 2026-03-15
-updated: 2026-03-28
-source: trace
-parent_skills: []
-version: 3
-use_count: 7
-last_used: 2026-03-28
-success_rate: 0.85
-agents: [researcher, browser]
-tools: [web_search, file_write]
-triggers:
-  keywords: [论文, 调研, 文献, 综述, 最新研究, paper, survey]
-  patterns: ["最近.*论文", "调研.*论文", ".*综述"]
-  examples:
-    - "帮我调研一下最新的RAG论文"
-    - "最近有没有什么关于向量数据库的新论文"
-    - "帮我做个文献综述"
-size_tokens: 850
----
-
-# 文献调研
-
-## 什么时候用
-Kevin 让我调研某个学术话题、找论文、做文献综述的时候。
-
-## 前置条件
-- 调研主题明确（如果 Kevin 说得模糊，我自己先判断一个合理范围，做完再跟他确认）
-- Researcher Agent 可用
-- 网络可用
-
-## 执行流程
-1. 确认调研主题和时间范围（默认最近一年）
-2. 让 Researcher 在 arXiv 和 Semantic Scholar 上搜索
-3. 初筛：读摘要，去掉不相关的
-4. 精筛：留下 5-10 篇最相关的
-5. 每篇提取：标题、作者、发表时间、核心方法、关键结论
-6. 按主题分组（不是按时间排）
-7. 先用自然语言给 Kevin 讲整体概况和关键发现
-8. 把详细整理存成文件，告诉他文件位置
-
-## 注意事项
-- 不要一上来甩论文列表，先说"大图"——这个领域最近的趋势是什么
-- Kevin 的研究方向从记忆中获取，相关论文优先级更高
-- 中文论文也要包含（2026-03-20 Kevin 特别提到的）
-- Google Scholar 也是有用的搜索源（2026-03-28 发现的）
-
-## 失败处理
-- 搜不到结果：扩大关键词、放宽时间范围、换数据源
-- Agent 超时：先告诉 Kevin 在跑，稍等
-- 找到太多结果（>30篇）：加更具体的筛选条件
-
-## 变更日志
-- 2026-03-15: 从三次调研任务的轨迹中孵化创建
-- 2026-03-20: Kevin 说中文论文也要包含，补充注意事项
-- 2026-03-28: 执行中发现 Google Scholar 有 arXiv 遗漏的论文，增加为搜索源
+  return (
+    <div className="auth-guard-page">
+      <div className="auth-guard-card animate-in">
+        <p className="auth-guard-eyebrow">Lapwing Desktop</p>
+        {manualMode ? (
+          <>
+            <h1>输入 Bootstrap Token</h1>
+            <p className="auth-guard-hint">
+              在远端主机查看 <code>~/.lapwing/auth/api-bootstrap-token</code>
+            </p>
+            <form onSubmit={handleSubmit} className="auth-guard-form">
+              <textarea
+                value={manualToken}
+                onChange={(e) => setManualToken(e.target.value)}
+                placeholder="粘贴 bootstrap token"
+                rows={3}
+              />
+              <button type="submit" className="btn btn-primary" disabled={submitting}>
+                {submitting ? "验证中…" : "建立会话"}
+              </button>
+            </form>
+          </>
+        ) : error ? (
+          <>
+            <h1>鉴权失败</h1>
+            <p className="auth-guard-hint">{error}</p>
+          </>
+        ) : (
+          <>
+            <h1>正在连接…</h1>
+            <p className="auth-guard-hint">读取 bootstrap token 并建立本地会话</p>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 ```
 
-## 附录 B: 空白 Skill 模板
+### 5.4 小组件
 
-```markdown
----
-id:
-name:
-category:
-status: draft
-created:
-updated:
-source:
-parent_skills: []
-version: 1
-use_count: 0
-last_used: null
-success_rate: 0.0
-agents: []
-tools: []
-triggers:
-  keywords: []
-  patterns: []
-  examples: []
-size_tokens: 0
----
-
-#
-
-## 什么时候用
-
-## 前置条件
-
-## 执行流程
-
-## 注意事项
-
-## 失败处理
-
-## 变更日志
+#### `StatusDot.tsx`
+```tsx
+export default function StatusDot({ online }: { online: boolean }) {
+  return (
+    <span
+      className={`status-dot ${online ? "status-dot--online" : "status-dot--offline"}`}
+    />
+  );
+}
 ```
+
+#### `StatCard.tsx`
+```tsx
+type StatCardProps = {
+  label: string;
+  value: string | number;
+  sub?: string;
+};
+
+export default function StatCard({ label, value, sub }: StatCardProps) {
+  return (
+    <div className="stat-card">
+      <span className="stat-card-label">{label}</span>
+      <strong className="stat-card-value">{value}</strong>
+      {sub && <span className="stat-card-sub">{sub}</span>}
+    </div>
+  );
+}
+```
+
+#### `DataCard.tsx`
+```tsx
+import type { ReactNode } from "react";
+
+type DataCardProps = {
+  title: string;
+  actions?: ReactNode;
+  children: ReactNode;
+  className?: string;
+};
+
+export default function DataCard({ title, actions, children, className = "" }: DataCardProps) {
+  return (
+    <section className={`data-card animate-in ${className}`}>
+      <div className="data-card-head">
+        <h2>{title}</h2>
+        {actions && <div className="data-card-actions">{actions}</div>}
+      </div>
+      <div className="data-card-body">{children}</div>
+    </section>
+  );
+}
+```
+
+#### `EmptyState.tsx`
+```tsx
+export default function EmptyState({ message }: { message: string }) {
+  return <p className="empty-state">{message}</p>;
+}
+```
+
+#### `BarMeter.tsx`
+```tsx
+type BarMeterProps = {
+  label: string;
+  value: number;
+  max?: number;
+  suffix?: string;
+};
+
+export default function BarMeter({ label, value, max = 10, suffix }: BarMeterProps) {
+  const pct = Math.min((value / max) * 100, 100);
+  return (
+    <div className="bar-meter">
+      <div className="bar-meter-row">
+        <span>{label}</span>
+        <strong>{value.toFixed(1)}{suffix}</strong>
+      </div>
+      <div className="bar-meter-track">
+        <div className="bar-meter-fill" style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+```
+
+#### `EventBadge.tsx`
+```tsx
+export default function EventBadge({ type }: { type: string }) {
+  return <span className="event-badge">{type}</span>;
+}
+```
+
+---
+
+## 6. 页面组件
+
+### 6.1 `OverviewPage.tsx` — 总览
+
+从现有 App.tsx 提取「状态」面板 + hero 操作按钮。这是首页。
+
+```tsx
+import { useEffect, useState } from "react";
+import { RefreshCw, Zap } from "lucide-react";
+import {
+  getStatus, getChats, reloadPersona, evolvePrompt,
+  type StatusResponse, type ChatSummary,
+} from "../api";
+import StatCard from "../components/StatCard";
+import DataCard from "../components/DataCard";
+import StatusDot from "../components/StatusDot";
+
+function formatDate(v: string | null) {
+  return v ? new Date(v).toLocaleString("zh-CN") : "暂无";
+}
+
+export default function OverviewPage() {
+  const [status, setStatus] = useState<StatusResponse | null>(null);
+  const [chats, setChats] = useState<ChatSummary[]>([]);
+  const [busy, setBusy] = useState<"reload" | "evolve" | null>(null);
+
+  useEffect(() => {
+    void Promise.all([getStatus(), getChats()]).then(([s, c]) => {
+      setStatus(s);
+      setChats(c);
+    });
+  }, []);
+
+  async function handleReload() {
+    setBusy("reload");
+    try { await reloadPersona(); } finally { setBusy(null); }
+  }
+
+  async function handleEvolve() {
+    setBusy("evolve");
+    try { await evolvePrompt(); } finally { setBusy(null); }
+  }
+
+  return (
+    <div className="page">
+      {/* 页头 */}
+      <header className="page-header animate-in">
+        <div>
+          <h1 className="page-title">总览</h1>
+          <p className="page-subtitle">Lapwing 运行状态一览</p>
+        </div>
+        <div className="page-header-actions">
+          <button className="btn btn-primary" onClick={handleReload} disabled={busy !== null}>
+            <RefreshCw size={16} />
+            {busy === "reload" ? "重载中…" : "重载人格"}
+          </button>
+          <button className="btn btn-soft" onClick={handleEvolve} disabled={busy !== null}>
+            <Zap size={16} />
+            {busy === "evolve" ? "进化中…" : "触发进化"}
+          </button>
+        </div>
+      </header>
+
+      {/* 状态卡片组 */}
+      <div className="stat-grid animate-in stagger-1">
+        <StatCard label="Chat 数量" value={status?.chat_count ?? 0} />
+        <StatCard label="最后活跃" value={formatDate(status?.last_interaction ?? null)} />
+        <StatCard label="服务启动" value={formatDate(status?.started_at ?? null)} />
+        <StatCard
+          label="后端状态"
+          value={status?.online ? "在线" : "离线"}
+        />
+      </div>
+
+      {/* 最近 Chat 列表 */}
+      <DataCard title="最近对话" className="stagger-2">
+        {chats.length === 0 ? (
+          <p className="empty-state">暂无对话记录。</p>
+        ) : (
+          <div className="list-stack">
+            {chats.slice(0, 8).map((chat) => (
+              <div key={chat.chat_id} className="list-row">
+                <span className="list-row-key">{chat.chat_id}</span>
+                <span className="list-row-muted">{formatDate(chat.last_interaction)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </DataCard>
+    </div>
+  );
+}
+```
+
+### 6.2 `MemoryPage.tsx` — 记忆 + 兴趣
+
+合并现有「记忆管理」和「兴趣图谱」面板。需要 chat 选择器。
+
+```tsx
+import { useEffect, useState } from "react";
+import { Trash2 } from "lucide-react";
+import {
+  getChats, getInterests, getMemory, deleteMemory,
+  type ChatSummary, type InterestItem, type MemoryItem,
+} from "../api";
+import DataCard from "../components/DataCard";
+import BarMeter from "../components/BarMeter";
+import EmptyState from "../components/EmptyState";
+
+function formatDate(v: string | null) {
+  return v ? new Date(v).toLocaleString("zh-CN") : "暂无";
+}
+
+export default function MemoryPage() {
+  const [chats, setChats] = useState<ChatSummary[]>([]);
+  const [chatId, setChatId] = useState("");
+  const [interests, setInterests] = useState<InterestItem[]>([]);
+  const [memory, setMemory] = useState<MemoryItem[]>([]);
+
+  useEffect(() => {
+    void getChats().then((c) => {
+      setChats(c);
+      if (c.length > 0 && !chatId) setChatId(c[0].chat_id);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!chatId) return;
+    void Promise.all([getInterests(chatId), getMemory(chatId)]).then(([i, m]) => {
+      setInterests(i.items);
+      setMemory(m.items);
+    });
+  }, [chatId]);
+
+  async function handleDelete(factKey: string) {
+    await deleteMemory(chatId, factKey);
+    const res = await getMemory(chatId);
+    setMemory(res.items);
+  }
+
+  return (
+    <div className="page">
+      <header className="page-header animate-in">
+        <div>
+          <h1 className="page-title">记忆</h1>
+          <p className="page-subtitle">管理 Lapwing 的记忆和兴趣图谱</p>
+        </div>
+        <select
+          className="chat-selector"
+          value={chatId}
+          onChange={(e) => setChatId(e.target.value)}
+        >
+          {chats.map((c) => (
+            <option key={c.chat_id} value={c.chat_id}>{c.chat_id}</option>
+          ))}
+        </select>
+      </header>
+
+      {/* 双列布局 */}
+      <div className="two-col">
+        {/* 兴趣图谱 */}
+        <DataCard title="兴趣图谱" className="stagger-1">
+          {interests.length === 0 ? (
+            <EmptyState message="暂无兴趣记录。" />
+          ) : (
+            <div className="list-stack">
+              {interests.map((item) => (
+                <BarMeter
+                  key={item.topic}
+                  label={item.topic}
+                  value={item.weight}
+                  max={8}
+                />
+              ))}
+            </div>
+          )}
+        </DataCard>
+
+        {/* 记忆列表 */}
+        <DataCard title={`记忆 (${memory.length})`} className="stagger-2">
+          {memory.length === 0 ? (
+            <EmptyState message="当前没有可见记忆。" />
+          ) : (
+            <div className="list-stack">
+              {memory.map((item) => (
+                <div key={item.fact_key} className="memory-row">
+                  <div className="memory-row-content">
+                    <p className="memory-row-key">#{item.index} [{item.fact_key}]</p>
+                    <p className="memory-row-value">{item.fact_value}</p>
+                    <span className="list-row-muted">
+                      更新于 {formatDate(item.updated_at)}
+                    </span>
+                  </div>
+                  <button
+                    className="btn btn-danger-soft btn-sm btn-icon"
+                    onClick={() => void handleDelete(item.fact_key)}
+                    title="删除"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </DataCard>
+      </div>
+    </div>
+  );
+}
+```
+
+### 6.3 `PersonaPage.tsx` — 人格 + 学习日志
+
+合并现有「学习日志」面板 + 进化操作。
+
+```tsx
+import { useEffect, useState } from "react";
+import { Sparkles, RefreshCw } from "lucide-react";
+import {
+  getLearnings, evolvePrompt, reloadPersona,
+  type LearningItem,
+} from "../api";
+import DataCard from "../components/DataCard";
+import EmptyState from "../components/EmptyState";
+
+function formatDate(v: string) {
+  return new Date(v).toLocaleString("zh-CN");
+}
+
+export default function PersonaPage() {
+  const [learnings, setLearnings] = useState<LearningItem[]>([]);
+  const [busy, setBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    void getLearnings().then((r) => setLearnings(r.items));
+  }, []);
+
+  async function handleEvolve() {
+    setBusy("evolve");
+    try { await evolvePrompt(); } finally { setBusy(null); }
+  }
+
+  async function handleReload() {
+    setBusy("reload");
+    try { await reloadPersona(); } finally { setBusy(null); }
+  }
+
+  return (
+    <div className="page">
+      <header className="page-header animate-in">
+        <div>
+          <h1 className="page-title">人格</h1>
+          <p className="page-subtitle">Lapwing 的自省日志和人格进化</p>
+        </div>
+        <div className="page-header-actions">
+          <button className="btn btn-primary" onClick={handleEvolve} disabled={busy !== null}>
+            <Sparkles size={16} />
+            {busy === "evolve" ? "进化中…" : "触发进化"}
+          </button>
+          <button className="btn btn-soft" onClick={handleReload} disabled={busy !== null}>
+            <RefreshCw size={16} />
+            {busy === "reload" ? "重载中…" : "重载人格"}
+          </button>
+        </div>
+      </header>
+
+      <DataCard title="学习日志" className="stagger-1">
+        {learnings.length === 0 ? (
+          <EmptyState message="data/memory/journal/ 中暂无日志。" />
+        ) : (
+          <div className="list-stack">
+            {learnings.map((item) => (
+              <div key={item.filename} className="learning-entry">
+                <div className="learning-entry-head">
+                  <strong>{item.date}</strong>
+                  <span className="list-row-muted">{formatDate(item.updated_at)}</span>
+                </div>
+                <pre className="learning-entry-body">{item.content}</pre>
+              </div>
+            ))}
+          </div>
+        )}
+      </DataCard>
+    </div>
+  );
+}
+```
+
+### 6.4 `TasksPage.tsx` — 任务视图
+
+```tsx
+import { useEffect, useState } from "react";
+import {
+  getChats, getTasks, getTask,
+  type ChatSummary, type TaskSummary, type TaskDetail,
+} from "../api";
+import DataCard from "../components/DataCard";
+import EmptyState from "../components/EmptyState";
+
+function formatDate(v: string | null) {
+  return v ? new Date(v).toLocaleString("zh-CN") : "—";
+}
+
+export default function TasksPage() {
+  const [chats, setChats] = useState<ChatSummary[]>([]);
+  const [chatId, setChatId] = useState("");
+  const [tasks, setTasks] = useState<TaskSummary[]>([]);
+  const [selectedId, setSelectedId] = useState("");
+  const [detail, setDetail] = useState<TaskDetail | null>(null);
+
+  useEffect(() => {
+    void getChats().then((c) => {
+      setChats(c);
+      if (c.length > 0 && !chatId) setChatId(c[0].chat_id);
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!chatId) return;
+    void getTasks(chatId, undefined, 20).then((r) => {
+      setTasks(r.items);
+      if (r.items.length > 0) setSelectedId(r.items[0].task_id);
+    });
+  }, [chatId]);
+
+  useEffect(() => {
+    if (!selectedId) { setDetail(null); return; }
+    void getTask(selectedId).then(setDetail);
+  }, [selectedId]);
+
+  return (
+    <div className="page">
+      <header className="page-header animate-in">
+        <div>
+          <h1 className="page-title">任务</h1>
+          <p className="page-subtitle">Agent 团队的任务执行记录</p>
+        </div>
+        <select
+          className="chat-selector"
+          value={chatId}
+          onChange={(e) => setChatId(e.target.value)}
+        >
+          {chats.map((c) => (
+            <option key={c.chat_id} value={c.chat_id}>{c.chat_id}</option>
+          ))}
+        </select>
+      </header>
+
+      <div className="two-col">
+        <DataCard title={`任务列表 (${tasks.length})`} className="stagger-1">
+          {tasks.length === 0 ? (
+            <EmptyState message="暂无任务记录。" />
+          ) : (
+            <div className="list-stack">
+              {tasks.map((task) => (
+                <div
+                  key={task.task_id}
+                  className={`task-row ${selectedId === task.task_id ? "task-row--active" : ""}`}
+                  onClick={() => setSelectedId(task.task_id)}
+                >
+                  <p className="task-row-id">{task.task_id}</p>
+                  <p className="task-row-text">{task.text || "（无文本）"}</p>
+                  <span className="list-row-muted">
+                    {task.status} · {formatDate(task.updated_at ?? null)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </DataCard>
+
+        <DataCard title="任务详情" className="stagger-2">
+          {!detail ? (
+            <EmptyState message="选择左侧任务查看详情。" />
+          ) : (
+            <div className="task-detail">
+              <div className="task-detail-header">
+                <strong>{detail.task_id}</strong>
+                <span className={`task-status task-status--${detail.status}`}>
+                  {detail.status}
+                </span>
+              </div>
+              <pre className="task-detail-events">
+                {JSON.stringify(detail.events, null, 2)}
+              </pre>
+            </div>
+          )}
+        </DataCard>
+      </div>
+    </div>
+  );
+}
+```
+
+### 6.5 `EventsPage.tsx` — 实时事件流
+
+```tsx
+import { useEffect, useRef, useState } from "react";
+import { Radio } from "lucide-react";
+import { API_BASE, type DesktopEvent } from "../api";
+import DataCard from "../components/DataCard";
+import StatusDot from "../components/StatusDot";
+import EventBadge from "../components/EventBadge";
+import EmptyState from "../components/EmptyState";
+
+function formatDate(v: string) {
+  return new Date(v).toLocaleString("zh-CN");
+}
+
+export default function EventsPage() {
+  const [events, setEvents] = useState<DesktopEvent[]>([]);
+  const [connected, setConnected] = useState(false);
+  const streamRef = useRef<EventSource | null>(null);
+
+  useEffect(() => {
+    const stream = new EventSource(`${API_BASE}/api/events/stream`, {
+      withCredentials: API_BASE.length > 0,
+    });
+    streamRef.current = stream;
+
+    stream.onopen = () => setConnected(true);
+    stream.onerror = () => setConnected(false);
+    stream.onmessage = (msg) => {
+      const event = JSON.parse(msg.data) as DesktopEvent;
+      setEvents((prev) => [event, ...prev].slice(0, 50));
+    };
+
+    return () => { stream.close(); setConnected(false); };
+  }, []);
+
+  return (
+    <div className="page">
+      <header className="page-header animate-in">
+        <div>
+          <h1 className="page-title">事件流</h1>
+          <p className="page-subtitle">来自后端的实时 SSE 事件</p>
+        </div>
+        <div className="page-header-actions">
+          <div className="connection-pill">
+            <StatusDot online={connected} />
+            <span>{connected ? "已连接" : "未连接"}</span>
+          </div>
+        </div>
+      </header>
+
+      <DataCard title={`最近事件 (${events.length})`} className="stagger-1">
+        {events.length === 0 ? (
+          <EmptyState message="等待来自 SSE 的事件…" />
+        ) : (
+          <div className="list-stack">
+            {events.map((event, i) => (
+              <div key={`${event.timestamp}-${i}`} className="event-row">
+                <EventBadge type={event.type} />
+                <p className="event-row-text">{event.payload.text ?? "（无文本）"}</p>
+                <span className="list-row-muted">
+                  {event.payload.chat_id ?? "unknown"} · {formatDate(event.timestamp)}
+                  {event.payload.task_id ? ` · ${event.payload.task_id}` : ""}
+                  {event.payload.tool_name ? ` · ${event.payload.tool_name}` : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </DataCard>
+    </div>
+  );
+}
+```
+
+### 6.6 `AuthPage.tsx` — 认证管理
+
+从现有 App.tsx 提取 Auth 面板、OAuth 流程、Codex 导入。
+
+```tsx
+import { useEffect, useState } from "react";
+import { KeyRound, Download, ExternalLink } from "lucide-react";
+import {
+  getAuthStatus, importCodexCache, startOpenAICodexOAuth,
+  getOAuthLoginSession,
+  type AuthStatusResponse, type OAuthLoginSession,
+} from "../api";
+import DataCard from "../components/DataCard";
+import EmptyState from "../components/EmptyState";
+
+function formatDate(v: string | null) {
+  return v ? new Date(v).toLocaleString("zh-CN") : "—";
+}
+
+export default function AuthPage() {
+  const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(null);
+  const [importing, setImporting] = useState(false);
+  const [startingOAuth, setStartingOAuth] = useState(false);
+  const [oauthSession, setOAuthSession] = useState<OAuthLoginSession | null>(null);
+  const [oauthNotice, setOAuthNotice] = useState("");
+
+  useEffect(() => {
+    void getAuthStatus().then(setAuthStatus);
+  }, []);
+
+  // OAuth 轮询
+  useEffect(() => {
+    if (!oauthSession || !["pending", "completing"].includes(oauthSession.status)) return;
+    const timer = setInterval(async () => {
+      try {
+        const next = await getOAuthLoginSession(oauthSession.loginId);
+        setOAuthSession(next);
+        if (next.status === "completed") {
+          setOAuthNotice(next.completionMessage ?? "OpenAI 登录成功。");
+          void getAuthStatus().then(setAuthStatus);
+        } else if (["failed", "expired"].includes(next.status)) {
+          setOAuthNotice(next.error ?? "登录未完成。");
+        }
+      } catch {}
+    }, 1500);
+    return () => clearInterval(timer);
+  }, [oauthSession]);
+
+  async function handleImport() {
+    setImporting(true);
+    try {
+      await importCodexCache();
+      void getAuthStatus().then(setAuthStatus);
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  async function handleOAuth() {
+    setStartingOAuth(true);
+    try {
+      const returnTo = ["http:", "https:"].includes(window.location.protocol)
+        ? window.location.href : undefined;
+      const session = await startOpenAICodexOAuth(returnTo);
+      setOAuthSession(session);
+      setOAuthNotice("授权页面已就绪，完成后自动刷新。");
+      window.open(session.authorizeUrl, "_blank", "noopener,noreferrer");
+    } catch (err) {
+      setOAuthNotice(err instanceof Error ? err.message : String(err));
+    } finally {
+      setStartingOAuth(false);
+    }
+  }
+
+  return (
+    <div className="page">
+      <header className="page-header animate-in">
+        <div>
+          <h1 className="page-title">认证</h1>
+          <p className="page-subtitle">Auth Profiles、OAuth 和本机 API 安全</p>
+        </div>
+        <div className="page-header-actions">
+          <button className="btn btn-primary" onClick={handleOAuth}
+            disabled={startingOAuth || oauthSession?.status === "pending"}>
+            <KeyRound size={16} />
+            {startingOAuth ? "跳转中…" : "登录 OpenAI"}
+          </button>
+          <button className="btn btn-soft" onClick={handleImport} disabled={importing}>
+            <Download size={16} />
+            {importing ? "导入中…" : "导入 Codex auth.json"}
+          </button>
+        </div>
+      </header>
+
+      <div className="two-col">
+        {/* 服务状态 */}
+        <DataCard title="服务认证" className="stagger-1">
+          <div className="list-stack">
+            <div className="list-row">
+              <span className="list-row-key">Host</span>
+              <span>{authStatus?.serviceAuth.host ?? "127.0.0.1"}</span>
+            </div>
+            <div className="list-row">
+              <span className="list-row-key">Cookie</span>
+              <span>{authStatus?.serviceAuth.cookieName ?? "lapwing_session"}</span>
+            </div>
+            <div className="list-row">
+              <span className="list-row-key">保护状态</span>
+              <span>{authStatus?.serviceAuth.protected ? "✓ 已保护" : "✗ 未保护"}</span>
+            </div>
+          </div>
+          {oauthNotice && <p className="auth-notice">{oauthNotice}</p>}
+          {oauthSession?.authorizeUrl && ["pending", "failed", "expired"].includes(oauthSession.status) && (
+            <p className="auth-notice">
+              浏览器未自动打开？{" "}
+              <a href={oauthSession.authorizeUrl} target="_blank" rel="noreferrer"
+                className="auth-link">
+                点击手动授权 <ExternalLink size={12} />
+              </a>
+            </p>
+          )}
+        </DataCard>
+
+        {/* Profiles */}
+        <DataCard title="Auth Profiles" className="stagger-2">
+          {(authStatus?.profiles ?? []).length === 0 ? (
+            <EmptyState message="尚未导入或登录任何 auth profile。" />
+          ) : (
+            <div className="list-stack">
+              {authStatus!.profiles.map((p) => (
+                <div key={p.profileId} className="list-row-block">
+                  <div className="list-row">
+                    <span className="list-row-key">{p.profileId}</span>
+                    <span>{p.provider} · {p.type}</span>
+                  </div>
+                  <span className="list-row-muted">
+                    {p.status}
+                    {p.reasonCode ? ` · ${p.reasonCode}` : ""}
+                    {p.expiresAt ? ` · 到期 ${formatDate(p.expiresAt)}` : ""}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+        </DataCard>
+      </div>
+
+      {/* Routes */}
+      <DataCard title="路由配置" className="stagger-3">
+        {Object.keys(authStatus?.routes ?? {}).length === 0 ? (
+          <EmptyState message="暂无路由配置。" />
+        ) : (
+          <div className="list-stack">
+            {Object.entries(authStatus!.routes!).map(([purpose, route]) => (
+              <div key={purpose} className="list-row-block">
+                <div className="list-row">
+                  <span className="list-row-key">{purpose}</span>
+                  <span>{route.provider || "auto"} · {route.model}</span>
+                </div>
+                <span className="list-row-muted">
+                  {route.baseUrl}
+                  {route.bindingMismatch ? " · ⚠ binding 不一致" : ""}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
+      </DataCard>
+    </div>
+  );
+}
+```
+
+### 6.7 `SettingsPage.tsx` — 预留
+
+```tsx
+import DataCard from "../components/DataCard";
+
+export default function SettingsPage() {
+  return (
+    <div className="page">
+      <header className="page-header animate-in">
+        <div>
+          <h1 className="page-title">设置</h1>
+          <p className="page-subtitle">系统配置（即将推出）</p>
+        </div>
+      </header>
+
+      <DataCard title="配置管理" className="stagger-1">
+        <p className="empty-state">
+          此页面将支持在线编辑 .env 配置、管理 Heartbeat 参数、调整 LLM 路由策略等。
+          目前请直接编辑服务器上的配置文件。
+        </p>
+      </DataCard>
+    </div>
+  );
+}
+```
+
+---
+
+## 7. 页面级样式
+
+### `styles/sidebar.css`
+
+```css
+.sidebar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: var(--sidebar-width);
+  height: 100vh;
+  background: var(--sidebar-bg);
+  backdrop-filter: blur(20px);
+  box-shadow: var(--shadow-sidebar);
+  display: flex;
+  flex-direction: column;
+  transition: width 0.25s ease;
+  z-index: 100;
+  overflow: hidden;
+}
+
+.sidebar--collapsed {
+  width: var(--sidebar-collapsed-width);
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1.25rem 1rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-logo {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--sidebar-text-active);
+  letter-spacing: 0.04em;
+}
+
+.sidebar-toggle {
+  background: transparent;
+  border: none;
+  color: var(--sidebar-text);
+  cursor: pointer;
+  padding: 0.4rem;
+  border-radius: var(--radius-sm);
+  transition: background 0.15s;
+}
+.sidebar-toggle:hover {
+  background: var(--sidebar-item-hover);
+}
+
+.sidebar-nav {
+  flex: 1;
+  padding: 0.75rem 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.65rem 0.85rem;
+  border-radius: var(--radius-sm);
+  color: var(--sidebar-text);
+  text-decoration: none;
+  font-size: 0.9rem;
+  font-weight: 450;
+  transition: all 0.15s ease;
+}
+
+.sidebar-item:hover {
+  background: var(--sidebar-item-hover);
+  color: var(--sidebar-text-active);
+}
+
+.sidebar-item--active {
+  background: var(--sidebar-item-active);
+  color: var(--sidebar-text-active);
+  font-weight: 550;
+}
+
+.sidebar--collapsed .sidebar-item {
+  justify-content: center;
+  padding: 0.65rem;
+}
+
+.sidebar-footer {
+  padding: 1rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.sidebar-status {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--sidebar-text);
+}
+```
+
+### `styles/pages.css`
+
+```css
+/* ---------- 页面布局 ---------- */
+.page {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+
+.page-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+
+.page-title {
+  font-size: 1.75rem;
+  font-weight: 700;
+  line-height: 1.1;
+  letter-spacing: -0.01em;
+}
+
+.page-subtitle {
+  color: var(--color-text-secondary);
+  margin-top: 0.3rem;
+  font-size: 0.9rem;
+}
+
+.page-header-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+/* ---------- Chat 选择器 ---------- */
+.chat-selector {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  padding: 0.55rem 1rem;
+  min-width: 200px;
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.chat-selector:focus {
+  border-color: var(--color-accent);
+}
+
+/* ---------- 统计卡片 grid ---------- */
+.stat-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 0.75rem;
+}
+
+.stat-card {
+  padding: 1rem 1.1rem;
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+  transition: box-shadow 0.2s;
+}
+.stat-card:hover {
+  box-shadow: var(--shadow-card-hover);
+}
+
+.stat-card-label {
+  display: block;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stat-card-value {
+  display: block;
+  margin-top: 0.35rem;
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.stat-card-sub {
+  display: block;
+  margin-top: 0.2rem;
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+}
+
+/* ---------- DataCard ---------- */
+.data-card {
+  padding: 1.15rem 1.25rem;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+.data-card-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 1rem;
+}
+
+.data-card-head h2 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.data-card-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* ---------- 双列布局 ---------- */
+.two-col {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+}
+
+@media (max-width: 860px) {
+  .two-col {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* ---------- 列表 ---------- */
+.list-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.list-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.7rem 0.85rem;
+  border-radius: var(--radius-sm);
+  background: rgba(246, 248, 251, 0.85);
+  gap: 0.75rem;
+}
+
+.list-row-block {
+  padding: 0.7rem 0.85rem;
+  border-radius: var(--radius-sm);
+  background: rgba(246, 248, 251, 0.85);
+}
+
+.list-row-key {
+  font-weight: 500;
+  font-size: 0.875rem;
+}
+
+.list-row-muted {
+  color: var(--color-text-muted);
+  font-size: 0.82rem;
+}
+
+/* ---------- 记忆行 ---------- */
+.memory-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem 0.85rem;
+  border-radius: var(--radius-sm);
+  background: rgba(246, 248, 251, 0.85);
+}
+
+.memory-row-content { flex: 1; }
+.memory-row-key { font-size: 0.82rem; color: var(--color-text-muted); margin-bottom: 0.2rem; }
+.memory-row-value { font-size: 0.9rem; margin-bottom: 0.25rem; }
+
+/* ---------- BarMeter ---------- */
+.bar-meter { padding: 0.6rem 0; }
+
+.bar-meter-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.875rem;
+  margin-bottom: 0.4rem;
+}
+
+.bar-meter-track {
+  height: 6px;
+  border-radius: 3px;
+  background: rgba(22, 56, 95, 0.06);
+  overflow: hidden;
+}
+
+.bar-meter-fill {
+  height: 100%;
+  border-radius: inherit;
+  background: linear-gradient(90deg, #ff9f68 0%, #4f87e8 100%);
+  transition: width 0.4s ease;
+}
+
+/* ---------- 任务行 ---------- */
+.task-row {
+  padding: 0.75rem 0.85rem;
+  border-radius: var(--radius-sm);
+  background: rgba(246, 248, 251, 0.85);
+  cursor: pointer;
+  border: 1px solid transparent;
+  transition: all 0.15s;
+}
+.task-row:hover { border-color: var(--color-border-active); }
+.task-row--active { border-color: var(--color-accent); background: var(--color-accent-soft); }
+.task-row-id { font-size: 0.82rem; font-weight: 500; }
+.task-row-text { font-size: 0.9rem; margin: 0.2rem 0; }
+
+.task-detail-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+.task-status {
+  display: inline-block;
+  padding: 0.2rem 0.6rem;
+  border-radius: var(--radius-pill);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+.task-status--completed { background: var(--color-success-soft); color: var(--color-success); }
+.task-status--running { background: var(--color-accent-soft); color: var(--color-accent); }
+.task-status--failed { background: var(--color-danger-soft); color: var(--color-danger); }
+
+.task-detail-events {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+  font-family: "Outfit", "Noto Sans SC", monospace;
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+/* ---------- 事件行 ---------- */
+.event-row {
+  padding: 0.75rem 0.85rem;
+  border-radius: var(--radius-sm);
+  background: rgba(246, 248, 251, 0.85);
+}
+.event-row-text { margin: 0.35rem 0; font-size: 0.9rem; }
+
+.event-badge {
+  display: inline-block;
+  padding: 0.15rem 0.5rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+  font-size: 0.78rem;
+  font-weight: 500;
+}
+
+/* ---------- 学习日志 ---------- */
+.learning-entry {
+  padding: 0.85rem;
+  border-radius: var(--radius-sm);
+  background: rgba(246, 248, 251, 0.85);
+}
+
+.learning-entry-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.learning-entry-body {
+  margin: 0;
+  white-space: pre-wrap;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+  font-family: "Outfit", "Noto Sans SC", sans-serif;
+}
+
+/* ---------- Auth ---------- */
+.auth-notice {
+  margin-top: 0.6rem;
+  font-size: 0.85rem;
+  color: var(--color-text-secondary);
+}
+
+.auth-link {
+  color: var(--color-accent);
+  text-decoration: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.auth-link:hover { text-decoration: underline; }
+
+.connection-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  padding: 0.5rem 0.9rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  font-size: 0.85rem;
+  border: 1px solid var(--color-border);
+}
+
+/* ---------- StatusDot ---------- */
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+.status-dot--online {
+  background: var(--color-success);
+  box-shadow: 0 0 0 4px var(--color-success-soft);
+}
+.status-dot--offline {
+  background: var(--color-danger);
+  box-shadow: 0 0 0 4px var(--color-danger-soft);
+}
+
+/* ---------- 空状态 ---------- */
+.empty-state {
+  color: var(--color-text-muted);
+  font-size: 0.875rem;
+  padding: 1rem 0;
+}
+
+/* ---------- AuthGuard 页面 ---------- */
+.auth-guard-page {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 100vh;
+  padding: 2rem;
+}
+
+.auth-guard-card {
+  max-width: 500px;
+  width: 100%;
+  padding: 2rem;
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-card-hover);
+  backdrop-filter: blur(16px);
+}
+
+.auth-guard-card h1 {
+  font-size: 1.5rem;
+  margin: 0.75rem 0 0;
+}
+
+.auth-guard-eyebrow {
+  text-transform: uppercase;
+  letter-spacing: 0.2em;
+  color: var(--color-text-muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.auth-guard-hint {
+  color: var(--color-text-secondary);
+  margin-top: 0.6rem;
+  font-size: 0.9rem;
+}
+.auth-guard-hint code {
+  background: rgba(22, 56, 95, 0.06);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.82rem;
+}
+
+.auth-guard-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  margin-top: 1rem;
+}
+
+.auth-guard-form textarea {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 0.9rem;
+  background: rgba(255, 255, 255, 0.6);
+  resize: vertical;
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.auth-guard-form textarea:focus {
+  border-color: var(--color-accent);
+}
+```
+
+---
+
+## 8. CSS 导入顺序
+
+在 `globals.css` 末尾添加：
+
+```css
+@import "./sidebar.css";
+@import "./pages.css";
+```
+
+或在 `main.tsx` 中分别导入三个文件：
+
+```tsx
+import "./styles/globals.css";
+import "./styles/sidebar.css";
+import "./styles/pages.css";
+```
+
+---
+
+## 9. 文件操作清单
+
+以下是 Claude Code 需要执行的操作，按顺序：
+
+### 9.1 安装依赖
+
+```bash
+cd desktop
+npm install react-router-dom@^6.28.0 lucide-react@^0.460.0
+```
+
+### 9.2 删除旧文件
+
+```bash
+rm desktop/src/App.tsx
+rm desktop/src/styles.css
+```
+
+> **不删除** `api.ts`（完整复用）、`main.tsx`（重写）、`vite-env.d.ts`（保留）。
+
+### 9.3 创建新文件
+
+按第 2 节目录结构创建所有文件。具体内容见第 3-7 节。
+
+文件创建顺序建议：
+1. `styles/globals.css` → `styles/sidebar.css` → `styles/pages.css`
+2. `components/StatusDot.tsx` → `EmptyState.tsx` → `StatCard.tsx` → `DataCard.tsx` → `BarMeter.tsx` → `EventBadge.tsx`
+3. `components/AuthGuard.tsx`
+4. `components/Sidebar.tsx`
+5. `components/AppShell.tsx`
+6. `pages/OverviewPage.tsx` → `MemoryPage.tsx` → `PersonaPage.tsx` → `TasksPage.tsx` → `EventsPage.tsx` → `AuthPage.tsx` → `SettingsPage.tsx`
+7. `router.tsx`
+8. 重写 `main.tsx`
+
+### 9.4 更新 `index.html`
+
+无需改动——现有的 `index.html` 已经有 `<div id="root">` 和 `<script type="module" src="/src/main.tsx">`。
+
+### 9.5 验证
+
+```bash
+cd desktop && npm run build
+```
+
+应零错误编译。如果有 TS 类型报错，根据 `api.ts` 中的现有类型定义修正。
+
+---
+
+## 10. 迁移对照表
+
+| 旧 App.tsx 功能块 | 新位置 | 备注 |
+|---|---|---|
+| Bootstrap token / manual auth | `AuthGuard.tsx` | 提取为独立守卫 |
+| hero + reload + evolve 按钮 | `OverviewPage.tsx` | 页头操作 |
+| 状态面板 (chat_count 等) | `OverviewPage.tsx` | StatCard 组件 |
+| 兴趣图谱 | `MemoryPage.tsx` | BarMeter 组件 |
+| 记忆管理 | `MemoryPage.tsx` | 含删除操作 |
+| Auth 面板 + OAuth + Codex | `AuthPage.tsx` | 完整独立页 |
+| 事件流 | `EventsPage.tsx` | SSE 连接 |
+| 任务视图 + 详情 | `TasksPage.tsx` | 双栏列表+详情 |
+| 学习日志 | `PersonaPage.tsx` | 含进化操作 |
+| toolbar (chat 选择器 + 状态) | 各页面内置选择器 + Sidebar 底部状态 | 拆散到各页 |
+| 30s 定时轮询 | 各页面独立 useEffect | 按需轮询 |
+| latency telemetry | 暂不迁移（可后续添加到 hooks/ | 降低首版复杂度 |
+| Notification 权限申请 | `EventsPage.tsx` | SSE 事件触发 |
+
+---
+
+## 11. 后续扩展点
+
+此蓝图只重构前端结构，以下功能可在后续迭代中添加：
+
+1. **`SettingsPage`** — 在线编辑 `.env`、Heartbeat 参数、LLM Router 配置
+   - 需要后端新增 `GET/POST /api/config` 端点
+2. **`SkillsPage`** — Skill 系统可视化（列表、状态、使用统计）
+   - 对接 Skill `_index.json` 和 `_registry.json`
+3. **`ChatPage`** — 内嵌对话界面（参考 AstrBot 的 WebChat）
+   - 需要后端新增 WebSocket 消息通道
+4. **深色模式** — CSS 变量已预备，只需添加 `[data-theme="dark"]` 覆盖
+5. **i18n** — 当前硬编码中文，可引入 `react-intl` 或简单 JSON map
+6. **移动端适配** — Sidebar 在窄屏切换为 overlay 抽屉
+
+---
+
+## 12. 设计原则回顾
+
+- **零后端改动**：所有 API 端点和 `api.ts` 保持原样
+- **渐进增强**：7 个页面可以独立开发和测试
+- **AstrBot 模式借鉴**：Sidebar + 路由 + 分页配置，但用 React 而非 Vue
+- **保持 Lapwing 美学**：暖色渐变背景、毛玻璃卡片、柔和阴影，但升级字体和配色
+- **最小依赖**：只添加 `react-router-dom` 和 `lucide-react`

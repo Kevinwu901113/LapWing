@@ -1,0 +1,22 @@
+{
+  "total_executions": 10,
+  "total_with_skill": 0,
+  "total_without_skill": 10,
+  "skill_match_rate": 0.0,
+  "match_level_distribution": {
+    "quick": 0,
+    "index": 0,
+    "semantic": 0,
+    "none": 10
+  },
+  "daily_stats": [
+    {
+      "date": "2026-03-30",
+      "executions": 10,
+      "with_skill": 0,
+      "skills_created": 0,
+      "skills_updated": 0
+    }
+  ],
+  "recent_matches": []
+}
