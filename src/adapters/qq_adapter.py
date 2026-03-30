@@ -83,10 +83,11 @@ class QQAdapter(BaseAdapter):
                     headers["Authorization"] = f"Bearer {self.access_token}"
                 async with websockets.connect(
                     self.ws_url,
-                    extra_headers=headers,
+                    additional_headers=headers,
                     ping_interval=30,
                     ping_timeout=10,
                     close_timeout=5,
+                    proxy=None,
                 ) as ws:
                     self.ws = ws
                     delay = self._reconnect_delay
