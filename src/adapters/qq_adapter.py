@@ -18,11 +18,37 @@ logger = logging.getLogger("lapwing.adapter.qq")
 
 MAX_QQ_MSG_LENGTH = 4000
 
+# QQ 表情 ID 映射（常用子集）
+QQ_FACE_MAP: dict[str, str] = {
+    "[微笑]": "14", "[撇嘴]": "1", "[色]": "2", "[发呆]": "3",
+    "[得意]": "4", "[流泪]": "5", "[害羞]": "6", "[闭嘴]": "7",
+    "[大哭]": "9", "[尴尬]": "10", "[发怒]": "11", "[调皮]": "12",
+    "[呲牙]": "13", "[惊讶]": "0", "[难过]": "15", "[酷]": "16",
+    "[抓狂]": "18", "[吐]": "19", "[偷笑]": "20", "[可爱]": "21",
+    "[白眼]": "22", "[傲慢]": "23", "[饥饿]": "24", "[困]": "25",
+    "[惊恐]": "26", "[流汗]": "27", "[憨笑]": "28", "[悠闲]": "29",
+    "[奋斗]": "30", "[咒骂]": "31", "[疑问]": "32", "[嘘]": "33",
+    "[晕]": "34", "[敲打]": "35", "[再见]": "36", "[抠鼻]": "53",
+    "[鼓掌]": "47", "[坏笑]": "50", "[右哼哼]": "52",
+    "[鄙视]": "49", "[委屈]": "55", "[亲亲]": "57",
+    "[可怜]": "58", "[笑哭]": "182", "[doge]": "179",
+    "[OK]": "324", "[爱心]": "66", "[心碎]": "67",
+    "[拥抱]": "49", "[强]": "76", "[弱]": "77",
+    "[握手]": "78", "[胜利]": "79",
+}
+
 
 class QQAdapter(BaseAdapter):
     """OneBot v11 WebSocket 客户端适配器。"""
 
     channel_type = ChannelType.QQ
+    _FACE_ID_TO_NAME: dict[str, str] | None = None
+
+    @classmethod
+    def _face_id_to_name(cls, face_id: str) -> str:
+        if cls._FACE_ID_TO_NAME is None:
+            cls._FACE_ID_TO_NAME = {v: k for k, v in QQ_FACE_MAP.items()}
+        return cls._FACE_ID_TO_NAME.get(face_id, "")
 
     def __init__(
         self,
@@ -148,6 +174,9 @@ class QQAdapter(BaseAdapter):
         if self.kevin_id and user_id != self.kevin_id:
             return
 
+        # 标记已读（私聊）
+        asyncio.create_task(self._mark_as_read(user_id))
+
         text = self._extract_text(event)
         if not text:
             return
@@ -163,19 +192,34 @@ class QQAdapter(BaseAdapter):
                 raw_event=event,
             ))
 
+    async def _mark_as_read(self, user_id: str) -> None:
+        """标记私聊消息已读。"""
+        try:
+            await self._call_api("mark_private_msg_as_read", {
+                "user_id": int(user_id),
+            })
+        except Exception:
+            pass  # 非关键操作，失败不影响主流程
+
     # ── 消息解析 ────────────────────────────────────────
 
     def _extract_text(self, event: dict) -> str:
         message = event.get("message", "")
         if isinstance(message, str):
-            return message
+            return message.strip()
         if isinstance(message, list):
-            parts = []
+            parts: list[str] = []
             for seg in message:
-                if seg.get("type") == "text":
-                    parts.append(seg.get("data", {}).get("text", ""))
+                seg_type = seg.get("type")
+                data = seg.get("data", {})
+                if seg_type == "text":
+                    parts.append(data.get("text", ""))
+                elif seg_type == "face":
+                    face_name = self._face_id_to_name(str(data.get("id", "")))
+                    if face_name:
+                        parts.append(face_name)
             return "".join(parts).strip()
-        return str(message)
+        return str(message).strip()
 
     def _extract_image(self, event: dict) -> Optional[str]:
         message = event.get("message", [])
@@ -198,10 +242,43 @@ class QQAdapter(BaseAdapter):
             "message": self._build_message_segments(text, None),
         })
 
-    def _build_message_segments(self, text: str, image_base64: Optional[str] = None) -> list:
-        segments = []
+    async def _send_private_msg_segments(self, user_id: str, segments: list) -> dict:
+        """发送由调用方预构建的消息段到私聊。"""
+        try:
+            numeric_id = int(user_id)
+        except ValueError:
+            return {"status": "failed", "retcode": -3}
+        return await self._call_api("send_private_msg", {
+            "user_id": numeric_id,
+            "message": segments,
+        })
+
+    async def send_reply(self, chat_id: str, text: str, reply_to_message_id: str) -> None:
+        """发送带引用的回复消息。"""
+        text_plain = self._markdown_to_plain(text)
+        segments: list[dict] = [{"type": "reply", "data": {"id": reply_to_message_id}}]
+        segments.extend(self._build_message_segments(text_plain))
+        await self._send_private_msg_segments(chat_id, segments)
+
+    async def poke(self, user_id: str) -> None:
+        """好友戳一戳 (friend poke)。"""
+        try:
+            await self._call_api("friend_poke", {"user_id": int(user_id)})
+        except Exception:
+            pass
+
+    def _build_message_segments(self, text: str, image_base64: str | None = None) -> list:
+        segments: list[dict] = []
         if text:
-            segments.append({"type": "text", "data": {"text": text}})
+            parts = re.split(r'(\[[^\[\]]+\])', text)
+            for part in parts:
+                if not part:
+                    continue
+                face_id = QQ_FACE_MAP.get(part)
+                if face_id is not None:
+                    segments.append({"type": "face", "data": {"id": face_id}})
+                else:
+                    segments.append({"type": "text", "data": {"text": part}})
         if image_base64:
             segments.append({"type": "image", "data": {"file": f"base64://{image_base64}"}})
         return segments
