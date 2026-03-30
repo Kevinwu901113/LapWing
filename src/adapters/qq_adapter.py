@@ -90,10 +90,15 @@ class QQAdapter(BaseAdapter):
                 ) as ws:
                     self.ws = ws
                     delay = self._reconnect_delay
-                    logger.info("QQ adapter 已连接到 %s", self.ws_url)
+                    logger.info("QQ adapter 已连接")
                     await self._listen(ws)
             except (websockets.ConnectionClosed, ConnectionRefusedError, OSError) as exc:
                 self.ws = None
+                # Cancel orphaned API call futures
+                for future in self._echo_futures.values():
+                    if not future.done():
+                        future.cancel()
+                self._echo_futures.clear()
                 if self._running:
                     logger.warning("QQ 连接断开 (%s)，%ds 后重连", exc, delay)
                     await asyncio.sleep(delay)
@@ -178,8 +183,13 @@ class QQAdapter(BaseAdapter):
     # ── 发送消息 ────────────────────────────────────────
 
     async def _send_private_msg(self, user_id: str, text: str) -> dict:
+        try:
+            numeric_id = int(user_id)
+        except ValueError:
+            logger.warning("QQ user_id 非数字: %s", user_id)
+            return {"status": "failed", "retcode": -3}
         return await self._call_api("send_private_msg", {
-            "user_id": int(user_id),
+            "user_id": numeric_id,
             "message": self._build_message_segments(text, None),
         })
 

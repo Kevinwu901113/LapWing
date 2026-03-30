@@ -23,8 +23,11 @@ class ChannelManager:
 
     async def start_all(self) -> None:
         for ch_type, adapter in self.adapters.items():
-            await adapter.start()
-            logger.info("通道已启动: %s", ch_type.value)
+            try:
+                await adapter.start()
+                logger.info("通道已启动: %s", ch_type.value)
+            except Exception as exc:
+                logger.error("通道启动失败: %s — %s", ch_type.value, exc)
 
     async def stop_all(self) -> None:
         for ch_type, adapter in self.adapters.items():
