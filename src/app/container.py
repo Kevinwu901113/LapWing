@@ -21,6 +21,7 @@ from src.api.event_bus import DesktopEventBus
 from src.api.server import LocalApiServer
 from src.app.task_view import TaskViewStore
 from src.core.brain import LapwingBrain
+from src.core.channel_manager import ChannelManager
 from src.core.heartbeat import HeartbeatEngine
 from src.core.latency_monitor import LatencyMonitor
 from src.heartbeat.actions.autonomous_browsing import AutonomousBrowsingAction
@@ -69,6 +70,7 @@ class AppContainer:
             latency_monitor=self.latency_monitor,
         )
         self.heartbeat: HeartbeatEngine | None = None
+        self.channel_manager = ChannelManager()
         self.telegram_app = None
 
         self._prepared = False
@@ -83,15 +85,17 @@ class AppContainer:
         self._prepared = True
         logger.info("应用容器依赖装配完成")
 
-    async def start(self, *, bot=None) -> None:
+    async def start(self, *, send_fn=None) -> None:
         if self._started:
             return
 
         await self.prepare()
 
-        if bot is not None:
-            self.heartbeat = self._build_heartbeat(bot)
+        if send_fn is not None:
+            self.heartbeat = self._build_heartbeat(send_fn)
             self.heartbeat.start()
+
+        await self.channel_manager.start_all()
 
         await self.api_server.start()
         self._started = True
@@ -101,6 +105,8 @@ class AppContainer:
         if self.heartbeat is not None:
             await self.heartbeat.shutdown()
             self.heartbeat = None
+
+        await self.channel_manager.stop_all()
 
         await self.api_server.shutdown()
 
@@ -194,8 +200,8 @@ class AppContainer:
             self.brain.experience_skill_manager = esm
             logger.info("经验技能系统已就绪")
 
-    def _build_heartbeat(self, bot) -> HeartbeatEngine:
-        heartbeat = HeartbeatEngine(brain=self.brain, bot=bot)
+    def _build_heartbeat(self, send_fn) -> HeartbeatEngine:
+        heartbeat = HeartbeatEngine(brain=self.brain, send_fn=send_fn)
         heartbeat.registry.register(CompactionCheckAction())
         heartbeat.registry.register(ProactiveMessageAction())
         heartbeat.registry.register(ReminderDispatchAction())

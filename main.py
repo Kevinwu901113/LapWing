@@ -151,6 +151,7 @@ def handle_auth_command(args: argparse.Namespace) -> int:
 def run_telegram_bot(logger: logging.Logger) -> int:
     from src.app.container import AppContainer
     from src.app.telegram_app import TelegramApp
+    from config.settings import TELEGRAM_KEVIN_ID
 
     if not TELEGRAM_TOKEN:
         logger.error("TELEGRAM_TOKEN 未配置！请检查 config/.env")
@@ -158,8 +159,49 @@ def run_telegram_bot(logger: logging.Logger) -> int:
 
     logger.info("Lapwing 正在启动...")
     container = AppContainer(db_path=DB_PATH, data_dir=DATA_DIR)
-    telegram_app = TelegramApp(container=container)
+
+    telegram_app = TelegramApp(container=container, tg_config={"kevin_id": TELEGRAM_KEVIN_ID})
     container.telegram_app = telegram_app
+
+    # Register QQ adapter if enabled
+    from config.settings import QQ_ENABLED
+    if QQ_ENABLED:
+        from config.settings import QQ_WS_URL, QQ_ACCESS_TOKEN, QQ_SELF_ID, QQ_KEVIN_ID
+        from src.adapters.base import ChannelType
+        from src.adapters.qq_adapter import QQAdapter
+
+        qq_config = {
+            "ws_url": QQ_WS_URL,
+            "access_token": QQ_ACCESS_TOKEN,
+            "self_id": QQ_SELF_ID,
+            "kevin_id": QQ_KEVIN_ID,
+        }
+
+        async def _qq_on_message(chat_id: str, text: str, channel, raw_event: dict) -> None:
+            """QQ 消息进入 Brain 的桥接。"""
+            container.channel_manager.last_active_channel = channel
+            brain = container.brain
+
+            async def send_fn(reply_text: str) -> None:
+                await container.channel_manager.send(ChannelType.QQ, chat_id, reply_text)
+
+            async def typing_fn() -> None:
+                pass  # QQ 无 typing indicator
+
+            async def noop_status(cid: str, t: str) -> None:
+                pass
+
+            await brain.think_conversational(
+                chat_id,
+                text,
+                send_fn=send_fn,
+                typing_fn=typing_fn,
+                status_callback=noop_status,
+            )
+
+        qq_adapter = QQAdapter(config=qq_config, on_message=_qq_on_message)
+        container.channel_manager.register(ChannelType.QQ, qq_adapter)
+        logger.info("QQ 通道已注册")
 
     app = telegram_app.build_application(
         token=TELEGRAM_TOKEN,

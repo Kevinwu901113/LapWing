@@ -13,7 +13,7 @@ class CompactionCheckAction(HeartbeatAction):
     beat_types = ["fast"]
     selection_mode = "always"  # 每次快心跳都检查
 
-    async def execute(self, ctx: SenseContext, brain, bot) -> None:
+    async def execute(self, ctx: SenseContext, brain, send_fn) -> None:
         if not hasattr(brain, "compactor") or brain.compactor is None:
             return
         try:

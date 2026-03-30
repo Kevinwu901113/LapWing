@@ -14,6 +14,7 @@ from config.settings import (
     MESSAGE_BUFFER_SECONDS,
     SKILLS_COMMANDS_ENABLED,
 )
+from src.adapters.base import BaseAdapter, ChannelType
 from src.app.telegram_delivery import send_telegram_reply_text, send_telegram_text_to_chat
 from src.core.reasoning_tags import strip_internal_thinking_tags
 
@@ -23,8 +24,9 @@ logger = logging.getLogger("lapwing.app.telegram")
 class TelegramApp:
     """将 Telegram 交互适配到 AppContainer。"""
 
-    def __init__(self, container) -> None:
+    def __init__(self, container, tg_config: dict | None = None) -> None:
         self._container = container
+        self._tg_config = tg_config or {}
         self._bot = None
         self._message_buffers: dict[str, list[str]] = {}
         self._buffer_tasks: dict[str, asyncio.Task] = {}
@@ -54,7 +56,14 @@ class TelegramApp:
 
     async def _post_init(self, application) -> None:
         self._bot = application.bot
-        await self._container.start(bot=application.bot)
+
+        tg_adapter = TelegramChannelAdapter(
+            telegram_app=self,
+            config=self._tg_config,
+        )
+        self._container.channel_manager.register(ChannelType.TELEGRAM, tg_adapter)
+
+        await self._container.start(send_fn=self._container.channel_manager.send_to_kevin)
 
     async def _post_shutdown(self, application) -> None:
         await self._container.shutdown()
@@ -88,6 +97,15 @@ class TelegramApp:
         app.add_handler(CommandHandler("models", self.cmd_model))
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         app.add_handler(MessageHandler(filters.VOICE | filters.AUDIO, self.handle_voice))
+        app.add_error_handler(self._error_handler)
+
+    async def _error_handler(self, update, context) -> None:
+        from telegram.error import TimedOut, NetworkError
+        err = context.error
+        if isinstance(err, (TimedOut, NetworkError)):
+            logger.warning("Telegram 网络错误（已忽略）: %s", err)
+        else:
+            logger.error("Telegram 未处理错误: %s", err, exc_info=err)
 
     async def cmd_start(self, update, context) -> None:
         if update.message:
@@ -420,12 +438,16 @@ class TelegramApp:
 
     async def _think_and_reply(self, message, chat_id: str, user_text: str) -> None:
         async with self._chat_lock(chat_id):
+            self._container.channel_manager.last_active_channel = ChannelType.TELEGRAM
             task_token = uuid.uuid4().hex
             self._active_status_tokens[chat_id] = task_token
             self._status_last_text.pop(chat_id, None)
             self._status_last_sent_at.pop(chat_id, None)
             try:
-                await message.chat.send_action("typing")
+                try:
+                    await message.chat.send_action("typing")
+                except Exception:
+                    pass
 
                 async def send_fn(text: str) -> None:
                     await send_telegram_text_to_chat(
@@ -518,7 +540,10 @@ class TelegramApp:
             return
 
         combined = "\n".join(messages)
-        await self._think_and_reply(message_obj, chat_id, combined)
+        try:
+            await self._think_and_reply(message_obj, chat_id, combined)
+        except Exception as exc:
+            logger.warning("消息处理失败 [%s]: %s", chat_id, exc)
 
     def _enqueue_message(self, chat_id: str, text: str, message_obj: Any) -> None:
         self._message_buffers.setdefault(chat_id, []).append(text)
@@ -577,3 +602,32 @@ class TelegramApp:
 
         await message.reply_text(f"🎤 {user_text}")
         self._enqueue_message(str(message.chat_id), user_text, message)
+
+
+class TelegramChannelAdapter(BaseAdapter):
+    """Thin BaseAdapter wrapper around TelegramApp for ChannelManager registration."""
+
+    channel_type = ChannelType.TELEGRAM
+
+    def __init__(self, telegram_app: TelegramApp, config: dict) -> None:
+        super().__init__(config)
+        self._telegram_app = telegram_app
+
+    async def start(self) -> None:
+        pass  # TelegramApp lifecycle managed by python-telegram-bot
+
+    async def stop(self) -> None:
+        pass  # TelegramApp lifecycle managed by python-telegram-bot
+
+    async def send_text(self, chat_id: str, text: str) -> None:
+        bot = self._telegram_app._bot
+        if bot is None:
+            return
+        try:
+            numeric_id = int(chat_id)
+        except ValueError:
+            numeric_id = chat_id
+        await send_telegram_text_to_chat(bot=bot, chat_id=numeric_id, text=text)
+
+    async def is_connected(self) -> bool:
+        return self._telegram_app._bot is not None

@@ -14,10 +14,14 @@ def app_with_container():
     brain.think = AsyncMock(return_value="ok")
     brain.run_skill_command = AsyncMock(return_value="skill ok")
     brain.memory = MagicMock()
+    channel_manager = MagicMock()
+    channel_manager.register = MagicMock()
+    channel_manager.send_to_kevin = AsyncMock()
     container = SimpleNamespace(
         brain=brain,
         start=AsyncMock(),
         shutdown=AsyncMock(),
+        channel_manager=channel_manager,
     )
     return TelegramApp(container=container), container
 
@@ -44,7 +48,10 @@ async def test_post_init_and_shutdown_bridge_container_lifecycle(app_with_contai
     await app._post_init(application)
     await app._post_shutdown(application)
 
-    container.start.assert_awaited_once_with(bot=application.bot)
+    container.start.assert_awaited_once()
+    call_kwargs = container.start.await_args.kwargs
+    assert "send_fn" in call_kwargs
+    assert callable(call_kwargs["send_fn"])
     container.shutdown.assert_awaited_once()
 
 

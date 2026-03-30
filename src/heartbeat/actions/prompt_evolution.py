@@ -12,7 +12,7 @@ class PromptEvolutionAction(HeartbeatAction):
     description = "每周根据学习日志和行为规则自动微进化 Lapwing 人格"
     beat_types = ["slow"]
 
-    async def execute(self, ctx: SenseContext, brain, bot) -> None:
+    async def execute(self, ctx: SenseContext, brain, send_fn) -> None:
         if not hasattr(brain, "evolution_engine") or brain.evolution_engine is None:
             return
 

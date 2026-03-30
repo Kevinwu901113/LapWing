@@ -32,10 +32,8 @@ def mock_brain():
 
 
 @pytest.fixture
-def mock_bot():
-    b = MagicMock()
-    b.send_message = AsyncMock()
-    return b
+def mock_send_fn():
+    return AsyncMock()
 
 
 class TestProactiveMessageAction:
@@ -45,50 +43,45 @@ class TestProactiveMessageAction:
     def test_name_is_proactive_message(self):
         assert ProactiveMessageAction().name == "proactive_message"
 
-    async def test_sends_message_to_user(self, ctx, mock_brain, mock_bot):
-        await ProactiveMessageAction().execute(ctx, mock_brain, mock_bot)
-        mock_bot.send_message.assert_called_once()
-        assert mock_bot.send_message.call_args.kwargs["chat_id"] == "c1"
+    async def test_sends_message_to_user(self, ctx, mock_brain, mock_send_fn):
+        await ProactiveMessageAction().execute(ctx, mock_brain, mock_send_fn)
+        mock_send_fn.assert_awaited_once_with("你好，好久不见，最近怎么样？")
 
-    async def test_stores_reply_in_memory(self, ctx, mock_brain, mock_bot):
-        await ProactiveMessageAction().execute(ctx, mock_brain, mock_bot)
+    async def test_stores_reply_in_memory(self, ctx, mock_brain, mock_send_fn):
+        await ProactiveMessageAction().execute(ctx, mock_brain, mock_send_fn)
         mock_brain.memory.append.assert_called_once_with(
             "c1", "assistant", "你好，好久不见，最近怎么样？"
         )
 
-    async def test_uses_heartbeat_purpose(self, ctx, mock_brain, mock_bot):
-        await ProactiveMessageAction().execute(ctx, mock_brain, mock_bot)
+    async def test_uses_heartbeat_purpose(self, ctx, mock_brain, mock_send_fn):
+        await ProactiveMessageAction().execute(ctx, mock_brain, mock_send_fn)
         assert mock_brain.router.complete.call_args.kwargs.get("purpose") == "heartbeat"
 
-    async def test_sanitizes_thinking_tags_before_send_and_store(self, ctx, mock_brain, mock_bot):
+    async def test_sanitizes_thinking_tags_before_send_and_store(self, ctx, mock_brain, mock_send_fn):
         mock_brain.router.complete = AsyncMock(return_value="<think>内部</think>你好")
 
-        await ProactiveMessageAction().execute(ctx, mock_brain, mock_bot)
+        await ProactiveMessageAction().execute(ctx, mock_brain, mock_send_fn)
 
-        mock_bot.send_message.assert_awaited_once()
-        sent = mock_bot.send_message.await_args.kwargs
-        assert sent["chat_id"] == "c1"
-        assert sent["text"] == "你好"
-        assert sent["parse_mode"] == "HTML"
+        mock_send_fn.assert_awaited_once_with("你好")
         mock_brain.memory.append.assert_awaited_once_with("c1", "assistant", "你好")
 
-    async def test_silent_on_llm_failure(self, ctx, mock_brain, mock_bot):
+    async def test_silent_on_llm_failure(self, ctx, mock_brain, mock_send_fn):
         mock_brain.router.complete = AsyncMock(side_effect=Exception("API error"))
-        await ProactiveMessageAction().execute(ctx, mock_brain, mock_bot)
-        mock_bot.send_message.assert_not_called()
+        await ProactiveMessageAction().execute(ctx, mock_brain, mock_send_fn)
+        mock_send_fn.assert_not_called()
 
-    async def test_marks_discovery_shared_when_used(self, ctx, mock_brain, mock_bot):
+    async def test_marks_discovery_shared_when_used(self, ctx, mock_brain, mock_send_fn):
         mock_brain.memory.get_unshared_discoveries = AsyncMock(return_value=[
             {"id": 42, "title": "有趣文章", "summary": "内容摘要", "url": "http://x.com"}
         ])
-        await ProactiveMessageAction().execute(ctx, mock_brain, mock_bot)
+        await ProactiveMessageAction().execute(ctx, mock_brain, mock_send_fn)
         mock_brain.memory.mark_discovery_shared.assert_called_once_with(42)
 
-    async def test_publishes_desktop_event_when_event_bus_present(self, ctx, mock_brain, mock_bot):
+    async def test_publishes_desktop_event_when_event_bus_present(self, ctx, mock_brain, mock_send_fn):
         mock_brain.event_bus = MagicMock()
         mock_brain.event_bus.publish = AsyncMock()
 
-        await ProactiveMessageAction().execute(ctx, mock_brain, mock_bot)
+        await ProactiveMessageAction().execute(ctx, mock_brain, mock_send_fn)
 
         mock_brain.event_bus.publish.assert_awaited_once_with(
             "proactive_message",
@@ -119,13 +112,13 @@ class TestReminderDispatchAction:
         assert action.beat_types == ["minute"]
         assert action.selection_mode == "always"
 
-    async def test_skips_when_no_due_reminder(self, minute_ctx, mock_brain, mock_bot):
+    async def test_skips_when_no_due_reminder(self, minute_ctx, mock_brain, mock_send_fn):
         mock_brain.memory.get_due_reminders = AsyncMock(return_value=[])
-        await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_bot)
-        mock_bot.send_message.assert_not_called()
+        await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_send_fn)
+        mock_send_fn.assert_not_called()
         mock_brain.memory.complete_or_reschedule_reminder.assert_not_called()
 
-    async def test_dispatches_due_reminder_and_updates_state(self, minute_ctx, mock_brain, mock_bot):
+    async def test_dispatches_due_reminder_and_updates_state(self, minute_ctx, mock_brain, mock_send_fn):
         mock_brain.memory.get_due_reminders = AsyncMock(return_value=[
             {
                 "id": 12,
@@ -145,20 +138,16 @@ class TestReminderDispatchAction:
         mock_brain.event_bus = MagicMock()
         mock_brain.event_bus.publish = AsyncMock()
 
-        await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_bot)
+        await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_send_fn)
 
-        mock_bot.send_message.assert_awaited_once()
-        sent = mock_bot.send_message.await_args.kwargs
-        assert sent["chat_id"] == "c1"
-        assert sent["text"] == "提醒你：起身活动一下"
-        assert sent["parse_mode"] == "HTML"
+        mock_send_fn.assert_awaited_once_with("提醒你：起身活动一下")
         mock_brain.memory.complete_or_reschedule_reminder.assert_awaited_once_with(12, now=minute_ctx.now)
         mock_brain.event_bus.publish.assert_awaited_once_with(
             "reminder_message",
             {"chat_id": "c1", "text": "提醒你：起身活动一下"},
         )
 
-    async def test_falls_back_when_llm_returns_empty(self, minute_ctx, mock_brain, mock_bot):
+    async def test_falls_back_when_llm_returns_empty(self, minute_ctx, mock_brain, mock_send_fn):
         mock_brain.memory.get_due_reminders = AsyncMock(return_value=[
             {
                 "id": 99,
@@ -176,15 +165,11 @@ class TestReminderDispatchAction:
         ])
         mock_brain.router.complete = AsyncMock(return_value="")
 
-        await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_bot)
+        await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_send_fn)
 
-        mock_bot.send_message.assert_awaited_once()
-        sent = mock_bot.send_message.await_args.kwargs
-        assert sent["chat_id"] == "c1"
-        assert sent["text"] == "提醒你：喝水"
-        assert sent["parse_mode"] == "HTML"
+        mock_send_fn.assert_awaited_once_with("提醒你：喝水")
 
-    async def test_reminder_sanitizes_model_message(self, minute_ctx, mock_brain, mock_bot):
+    async def test_reminder_sanitizes_model_message(self, minute_ctx, mock_brain, mock_send_fn):
         mock_brain.memory.get_due_reminders = AsyncMock(return_value=[
             {
                 "id": 101,
@@ -202,10 +187,6 @@ class TestReminderDispatchAction:
         ])
         mock_brain.router.complete = AsyncMock(return_value="<think>内部</think>提醒你去散步")
 
-        await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_bot)
+        await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_send_fn)
 
-        mock_bot.send_message.assert_awaited_once()
-        sent = mock_bot.send_message.await_args.kwargs
-        assert sent["chat_id"] == "c1"
-        assert sent["text"] == "提醒你去散步"
-        assert sent["parse_mode"] == "HTML"
+        mock_send_fn.assert_awaited_once_with("提醒你去散步")

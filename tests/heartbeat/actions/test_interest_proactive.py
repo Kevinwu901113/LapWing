@@ -35,98 +35,92 @@ def mock_brain():
 
 
 @pytest.fixture
-def mock_bot():
-    bot = MagicMock()
-    bot.send_message = AsyncMock()
-    return bot
+def mock_send_fn():
+    return AsyncMock()
 
 
 @pytest.mark.asyncio
 class TestInterestProactiveAction:
-    async def test_skips_when_no_interests(self, mock_brain, mock_bot):
+    async def test_skips_when_no_interests(self, mock_brain, mock_send_fn):
         mock_brain.memory.get_top_interests = AsyncMock(return_value=[])
         with patch("src.heartbeat.actions.interest_proactive.load_prompt", return_value="{topic} {search_results} {user_facts_summary}"):
-            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_bot)
-        mock_bot.send_message.assert_not_called()
+            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_send_fn)
+        mock_send_fn.assert_not_called()
 
-    async def test_skips_when_search_empty(self, mock_brain, mock_bot):
+    async def test_skips_when_search_empty(self, mock_brain, mock_send_fn):
         with patch("src.heartbeat.actions.interest_proactive.load_prompt", return_value="{topic} {search_results} {user_facts_summary}"), \
              patch("src.heartbeat.actions.interest_proactive.web_search.search", AsyncMock(return_value=[])):
-            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_bot)
-        mock_bot.send_message.assert_not_called()
+            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_send_fn)
+        mock_send_fn.assert_not_called()
 
-    async def test_sends_message_with_topic(self, mock_brain, mock_bot):
+    async def test_sends_message_with_topic(self, mock_brain, mock_send_fn):
         results = [{"title": "Python 文章", "url": "https://example.com/python", "snippet": "最新趋势"}]
         with patch("src.heartbeat.actions.interest_proactive.load_prompt", return_value="{topic}\n{search_results}\n{user_facts_summary}"), \
              patch("src.heartbeat.actions.interest_proactive.web_search.search", AsyncMock(return_value=results)) as mock_search:
-            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_bot)
+            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_send_fn)
         mock_search.assert_awaited_once_with("Python", max_results=3)
-        mock_bot.send_message.assert_awaited_once()
+        mock_send_fn.assert_awaited_once()
 
-    async def test_saves_discovery(self, mock_brain, mock_bot):
+    async def test_saves_discovery(self, mock_brain, mock_send_fn):
         results = [{"title": "Python 文章", "url": "https://example.com/python", "snippet": "最新趋势"}]
         with patch("src.heartbeat.actions.interest_proactive.load_prompt", return_value="{topic}\n{search_results}\n{user_facts_summary}"), \
              patch("src.heartbeat.actions.interest_proactive.web_search.search", AsyncMock(return_value=results)):
-            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_bot)
+            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_send_fn)
         call_kwargs = mock_brain.memory.add_discovery.call_args.kwargs
         assert call_kwargs["source"] == "interest_search"
 
-    async def test_appends_to_memory(self, mock_brain, mock_bot):
+    async def test_appends_to_memory(self, mock_brain, mock_send_fn):
         results = [{"title": "Python 文章", "url": "https://example.com/python", "snippet": "最新趋势"}]
         with patch("src.heartbeat.actions.interest_proactive.load_prompt", return_value="{topic}\n{search_results}\n{user_facts_summary}"), \
              patch("src.heartbeat.actions.interest_proactive.web_search.search", AsyncMock(return_value=results)):
-            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_bot)
+            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_send_fn)
         mock_brain.memory.append.assert_awaited_once_with(
             "c1", "assistant", "刚看到一篇关于 Python 的文章，感觉你会喜欢。"
         )
 
-    async def test_decays_interests_after_share(self, mock_brain, mock_bot):
+    async def test_decays_interests_after_share(self, mock_brain, mock_send_fn):
         results = [{"title": "Python 文章", "url": "https://example.com/python", "snippet": "最新趋势"}]
         with patch("src.heartbeat.actions.interest_proactive.load_prompt", return_value="{topic}\n{search_results}\n{user_facts_summary}"), \
              patch("src.heartbeat.actions.interest_proactive.web_search.search", AsyncMock(return_value=results)):
-            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_bot)
+            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_send_fn)
         mock_brain.memory.decay_interests.assert_awaited_once_with("c1", factor=0.9)
 
-    async def test_skips_during_quiet_hours(self, mock_brain, mock_bot):
+    async def test_skips_during_quiet_hours(self, mock_brain, mock_send_fn):
         with patch("src.heartbeat.actions.interest_proactive.load_prompt", return_value="{topic}"):
-            await InterestProactiveAction().execute(make_ctx(hour=23), mock_brain, mock_bot)
-        mock_bot.send_message.assert_not_called()
+            await InterestProactiveAction().execute(make_ctx(hour=23), mock_brain, mock_send_fn)
+        mock_send_fn.assert_not_called()
 
-    async def test_skips_when_silence_too_short(self, mock_brain, mock_bot):
+    async def test_skips_when_silence_too_short(self, mock_brain, mock_send_fn):
         with patch("src.heartbeat.actions.interest_proactive.load_prompt", return_value="{topic}"):
-            await InterestProactiveAction().execute(make_ctx(silence_hours=1.0), mock_brain, mock_bot)
-        mock_bot.send_message.assert_not_called()
+            await InterestProactiveAction().execute(make_ctx(silence_hours=1.0), mock_brain, mock_send_fn)
+        mock_send_fn.assert_not_called()
 
-    async def test_uses_heartbeat_purpose(self, mock_brain, mock_bot):
+    async def test_uses_heartbeat_purpose(self, mock_brain, mock_send_fn):
         results = [{"title": "Python 文章", "url": "https://example.com/python", "snippet": "最新趋势"}]
         with patch("src.heartbeat.actions.interest_proactive.load_prompt", return_value="{topic}\n{search_results}\n{user_facts_summary}"), \
              patch("src.heartbeat.actions.interest_proactive.web_search.search", AsyncMock(return_value=results)):
-            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_bot)
+            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_send_fn)
         assert mock_brain.router.complete.call_args.kwargs["purpose"] == "heartbeat"
 
-    async def test_sanitizes_thinking_tags_before_send_and_store(self, mock_brain, mock_bot):
+    async def test_sanitizes_thinking_tags_before_send_and_store(self, mock_brain, mock_send_fn):
         mock_brain.router.complete = AsyncMock(return_value="<think>内部</think>这条给你")
         results = [{"title": "Python 文章", "url": "https://example.com/python", "snippet": "最新趋势"}]
 
         with patch("src.heartbeat.actions.interest_proactive.load_prompt", return_value="{topic}\n{search_results}\n{user_facts_summary}"), \
              patch("src.heartbeat.actions.interest_proactive.web_search.search", AsyncMock(return_value=results)):
-            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_bot)
+            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_send_fn)
 
-        mock_bot.send_message.assert_awaited_once()
-        sent = mock_bot.send_message.await_args.kwargs
-        assert sent["chat_id"] == "c1"
-        assert sent["text"] == "这条给你"
-        assert sent["parse_mode"] == "HTML"
+        mock_send_fn.assert_awaited_once_with("这条给你")
         mock_brain.memory.append.assert_awaited_once_with("c1", "assistant", "这条给你")
 
-    async def test_publishes_desktop_event(self, mock_brain, mock_bot):
+    async def test_publishes_desktop_event(self, mock_brain, mock_send_fn):
         mock_brain.event_bus = MagicMock()
         mock_brain.event_bus.publish = AsyncMock()
         results = [{"title": "Python 文章", "url": "https://example.com/python", "snippet": "最新趋势"}]
 
         with patch("src.heartbeat.actions.interest_proactive.load_prompt", return_value="{topic}\n{search_results}\n{user_facts_summary}"), \
              patch("src.heartbeat.actions.interest_proactive.web_search.search", AsyncMock(return_value=results)):
-            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_bot)
+            await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_send_fn)
 
         mock_brain.event_bus.publish.assert_awaited_once_with(
             "interest_proactive",

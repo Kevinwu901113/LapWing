@@ -14,7 +14,7 @@ class SelfReflectionAction(HeartbeatAction):
     description = "每日回顾对话表现，提取经验，写入学习日志"
     beat_types = ["slow"]
 
-    async def execute(self, ctx: SenseContext, brain, bot) -> None:
+    async def execute(self, ctx: SenseContext, brain, send_fn) -> None:
         if not hasattr(brain, "self_reflection") or brain.self_reflection is None:
             return
 

@@ -11,7 +11,7 @@ class MemoryConsolidationAction(HeartbeatAction):
     description = "深度提取用户信息"
     beat_types = ["slow"]
 
-    async def execute(self, ctx: SenseContext, brain, bot) -> None:
+    async def execute(self, ctx: SenseContext, brain, send_fn) -> None:
         try:
             history = await brain.memory.get(ctx.chat_id)
             if not history:
