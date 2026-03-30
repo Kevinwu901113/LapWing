@@ -336,6 +336,10 @@ if TELEGRAM_PROGRESS_STYLE not in {"report", "silent"}:
     raise ValueError("TELEGRAM_PROGRESS_STYLE 仅支持 report 或 silent。")
 if TELEGRAM_PROGRESS_THROTTLE_SECONDS < 0:
     raise ValueError("TELEGRAM_PROGRESS_THROTTLE_SECONDS 不能小于 0。")
+if QQ_GROUP_CONTEXT_SIZE <= 0:
+    raise ValueError("QQ_GROUP_CONTEXT_SIZE 必须是正整数。")
+if QQ_GROUP_COOLDOWN < 0:
+    raise ValueError("QQ_GROUP_COOLDOWN 不能小于 0。")
 
 # 自省与进化
 SELF_REFLECTION_HOUR: int = int(os.getenv("SELF_REFLECTION_HOUR", "2"))  # 每日自省时间（小时）

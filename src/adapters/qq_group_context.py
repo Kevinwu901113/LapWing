@@ -28,7 +28,7 @@ class GroupContext:
     group_id: str
     buffer: deque[GroupMessage] = field(default_factory=lambda: deque(maxlen=50))
     last_reply_time: float = 0.0
-    my_recent_message_ids: list[str] = field(default_factory=list)
+    my_recent_message_ids: deque[str] = field(default_factory=lambda: deque(maxlen=20))
 
     def add_message(self, msg: GroupMessage) -> None:
         self.buffer.append(msg)
@@ -53,5 +53,3 @@ class GroupContext:
     def record_my_message(self, message_id: str) -> None:
         """Track a message ID sent by Lapwing (for reply-to-self detection)."""
         self.my_recent_message_ids.append(message_id)
-        if len(self.my_recent_message_ids) > 20:
-            self.my_recent_message_ids = self.my_recent_message_ids[-20:]
