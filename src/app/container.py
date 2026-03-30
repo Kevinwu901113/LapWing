@@ -21,6 +21,7 @@ from src.api.event_bus import DesktopEventBus
 from src.api.server import LocalApiServer
 from src.app.task_view import TaskViewStore
 from src.core.brain import LapwingBrain
+from src.core.channel_manager import ChannelManager
 from src.core.heartbeat import HeartbeatEngine
 from src.core.latency_monitor import LatencyMonitor
 from src.heartbeat.actions.autonomous_browsing import AutonomousBrowsingAction
@@ -69,6 +70,7 @@ class AppContainer:
             latency_monitor=self.latency_monitor,
         )
         self.heartbeat: HeartbeatEngine | None = None
+        self.channel_manager = ChannelManager()
         self.telegram_app = None
 
         self._prepared = False
@@ -93,6 +95,8 @@ class AppContainer:
             self.heartbeat = self._build_heartbeat(send_fn)
             self.heartbeat.start()
 
+        await self.channel_manager.start_all()
+
         await self.api_server.start()
         self._started = True
         logger.info("应用容器启动完成")
@@ -101,6 +105,8 @@ class AppContainer:
         if self.heartbeat is not None:
             await self.heartbeat.shutdown()
             self.heartbeat = None
+
+        await self.channel_manager.stop_all()
 
         await self.api_server.shutdown()
 

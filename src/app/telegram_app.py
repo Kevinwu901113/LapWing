@@ -14,6 +14,7 @@ from config.settings import (
     MESSAGE_BUFFER_SECONDS,
     SKILLS_COMMANDS_ENABLED,
 )
+from src.adapters.base import BaseAdapter, ChannelType
 from src.app.telegram_delivery import send_telegram_reply_text, send_telegram_text_to_chat
 from src.core.reasoning_tags import strip_internal_thinking_tags
 
@@ -23,8 +24,9 @@ logger = logging.getLogger("lapwing.app.telegram")
 class TelegramApp:
     """将 Telegram 交互适配到 AppContainer。"""
 
-    def __init__(self, container) -> None:
+    def __init__(self, container, tg_config: dict | None = None) -> None:
         self._container = container
+        self._tg_config = tg_config or {}
         self._bot = None
         self._message_buffers: dict[str, list[str]] = {}
         self._buffer_tasks: dict[str, asyncio.Task] = {}
@@ -55,13 +57,13 @@ class TelegramApp:
     async def _post_init(self, application) -> None:
         self._bot = application.bot
 
-        async def _telegram_send_to_kevin(text: str) -> None:
-            from src.app.telegram_delivery import send_telegram_text_to_chat
-            chat_ids = await self._container.brain.memory.get_all_chat_ids()
-            for chat_id in chat_ids:
-                await send_telegram_text_to_chat(bot=self._bot, chat_id=chat_id, text=text)
+        tg_adapter = TelegramChannelAdapter(
+            telegram_app=self,
+            config=self._tg_config,
+        )
+        self._container.channel_manager.register(ChannelType.TELEGRAM, tg_adapter)
 
-        await self._container.start(send_fn=_telegram_send_to_kevin)
+        await self._container.start(send_fn=self._container.channel_manager.send_to_kevin)
 
     async def _post_shutdown(self, application) -> None:
         await self._container.shutdown()
@@ -599,3 +601,32 @@ class TelegramApp:
 
         await message.reply_text(f"🎤 {user_text}")
         self._enqueue_message(str(message.chat_id), user_text, message)
+
+
+class TelegramChannelAdapter(BaseAdapter):
+    """Thin BaseAdapter wrapper around TelegramApp for ChannelManager registration."""
+
+    channel_type = ChannelType.TELEGRAM
+
+    def __init__(self, telegram_app: TelegramApp, config: dict) -> None:
+        super().__init__(config)
+        self._telegram_app = telegram_app
+
+    async def start(self) -> None:
+        pass  # TelegramApp lifecycle managed by python-telegram-bot
+
+    async def stop(self) -> None:
+        pass  # TelegramApp lifecycle managed by python-telegram-bot
+
+    async def send_text(self, chat_id: str, text: str) -> None:
+        bot = self._telegram_app._bot
+        if bot is None:
+            return
+        try:
+            numeric_id = int(chat_id)
+        except ValueError:
+            numeric_id = chat_id
+        await send_telegram_text_to_chat(bot=bot, chat_id=numeric_id, text=text)
+
+    async def is_connected(self) -> bool:
+        return self._telegram_app._bot is not None
