@@ -236,7 +236,9 @@ class QQAdapter(BaseAdapter):
         text = re.sub(r'_(.+?)_', r'\1', text)
         text = re.sub(r'`(.+?)`', r'\1', text)
         text = re.sub(r'\[(.+?)\]\((.+?)\)', r'\1 (\2)', text)
-        return text
+        # 清理连续空行（3+ 个换行 → 2 个）并 strip 首尾空白
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
 
     def _split_text(self, text: str, max_length: int) -> list[str]:
         if len(text) <= max_length:
