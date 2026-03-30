@@ -10,6 +10,7 @@ import time
 from typing import Awaitable, Callable, Optional
 
 import websockets
+from websockets.protocol import State as WsState
 
 from src.adapters.base import BaseAdapter, ChannelType
 
@@ -60,7 +61,7 @@ class QQAdapter(BaseAdapter):
         logger.info("QQ adapter 已停止")
 
     async def is_connected(self) -> bool:
-        return self.ws is not None and self.ws.open
+        return self.ws is not None and self.ws.state == WsState.OPEN
 
     async def send_text(self, chat_id: str, text: str) -> None:
         text = self._markdown_to_plain(text)
@@ -203,7 +204,7 @@ class QQAdapter(BaseAdapter):
         return segments
 
     async def _call_api(self, action: str, params: dict, timeout: float = 30.0) -> dict:
-        if not self.ws or not self.ws.open:
+        if not self.ws or not self.ws.state == WsState.OPEN:
             return {"status": "failed", "retcode": -1}
 
         echo = f"{action}_{time.time()}"
