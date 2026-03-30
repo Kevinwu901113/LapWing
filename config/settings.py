@@ -95,6 +95,16 @@ QQ_ACCESS_TOKEN: str = os.getenv("QQ_ACCESS_TOKEN", "")
 QQ_SELF_ID: str = os.getenv("QQ_SELF_ID", "")
 QQ_KEVIN_ID: str = os.getenv("QQ_KEVIN_ID", "")
 
+# QQ 群聊
+QQ_GROUP_IDS: list[str] = [
+    g.strip() for g in os.getenv("QQ_GROUP_IDS", "").split(",") if g.strip()
+]
+QQ_GROUP_CONTEXT_SIZE: int = int(os.getenv("QQ_GROUP_CONTEXT_SIZE", "30"))
+QQ_GROUP_COOLDOWN: int = int(os.getenv("QQ_GROUP_COOLDOWN", "60"))
+QQ_GROUP_INTEREST_KEYWORDS: list[str] = [
+    k.strip() for k in os.getenv("QQ_GROUP_INTEREST_KEYWORDS", "").split(",") if k.strip()
+]
+
 # LLM（OpenAI 兼容格式）
 LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
 LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "")
