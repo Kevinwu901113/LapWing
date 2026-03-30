@@ -166,7 +166,11 @@ def run_telegram_bot(logger: logging.Logger) -> int:
     # Register QQ adapter if enabled
     from config.settings import QQ_ENABLED
     if QQ_ENABLED:
-        from config.settings import QQ_WS_URL, QQ_ACCESS_TOKEN, QQ_SELF_ID, QQ_KEVIN_ID
+        from config.settings import (
+            QQ_WS_URL, QQ_ACCESS_TOKEN, QQ_SELF_ID, QQ_KEVIN_ID,
+            QQ_GROUP_IDS, QQ_GROUP_CONTEXT_SIZE, QQ_GROUP_COOLDOWN,
+            QQ_GROUP_INTEREST_KEYWORDS,
+        )
         from src.adapters.base import ChannelType
         from src.adapters.qq_adapter import QQAdapter
 
@@ -175,6 +179,11 @@ def run_telegram_bot(logger: logging.Logger) -> int:
             "access_token": QQ_ACCESS_TOKEN,
             "self_id": QQ_SELF_ID,
             "kevin_id": QQ_KEVIN_ID,
+            "group_ids": QQ_GROUP_IDS,
+            "self_names": ["Lapwing", "lapwing", "小翅"],
+            "interest_keywords": QQ_GROUP_INTEREST_KEYWORDS,
+            "group_cooldown": QQ_GROUP_COOLDOWN,
+            "group_context_size": QQ_GROUP_CONTEXT_SIZE,
         }
 
         async def _qq_on_message(chat_id: str, text: str, channel, raw_event: dict) -> None:
@@ -200,8 +209,9 @@ def run_telegram_bot(logger: logging.Logger) -> int:
             )
 
         qq_adapter = QQAdapter(config=qq_config, on_message=_qq_on_message)
+        qq_adapter.router = container.brain.router  # Inject LLM router for group decisions
         container.channel_manager.register(ChannelType.QQ, qq_adapter)
-        logger.info("QQ 通道已注册")
+        logger.info("QQ 通道已注册（群聊: %s）", QQ_GROUP_IDS or "无")
 
     app = telegram_app.build_application(
         token=TELEGRAM_TOKEN,
