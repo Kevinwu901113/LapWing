@@ -86,6 +86,14 @@ TELEGRAM_PROGRESS_DEDUP: bool = os.getenv("TELEGRAM_PROGRESS_DEDUP", "true").low
 TELEGRAM_PROGRESS_THROTTLE_SECONDS: float = float(
     os.getenv("TELEGRAM_PROGRESS_THROTTLE_SECONDS", "1.0")
 )
+TELEGRAM_KEVIN_ID: str = os.getenv("TELEGRAM_KEVIN_ID", "")
+
+# QQ (NapCat OneBot v11)
+QQ_ENABLED: bool = os.getenv("QQ_ENABLED", "false").lower() == "true"
+QQ_WS_URL: str = os.getenv("QQ_WS_URL", "ws://127.0.0.1:3001")
+QQ_ACCESS_TOKEN: str = os.getenv("QQ_ACCESS_TOKEN", "")
+QQ_SELF_ID: str = os.getenv("QQ_SELF_ID", "")
+QQ_KEVIN_ID: str = os.getenv("QQ_KEVIN_ID", "")
 
 # LLM（OpenAI 兼容格式）
 LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
