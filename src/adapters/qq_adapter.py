@@ -13,6 +13,9 @@ import websockets
 from websockets.protocol import State as WsState
 
 from src.adapters.base import BaseAdapter, ChannelType
+from src.adapters.qq_group_context import GroupContext, GroupMessage
+from src.adapters.qq_group_filter import GroupMessageFilter
+from src.core.prompt_loader import load_prompt
 
 logger = logging.getLogger("lapwing.adapter.qq")
 
@@ -68,6 +71,21 @@ class QQAdapter(BaseAdapter):
         self._echo_futures: dict[str, asyncio.Future] = {}
         self._message_dedup: dict[str, float] = {}
         self._connection_task: Optional[asyncio.Task] = None
+
+        # Group chat
+        self._allowed_groups: set[str] = set(config.get("group_ids", []))
+        self._group_contexts: dict[str, GroupContext] = {}
+        self._group_filter: GroupMessageFilter | None = None
+        if self._allowed_groups:
+            self._group_filter = GroupMessageFilter(
+                self_id=self.self_id,
+                self_names=config.get("self_names", ["Lapwing", "lapwing"]),
+                kevin_id=self.kevin_id,
+                interest_keywords=config.get("interest_keywords", []),
+                cooldown_seconds=config.get("group_cooldown", 60),
+            )
+        self._group_context_size: int = config.get("group_context_size", 30)
+        self.router = None  # Injected by main.py for group engagement decisions
 
     async def start(self) -> None:
         self._running = True
@@ -158,6 +176,7 @@ class QQAdapter(BaseAdapter):
     async def _handle_message_event(self, event: dict) -> None:
         user_id = str(event.get("user_id", ""))
         message_id = str(event.get("message_id", ""))
+        message_type = event.get("message_type")
 
         if user_id == self.self_id:
             return
@@ -170,28 +189,57 @@ class QQAdapter(BaseAdapter):
         self._message_dedup[dedup_key] = now
         self._message_dedup = {k: v for k, v in self._message_dedup.items() if now - v < 60}
 
-        # 只处理 Kevin 的消息
-        if self.kevin_id and user_id != self.kevin_id:
-            return
-
-        # 标记已读（仅私聊）
-        if event.get("message_type") == "private":
-            asyncio.create_task(self._mark_as_read(user_id))
-
         text = self._extract_text(event)
-        if not text:
-            return
 
-        if self.on_message:
-            # 必须用 create_task 而非 await：on_message 内部会调用
-            # send_text → _call_api，后者需要 _listen 循环继续运转
-            # 来接收 echo 响应；若 await 则会死锁。
-            asyncio.create_task(self.on_message(
-                chat_id=user_id,
-                text=text,
-                channel=ChannelType.QQ,
-                raw_event=event,
-            ))
+        if message_type == "private":
+            # Private: Kevin only (existing logic)
+            if self.kevin_id and user_id != self.kevin_id:
+                return
+            if not text:
+                return
+            asyncio.create_task(self._mark_as_read(user_id))
+            if self.on_message:
+                # 必须用 create_task 而非 await：on_message 内部会调用
+                # send_text → _call_api，后者需要 _listen 循环继续运转
+                # 来接收 echo 响应；若 await 则会死锁。
+                asyncio.create_task(self.on_message(
+                    chat_id=user_id,
+                    text=text,
+                    channel=ChannelType.QQ,
+                    raw_event=event,
+                ))
+
+        elif message_type == "group":
+            group_id = str(event.get("group_id", ""))
+            if group_id not in self._allowed_groups:
+                return
+
+            ctx = self._get_group_context(group_id)
+            is_at_self = self._check_at_self(event)
+            is_reply_to_self = self._check_reply_to_self(event, ctx)
+            nickname = self._get_sender_nickname(event)
+
+            group_msg = GroupMessage(
+                message_id=message_id,
+                user_id=user_id,
+                nickname=nickname,
+                text=text or "(非文本消息)",
+                timestamp=now,
+                is_at_self=is_at_self,
+                is_reply_to_self=is_reply_to_self,
+            )
+            ctx.add_message(group_msg)
+
+            if not text:
+                return
+            if self._group_filter is None:
+                return
+
+            should_engage, reason = self._group_filter.should_engage(group_msg, ctx)
+            if not should_engage:
+                return
+
+            asyncio.create_task(self._handle_group_engagement(ctx, group_msg, reason))
 
     async def _mark_as_read(self, user_id: str) -> None:
         """标记私聊消息已读。"""
@@ -201,6 +249,122 @@ class QQAdapter(BaseAdapter):
             })
         except Exception:
             pass  # 非关键操作，失败不影响主流程
+
+    # ── 群聊辅助 ─────────────────────────────────────────
+
+    def _get_group_context(self, group_id: str) -> GroupContext:
+        if group_id not in self._group_contexts:
+            self._group_contexts[group_id] = GroupContext(group_id=group_id)
+        return self._group_contexts[group_id]
+
+    def _check_at_self(self, event: dict) -> bool:
+        message = event.get("message", [])
+        if isinstance(message, list):
+            for seg in message:
+                if seg.get("type") == "at" and str(seg.get("data", {}).get("qq", "")) == self.self_id:
+                    return True
+        return False
+
+    def _check_reply_to_self(self, event: dict, ctx: GroupContext) -> bool:
+        message = event.get("message", [])
+        if isinstance(message, list):
+            for seg in message:
+                if seg.get("type") == "reply":
+                    reply_id = str(seg.get("data", {}).get("id", ""))
+                    if reply_id in ctx.my_recent_message_ids:
+                        return True
+        return False
+
+    def _get_sender_nickname(self, event: dict) -> str:
+        sender = event.get("sender", {})
+        return sender.get("card", "") or sender.get("nickname", "") or str(event.get("user_id", ""))
+
+    # ── 群聊参与决策与执行 ───────────────────────────────
+
+    async def _handle_group_engagement(
+        self, ctx: GroupContext, msg: GroupMessage, reason: str
+    ) -> None:
+        """Tier-2: ask Brain whether and how to participate."""
+        action, content = await self._decide_group_engagement(ctx, reason)
+
+        if action == "SKIP":
+            return
+
+        if action == "REACT":
+            await self._react_to_message(msg.message_id, content)
+
+        elif action == "REPLY":
+            if msg.is_at_self or msg.is_reply_to_self:
+                result = await self._send_group_reply(ctx.group_id, content, msg.message_id)
+            else:
+                result = await self._send_group_msg(ctx.group_id, content)
+
+            resp_msg_id = str(result.get("data", {}).get("message_id", ""))
+            if resp_msg_id:
+                ctx.record_my_message(resp_msg_id)
+            ctx.last_reply_time = time.time()
+
+    async def _decide_group_engagement(
+        self, ctx: GroupContext, trigger_reason: str
+    ) -> tuple[str, str]:
+        """Call LLM to decide group participation. Returns (action, content)."""
+        if self.router is None:
+            return "SKIP", ""
+
+        prompt_template = load_prompt("group_engage_decision")
+        prompt = prompt_template.format(
+            group_context=ctx.format_for_prompt(n=self._group_context_size),
+            trigger_reason=trigger_reason,
+        )
+
+        try:
+            response = await self.router.complete(
+                messages=[{"role": "user", "content": prompt}],
+                purpose="tool",
+                max_tokens=200,
+            )
+        except Exception as exc:
+            logger.warning("Group engagement decision failed: %s", exc)
+            return "SKIP", ""
+
+        text = response.strip()
+        if text.startswith("SKIP"):
+            return "SKIP", ""
+        if text.startswith("REACT"):
+            emoji_id = text.replace("REACT", "", 1).strip()
+            return "REACT", emoji_id
+        if text.startswith("REPLY"):
+            reply = text.replace("REPLY", "", 1).strip()
+            return "REPLY", reply
+        return "SKIP", ""
+
+    # ── 群聊发送 ────────────────────────────────────────
+
+    async def _send_group_msg(self, group_id: str, text: str) -> dict:
+        text_plain = self._markdown_to_plain(text)
+        segments = self._build_message_segments(text_plain)
+        return await self._call_api("send_group_msg", {
+            "group_id": int(group_id),
+            "message": segments,
+        })
+
+    async def _send_group_reply(self, group_id: str, text: str, reply_to_id: str) -> dict:
+        text_plain = self._markdown_to_plain(text)
+        segments: list[dict] = [{"type": "reply", "data": {"id": reply_to_id}}]
+        segments.extend(self._build_message_segments(text_plain))
+        return await self._call_api("send_group_msg", {
+            "group_id": int(group_id),
+            "message": segments,
+        })
+
+    async def _react_to_message(self, message_id: str, emoji_id: str) -> None:
+        try:
+            await self._call_api("set_msg_emoji_like", {
+                "message_id": message_id,
+                "emoji_id": emoji_id,
+            })
+        except Exception:
+            pass  # Non-critical
 
     # ── 消息解析 ────────────────────────────────────────
 
