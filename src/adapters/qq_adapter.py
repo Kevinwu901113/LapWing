@@ -10,6 +10,7 @@ import time
 from typing import Awaitable, Callable, Optional
 
 import websockets
+from websockets.protocol import State as WsState
 
 from src.adapters.base import BaseAdapter, ChannelType
 
@@ -60,7 +61,7 @@ class QQAdapter(BaseAdapter):
         logger.info("QQ adapter 已停止")
 
     async def is_connected(self) -> bool:
-        return self.ws is not None and self.ws.open
+        return self.ws is not None and self.ws.state == WsState.OPEN
 
     async def send_text(self, chat_id: str, text: str) -> None:
         text = self._markdown_to_plain(text)
@@ -83,10 +84,11 @@ class QQAdapter(BaseAdapter):
                     headers["Authorization"] = f"Bearer {self.access_token}"
                 async with websockets.connect(
                     self.ws_url,
-                    extra_headers=headers,
+                    additional_headers=headers,
                     ping_interval=30,
                     ping_timeout=10,
                     close_timeout=5,
+                    proxy=None,
                 ) as ws:
                     self.ws = ws
                     delay = self._reconnect_delay
@@ -151,12 +153,15 @@ class QQAdapter(BaseAdapter):
             return
 
         if self.on_message:
-            await self.on_message(
+            # 必须用 create_task 而非 await：on_message 内部会调用
+            # send_text → _call_api，后者需要 _listen 循环继续运转
+            # 来接收 echo 响应；若 await 则会死锁。
+            asyncio.create_task(self.on_message(
                 chat_id=user_id,
                 text=text,
                 channel=ChannelType.QQ,
                 raw_event=event,
-            )
+            ))
 
     # ── 消息解析 ────────────────────────────────────────
 
@@ -202,7 +207,7 @@ class QQAdapter(BaseAdapter):
         return segments
 
     async def _call_api(self, action: str, params: dict, timeout: float = 30.0) -> dict:
-        if not self.ws or not self.ws.open:
+        if not self.ws or not self.ws.state == WsState.OPEN:
             return {"status": "failed", "retcode": -1}
 
         echo = f"{action}_{time.time()}"
@@ -231,7 +236,9 @@ class QQAdapter(BaseAdapter):
         text = re.sub(r'_(.+?)_', r'\1', text)
         text = re.sub(r'`(.+?)`', r'\1', text)
         text = re.sub(r'\[(.+?)\]\((.+?)\)', r'\1 (\2)', text)
-        return text
+        # 清理连续空行（3+ 个换行 → 2 个）并 strip 首尾空白
+        text = re.sub(r'\n{3,}', '\n\n', text)
+        return text.strip()
 
     def _split_text(self, text: str, max_length: int) -> list[str]:
         if len(text) <= max_length:

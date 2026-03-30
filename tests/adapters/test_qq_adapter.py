@@ -79,7 +79,7 @@ class TestMarkdownToPlain:
 
     def test_code_block(self):
         adapter = _make_adapter()
-        assert adapter._markdown_to_plain("```python\nprint(1)\n```") == "print(1)\n"
+        assert adapter._markdown_to_plain("```python\nprint(1)\n```") == "print(1)"
 
     def test_inline_code(self):
         adapter = _make_adapter()
