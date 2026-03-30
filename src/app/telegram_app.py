@@ -438,6 +438,7 @@ class TelegramApp:
 
     async def _think_and_reply(self, message, chat_id: str, user_text: str) -> None:
         async with self._chat_lock(chat_id):
+            self._container.channel_manager.last_active_channel = ChannelType.TELEGRAM
             task_token = uuid.uuid4().hex
             self._active_status_tokens[chat_id] = task_token
             self._status_last_text.pop(chat_id, None)
