@@ -153,12 +153,15 @@ class QQAdapter(BaseAdapter):
             return
 
         if self.on_message:
-            await self.on_message(
+            # 必须用 create_task 而非 await：on_message 内部会调用
+            # send_text → _call_api，后者需要 _listen 循环继续运转
+            # 来接收 echo 响应；若 await 则会死锁。
+            asyncio.create_task(self.on_message(
                 chat_id=user_id,
                 text=text,
                 channel=ChannelType.QQ,
                 raw_event=event,
-            )
+            ))
 
     # ── 消息解析 ────────────────────────────────────────
 
