@@ -87,7 +87,7 @@ class WeatherAgent(BaseAgent):
         try:
             raw = await router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="agent_execution",
                 max_tokens=128,
                 session_key=f"chat:{chat_id}",
                 origin="agent.weather.extract_city",

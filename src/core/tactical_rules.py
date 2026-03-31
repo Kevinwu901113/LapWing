@@ -53,7 +53,7 @@ class TacticalRules:
         try:
             result = await self._router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="lightweight_judgment",
                 max_tokens=256,
                 session_key="system:tactical_rules",
                 origin="core.tactical_rules.analyze",

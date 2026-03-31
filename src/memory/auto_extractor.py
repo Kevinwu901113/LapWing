@@ -86,6 +86,7 @@ class AutoMemoryExtractor:
             raw = await self._router.query_lightweight(
                 system="你是一个记忆提取模块。严格按照要求输出 JSON。",
                 user=prompt,
+                slot="memory_processing",
             )
             items = self._parse_response(raw)
         except Exception as e:

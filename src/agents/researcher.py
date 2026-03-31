@@ -87,7 +87,7 @@ class ResearcherAgent(BaseAgent):
             )
             raw = await router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="agent_execution",
                 max_tokens=128,
                 session_key=f"chat:{chat_id}",
                 origin="agent.researcher.extract_queries",
@@ -216,7 +216,7 @@ class ResearcherAgent(BaseAgent):
         try:
             return await router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="agent_execution",
                 max_tokens=1024,
                 session_key=f"chat:{chat_id}",
                 origin="agent.researcher.summarize",

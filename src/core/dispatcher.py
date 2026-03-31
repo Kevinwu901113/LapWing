@@ -133,7 +133,7 @@ class AgentDispatcher:
         )
         raw = await self._router.complete(
             [{"role": "user", "content": prompt}],
-            purpose="tool",
+            slot="lightweight_judgment",
             max_tokens=512,
             session_key=f"chat:{chat_id}",
             origin="core.dispatcher.classify",
@@ -215,7 +215,7 @@ class AgentDispatcher:
         ]
         result = await self._router.complete(
             messages,
-            purpose="chat",
+            slot="persona_expression",
             session_key=f"chat:{chat_id}",
             origin="core.dispatcher.persona_format",
         )

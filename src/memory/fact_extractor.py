@@ -114,7 +114,7 @@ class FactExtractor:
             messages = [{"role": "user", "content": prompt}]
             response = await self._router.complete(
                 messages,
-                purpose="tool",
+                slot="memory_processing",
                 max_tokens=512,
                 session_key=f"chat:{chat_id}",
                 origin="memory.fact_extractor.extract",

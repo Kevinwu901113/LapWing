@@ -72,7 +72,7 @@ class ConversationCompactor:
         try:
             summary = await self._router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="memory_processing",
                 max_tokens=COMPACTION_SUMMARY_MAX_TOKENS,
                 session_key=f"chat:{actual_chat_id}",
                 origin="memory.compactor",

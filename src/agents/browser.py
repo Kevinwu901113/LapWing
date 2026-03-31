@@ -48,7 +48,7 @@ class BrowserAgent(BaseAgent):
         try:
             summary = await router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="agent_execution",
                 max_tokens=1024,
                 session_key=f"chat:{task.chat_id}",
                 origin="agent.browser.summary",

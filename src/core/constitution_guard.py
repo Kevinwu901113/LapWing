@@ -80,7 +80,7 @@ class ConstitutionGuard:
         try:
             response = await self._router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="chat",
+                slot="persona_expression",
                 max_tokens=512,
                 session_key="system:constitution_guard",
                 origin="core.constitution_guard",

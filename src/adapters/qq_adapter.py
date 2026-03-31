@@ -320,7 +320,7 @@ class QQAdapter(BaseAdapter):
         try:
             response = await self.router.complete(
                 messages=[{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="lightweight_judgment",
                 max_tokens=200,
             )
         except Exception as exc:

@@ -57,7 +57,7 @@ class EvolutionEngine:
         try:
             raw = await self._router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="chat",
+                slot="persona_expression",
                 max_tokens=2048,
                 session_key="system:evolution_engine",
                 origin="core.evolution_engine",

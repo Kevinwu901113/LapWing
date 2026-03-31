@@ -411,7 +411,7 @@ class CoderAgent(BaseAgent):
         try:
             raw = await router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="agent_execution",
                 max_tokens=1024,
                 session_key=f"chat:{chat_id}",
                 origin="agent.coder.generate_code",
@@ -430,7 +430,7 @@ class CoderAgent(BaseAgent):
         try:
             raw = await router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="agent_execution",
                 max_tokens=1024,
                 session_key=f"chat:{chat_id}",
                 origin="agent.coder.fix_code",
@@ -445,7 +445,7 @@ class CoderAgent(BaseAgent):
         try:
             raw = await router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="agent_execution",
                 max_tokens=1400,
                 session_key=f"chat:{chat_id}",
                 origin="agent.coder.plan_workspace",
@@ -473,7 +473,7 @@ class CoderAgent(BaseAgent):
         try:
             raw = await router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="agent_execution",
                 max_tokens=1400,
                 session_key=f"chat:{chat_id}",
                 origin="agent.coder.fix_workspace_plan",

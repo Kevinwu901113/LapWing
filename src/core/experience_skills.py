@@ -372,7 +372,7 @@ class ExperienceSkillManager:
         try:
             response = await self._router.complete(
                 messages=[{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="lightweight_judgment",
             )
         except Exception as exc:
             logger.warning("Level 2 技能匹配 LLM 调用失败: %s", exc)

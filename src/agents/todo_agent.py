@@ -56,7 +56,7 @@ class TodoAgent(BaseAgent):
         try:
             raw = await router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="agent_execution",
                 max_tokens=320,
                 session_key=f"chat:{chat_id}",
                 origin="agent.todo.parse",
