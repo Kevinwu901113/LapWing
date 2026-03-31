@@ -67,9 +67,10 @@ class _ThinkCtx:
 class LapwingBrain:
     """管理 LLM 调用和对话上下文。"""
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path, *, model_config=None):
         self.auth_manager = AuthManager()
-        self.router = LLMRouter(auth_manager=self.auth_manager)
+        self._model_config = model_config
+        self.router = LLMRouter(auth_manager=self.auth_manager, model_config=model_config)
         self.tool_registry = build_default_tool_registry()
         self.task_runtime = TaskRuntime(router=self.router, tool_registry=self.tool_registry)
         self.memory = ConversationMemory(db_path)

@@ -94,6 +94,13 @@ def create_app(
     app.state.started_at = datetime.now(timezone.utc).isoformat()
     app.state.auth_manager = getattr(brain, "auth_manager", None)
 
+    # Mount model routing API if ModelConfigManager is available
+    _model_config = getattr(brain, "_model_config", None)
+    if _model_config is not None:
+        from src.api import model_routing as _model_routing_api
+        _model_routing_api.init(_model_config, getattr(brain, "router", None))
+        app.include_router(_model_routing_api.router)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=API_ALLOWED_ORIGINS,
