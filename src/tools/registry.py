@@ -923,4 +923,164 @@ def build_default_tool_registry() -> ToolRegistry:
         )
     )
 
+    # ── Memory CRUD（Wave 1）──
+    from config.settings import MEMORY_CRUD_ENABLED, SELF_SCHEDULE_ENABLED
+    if MEMORY_CRUD_ENABLED:
+        from src.tools.memory_crud import MEMORY_CRUD_EXECUTORS
+        registry.register(ToolSpec(
+            name="memory_list",
+            description="列出记忆目录中的所有文件。用于了解自己记住了什么、记忆是怎么组织的。",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "directory": {
+                        "type": "string",
+                        "description": "要列出的子目录，默认整个记忆目录。例如: 'kevin_fact'",
+                        "default": "",
+                    },
+                },
+            },
+            executor=MEMORY_CRUD_EXECUTORS["memory_list"],
+            capability="memory",
+            risk_level="low",
+        ))
+        registry.register(ToolSpec(
+            name="memory_read",
+            description="读取一个记忆文件的内容（带行号）。用于回顾之前记录的信息、检查记忆是否准确。",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "文件路径（相对于 data/memory/）。例如: 'KEVIN.md' 或 'kevin_fact/preferences.md'",
+                    },
+                },
+                "required": ["path"],
+            },
+            executor=MEMORY_CRUD_EXECUTORS["memory_read"],
+            capability="memory",
+            risk_level="low",
+        ))
+        registry.register(ToolSpec(
+            name="memory_edit",
+            description="编辑记忆文件中的内容（精确查找替换）。用于更新过时的信息、纠正错误。old_text 必须精确匹配。",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "文件路径（相对于 data/memory/）",
+                    },
+                    "old_text": {
+                        "type": "string",
+                        "description": "要替换的原文（必须精确匹配）",
+                    },
+                    "new_text": {
+                        "type": "string",
+                        "description": "替换后的新文本",
+                    },
+                },
+                "required": ["path", "old_text", "new_text"],
+            },
+            executor=MEMORY_CRUD_EXECUTORS["memory_edit"],
+            capability="memory",
+            risk_level="medium",
+        ))
+        registry.register(ToolSpec(
+            name="memory_delete",
+            description="删除记忆文件或文件中的特定内容。用于清理过时的、错误的记忆。不提供 text_to_remove 则删除整个文件。",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "文件路径（相对于 data/memory/）",
+                    },
+                    "text_to_remove": {
+                        "type": "string",
+                        "description": "要从文件中删除的特定文本。不提供则删除整个文件。",
+                    },
+                },
+                "required": ["path"],
+            },
+            executor=MEMORY_CRUD_EXECUTORS["memory_delete"],
+            capability="memory",
+            risk_level="medium",
+        ))
+        registry.register(ToolSpec(
+            name="memory_search",
+            description="在所有记忆文件中搜索包含关键词的内容。用于查找之前记录的特定信息。",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "keyword": {
+                        "type": "string",
+                        "description": "搜索关键词",
+                    },
+                },
+                "required": ["keyword"],
+            },
+            executor=MEMORY_CRUD_EXECUTORS["memory_search"],
+            capability="memory",
+            risk_level="low",
+        ))
+
+    # ── 自主调度（Wave 1）──
+    if SELF_SCHEDULE_ENABLED:
+        from src.tools.schedule_task import SCHEDULE_EXECUTORS
+        registry.register(ToolSpec(
+            name="schedule_task",
+            description=(
+                "安排一个在未来执行的定时任务。"
+                "用于：定期自省、定时提醒 Kevin、自主浏览新闻、安排兴趣探索等。"
+                "schedule 用自然语言描述（如'每天晚上11点'、'每隔2小时'、'明天早上8点'）。"
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "schedule": {
+                        "type": "string",
+                        "description": "时间安排。支持: '每天HH:MM'、'每隔N小时'、'每隔N分钟'、'YYYY-MM-DD HH:MM'（单次）、'明天/后天 HH:MM'",
+                    },
+                    "task_description": {
+                        "type": "string",
+                        "description": "要执行的任务描述，这会成为你收到的 prompt。",
+                    },
+                    "repeat": {
+                        "type": "boolean",
+                        "description": "是否重复执行，默认 true。",
+                    },
+                },
+                "required": ["schedule", "task_description"],
+            },
+            executor=SCHEDULE_EXECUTORS["schedule_task"],
+            capability="schedule",
+            risk_level="medium",
+        ))
+        registry.register(ToolSpec(
+            name="list_scheduled_tasks",
+            description="查看所有已安排的定时任务。",
+            json_schema={"type": "object", "properties": {}},
+            executor=SCHEDULE_EXECUTORS["list_scheduled_tasks"],
+            capability="schedule",
+            risk_level="low",
+        ))
+        registry.register(ToolSpec(
+            name="cancel_scheduled_task",
+            description="取消一个定时任务。",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "task_id": {
+                        "type": "string",
+                        "description": "要取消的任务 ID",
+                    },
+                },
+                "required": ["task_id"],
+            },
+            executor=SCHEDULE_EXECUTORS["cancel_scheduled_task"],
+            capability="schedule",
+            risk_level="medium",
+        ))
+
     return registry

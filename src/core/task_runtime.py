@@ -20,7 +20,9 @@ from config.settings import (
     LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD,
     LOOP_DETECTION_HISTORY_SIZE,
     LOOP_DETECTION_WARNING_THRESHOLD,
+    MEMORY_CRUD_ENABLED,
     ROOT_DIR,
+    SELF_SCHEDULE_ENABLED,
     SHELL_DEFAULT_CWD,
     TASK_MAX_TOOL_ROUNDS,
 )
@@ -218,6 +220,10 @@ class TaskRuntime:
             tool_names.update({"web_search", "web_fetch"})
         if skill_activation_enabled:
             tool_names.add("activate_skill")
+        if MEMORY_CRUD_ENABLED:
+            tool_names.update({"memory_list", "memory_read", "memory_edit", "memory_delete", "memory_search"})
+        if SELF_SCHEDULE_ENABLED:
+            tool_names.update({"schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"})
         return self._tool_registry.function_tools(
             include_internal=False,
             tool_names=tool_names,

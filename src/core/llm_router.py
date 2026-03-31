@@ -856,6 +856,23 @@ class LLMRouter:
             runner=_runner,
         )
 
+    async def query_lightweight(self, system: str, user: str) -> str:
+        """用轻量模型做简单任务（分类、提取、判断）。
+
+        使用较低 max_tokens（1000），不需要 tool calling。
+        路由到 chat purpose（通常是最快的模型），温度由底层模型路由决定。
+        """
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ]
+        return await self.complete(
+            messages,
+            purpose="chat",
+            max_tokens=1000,
+            origin="query_lightweight",
+        )
+
     async def complete_with_tools(
         self,
         messages: list[dict],

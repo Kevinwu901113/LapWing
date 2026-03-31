@@ -89,6 +89,7 @@ class LapwingBrain:
         self.tactical_rules: TacticalRules | None = None
         self.evolution_engine: EvolutionEngine | None = None
         self.session_manager = None  # Set externally (SessionManager | None)
+        self.auto_memory_extractor = None  # Set externally (AutoMemoryExtractor | None)
 
     async def init_db(self) -> None:
         """初始化数据库连接和表结构。"""

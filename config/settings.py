@@ -227,6 +227,12 @@ FACT_EXTRACT_IDLE_SECONDS: int = int(os.getenv("FACT_EXTRACT_IDLE_SECONDS", "300
 FACT_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("FACT_EXTRACT_TURN_THRESHOLD", "3"))  # 满 N 轮触发提取
 INTEREST_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("INTEREST_EXTRACT_TURN_THRESHOLD", "5"))
 
+# ── Wave 1 功能开关 ──
+MEMORY_CRUD_ENABLED: bool = os.getenv("MEMORY_CRUD_ENABLED", "true").lower() in ("true", "1", "yes")
+AUTO_MEMORY_EXTRACT_ENABLED: bool = os.getenv("AUTO_MEMORY_EXTRACT_ENABLED", "true").lower() in ("true", "1", "yes")
+SELF_SCHEDULE_ENABLED: bool = os.getenv("SELF_SCHEDULE_ENABLED", "true").lower() in ("true", "1", "yes")
+SCHEDULED_TASKS_PATH: Path = DATA_DIR / "scheduled_tasks.json"
+
 # ── Session 管理 ──
 SESSION_ENABLED: bool = os.getenv("SESSION_ENABLED", "false").lower() in ("true", "1")
 SESSION_TIMEOUT_MINUTES: int = int(os.getenv("SESSION_TIMEOUT_MINUTES", "30"))

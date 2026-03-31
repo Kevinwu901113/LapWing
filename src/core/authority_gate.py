@@ -69,6 +69,16 @@ OPERATION_AUTH: dict[str, AuthLevel] = {
     "verify_code_result": AuthLevel.OWNER,
     "verify_workspace": AuthLevel.OWNER,
     "memory_note": AuthLevel.OWNER,
+    # Memory CRUD（Wave 1）
+    "memory_list": AuthLevel.OWNER,
+    "memory_read": AuthLevel.OWNER,
+    "memory_edit": AuthLevel.OWNER,
+    "memory_delete": AuthLevel.OWNER,
+    "memory_search": AuthLevel.OWNER,
+    # 自主调度（Wave 1）
+    "schedule_task": AuthLevel.OWNER,
+    "list_scheduled_tasks": AuthLevel.OWNER,
+    "cancel_scheduled_task": AuthLevel.OWNER,
 }
 
 # 未注册工具的默认权限（保守策略）

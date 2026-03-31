@@ -209,6 +209,13 @@ class AppContainer:
             self.brain.session_manager = sm
             logger.info("Session 系统已就绪")
 
+        # 自动记忆提取（Wave 1）
+        from config.settings import AUTO_MEMORY_EXTRACT_ENABLED
+        if AUTO_MEMORY_EXTRACT_ENABLED:
+            from src.memory.auto_extractor import AutoMemoryExtractor
+            self.brain.auto_memory_extractor = AutoMemoryExtractor(router=self.brain.router)
+            logger.info("自动记忆提取已就绪")
+
     def _build_heartbeat(self, send_fn) -> HeartbeatEngine:
         from src.heartbeat.actions.session_reaper import SessionReaperAction
         heartbeat = HeartbeatEngine(brain=self.brain, send_fn=send_fn)
@@ -221,4 +228,12 @@ class AppContainer:
         heartbeat.registry.register(SelfReflectionAction())
         heartbeat.registry.register(PromptEvolutionAction())
         heartbeat.registry.register(SessionReaperAction())
+        # Wave 1 actions
+        from config.settings import AUTO_MEMORY_EXTRACT_ENABLED, SELF_SCHEDULE_ENABLED
+        if AUTO_MEMORY_EXTRACT_ENABLED:
+            from src.heartbeat.actions.auto_memory import AutoMemoryAction
+            heartbeat.registry.register(AutoMemoryAction())
+        if SELF_SCHEDULE_ENABLED:
+            from src.heartbeat.actions.scheduled_tasks import ScheduledTasksAction
+            heartbeat.registry.register(ScheduledTasksAction())
         return heartbeat
