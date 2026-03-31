@@ -1,1888 +1,1049 @@
-# Lapwing Desktop Panel — 完整前端重构蓝图
+# Lapwing Session System — 设计蓝图
 
-> 本文档是桌面前端的完整重构方案，供 Claude Code 实现。
-> 参考 AstrBot 的 sidebar + 分页架构，保留 React + Vite + Tauri 技术栈。
-> **不改动后端 API（`src/api/server.py`）**，只重构前端。
-
----
-
-## 0. 问题与目标
-
-### 当前问题
-- `App.tsx` 是 600 行的单文件巨石组件，所有面板堆在一个页面
-- 没有路由、没有导航、没有组件拆分
-- Auth 面板、记忆、兴趣、事件、任务、学习日志全平铺在 grid 中
-- 新增功能只能继续往下堆，无法扩展
-
-### 目标
-- **Sidebar + 路由页面**架构（参考 AstrBot dashboard 的 FullLayout + 分页模式）
-- 拆分为 7 个独立页面组件
-- 提取可复用 UI 组件
-- 保持现有暖色调毛玻璃美学，但换掉 Space Grotesk 字体
-- 后端 API 零改动，所有现有端点保持原样
-- `api.ts` 零改动（类型和请求函数全部复用）
+> 本文档是完整的实现规范，可直接交给 Claude Code 执行。
+> 所有文件路径、行号和代码均基于当前 v6 代码库。
 
 ---
 
-## 1. 新增依赖
+## 一、问题
 
-在 `desktop/package.json` 中添加：
+当前所有对话共享一个永续的滑动窗口（40 条消息），不同话题混在一起送给 LLM。上午聊论文、中午查比赛、下午调代码——全部压在同一个上下文里，既浪费 token，又互相污染。
 
-```json
-{
-  "dependencies": {
-    "react": "^18.3.1",
-    "react-dom": "^18.3.1",
-    "react-router-dom": "^6.28.0",
-    "lucide-react": "^0.460.0"
-  }
-}
+## 二、核心概念
+
+在 `chat_id`（用户身份）之下引入 `session`（话题窗口）。
+
+```
+chat_id (用户)
+├── Session A — "论文写作"     [active]
+├── Session B — "道奇比赛查询"  [dormant, 40min ago]
+├── Session C — "调试 bug"     [condensed, 5h ago]
+└── (用户级数据：facts, interests, todos, reminders, discoveries)
 ```
 
-只新增两个依赖：`react-router-dom`（路由）和 `lucide-react`（图标）。不引入任何 UI 框架。
+### 四级生命周期
+
+| 状态 | 含义 | LLM 上下文 | 内存 | 磁盘 |
+|------|------|------------|------|------|
+| **Active** | 当前正在聊的话题 | ✅ 完整送入 | 完整消息 | 实时写 DB |
+| **Dormant** | 话题切走了，随时可回来 | ❌ | 完整消息 | DB |
+| **Condensed** | 压缩保留，仍可唤回 | ❌ | 仅摘要 | 快照文件 + DB |
+| **Deleted** | 最终清除 | ❌ | 无 | 仅 DB 归档 |
+
+### 状态流转
+
+```
+[新消息] ──→ 创建 Active session
+                │
+                ├── 话题切换 / 超时 ──→ Dormant（完整消息在内存）
+                │                        │
+                │   ┌── 话题匹配回来 ←───┤
+                │   │                    │
+                │   │                    └── 超过 DORMANT_TTL ──→ Condensed（压缩 + 写快照）
+                │   │                                              │
+                │   ├── 话题匹配回来（从快照恢复完整上下文）←──────┤
+                │   │                                              │
+                │   │                                              └── 超过 CONDENSED_TTL ──→ Deleted
+                │   │
+                │   └── 消息数 < MIN_MESSAGES ──→ 直接 Deleted（太短不值得保留）
+                │
+                └── 继续聊 ──→ 保持 Active
+```
+
+**关键约束：** 同一 `chat_id` 同一时间只有 **一个** Active session。
 
 ---
 
-## 2. 目录结构
+## 三、数据模型
 
-```
-desktop/src/
-├── main.tsx                     # 入口，挂载 RouterProvider
-├── api.ts                       # 【不改动】现有 API 客户端
-├── router.tsx                   # 路由定义
-├── styles/
-│   ├── globals.css              # 全局 CSS 变量 + reset + 字体
-│   ├── sidebar.css              # 侧栏样式
-│   └── pages.css                # 页面通用组件样式
-├── components/
-│   ├── AppShell.tsx             # 根布局：Sidebar + <Outlet />
-│   ├── Sidebar.tsx              # 侧栏导航
-│   ├── AuthGuard.tsx            # 鉴权守卫（bootstrap token 流程）
-│   ├── StatusDot.tsx            # 在线状态小圆点
-│   ├── StatCard.tsx             # 统计卡片
-│   ├── DataCard.tsx             # 通用数据展示卡片（标题 + 内容）
-│   ├── BarMeter.tsx             # 兴趣权重条
-│   ├── EmptyState.tsx           # 空状态占位
-│   └── EventBadge.tsx           # 事件类型标签
-├── hooks/
-│   ├── useSSE.ts                # SSE 连接 hook
-│   ├── usePolling.ts            # 定时轮询 hook
-│   └── useLatencyTelemetry.ts   # 延迟遥测 hook（从 App.tsx 提取）
-├── pages/
-│   ├── OverviewPage.tsx         # 总览：状态 + 快捷操作
-│   ├── MemoryPage.tsx           # 记忆管理 + 兴趣图谱
-│   ├── PersonaPage.tsx          # 人格进化 + 学习日志
-│   ├── TasksPage.tsx            # 任务视图 + 任务详情
-│   ├── EventsPage.tsx           # 实时事件流
-│   ├── AuthPage.tsx             # Auth 状态 + OAuth + Codex
-│   └── SettingsPage.tsx         # 系统设置（预留）
-└── vite-env.d.ts                # 【不改动】
-```
+### 3.1 新增 `sessions` 表
 
----
-
-## 3. 路由定义
-
-### `router.tsx`
-
-```tsx
-import { createBrowserRouter } from "react-router-dom";
-import AppShell from "./components/AppShell";
-import OverviewPage from "./pages/OverviewPage";
-import MemoryPage from "./pages/MemoryPage";
-import PersonaPage from "./pages/PersonaPage";
-import TasksPage from "./pages/TasksPage";
-import EventsPage from "./pages/EventsPage";
-import AuthPage from "./pages/AuthPage";
-import SettingsPage from "./pages/SettingsPage";
-
-export const router = createBrowserRouter([
-  {
-    path: "/",
-    element: <AppShell />,
-    children: [
-      { index: true, element: <OverviewPage /> },
-      { path: "memory", element: <MemoryPage /> },
-      { path: "persona", element: <PersonaPage /> },
-      { path: "tasks", element: <TasksPage /> },
-      { path: "events", element: <EventsPage /> },
-      { path: "auth", element: <AuthPage /> },
-      { path: "settings", element: <SettingsPage /> },
-    ],
-  },
-]);
-```
-
-### `main.tsx`
-
-```tsx
-import { StrictMode } from "react";
-import { createRoot } from "react-dom/client";
-import { RouterProvider } from "react-router-dom";
-import { router } from "./router";
-import "./styles/globals.css";
-
-createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <RouterProvider router={router} />
-  </StrictMode>,
+```sql
+CREATE TABLE IF NOT EXISTS sessions (
+    id              TEXT PRIMARY KEY,              -- UUID
+    chat_id         TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'active', -- active / dormant / condensed / deleted
+    topic_summary   TEXT NOT NULL DEFAULT '',       -- 话题摘要（5-15字）
+    topic_keywords  TEXT NOT NULL DEFAULT '[]',     -- JSON array，用于快速匹配
+    snapshot_path   TEXT,                           -- condensed 快照文件路径（相对于 SESSION_SNAPSHOTS_DIR）
+    created_at      TEXT NOT NULL,
+    last_active_at  TEXT NOT NULL,
+    condensed_at    TEXT,                           -- 进入 condensed 状态的时间
+    message_count   INTEGER NOT NULL DEFAULT 0
 );
+CREATE INDEX IF NOT EXISTS idx_sessions_chat_id_status
+    ON sessions(chat_id, status);
+CREATE INDEX IF NOT EXISTS idx_sessions_last_active
+    ON sessions(last_active_at);
+```
+
+### 3.2 `conversations` 表增加 `session_id` 列
+
+```sql
+ALTER TABLE conversations ADD COLUMN session_id TEXT;
+CREATE INDEX IF NOT EXISTS idx_conversations_session_id
+    ON conversations(session_id);
+```
+
+迁移策略：已有消息的 `session_id` 为 NULL，视为"遗留对话"。`SessionManager` 首次为某 `chat_id` 创建 session 时，不迁移旧消息。
+
+### 3.3 Session 快照文件
+
+目录：`data/memory/sessions/`
+
+每个 condensed session 对应一个 markdown 文件：
+
+```
+data/memory/sessions/
+├── a1b2c3d4.md
+├── e5f6g7h8.md
+└── ...
+```
+
+文件格式：
+
+```markdown
+# Session a1b2c3d4
+- 话题：论文数据集预处理
+- 关键词：论文, 数据集, CSV, 预处理, 导师
+- 时间：2026-03-31 14:00 ~ 15:20
+- 消息数：12
+
+## 摘要
+讨论了导师要求的 CSV 数据集预处理方案，确定用 pandas 做清洗，约定明天提交初稿。
+
+## 对话记录
+用户: 帮我看看这个数据集要怎么预处理
+Lapwing: 你说的是昨天导师提到的那个吗？
+用户: 对，就是那个 CSV 格式的，有好多空值
+Lapwing: 我看看... 空值比例大概多少？如果不超过 10% 可以直接 dropna，多的话得考虑填充策略
+用户: 大概 15% 左右
+...
+```
+
+**为什么用 markdown 文件而不是存 DB：**
+- 符合"文件是 source of truth"原则，可检查、可 diff
+- 与现有的 `data/memory/` 体系一致（journal、conversations/summaries 都是 markdown）
+- 快照可能包含几十条消息，放 DB 的单个字段里不方便人工审查
+- 快照文件是不可变的——写入后不会修改，只有删除
+
+### 3.4 Python 数据类
+
+```python
+# src/core/session_manager.py
+
+@dataclasses.dataclass
+class Session:
+    id: str
+    chat_id: str
+    status: str                # "active" | "dormant" | "condensed" | "deleted"
+    topic_summary: str
+    topic_keywords: list[str]
+    snapshot_path: str | None  # condensed 快照文件路径
+    created_at: datetime
+    last_active_at: datetime
+    condensed_at: datetime | None
+    message_count: int
 ```
 
 ---
 
-## 4. 全局样式
+## 四、SessionManager
 
-### `styles/globals.css`
+新文件：`src/core/session_manager.py`
 
-替换现有的 `styles.css`。
+### 4.1 职责
 
-**字体选择**：`"Outfit"` 作为主字体（geometric sans，比 Space Grotesk 更精致），`"Noto Sans SC"` 保持中文显示。
+| 方法 | 作用 |
+|------|------|
+| `resolve_session(chat_id, message) → Session` | 核心方法：为本次消息确定应使用的 session |
+| `get_or_create_active(chat_id) → Session` | 获取当前 active session；没有则创建 |
+| `create_session(chat_id, topic_summary) → Session` | 创建新 active，现有 active 自动降级 dormant |
+| `deactivate(session) → None` | Active → Dormant，生成 topic_summary |
+| `condense(session) → None` | Dormant → Condensed，写快照 + 清内存 |
+| `reactivate(session) → None` | Dormant/Condensed → Active，按需从快照恢复 |
+| `delete_session(session) → None` | 清除内存缓存 + 删快照文件，DB 标记 deleted |
+| `find_matching_session(chat_id, message) → Session \| None` | 在 dormant + condensed 中找话题匹配的 |
+| `reap_expired(chat_id) → tuple[int, int]` | 两级清理：dormant → condensed，condensed → deleted |
+| `list_sessions(chat_id, status) → list[Session]` | 列出指定状态的 sessions |
 
-```css
-@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap");
+### 4.2 与 ConversationMemory 的关系
 
-:root {
-  /* 色彩系统 */
-  --color-bg: #f5f1ea;
-  --color-surface: rgba(255, 255, 255, 0.72);
-  --color-surface-hover: rgba(255, 255, 255, 0.88);
-  --color-surface-solid: #ffffff;
-  --color-border: rgba(22, 56, 95, 0.08);
-  --color-border-active: rgba(22, 56, 95, 0.2);
+SessionManager **持有** ConversationMemory 的引用，但不替代它。ConversationMemory 的接口扩展：
 
-  --color-text-primary: #1a2332;
-  --color-text-secondary: #526075;
-  --color-text-muted: #8494a7;
+```python
+# 新增方法
+async def append_to_session(self, chat_id: str, session_id: str, role: str, content: str, *, channel: str = "telegram") -> None
+async def get_session_messages(self, session_id: str) -> list[dict]
+async def load_session_from_snapshot(self, session_id: str, messages: list[dict]) -> None
+async def clear_session_cache(self, session_id: str) -> None
+```
 
-  --color-accent: #2d6be4;
-  --color-accent-soft: rgba(45, 107, 228, 0.1);
-  --color-success: #2f9e72;
-  --color-success-soft: rgba(47, 158, 114, 0.12);
-  --color-danger: #c44536;
-  --color-danger-soft: rgba(196, 69, 54, 0.1);
-  --color-warning: #d4940a;
+原有的 `get(chat_id)` 和 `append(chat_id, ...)` 保持向后兼容——当 session 系统未启用时走老路径。
 
-  /* 侧栏 */
-  --sidebar-width: 240px;
-  --sidebar-collapsed-width: 68px;
-  --sidebar-bg: rgba(26, 35, 50, 0.95);
-  --sidebar-text: rgba(255, 255, 255, 0.7);
-  --sidebar-text-active: #ffffff;
-  --sidebar-item-hover: rgba(255, 255, 255, 0.08);
-  --sidebar-item-active: rgba(45, 107, 228, 0.2);
+### 4.3 内存缓存结构变化
 
-  /* 圆角 */
-  --radius-sm: 8px;
-  --radius-md: 14px;
-  --radius-lg: 20px;
-  --radius-pill: 999px;
+当前：
+```python
+self._store: dict[str, list[dict]]  # key = chat_id
+```
 
-  /* 阴影 */
-  --shadow-card: 0 2px 12px rgba(31, 43, 61, 0.06);
-  --shadow-card-hover: 0 8px 32px rgba(31, 43, 61, 0.1);
-  --shadow-sidebar: 4px 0 24px rgba(0, 0, 0, 0.08);
+改为双层：
+```python
+self._store: dict[str, list[dict]]          # key = session_id（active + dormant）
+self._legacy_store: dict[str, list[dict]]   # key = chat_id（session 系统关闭时的 fallback）
+```
 
-  /* 排版 */
-  font-family: "Outfit", "Noto Sans SC", sans-serif;
-  font-size: 15px;
-  line-height: 1.55;
-  color: var(--color-text-primary);
+Condensed session 不占 `_store` 空间——它们的完整消息在磁盘快照里，内存中只有 `sessions` 表里的 `topic_summary`。
 
-  /* 背景 */
-  color-scheme: light;
-  background:
-    radial-gradient(ellipse at 10% 0%, rgba(255, 184, 108, 0.35), transparent 50%),
-    radial-gradient(ellipse at 90% 10%, rgba(109, 181, 255, 0.3), transparent 40%),
-    var(--color-bg);
-  background-attachment: fixed;
-}
+---
 
-* {
-  box-sizing: border-box;
-  margin: 0;
-}
+## 五、话题检测（三层策略）
 
-body {
-  min-height: 100vh;
-  min-width: 320px;
-  -webkit-font-smoothing: antialiased;
-}
+### Layer 1：时间间隔（零成本）
 
-button, select, textarea, input {
-  font: inherit;
-  color: inherit;
-}
+```python
+SESSION_TIMEOUT_MINUTES = 30
+```
 
-/* ---------- 通用按钮 ---------- */
-.btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  border: none;
-  border-radius: var(--radius-pill);
-  padding: 0.6rem 1.1rem;
-  font-weight: 500;
-  font-size: 0.875rem;
-  cursor: pointer;
-  transition: all 0.18s ease;
-  white-space: nowrap;
-}
+距离 active session 最后一条消息超过 30 分钟 → 直接创建新 session，不调 LLM。
 
-.btn:hover { transform: translateY(-1px); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+**理由**：30 分钟的沉默几乎一定意味着话题切换或重新开始。这一层拦截了大部分场景。
 
-.btn-primary { background: var(--color-accent); color: #fff; }
-.btn-primary:hover { background: #2560d0; }
+### Layer 2：LLM 话题判断（轻量）
 
-.btn-soft {
-  background: var(--color-surface);
-  color: var(--color-text-primary);
-  border: 1px solid var(--color-border);
-}
-.btn-soft:hover { background: var(--color-surface-hover); border-color: var(--color-border-active); }
+连续对话中（未超时），每条消息到达时调用一次轻量 LLM：
 
-.btn-danger { background: var(--color-danger); color: #fff; }
-.btn-danger-soft { background: var(--color-danger-soft); color: var(--color-danger); }
+```
+prompt (topic_detect.md):
+---
+当前话题：{topic_summary}
+最近 3 条消息：
+{recent_messages}
 
-.btn-sm { padding: 0.4rem 0.75rem; font-size: 0.8rem; }
-.btn-icon { padding: 0.5rem; border-radius: var(--radius-sm); }
+新消息：{new_message}
 
-/* ---------- 动画 ---------- */
-@keyframes fade-up {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
-}
+这条新消息是否在继续当前话题？
+- 如果是同一话题或自然延伸，回答：SAME
+- 如果是完全不同的话题，回答：NEW|简短话题描述（10字以内）
 
-@keyframes fade-in {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
+只回答一行。
+---
+```
 
-.animate-in {
-  animation: fade-up 0.4s ease both;
-}
+调用参数：
+- `purpose="tool"`（使用最便宜的模型）
+- `max_tokens=30`
+- `session_key=f"chat:{chat_id}"`
+- `origin="core.session_manager.topic_detect"`
 
-/* 交错动画 */
-.stagger-1 { animation-delay: 0.05s; }
-.stagger-2 { animation-delay: 0.1s; }
-.stagger-3 { animation-delay: 0.15s; }
-.stagger-4 { animation-delay: 0.2s; }
+**边界处理**：
+- 解析失败 → 默认 SAME（保守策略，不误创建）
+- "帮我查个东西" 这类模糊请求 → LLM 决定
+- 极短消息（<5字，如"嗯"、"好"、"哈哈"）→ 跳过检测，视为 SAME
 
-/* ---------- 滚动条 ---------- */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(22, 56, 95, 0.15); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(22, 56, 95, 0.25); }
+### Layer 3：Dormant + Condensed 匹配（话题切换时）
+
+当 Layer 1 或 Layer 2 判定"新话题"时，在创建新 session 之前，检查是否有匹配的旧 session 可以复活：
+
+```
+prompt (topic_match_dormant.md):
+---
+休眠中的对话：
+{sessions_numbered}
+
+新消息：{new_message}
+
+这条消息是否在回到某个休眠话题？回答编号（如 1），或 NONE。
+只回答一行。
+---
+```
+
+匹配范围同时包含 dormant 和 condensed sessions——它们都有 `topic_summary`，对 LLM 来说匹配逻辑相同，只是复活时的数据来源不同（dormant 从内存、condensed 从快照文件）。
+
+如果 dormant + condensed 数量为 0，跳过此步，直接创建新 session。
+
+**优化路径（Phase 4）**：当 sqlite-vec 迁移完成后，可用 embedding 余弦距离替代 LLM 调用，成本更低。
+
+---
+
+## 六、Session 生命周期细节
+
+### 6.1 创建
+
+触发条件：
+1. `chat_id` 没有任何 active session（首次消息 / 所有 session 都已过期）
+2. Layer 1 超时判定
+3. Layer 2 LLM 判定 NEW 且 Layer 3 无匹配旧 session
+
+创建流程：
+1. 现有 active session（如有）→ `deactivate()`
+2. 生成 UUID
+3. 写入 sessions 表（status=active）
+4. 初始化内存缓存
+
+### 6.2 降级为 Dormant
+
+触发条件：新 session 创建时，旧 active 自动降级。
+
+降级流程：
+1. 如果 session 消息数 < `SESSION_MIN_MESSAGES_TO_KEEP`（默认 4），直接删除而不是降级（太短的对话不值得保留）
+2. 生成 topic_summary（如果还没有）：
+   - 用 LLM 从最近几条消息提取 10 字以内的话题摘要
+   - 提取 3-5 个 topic_keywords
+3. 更新 sessions 表 status → dormant
+4. 内存缓存保留（随时可复活，零成本恢复）
+
+### 6.3 Dormant → Condensed（压缩归档）
+
+触发条件：dormant session 的 `last_active_at` 超过 `SESSION_DORMANT_TTL_HOURS`（默认 3 小时）。
+
+压缩流程：
+1. **Memory flush**：让 Lapwing 主动审视这段对话，通过 `memory_note` 工具把值得长期保留的信息写入记忆文件（`data/memory/KEVIN.md` 或相关记忆文件）。这一步是静默的——不向用户发送任何消息，仅在后台执行一次 LLM 调用。
+2. 触发一次 `fact_extractor.force_extraction()` 确保自动提取的用户画像也已更新
+3. 生成摘要（用 LLM 压缩完整对话为一段 100-200 字的摘要）
+4. 写快照文件到 `data/memory/sessions/{session_id}.md`：
+   - 元信息（话题、关键词、时间范围、消息数）
+   - 摘要
+   - 完整对话记录（用于复活时恢复上下文）
+5. 清除内存缓存（`_store.pop(session_id)`）
+6. 更新 sessions 表：status → condensed，填写 `snapshot_path`，记录 `condensed_at`
+7. topic_summary 保留在 sessions 表中（用于 Layer 3 匹配）
+
+**Memory flush 的意义**：`fact_extractor` 只能提取结构化的用户画像信息（键值对），但对话中可能包含更丰富的上下文——比如"导师对论文的具体反馈"、"讨论中达成的技术决定"、"未完成的待办事项"。Memory flush 让 Lapwing 用她自己的判断力来决定什么值得记住，写入她自己维护的记忆文件。这比被动提取更可靠，也符合"Lapwing 握着自己的笔"这一设计原则。
+
+**压缩后的内存占用**：sessions 表中一行（topic_summary + keywords），无 `_store` 条目。
+相比 dormant 的完整消息列表在内存中，condensed 几乎不占空间。
+
+### 6.4 复活（Dormant 或 Condensed → Active）
+
+**从 Dormant 复活**（消息还在内存里）：
+1. 现有 active session → `deactivate()`
+2. 目标 dormant session status → active
+3. 更新 last_active_at
+4. 内存缓存已在，零开销
+
+**从 Condensed 复活**（消息在快照文件里）：
+1. 现有 active session → `deactivate()`
+2. 读取快照文件 `data/memory/sessions/{session_id}.md`
+3. 解析"对话记录"部分，还原为 `list[dict]` 消息列表
+4. 加载到内存缓存 `_store[session_id] = messages`
+5. 更新 sessions 表：status → active，清空 `condensed_at`
+6. 删除快照文件（它已回到内存了，下次降级时会重新生成）
+
+**复活后的上下文质量**：和从未离开一样——完整的对话消息，不是摘要。LLM 能看到之前讨论的所有细节。
+
+### 6.5 Condensed → Deleted（最终清除）
+
+触发条件：condensed session 的 `condensed_at` 超过 `SESSION_CONDENSED_TTL_HOURS`（默认 24 小时）。
+
+删除流程：
+1. 删除快照文件 `data/memory/sessions/{session_id}.md`
+2. 更新 sessions 表 status → deleted
+3. DB 中的消息记录（conversations 表）保留
+
+**不删除 DB 消息的理由**：自省引擎需要按日期回顾所有对话；`conversations` 表是 Lapwing 的完整历史日志。
+快照文件可以安全删除——它只是 conversations 表数据的一份格式化副本，随时可以从 DB 重建（但正常流程不需要）。
+
+### 6.6 过期扫描
+
+由 Heartbeat 的 slow beat 触发（已有 compaction_check 先例）。
+一次扫描处理两级过期：dormant → condensed，condensed → deleted。
+
+```python
+# src/heartbeat/actions/session_reaper.py
+
+class SessionReaperAction(HeartbeatAction):
+    name = "session_reaper"
+    description = "清理过期的对话会话（压缩休眠 + 删除过期）"
+    beat_types = ["slow"]
+    selection_mode = "always"
+
+    async def execute(self, ctx, brain, send_fn):
+        if brain.session_manager is not None:
+            condensed, deleted = await brain.session_manager.reap_expired(ctx.chat_id)
+            if condensed > 0 or deleted > 0:
+                logger.info(
+                    f"[{ctx.chat_id}] Session 清理：{condensed} 个压缩归档，{deleted} 个删除"
+                )
+```
+
+### 6.7 Dormant + Condensed 总量控制
+
+`SESSION_MAX_DORMANT_PER_CHAT`（默认 5）限制的是 dormant + condensed 的总数。
+超出时，按 `last_active_at` 从最老的开始处理：
+- 如果最老的是 dormant → condense
+- 如果最老的已经是 condensed → delete
+
+这保证内存和磁盘占用都有上限。
+
+---
+
+## 七、配置项
+
+```python
+# config/settings.py 新增
+
+# ── Session 管理 ──
+SESSION_ENABLED: bool = bool(os.getenv("SESSION_ENABLED", "true").lower() in ("true", "1"))
+SESSION_TIMEOUT_MINUTES: int = int(os.getenv("SESSION_TIMEOUT_MINUTES", "30"))
+SESSION_DORMANT_TTL_HOURS: float = float(os.getenv("SESSION_DORMANT_TTL_HOURS", "3"))
+SESSION_CONDENSED_TTL_HOURS: float = float(os.getenv("SESSION_CONDENSED_TTL_HOURS", "24"))
+SESSION_MIN_MESSAGES_TO_KEEP: int = int(os.getenv("SESSION_MIN_MESSAGES_TO_KEEP", "4"))
+SESSION_MAX_DORMANT_PER_CHAT: int = int(os.getenv("SESSION_MAX_DORMANT_PER_CHAT", "5"))
+SESSION_TOPIC_DETECT_ENABLED: bool = bool(os.getenv("SESSION_TOPIC_DETECT_ENABLED", "true").lower() in ("true", "1"))
+SESSION_SHORT_MESSAGE_SKIP_THRESHOLD: int = int(os.getenv("SESSION_SHORT_MESSAGE_SKIP_THRESHOLD", "5"))
+SESSION_SNAPSHOTS_DIR: Path = MEMORY_DIR / "sessions"
+SESSION_CONDENSE_SUMMARY_MAX_TOKENS: int = int(os.getenv("SESSION_CONDENSE_SUMMARY_MAX_TOKENS", "300"))
 ```
 
 ---
 
-## 5. 核心组件
+## 八、现有模块影响分析
 
-### 5.1 `AppShell.tsx` — 根布局
+### 受影响的模块
 
-```tsx
-import { useState } from "react";
-import { Outlet } from "react-router-dom";
-import Sidebar from "./Sidebar";
-import AuthGuard from "./AuthGuard";
+| 模块 | 变化 | 复杂度 |
+|------|------|--------|
+| `brain.py` | `_prepare_think` 改用 SessionManager 获取消息 | 中 |
+| `conversation.py` | 新增 session-aware 方法，缓存结构变更 | 高 |
+| `compactor.py` | 压缩范围限制在 active session 内 | 低 |
+| `fact_extractor.py` | 从 session 消息提取，提取结果仍写到 chat_id | 低 |
+| `dispatcher.py` | `history` 改从 session 获取 | 低 |
+| `heartbeat.py / actions/` | 新增 session_reaper；proactive 消息写入 active session | 低 |
+| `telegram_app.py` | `/clear` 命令需要决定清哪个 session | 低 |
+| `qq_adapter.py` | 传 session_id 给 memory.append | 低 |
 
-export default function AppShell() {
-  const [collapsed, setCollapsed] = useState(false);
+### 不受影响的模块
 
-  return (
-    <AuthGuard>
-      <div style={{
-        display: "flex",
-        minHeight: "100vh",
-      }}>
-        <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} />
-        <main style={{
-          flex: 1,
-          marginLeft: collapsed ? "var(--sidebar-collapsed-width)" : "var(--sidebar-width)",
-          padding: "1.5rem 2rem 3rem",
-          transition: "margin-left 0.25s ease",
-          maxWidth: "1100px",
-        }}>
-          <Outlet />
-        </main>
-      </div>
-    </AuthGuard>
-  );
-}
+| 模块 | 原因 |
+|------|------|
+| `llm_router.py` | session_key 仍然是 `chat:{chat_id}`，不变 |
+| `task_runtime.py` | pending_confirmation 仍然按 chat_id，不变 |
+| `self_reflection.py` | 按日期查 DB，不依赖内存缓存 |
+| `tactical_rules.py` | 从 memory.get() 获取 history，改为 session messages 即可 |
+| `evolution_engine.py` | 不直接操作对话历史 |
+| `constitution_guard.py` | 不直接操作对话历史 |
+| `interest_tracker.py` | notify 仍按 chat_id，不变 |
+| `vector_store.py` | 按 chat_id 存取，不变 |
+| `auth/` | 独立的认证系统 |
+| `tools/` | 不关心 session |
+| `agents/` | 接收 AgentTask，不直接操作 memory |
+
+---
+
+## 九、关键代码变更
+
+### 9.1 `brain.py` — `_ThinkCtx` 扩展
+
+```python
+@dataclasses.dataclass
+class _ThinkCtx:
+    """think() / think_conversational() 共享前置逻辑的结果。"""
+    messages: list[dict]
+    effective_user_message: str
+    approved_directory: str | None
+    early_reply: str | None = None
+    matched_experience_skills: list | None = None
+    session_id: str | None = None  # 新增：当前使用的 session ID
 ```
 
-### 5.2 `Sidebar.tsx` — 侧栏导航
+### 9.2 `brain.py` — `_prepare_think` 改造
 
-仿 AstrBot 的 `FullLayout.vue` 侧栏结构：logo + nav items + 底部状态。
+```python
+# 在 _prepare_think 开头，resolve session 并用 session 写入消息：
 
-```tsx
-import { NavLink, useLocation } from "react-router-dom";
-import {
-  LayoutDashboard,
-  Brain,
-  Sparkles,
-  ListTodo,
-  Radio,
-  Shield,
-  Settings,
-  PanelLeftClose,
-  PanelLeft,
-} from "lucide-react";
-import StatusDot from "./StatusDot";
+if self.session_manager is not None:
+    session = await self.session_manager.resolve_session(chat_id, user_message)
+    session_id = session.id
+    await self.memory.append_to_session(chat_id, session_id, "user", user_message)
+else:
+    session_id = None
+    await self.memory.append(chat_id, "user", user_message)
 
-type SidebarProps = {
-  collapsed: boolean;
-  onToggle: () => void;
-};
+# ...（中间逻辑不变）...
 
-const NAV_ITEMS = [
-  { to: "/", icon: LayoutDashboard, label: "总览", end: true },
-  { to: "/memory", icon: Brain, label: "记忆" },
-  { to: "/persona", icon: Sparkles, label: "人格" },
-  { to: "/tasks", icon: ListTodo, label: "任务" },
-  { to: "/events", icon: Radio, label: "事件" },
-  { to: "/auth", icon: Shield, label: "认证" },
-  { to: "/settings", icon: Settings, label: "设置" },
-] as const;
+# 获取历史时：
+if session_id is not None:
+    history = await self.memory.get_session_messages(session_id)
+else:
+    history = await self.memory.get(chat_id)
 
-export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
-  return (
-    <aside className={`sidebar ${collapsed ? "sidebar--collapsed" : ""}`}>
-      {/* 顶部 Logo 区域 */}
-      <div className="sidebar-header">
-        {!collapsed && <span className="sidebar-logo">Lapwing</span>}
-        <button className="sidebar-toggle btn-icon" onClick={onToggle}>
-          {collapsed ? <PanelLeft size={18} /> : <PanelLeftClose size={18} />}
-        </button>
-      </div>
+# 压缩时：
+await self.compactor.try_compact(chat_id, session_id=session_id)
 
-      {/* 导航项 */}
-      <nav className="sidebar-nav">
-        {NAV_ITEMS.map(({ to, icon: Icon, label, ...rest }) => (
-          <NavLink
-            key={to}
-            to={to}
-            end={"end" in rest}
-            className={({ isActive }) =>
-              `sidebar-item ${isActive ? "sidebar-item--active" : ""}`
-            }
-            title={collapsed ? label : undefined}
-          >
-            <Icon size={20} strokeWidth={1.8} />
-            {!collapsed && <span>{label}</span>}
-          </NavLink>
-        ))}
-      </nav>
-
-      {/* 底部状态 */}
-      <div className="sidebar-footer">
-        {!collapsed && (
-          <div className="sidebar-status">
-            <StatusDot online={true} />
-            <span>后端在线</span>
-          </div>
-        )}
-      </div>
-    </aside>
-  );
-}
+# 返回 ctx 时带上 session_id：
+return _ThinkCtx(
+    messages=messages,
+    effective_user_message=effective_user_message,
+    approved_directory=approved_directory,
+    matched_experience_skills=matched_experience_skills,
+    session_id=session_id,
+)
 ```
 
-### 5.3 `AuthGuard.tsx` — 鉴权守卫
+### 9.3 `brain.py` — `think` / `think_conversational` 中的 append 改造
 
-从现有 `App.tsx` 提取 bootstrap token 逻辑，独立为守卫组件。包裹 `AppShell`，只在鉴权成功后渲染子组件。
+```python
+# think() 中：
+if ctx.session_id is not None:
+    await self.memory.append_to_session(chat_id, ctx.session_id, "assistant", reply)
+else:
+    await self.memory.append(chat_id, "assistant", reply)
 
-```tsx
-import { type FormEvent, useEffect, useState, type ReactNode } from "react";
-import { createApiSession, getAuthStatus } from "../api";
-
-declare global {
-  interface Window {
-    __TAURI__?: {
-      invoke?: (command: string, args?: Record<string, unknown>) => Promise<unknown>;
-    };
-  }
-}
-
-async function readBootstrapToken(): Promise<string> {
-  const invoke = window.__TAURI__?.invoke;
-  if (!invoke) throw new Error("Tauri runtime unavailable");
-  const token = await invoke("read_bootstrap_token");
-  if (typeof token !== "string" || !token.trim()) throw new Error("Failed to read bootstrap token");
-  return token;
-}
-
-export default function AuthGuard({ children }: { children: ReactNode }) {
-  const [ready, setReady] = useState(false);
-  const [error, setError] = useState("");
-  const [manualMode, setManualMode] = useState(false);
-  const [manualToken, setManualToken] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        // 先尝试现有 session
-        await getAuthStatus();
-        if (!cancelled) setReady(true);
-      } catch {
-        // 尝试 Tauri 自动获取 token
-        try {
-          const token = await readBootstrapToken();
-          await createApiSession(token);
-          if (!cancelled) setReady(true);
-        } catch {
-          // 非 Tauri 环境，进入手动输入模式
-          if (!cancelled) setManualMode(true);
-        }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, []);
-
-  async function handleSubmit(e: FormEvent) {
-    e.preventDefault();
-    if (!manualToken.trim()) return;
-    setSubmitting(true);
-    try {
-      await createApiSession(manualToken.trim());
-      setReady(true);
-      setManualMode(false);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  if (ready) return <>{children}</>;
-
-  return (
-    <div className="auth-guard-page">
-      <div className="auth-guard-card animate-in">
-        <p className="auth-guard-eyebrow">Lapwing Desktop</p>
-        {manualMode ? (
-          <>
-            <h1>输入 Bootstrap Token</h1>
-            <p className="auth-guard-hint">
-              在远端主机查看 <code>~/.lapwing/auth/api-bootstrap-token</code>
-            </p>
-            <form onSubmit={handleSubmit} className="auth-guard-form">
-              <textarea
-                value={manualToken}
-                onChange={(e) => setManualToken(e.target.value)}
-                placeholder="粘贴 bootstrap token"
-                rows={3}
-              />
-              <button type="submit" className="btn btn-primary" disabled={submitting}>
-                {submitting ? "验证中…" : "建立会话"}
-              </button>
-            </form>
-          </>
-        ) : error ? (
-          <>
-            <h1>鉴权失败</h1>
-            <p className="auth-guard-hint">{error}</p>
-          </>
-        ) : (
-          <>
-            <h1>正在连接…</h1>
-            <p className="auth-guard-hint">读取 bootstrap token 并建立本地会话</p>
-          </>
-        )}
-      </div>
-    </div>
-  );
-}
+# think_conversational() 中同理
 ```
 
-### 5.4 小组件
+### 9.4 `conversation.py` — 新增方法
 
-#### `StatusDot.tsx`
-```tsx
-export default function StatusDot({ online }: { online: boolean }) {
-  return (
-    <span
-      className={`status-dot ${online ? "status-dot--online" : "status-dot--offline"}`}
-    />
-  );
-}
+```python
+async def append_to_session(
+    self, chat_id: str, session_id: str, role: str, content: str, *, channel: str = "telegram"
+) -> None:
+    """追加消息到指定 session（先写缓存，再持久化）。"""
+    if session_id not in self._store:
+        self._store[session_id] = []
+    self._store[session_id].append({"role": role, "content": content})
+
+    try:
+        timestamp = datetime.now(timezone.utc).isoformat()
+        await self._db.execute(
+            "INSERT INTO conversations (chat_id, role, content, timestamp, channel, session_id) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (chat_id, role, content, timestamp, channel, session_id),
+        )
+        await self._db.commit()
+    except Exception as e:
+        logger.error(f"对话消息写入数据库失败: {e}")
+
+async def get_session_messages(self, session_id: str) -> list[dict]:
+    """获取指定 session 的对话历史（从缓存读取）。"""
+    if session_id not in self._store:
+        await self._load_session_history(session_id)
+    return self._store.get(session_id, [])
+
+async def _load_session_history(self, session_id: str) -> None:
+    """从 DB 加载指定 session 的消息到内存缓存。"""
+    max_messages = MAX_HISTORY_TURNS * 2
+    try:
+        async with self._db.execute(
+            """SELECT role, content FROM (
+                SELECT id, role, content FROM conversations
+                WHERE session_id = ?
+                ORDER BY id DESC
+                LIMIT ?
+            ) ORDER BY id ASC""",
+            (session_id, max_messages),
+        ) as cursor:
+            messages = [
+                {"role": row[0], "content": row[1]}
+                async for row in cursor
+            ]
+        if messages:
+            self._store[session_id] = messages
+    except Exception as e:
+        logger.error(f"从 DB 加载 session {session_id} 历史失败: {e}")
+
+async def load_session_from_snapshot(self, session_id: str, messages: list[dict]) -> None:
+    """从快照恢复的消息加载到内存缓存（用于 condensed session 复活）。"""
+    self._store[session_id] = list(messages)
+
+async def clear_session_cache(self, session_id: str) -> None:
+    """仅清除指定 session 的内存缓存。"""
+    self._store.pop(session_id, None)
 ```
 
-#### `StatCard.tsx`
-```tsx
-type StatCardProps = {
-  label: string;
-  value: string | number;
-  sub?: string;
-};
+### 9.5 `session_manager.py` — 快照读写
 
-export default function StatCard({ label, value, sub }: StatCardProps) {
-  return (
-    <div className="stat-card">
-      <span className="stat-card-label">{label}</span>
-      <strong className="stat-card-value">{value}</strong>
-      {sub && <span className="stat-card-sub">{sub}</span>}
-    </div>
-  );
-}
+```python
+async def _write_snapshot(self, session: Session, messages: list[dict], summary: str) -> Path:
+    """将 session 完整对话写入快照文件。"""
+    SESSION_SNAPSHOTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = SESSION_SNAPSHOTS_DIR / f"{session.id}.md"
+
+    keywords_str = ", ".join(session.topic_keywords)
+    time_range = f"{session.created_at.strftime('%Y-%m-%d %H:%M')} ~ {session.last_active_at.strftime('%H:%M')}"
+
+    lines = [
+        f"# Session {session.id}",
+        f"- 话题：{session.topic_summary}",
+        f"- 关键词：{keywords_str}",
+        f"- 时间：{time_range}",
+        f"- 消息数：{session.message_count}",
+        "",
+        "## 摘要",
+        summary,
+        "",
+        "## 对话记录",
+    ]
+    for msg in messages:
+        role_label = "用户" if msg["role"] == "user" else "Lapwing"
+        lines.append(f"{role_label}: {msg['content']}")
+
+    content = "\n".join(lines) + "\n"
+    await asyncio.to_thread(path.write_text, content, encoding="utf-8")
+    return path
+
+def _read_snapshot(self, snapshot_path: Path) -> list[dict]:
+    """从快照文件解析对话记录，还原为消息列表。"""
+    if not snapshot_path.exists():
+        logger.warning(f"快照文件不存在: {snapshot_path}")
+        return []
+
+    text = snapshot_path.read_text(encoding="utf-8")
+    messages = []
+    in_conversation = False
+
+    for line in text.splitlines():
+        if line.strip() == "## 对话记录":
+            in_conversation = True
+            continue
+        if not in_conversation:
+            continue
+        if line.startswith("## "):
+            break  # 遇到下一个 section 就停止
+
+        if line.startswith("用户: "):
+            messages.append({"role": "user", "content": line[4:]})
+        elif line.startswith("Lapwing: "):
+            messages.append({"role": "assistant", "content": line[9:]})
+
+    return messages
 ```
 
-#### `DataCard.tsx`
-```tsx
-import type { ReactNode } from "react";
+### 9.6 `session_manager.py` — condense 方法
 
-type DataCardProps = {
-  title: string;
-  actions?: ReactNode;
-  children: ReactNode;
-  className?: string;
-};
+```python
+async def condense(self, session: Session) -> None:
+    """Dormant → Condensed：memory flush + 生成摘要 + 写快照 + 清内存。"""
+    # 1. Memory flush：让 Lapwing 主动保存重要信息到记忆文件
+    messages = await self._memory.get_session_messages(session.id)
+    if not messages:
+        await self.delete_session(session)
+        return
 
-export default function DataCard({ title, actions, children, className = "" }: DataCardProps) {
-  return (
-    <section className={`data-card animate-in ${className}`}>
-      <div className="data-card-head">
-        <h2>{title}</h2>
-        {actions && <div className="data-card-actions">{actions}</div>}
-      </div>
-      <div className="data-card-body">{children}</div>
-    </section>
-  );
-}
+    await self._memory_flush(session, messages)
+
+    # 2. 确保自动提取的用户画像也已更新
+    if self._fact_extractor is not None:
+        await self._fact_extractor.force_extraction(session.chat_id)
+
+    # 3. 生成压缩摘要
+    summary = await self._generate_condense_summary(messages)
+
+    # 4. 写快照文件
+    path = await self._write_snapshot(session, messages, summary)
+
+    # 5. 清内存缓存
+    await self._memory.clear_session_cache(session.id)
+
+    # 6. 更新 DB
+    now = datetime.now(timezone.utc)
+    await self._update_session_status(
+        session.id,
+        status="condensed",
+        snapshot_path=str(path.relative_to(SESSION_SNAPSHOTS_DIR)),
+        condensed_at=now,
+    )
+    session.status = "condensed"
+    session.snapshot_path = str(path.relative_to(SESSION_SNAPSHOTS_DIR))
+    session.condensed_at = now
+
+async def _memory_flush(self, session: Session, messages: list[dict]) -> None:
+    """静默 memory flush：让 Lapwing 审视对话，用 memory_note 工具写入持久记忆。
+
+    这一步不向用户发送任何消息。通过给 LLM 提供对话内容和 memory_note 工具，
+    让 Lapwing 自行判断哪些信息值得长期保留。
+    """
+    conversation_text = "\n".join(
+        f"{'用户' if m['role'] == 'user' else 'Lapwing'}: {m['content']}"
+        for m in messages[-20:]
+    )
+    prompt = load_prompt("session_memory_flush").replace("{conversation}", conversation_text)
+
+    try:
+        # 提供 memory_note 工具，让 Lapwing 自主决定写入什么
+        tools = self._tool_registry.function_tools(
+            include_internal=False,
+            tool_names={"memory_note"},
+        )
+        await self._router.complete(
+            [
+                {"role": "system", "content": load_prompt("lapwing_soul")},
+                {"role": "user", "content": prompt},
+            ],
+            purpose="tool",
+            max_tokens=200,
+            tools=tools,
+            origin="core.session_manager.memory_flush",
+        )
+        logger.debug(f"[{session.chat_id}] Session {session.id} memory flush 完成")
+    except Exception as exc:
+        logger.warning(f"[{session.chat_id}] Session memory flush 失败: {exc}")
+        # flush 失败不阻塞 condense 流程
+
+async def _generate_condense_summary(self, messages: list[dict]) -> str:
+    """用 LLM 生成对话压缩摘要。"""
+    conversation_text = "\n".join(
+        f"{'用户' if m['role'] == 'user' else 'Lapwing'}: {m['content']}"
+        for m in messages[-20:]  # 最多取最近 20 条
+    )
+    prompt = load_prompt("session_condense").replace("{conversation}", conversation_text)
+    try:
+        return await self._router.complete(
+            [{"role": "user", "content": prompt}],
+            purpose="tool",
+            max_tokens=SESSION_CONDENSE_SUMMARY_MAX_TOKENS,
+            origin="core.session_manager.condense",
+        )
+    except Exception as exc:
+        logger.warning(f"Session 压缩摘要生成失败: {exc}")
+        return "（摘要生成失败）"
 ```
 
-#### `EmptyState.tsx`
-```tsx
-export default function EmptyState({ message }: { message: string }) {
-  return <p className="empty-state">{message}</p>;
-}
+### 9.7 `session_manager.py` — 从 Condensed 复活
+
+```python
+async def reactivate(self, session: Session) -> None:
+    """Dormant/Condensed → Active，按需从快照恢复完整上下文。"""
+    # 先降级当前 active
+    current_active = await self._get_active(session.chat_id)
+    if current_active is not None:
+        await self.deactivate(current_active)
+
+    if session.status == "condensed":
+        # 从快照恢复完整消息到内存
+        snapshot_path = SESSION_SNAPSHOTS_DIR / session.snapshot_path
+        messages = self._read_snapshot(snapshot_path)
+        if messages:
+            await self._memory.load_session_from_snapshot(session.id, messages)
+        else:
+            logger.warning(f"从快照恢复 session {session.id} 失败，创建空缓存")
+            await self._memory.load_session_from_snapshot(session.id, [])
+
+        # 删除快照文件（已回到内存，下次降级时重新生成）
+        try:
+            snapshot_path.unlink(missing_ok=True)
+        except Exception as exc:
+            logger.warning(f"删除快照文件失败: {exc}")
+
+    # 更新状态
+    now = datetime.now(timezone.utc)
+    await self._update_session_status(
+        session.id,
+        status="active",
+        condensed_at=None,
+        snapshot_path=None,
+    )
+    session.status = "active"
+    session.last_active_at = now
+    session.condensed_at = None
+    session.snapshot_path = None
 ```
 
-#### `BarMeter.tsx`
-```tsx
-type BarMeterProps = {
-  label: string;
-  value: number;
-  max?: number;
-  suffix?: string;
-};
+### 9.8 `session_manager.py` — reap_expired（两级扫描）
 
-export default function BarMeter({ label, value, max = 10, suffix }: BarMeterProps) {
-  const pct = Math.min((value / max) * 100, 100);
-  return (
-    <div className="bar-meter">
-      <div className="bar-meter-row">
-        <span>{label}</span>
-        <strong>{value.toFixed(1)}{suffix}</strong>
-      </div>
-      <div className="bar-meter-track">
-        <div className="bar-meter-fill" style={{ width: `${pct}%` }} />
-      </div>
-    </div>
-  );
-}
+```python
+async def reap_expired(self, chat_id: str) -> tuple[int, int]:
+    """清理过期 sessions。返回 (condensed_count, deleted_count)。"""
+    now = datetime.now(timezone.utc)
+    condensed_count = 0
+    deleted_count = 0
+
+    sessions = await self.list_sessions(chat_id)
+
+    # Pass 1: dormant → condensed
+    for s in sessions:
+        if s.status == "dormant":
+            elapsed = (now - s.last_active_at).total_seconds() / 3600
+            if elapsed >= SESSION_DORMANT_TTL_HOURS:
+                await self.condense(s)
+                condensed_count += 1
+
+    # Pass 2: condensed → deleted
+    for s in sessions:
+        if s.status == "condensed" and s.condensed_at is not None:
+            elapsed = (now - s.condensed_at).total_seconds() / 3600
+            if elapsed >= SESSION_CONDENSED_TTL_HOURS:
+                await self.delete_session(s)
+                deleted_count += 1
+
+    # Pass 3: 总量控制
+    alive = [s for s in await self.list_sessions(chat_id) if s.status in ("dormant", "condensed")]
+    alive.sort(key=lambda s: s.last_active_at)
+    while len(alive) > SESSION_MAX_DORMANT_PER_CHAT:
+        oldest = alive.pop(0)
+        if oldest.status == "dormant":
+            await self.condense(oldest)
+            condensed_count += 1
+        else:
+            await self.delete_session(oldest)
+            deleted_count += 1
+
+    return condensed_count, deleted_count
 ```
 
-#### `EventBadge.tsx`
-```tsx
-export default function EventBadge({ type }: { type: string }) {
-  return <span className="event-badge">{type}</span>;
-}
+### 9.9 `compactor.py` — Session 感知
+
+```python
+async def try_compact(self, chat_id: str, *, session_id: str | None = None) -> bool:
+    key = session_id or chat_id
+    if key in self._compacting:
+        return False
+
+    history = (
+        await self._memory.get_session_messages(session_id)
+        if session_id
+        else await self._memory.get(chat_id)
+    )
+    if not self.should_compact(len(history)):
+        return False
+
+    self._compacting.add(key)
+    try:
+        return await self._do_compact(key, history, is_session=session_id is not None)
+    finally:
+        self._compacting.discard(key)
+```
+
+### 9.10 `dispatcher.py` — History 来源
+
+```python
+async def try_dispatch(self, chat_id: str, user_message: str, *, session_id: str | None = None) -> str | None:
+    ...
+    if session_id:
+        history = await self._memory.get_session_messages(session_id)
+    else:
+        history = await self._memory.get(chat_id)
+```
+
+### 9.11 Heartbeat proactive 消息
+
+```python
+# proactive.py — 主动消息写入 active session
+async def execute(self, ctx, brain, send_fn):
+    ...
+    await send_fn(reply)
+
+    if brain.session_manager is not None:
+        session = await brain.session_manager.get_or_create_active(ctx.chat_id)
+        await brain.memory.append_to_session(ctx.chat_id, session.id, "assistant", reply)
+    else:
+        await brain.memory.append(ctx.chat_id, "assistant", reply)
 ```
 
 ---
 
-## 6. 页面组件
+## 十、新增 Prompt 文件
 
-### 6.1 `OverviewPage.tsx` — 总览
+### `prompts/topic_detect.md`
 
-从现有 App.tsx 提取「状态」面板 + hero 操作按钮。这是首页。
+```markdown
+你是一个话题分类器。判断新消息是否在继续当前话题。
 
-```tsx
-import { useEffect, useState } from "react";
-import { RefreshCw, Zap } from "lucide-react";
-import {
-  getStatus, getChats, reloadPersona, evolvePrompt,
-  type StatusResponse, type ChatSummary,
-} from "../api";
-import StatCard from "../components/StatCard";
-import DataCard from "../components/DataCard";
-import StatusDot from "../components/StatusDot";
+当前话题：{topic_summary}
+最近对话：
+{recent_messages}
 
-function formatDate(v: string | null) {
-  return v ? new Date(v).toLocaleString("zh-CN") : "暂无";
-}
+新消息：{new_message}
 
-export default function OverviewPage() {
-  const [status, setStatus] = useState<StatusResponse | null>(null);
-  const [chats, setChats] = useState<ChatSummary[]>([]);
-  const [busy, setBusy] = useState<"reload" | "evolve" | null>(null);
+规则：
+- 如果新消息是对当前话题的延续、补充、追问，回答 SAME
+- 如果新消息开始了一个完全不同的话题，回答 NEW|话题描述（10字以内）
+- "嗯""好""哈哈"等极短回应视为 SAME
+- 如果不确定，回答 SAME
 
-  useEffect(() => {
-    void Promise.all([getStatus(), getChats()]).then(([s, c]) => {
-      setStatus(s);
-      setChats(c);
-    });
-  }, []);
-
-  async function handleReload() {
-    setBusy("reload");
-    try { await reloadPersona(); } finally { setBusy(null); }
-  }
-
-  async function handleEvolve() {
-    setBusy("evolve");
-    try { await evolvePrompt(); } finally { setBusy(null); }
-  }
-
-  return (
-    <div className="page">
-      {/* 页头 */}
-      <header className="page-header animate-in">
-        <div>
-          <h1 className="page-title">总览</h1>
-          <p className="page-subtitle">Lapwing 运行状态一览</p>
-        </div>
-        <div className="page-header-actions">
-          <button className="btn btn-primary" onClick={handleReload} disabled={busy !== null}>
-            <RefreshCw size={16} />
-            {busy === "reload" ? "重载中…" : "重载人格"}
-          </button>
-          <button className="btn btn-soft" onClick={handleEvolve} disabled={busy !== null}>
-            <Zap size={16} />
-            {busy === "evolve" ? "进化中…" : "触发进化"}
-          </button>
-        </div>
-      </header>
-
-      {/* 状态卡片组 */}
-      <div className="stat-grid animate-in stagger-1">
-        <StatCard label="Chat 数量" value={status?.chat_count ?? 0} />
-        <StatCard label="最后活跃" value={formatDate(status?.last_interaction ?? null)} />
-        <StatCard label="服务启动" value={formatDate(status?.started_at ?? null)} />
-        <StatCard
-          label="后端状态"
-          value={status?.online ? "在线" : "离线"}
-        />
-      </div>
-
-      {/* 最近 Chat 列表 */}
-      <DataCard title="最近对话" className="stagger-2">
-        {chats.length === 0 ? (
-          <p className="empty-state">暂无对话记录。</p>
-        ) : (
-          <div className="list-stack">
-            {chats.slice(0, 8).map((chat) => (
-              <div key={chat.chat_id} className="list-row">
-                <span className="list-row-key">{chat.chat_id}</span>
-                <span className="list-row-muted">{formatDate(chat.last_interaction)}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </DataCard>
-    </div>
-  );
-}
+只回答一行。
 ```
 
-### 6.2 `MemoryPage.tsx` — 记忆 + 兴趣
+### `prompts/topic_match_dormant.md`
 
-合并现有「记忆管理」和「兴趣图谱」面板。需要 chat 选择器。
+```markdown
+以下是休眠中的对话话题：
+{dormant_list}
 
-```tsx
-import { useEffect, useState } from "react";
-import { Trash2 } from "lucide-react";
-import {
-  getChats, getInterests, getMemory, deleteMemory,
-  type ChatSummary, type InterestItem, type MemoryItem,
-} from "../api";
-import DataCard from "../components/DataCard";
-import BarMeter from "../components/BarMeter";
-import EmptyState from "../components/EmptyState";
+新消息：{new_message}
 
-function formatDate(v: string | null) {
-  return v ? new Date(v).toLocaleString("zh-CN") : "暂无";
-}
-
-export default function MemoryPage() {
-  const [chats, setChats] = useState<ChatSummary[]>([]);
-  const [chatId, setChatId] = useState("");
-  const [interests, setInterests] = useState<InterestItem[]>([]);
-  const [memory, setMemory] = useState<MemoryItem[]>([]);
-
-  useEffect(() => {
-    void getChats().then((c) => {
-      setChats(c);
-      if (c.length > 0 && !chatId) setChatId(c[0].chat_id);
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!chatId) return;
-    void Promise.all([getInterests(chatId), getMemory(chatId)]).then(([i, m]) => {
-      setInterests(i.items);
-      setMemory(m.items);
-    });
-  }, [chatId]);
-
-  async function handleDelete(factKey: string) {
-    await deleteMemory(chatId, factKey);
-    const res = await getMemory(chatId);
-    setMemory(res.items);
-  }
-
-  return (
-    <div className="page">
-      <header className="page-header animate-in">
-        <div>
-          <h1 className="page-title">记忆</h1>
-          <p className="page-subtitle">管理 Lapwing 的记忆和兴趣图谱</p>
-        </div>
-        <select
-          className="chat-selector"
-          value={chatId}
-          onChange={(e) => setChatId(e.target.value)}
-        >
-          {chats.map((c) => (
-            <option key={c.chat_id} value={c.chat_id}>{c.chat_id}</option>
-          ))}
-        </select>
-      </header>
-
-      {/* 双列布局 */}
-      <div className="two-col">
-        {/* 兴趣图谱 */}
-        <DataCard title="兴趣图谱" className="stagger-1">
-          {interests.length === 0 ? (
-            <EmptyState message="暂无兴趣记录。" />
-          ) : (
-            <div className="list-stack">
-              {interests.map((item) => (
-                <BarMeter
-                  key={item.topic}
-                  label={item.topic}
-                  value={item.weight}
-                  max={8}
-                />
-              ))}
-            </div>
-          )}
-        </DataCard>
-
-        {/* 记忆列表 */}
-        <DataCard title={`记忆 (${memory.length})`} className="stagger-2">
-          {memory.length === 0 ? (
-            <EmptyState message="当前没有可见记忆。" />
-          ) : (
-            <div className="list-stack">
-              {memory.map((item) => (
-                <div key={item.fact_key} className="memory-row">
-                  <div className="memory-row-content">
-                    <p className="memory-row-key">#{item.index} [{item.fact_key}]</p>
-                    <p className="memory-row-value">{item.fact_value}</p>
-                    <span className="list-row-muted">
-                      更新于 {formatDate(item.updated_at)}
-                    </span>
-                  </div>
-                  <button
-                    className="btn btn-danger-soft btn-sm btn-icon"
-                    onClick={() => void handleDelete(item.fact_key)}
-                    title="删除"
-                  >
-                    <Trash2 size={14} />
-                  </button>
-                </div>
-              ))}
-            </div>
-          )}
-        </DataCard>
-      </div>
-    </div>
-  );
-}
+这条消息是否在回到某个休眠话题？回答对应编号（如 1），或 NONE。
+只回答一行。
 ```
 
-### 6.3 `PersonaPage.tsx` — 人格 + 学习日志
+### `prompts/topic_summarize.md`
 
-合并现有「学习日志」面板 + 进化操作。
+```markdown
+以下是一段对话：
+{conversation_text}
 
-```tsx
-import { useEffect, useState } from "react";
-import { Sparkles, RefreshCw } from "lucide-react";
-import {
-  getLearnings, evolvePrompt, reloadPersona,
-  type LearningItem,
-} from "../api";
-import DataCard from "../components/DataCard";
-import EmptyState from "../components/EmptyState";
+用10个字以内概括这段对话的核心话题。同时提取3-5个关键词（JSON数组）。
 
-function formatDate(v: string) {
-  return new Date(v).toLocaleString("zh-CN");
-}
-
-export default function PersonaPage() {
-  const [learnings, setLearnings] = useState<LearningItem[]>([]);
-  const [busy, setBusy] = useState<string | null>(null);
-
-  useEffect(() => {
-    void getLearnings().then((r) => setLearnings(r.items));
-  }, []);
-
-  async function handleEvolve() {
-    setBusy("evolve");
-    try { await evolvePrompt(); } finally { setBusy(null); }
-  }
-
-  async function handleReload() {
-    setBusy("reload");
-    try { await reloadPersona(); } finally { setBusy(null); }
-  }
-
-  return (
-    <div className="page">
-      <header className="page-header animate-in">
-        <div>
-          <h1 className="page-title">人格</h1>
-          <p className="page-subtitle">Lapwing 的自省日志和人格进化</p>
-        </div>
-        <div className="page-header-actions">
-          <button className="btn btn-primary" onClick={handleEvolve} disabled={busy !== null}>
-            <Sparkles size={16} />
-            {busy === "evolve" ? "进化中…" : "触发进化"}
-          </button>
-          <button className="btn btn-soft" onClick={handleReload} disabled={busy !== null}>
-            <RefreshCw size={16} />
-            {busy === "reload" ? "重载中…" : "重载人格"}
-          </button>
-        </div>
-      </header>
-
-      <DataCard title="学习日志" className="stagger-1">
-        {learnings.length === 0 ? (
-          <EmptyState message="data/memory/journal/ 中暂无日志。" />
-        ) : (
-          <div className="list-stack">
-            {learnings.map((item) => (
-              <div key={item.filename} className="learning-entry">
-                <div className="learning-entry-head">
-                  <strong>{item.date}</strong>
-                  <span className="list-row-muted">{formatDate(item.updated_at)}</span>
-                </div>
-                <pre className="learning-entry-body">{item.content}</pre>
-              </div>
-            ))}
-          </div>
-        )}
-      </DataCard>
-    </div>
-  );
-}
+格式：
+话题|["关键词1","关键词2","关键词3"]
 ```
 
-### 6.4 `TasksPage.tsx` — 任务视图
+### `prompts/session_condense.md`
 
-```tsx
-import { useEffect, useState } from "react";
-import {
-  getChats, getTasks, getTask,
-  type ChatSummary, type TaskSummary, type TaskDetail,
-} from "../api";
-import DataCard from "../components/DataCard";
-import EmptyState from "../components/EmptyState";
+```markdown
+以下是一段对话：
+{conversation}
 
-function formatDate(v: string | null) {
-  return v ? new Date(v).toLocaleString("zh-CN") : "—";
-}
+用100-200字概括这段对话的核心内容，包括：
+- 讨论了什么
+- 得出了什么结论或决定
+- 有没有未完成的事项
 
-export default function TasksPage() {
-  const [chats, setChats] = useState<ChatSummary[]>([]);
-  const [chatId, setChatId] = useState("");
-  const [tasks, setTasks] = useState<TaskSummary[]>([]);
-  const [selectedId, setSelectedId] = useState("");
-  const [detail, setDetail] = useState<TaskDetail | null>(null);
-
-  useEffect(() => {
-    void getChats().then((c) => {
-      setChats(c);
-      if (c.length > 0 && !chatId) setChatId(c[0].chat_id);
-    });
-  }, []);
-
-  useEffect(() => {
-    if (!chatId) return;
-    void getTasks(chatId, undefined, 20).then((r) => {
-      setTasks(r.items);
-      if (r.items.length > 0) setSelectedId(r.items[0].task_id);
-    });
-  }, [chatId]);
-
-  useEffect(() => {
-    if (!selectedId) { setDetail(null); return; }
-    void getTask(selectedId).then(setDetail);
-  }, [selectedId]);
-
-  return (
-    <div className="page">
-      <header className="page-header animate-in">
-        <div>
-          <h1 className="page-title">任务</h1>
-          <p className="page-subtitle">Agent 团队的任务执行记录</p>
-        </div>
-        <select
-          className="chat-selector"
-          value={chatId}
-          onChange={(e) => setChatId(e.target.value)}
-        >
-          {chats.map((c) => (
-            <option key={c.chat_id} value={c.chat_id}>{c.chat_id}</option>
-          ))}
-        </select>
-      </header>
-
-      <div className="two-col">
-        <DataCard title={`任务列表 (${tasks.length})`} className="stagger-1">
-          {tasks.length === 0 ? (
-            <EmptyState message="暂无任务记录。" />
-          ) : (
-            <div className="list-stack">
-              {tasks.map((task) => (
-                <div
-                  key={task.task_id}
-                  className={`task-row ${selectedId === task.task_id ? "task-row--active" : ""}`}
-                  onClick={() => setSelectedId(task.task_id)}
-                >
-                  <p className="task-row-id">{task.task_id}</p>
-                  <p className="task-row-text">{task.text || "（无文本）"}</p>
-                  <span className="list-row-muted">
-                    {task.status} · {formatDate(task.updated_at ?? null)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </DataCard>
-
-        <DataCard title="任务详情" className="stagger-2">
-          {!detail ? (
-            <EmptyState message="选择左侧任务查看详情。" />
-          ) : (
-            <div className="task-detail">
-              <div className="task-detail-header">
-                <strong>{detail.task_id}</strong>
-                <span className={`task-status task-status--${detail.status}`}>
-                  {detail.status}
-                </span>
-              </div>
-              <pre className="task-detail-events">
-                {JSON.stringify(detail.events, null, 2)}
-              </pre>
-            </div>
-          )}
-        </DataCard>
-      </div>
-    </div>
-  );
-}
+直接写摘要，不要加标题或格式标记。
 ```
 
-### 6.5 `EventsPage.tsx` — 实时事件流
+### `prompts/session_memory_flush.md`（新增）
 
-```tsx
-import { useEffect, useRef, useState } from "react";
-import { Radio } from "lucide-react";
-import { API_BASE, type DesktopEvent } from "../api";
-import DataCard from "../components/DataCard";
-import StatusDot from "../components/StatusDot";
-import EventBadge from "../components/EventBadge";
-import EmptyState from "../components/EmptyState";
+```markdown
+以下是一段即将归档的对话。请审视这段对话，判断是否有值得长期记住的信息。
 
-function formatDate(v: string) {
-  return new Date(v).toLocaleString("zh-CN");
-}
+{conversation}
 
-export default function EventsPage() {
-  const [events, setEvents] = useState<DesktopEvent[]>([]);
-  const [connected, setConnected] = useState(false);
-  const streamRef = useRef<EventSource | null>(null);
+如果有值得记住的内容，使用 memory_note 工具写入。值得记住的信息包括：
+- Kevin 提到的重要决定、偏好、计划
+- 你们约定的事情或承诺
+- Kevin 分享的个人经历或感受
+- 有价值的技术讨论结论
+- 未完成的事项或待跟进的话题
 
-  useEffect(() => {
-    const stream = new EventSource(`${API_BASE}/api/events/stream`, {
-      withCredentials: API_BASE.length > 0,
-    });
-    streamRef.current = stream;
+如果这段对话是日常闲聊、简单查询，没有什么特别值得记录的，就不需要写任何东西。
 
-    stream.onopen = () => setConnected(true);
-    stream.onerror = () => setConnected(false);
-    stream.onmessage = (msg) => {
-      const event = JSON.parse(msg.data) as DesktopEvent;
-      setEvents((prev) => [event, ...prev].slice(0, 50));
-    };
-
-    return () => { stream.close(); setConnected(false); };
-  }, []);
-
-  return (
-    <div className="page">
-      <header className="page-header animate-in">
-        <div>
-          <h1 className="page-title">事件流</h1>
-          <p className="page-subtitle">来自后端的实时 SSE 事件</p>
-        </div>
-        <div className="page-header-actions">
-          <div className="connection-pill">
-            <StatusDot online={connected} />
-            <span>{connected ? "已连接" : "未连接"}</span>
-          </div>
-        </div>
-      </header>
-
-      <DataCard title={`最近事件 (${events.length})`} className="stagger-1">
-        {events.length === 0 ? (
-          <EmptyState message="等待来自 SSE 的事件…" />
-        ) : (
-          <div className="list-stack">
-            {events.map((event, i) => (
-              <div key={`${event.timestamp}-${i}`} className="event-row">
-                <EventBadge type={event.type} />
-                <p className="event-row-text">{event.payload.text ?? "（无文本）"}</p>
-                <span className="list-row-muted">
-                  {event.payload.chat_id ?? "unknown"} · {formatDate(event.timestamp)}
-                  {event.payload.task_id ? ` · ${event.payload.task_id}` : ""}
-                  {event.payload.tool_name ? ` · ${event.payload.tool_name}` : ""}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </DataCard>
-    </div>
-  );
-}
-```
-
-### 6.6 `AuthPage.tsx` — 认证管理
-
-从现有 App.tsx 提取 Auth 面板、OAuth 流程、Codex 导入。
-
-```tsx
-import { useEffect, useState } from "react";
-import { KeyRound, Download, ExternalLink } from "lucide-react";
-import {
-  getAuthStatus, importCodexCache, startOpenAICodexOAuth,
-  getOAuthLoginSession,
-  type AuthStatusResponse, type OAuthLoginSession,
-} from "../api";
-import DataCard from "../components/DataCard";
-import EmptyState from "../components/EmptyState";
-
-function formatDate(v: string | null) {
-  return v ? new Date(v).toLocaleString("zh-CN") : "—";
-}
-
-export default function AuthPage() {
-  const [authStatus, setAuthStatus] = useState<AuthStatusResponse | null>(null);
-  const [importing, setImporting] = useState(false);
-  const [startingOAuth, setStartingOAuth] = useState(false);
-  const [oauthSession, setOAuthSession] = useState<OAuthLoginSession | null>(null);
-  const [oauthNotice, setOAuthNotice] = useState("");
-
-  useEffect(() => {
-    void getAuthStatus().then(setAuthStatus);
-  }, []);
-
-  // OAuth 轮询
-  useEffect(() => {
-    if (!oauthSession || !["pending", "completing"].includes(oauthSession.status)) return;
-    const timer = setInterval(async () => {
-      try {
-        const next = await getOAuthLoginSession(oauthSession.loginId);
-        setOAuthSession(next);
-        if (next.status === "completed") {
-          setOAuthNotice(next.completionMessage ?? "OpenAI 登录成功。");
-          void getAuthStatus().then(setAuthStatus);
-        } else if (["failed", "expired"].includes(next.status)) {
-          setOAuthNotice(next.error ?? "登录未完成。");
-        }
-      } catch {}
-    }, 1500);
-    return () => clearInterval(timer);
-  }, [oauthSession]);
-
-  async function handleImport() {
-    setImporting(true);
-    try {
-      await importCodexCache();
-      void getAuthStatus().then(setAuthStatus);
-    } finally {
-      setImporting(false);
-    }
-  }
-
-  async function handleOAuth() {
-    setStartingOAuth(true);
-    try {
-      const returnTo = ["http:", "https:"].includes(window.location.protocol)
-        ? window.location.href : undefined;
-      const session = await startOpenAICodexOAuth(returnTo);
-      setOAuthSession(session);
-      setOAuthNotice("授权页面已就绪，完成后自动刷新。");
-      window.open(session.authorizeUrl, "_blank", "noopener,noreferrer");
-    } catch (err) {
-      setOAuthNotice(err instanceof Error ? err.message : String(err));
-    } finally {
-      setStartingOAuth(false);
-    }
-  }
-
-  return (
-    <div className="page">
-      <header className="page-header animate-in">
-        <div>
-          <h1 className="page-title">认证</h1>
-          <p className="page-subtitle">Auth Profiles、OAuth 和本机 API 安全</p>
-        </div>
-        <div className="page-header-actions">
-          <button className="btn btn-primary" onClick={handleOAuth}
-            disabled={startingOAuth || oauthSession?.status === "pending"}>
-            <KeyRound size={16} />
-            {startingOAuth ? "跳转中…" : "登录 OpenAI"}
-          </button>
-          <button className="btn btn-soft" onClick={handleImport} disabled={importing}>
-            <Download size={16} />
-            {importing ? "导入中…" : "导入 Codex auth.json"}
-          </button>
-        </div>
-      </header>
-
-      <div className="two-col">
-        {/* 服务状态 */}
-        <DataCard title="服务认证" className="stagger-1">
-          <div className="list-stack">
-            <div className="list-row">
-              <span className="list-row-key">Host</span>
-              <span>{authStatus?.serviceAuth.host ?? "127.0.0.1"}</span>
-            </div>
-            <div className="list-row">
-              <span className="list-row-key">Cookie</span>
-              <span>{authStatus?.serviceAuth.cookieName ?? "lapwing_session"}</span>
-            </div>
-            <div className="list-row">
-              <span className="list-row-key">保护状态</span>
-              <span>{authStatus?.serviceAuth.protected ? "✓ 已保护" : "✗ 未保护"}</span>
-            </div>
-          </div>
-          {oauthNotice && <p className="auth-notice">{oauthNotice}</p>}
-          {oauthSession?.authorizeUrl && ["pending", "failed", "expired"].includes(oauthSession.status) && (
-            <p className="auth-notice">
-              浏览器未自动打开？{" "}
-              <a href={oauthSession.authorizeUrl} target="_blank" rel="noreferrer"
-                className="auth-link">
-                点击手动授权 <ExternalLink size={12} />
-              </a>
-            </p>
-          )}
-        </DataCard>
-
-        {/* Profiles */}
-        <DataCard title="Auth Profiles" className="stagger-2">
-          {(authStatus?.profiles ?? []).length === 0 ? (
-            <EmptyState message="尚未导入或登录任何 auth profile。" />
-          ) : (
-            <div className="list-stack">
-              {authStatus!.profiles.map((p) => (
-                <div key={p.profileId} className="list-row-block">
-                  <div className="list-row">
-                    <span className="list-row-key">{p.profileId}</span>
-                    <span>{p.provider} · {p.type}</span>
-                  </div>
-                  <span className="list-row-muted">
-                    {p.status}
-                    {p.reasonCode ? ` · ${p.reasonCode}` : ""}
-                    {p.expiresAt ? ` · 到期 ${formatDate(p.expiresAt)}` : ""}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </DataCard>
-      </div>
-
-      {/* Routes */}
-      <DataCard title="路由配置" className="stagger-3">
-        {Object.keys(authStatus?.routes ?? {}).length === 0 ? (
-          <EmptyState message="暂无路由配置。" />
-        ) : (
-          <div className="list-stack">
-            {Object.entries(authStatus!.routes!).map(([purpose, route]) => (
-              <div key={purpose} className="list-row-block">
-                <div className="list-row">
-                  <span className="list-row-key">{purpose}</span>
-                  <span>{route.provider || "auto"} · {route.model}</span>
-                </div>
-                <span className="list-row-muted">
-                  {route.baseUrl}
-                  {route.bindingMismatch ? " · ⚠ binding 不一致" : ""}
-                </span>
-              </div>
-            ))}
-          </div>
-        )}
-      </DataCard>
-    </div>
-  );
-}
-```
-
-### 6.7 `SettingsPage.tsx` — 预留
-
-```tsx
-import DataCard from "../components/DataCard";
-
-export default function SettingsPage() {
-  return (
-    <div className="page">
-      <header className="page-header animate-in">
-        <div>
-          <h1 className="page-title">设置</h1>
-          <p className="page-subtitle">系统配置（即将推出）</p>
-        </div>
-      </header>
-
-      <DataCard title="配置管理" className="stagger-1">
-        <p className="empty-state">
-          此页面将支持在线编辑 .env 配置、管理 Heartbeat 参数、调整 LLM 路由策略等。
-          目前请直接编辑服务器上的配置文件。
-        </p>
-      </DataCard>
-    </div>
-  );
-}
+不要向用户发送任何消息。
 ```
 
 ---
 
-## 7. 页面级样式
+## 十一、实施阶段
 
-### `styles/sidebar.css`
+### Phase 1：基础骨架（可独立部署验证）
 
-```css
-.sidebar {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: var(--sidebar-width);
-  height: 100vh;
-  background: var(--sidebar-bg);
-  backdrop-filter: blur(20px);
-  box-shadow: var(--shadow-sidebar);
-  display: flex;
-  flex-direction: column;
-  transition: width 0.25s ease;
-  z-index: 100;
-  overflow: hidden;
-}
+**目标**：Session 创建/切换能跑起来，仅用时间间隔检测，仅 Active ↔ Dormant ↔ Deleted 三级。
 
-.sidebar--collapsed {
-  width: var(--sidebar-collapsed-width);
-}
+1. 新增 `src/core/session_manager.py`（SessionManager 类，不含 condense 逻辑）
+2. 新增 `sessions` 表，`conversations` 表加 `session_id` 列（migration）
+3. `conversation.py` 新增 session-aware 方法
+4. `brain.py` 集成 SessionManager（`_prepare_think` + `think` + `think_conversational`）
+5. `config/settings.py` 新增配置项
+6. `SESSION_TOPIC_DETECT_ENABLED=false`（Phase 1 不启用 LLM 检测）
+7. Heartbeat 新增 `SessionReaperAction`（Phase 1 仅处理 dormant → deleted）
 
-.sidebar-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 1.25rem 1rem;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
-}
+**验证方式**：
+- 连续聊天 → 同一个 session
+- 沉默 30 分钟后发消息 → 新 session，旧 session dormant
+- 3 小时后旧 session 被清理（直接 deleted）
+- `/clear` 仍然正常工作
 
-.sidebar-logo {
-  font-size: 1.25rem;
-  font-weight: 700;
-  color: var(--sidebar-text-active);
-  letter-spacing: 0.04em;
-}
+### Phase 2：LLM 话题检测 + Dormant 匹配
 
-.sidebar-toggle {
-  background: transparent;
-  border: none;
-  color: var(--sidebar-text);
-  cursor: pointer;
-  padding: 0.4rem;
-  border-radius: var(--radius-sm);
-  transition: background 0.15s;
-}
-.sidebar-toggle:hover {
-  background: var(--sidebar-item-hover);
-}
+**目标**：Lapwing 在连续对话中也能识别话题切换，并能切回旧话题。
 
-.sidebar-nav {
-  flex: 1;
-  padding: 0.75rem 0.6rem;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
+1. 新增 `prompts/topic_detect.md`、`topic_match_dormant.md`、`topic_summarize.md`
+2. SessionManager 实现 Layer 2 + Layer 3 逻辑
+3. `SESSION_TOPIC_DETECT_ENABLED=true`
+4. Dormant session 降级时自动生成 topic_summary
 
-.sidebar-item {
-  display: flex;
-  align-items: center;
-  gap: 0.75rem;
-  padding: 0.65rem 0.85rem;
-  border-radius: var(--radius-sm);
-  color: var(--sidebar-text);
-  text-decoration: none;
-  font-size: 0.9rem;
-  font-weight: 450;
-  transition: all 0.15s ease;
-}
+**验证方式**：
+- 聊论文 → 突然说"道奇今天打谁" → 自动新 session
+- 回头说"对了那个数据集" → 匹配回论文 session，上下文恢复
+- 查天气这种极短对话 → 不保留 dormant（< 4 条消息）
 
-.sidebar-item:hover {
-  background: var(--sidebar-item-hover);
-  color: var(--sidebar-text-active);
-}
+### Phase 3：Condensed 层 + 快照归档
 
-.sidebar-item--active {
-  background: var(--sidebar-item-active);
-  color: var(--sidebar-text-active);
-  font-weight: 550;
-}
+**目标**：Dormant 不直接删除，先压缩归档；通过快照文件实现低成本长时间保留 + 完整复活。
 
-.sidebar--collapsed .sidebar-item {
-  justify-content: center;
-  padding: 0.65rem;
-}
+1. 新增 `prompts/session_condense.md`
+2. SessionManager 实现 `condense()` / `_write_snapshot()` / `_read_snapshot()`
+3. `reactivate()` 支持从 condensed 恢复
+4. `reap_expired()` 实现两级扫描（dormant → condensed，condensed → deleted）
+5. Layer 3 匹配范围扩展到 condensed sessions
+6. `SESSION_CONDENSED_TTL_HOURS` 配置项生效
 
-.sidebar-footer {
-  padding: 1rem;
-  border-top: 1px solid rgba(255, 255, 255, 0.06);
-}
+**验证方式**：
+- Dormant 3 小时后变 condensed，快照文件生成
+- Condense 之前触发 memory flush，Lapwing 写入记忆文件
+- 聊到相关话题 → condensed 被匹配 → 从快照完整恢复
+- Condensed 24 小时后删除，快照文件清理
+- 总量超过 5 个时，最老的被正确处理
 
-.sidebar-status {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 0.8rem;
-  color: var(--sidebar-text);
-}
-```
+### Phase 4：优化与可观测（随 sqlite-vec 迁移）
 
-### `styles/pages.css`
-
-```css
-/* ---------- 页面布局 ---------- */
-.page {
-  display: flex;
-  flex-direction: column;
-  gap: 1.25rem;
-}
-
-.page-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 1rem;
-  flex-wrap: wrap;
-}
-
-.page-title {
-  font-size: 1.75rem;
-  font-weight: 700;
-  line-height: 1.1;
-  letter-spacing: -0.01em;
-}
-
-.page-subtitle {
-  color: var(--color-text-secondary);
-  margin-top: 0.3rem;
-  font-size: 0.9rem;
-}
-
-.page-header-actions {
-  display: flex;
-  gap: 0.6rem;
-  flex-wrap: wrap;
-}
-
-/* ---------- Chat 选择器 ---------- */
-.chat-selector {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-pill);
-  background: var(--color-surface);
-  padding: 0.55rem 1rem;
-  min-width: 200px;
-  font-size: 0.875rem;
-  outline: none;
-  transition: border-color 0.15s;
-}
-.chat-selector:focus {
-  border-color: var(--color-accent);
-}
-
-/* ---------- 统计卡片 grid ---------- */
-.stat-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-  gap: 0.75rem;
-}
-
-.stat-card {
-  padding: 1rem 1.1rem;
-  border-radius: var(--radius-md);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-card);
-  transition: box-shadow 0.2s;
-}
-.stat-card:hover {
-  box-shadow: var(--shadow-card-hover);
-}
-
-.stat-card-label {
-  display: block;
-  font-size: 0.8rem;
-  color: var(--color-text-muted);
-  font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-}
-
-.stat-card-value {
-  display: block;
-  margin-top: 0.35rem;
-  font-size: 1.15rem;
-  font-weight: 600;
-}
-
-.stat-card-sub {
-  display: block;
-  margin-top: 0.2rem;
-  font-size: 0.8rem;
-  color: var(--color-text-muted);
-}
-
-/* ---------- DataCard ---------- */
-.data-card {
-  padding: 1.15rem 1.25rem;
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-card);
-}
-
-.data-card-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 1rem;
-}
-
-.data-card-head h2 {
-  font-size: 1rem;
-  font-weight: 600;
-}
-
-.data-card-actions {
-  display: flex;
-  gap: 0.5rem;
-}
-
-/* ---------- 双列布局 ---------- */
-.two-col {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 1rem;
-}
-
-@media (max-width: 860px) {
-  .two-col {
-    grid-template-columns: 1fr;
-  }
-}
-
-/* ---------- 列表 ---------- */
-.list-stack {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-}
-
-.list-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 0.7rem 0.85rem;
-  border-radius: var(--radius-sm);
-  background: rgba(246, 248, 251, 0.85);
-  gap: 0.75rem;
-}
-
-.list-row-block {
-  padding: 0.7rem 0.85rem;
-  border-radius: var(--radius-sm);
-  background: rgba(246, 248, 251, 0.85);
-}
-
-.list-row-key {
-  font-weight: 500;
-  font-size: 0.875rem;
-}
-
-.list-row-muted {
-  color: var(--color-text-muted);
-  font-size: 0.82rem;
-}
-
-/* ---------- 记忆行 ---------- */
-.memory-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: flex-start;
-  gap: 0.75rem;
-  padding: 0.75rem 0.85rem;
-  border-radius: var(--radius-sm);
-  background: rgba(246, 248, 251, 0.85);
-}
-
-.memory-row-content { flex: 1; }
-.memory-row-key { font-size: 0.82rem; color: var(--color-text-muted); margin-bottom: 0.2rem; }
-.memory-row-value { font-size: 0.9rem; margin-bottom: 0.25rem; }
-
-/* ---------- BarMeter ---------- */
-.bar-meter { padding: 0.6rem 0; }
-
-.bar-meter-row {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  font-size: 0.875rem;
-  margin-bottom: 0.4rem;
-}
-
-.bar-meter-track {
-  height: 6px;
-  border-radius: 3px;
-  background: rgba(22, 56, 95, 0.06);
-  overflow: hidden;
-}
-
-.bar-meter-fill {
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, #ff9f68 0%, #4f87e8 100%);
-  transition: width 0.4s ease;
-}
-
-/* ---------- 任务行 ---------- */
-.task-row {
-  padding: 0.75rem 0.85rem;
-  border-radius: var(--radius-sm);
-  background: rgba(246, 248, 251, 0.85);
-  cursor: pointer;
-  border: 1px solid transparent;
-  transition: all 0.15s;
-}
-.task-row:hover { border-color: var(--color-border-active); }
-.task-row--active { border-color: var(--color-accent); background: var(--color-accent-soft); }
-.task-row-id { font-size: 0.82rem; font-weight: 500; }
-.task-row-text { font-size: 0.9rem; margin: 0.2rem 0; }
-
-.task-detail-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.75rem;
-}
-
-.task-status {
-  display: inline-block;
-  padding: 0.2rem 0.6rem;
-  border-radius: var(--radius-pill);
-  font-size: 0.78rem;
-  font-weight: 500;
-}
-.task-status--completed { background: var(--color-success-soft); color: var(--color-success); }
-.task-status--running { background: var(--color-accent-soft); color: var(--color-accent); }
-.task-status--failed { background: var(--color-danger-soft); color: var(--color-danger); }
-
-.task-detail-events {
-  margin: 0;
-  white-space: pre-wrap;
-  font-size: 0.82rem;
-  line-height: 1.55;
-  color: var(--color-text-secondary);
-  font-family: "Outfit", "Noto Sans SC", monospace;
-  max-height: 400px;
-  overflow-y: auto;
-}
-
-/* ---------- 事件行 ---------- */
-.event-row {
-  padding: 0.75rem 0.85rem;
-  border-radius: var(--radius-sm);
-  background: rgba(246, 248, 251, 0.85);
-}
-.event-row-text { margin: 0.35rem 0; font-size: 0.9rem; }
-
-.event-badge {
-  display: inline-block;
-  padding: 0.15rem 0.5rem;
-  border-radius: var(--radius-pill);
-  background: var(--color-accent-soft);
-  color: var(--color-accent);
-  font-size: 0.78rem;
-  font-weight: 500;
-}
-
-/* ---------- 学习日志 ---------- */
-.learning-entry {
-  padding: 0.85rem;
-  border-radius: var(--radius-sm);
-  background: rgba(246, 248, 251, 0.85);
-}
-
-.learning-entry-head {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  margin-bottom: 0.5rem;
-}
-
-.learning-entry-body {
-  margin: 0;
-  white-space: pre-wrap;
-  font-size: 0.85rem;
-  line-height: 1.6;
-  color: var(--color-text-secondary);
-  font-family: "Outfit", "Noto Sans SC", sans-serif;
-}
-
-/* ---------- Auth ---------- */
-.auth-notice {
-  margin-top: 0.6rem;
-  font-size: 0.85rem;
-  color: var(--color-text-secondary);
-}
-
-.auth-link {
-  color: var(--color-accent);
-  text-decoration: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.25rem;
-}
-.auth-link:hover { text-decoration: underline; }
-
-.connection-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.45rem;
-  padding: 0.5rem 0.9rem;
-  border-radius: var(--radius-pill);
-  background: var(--color-surface);
-  font-size: 0.85rem;
-  border: 1px solid var(--color-border);
-}
-
-/* ---------- StatusDot ---------- */
-.status-dot {
-  display: inline-block;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-.status-dot--online {
-  background: var(--color-success);
-  box-shadow: 0 0 0 4px var(--color-success-soft);
-}
-.status-dot--offline {
-  background: var(--color-danger);
-  box-shadow: 0 0 0 4px var(--color-danger-soft);
-}
-
-/* ---------- 空状态 ---------- */
-.empty-state {
-  color: var(--color-text-muted);
-  font-size: 0.875rem;
-  padding: 1rem 0;
-}
-
-/* ---------- AuthGuard 页面 ---------- */
-.auth-guard-page {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  min-height: 100vh;
-  padding: 2rem;
-}
-
-.auth-guard-card {
-  max-width: 500px;
-  width: 100%;
-  padding: 2rem;
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-card-hover);
-  backdrop-filter: blur(16px);
-}
-
-.auth-guard-card h1 {
-  font-size: 1.5rem;
-  margin: 0.75rem 0 0;
-}
-
-.auth-guard-eyebrow {
-  text-transform: uppercase;
-  letter-spacing: 0.2em;
-  color: var(--color-text-muted);
-  font-size: 0.72rem;
-  font-weight: 600;
-}
-
-.auth-guard-hint {
-  color: var(--color-text-secondary);
-  margin-top: 0.6rem;
-  font-size: 0.9rem;
-}
-.auth-guard-hint code {
-  background: rgba(22, 56, 95, 0.06);
-  padding: 0.15rem 0.4rem;
-  border-radius: 4px;
-  font-size: 0.82rem;
-}
-
-.auth-guard-form {
-  display: flex;
-  flex-direction: column;
-  gap: 0.75rem;
-  margin-top: 1rem;
-}
-
-.auth-guard-form textarea {
-  border: 1px solid var(--color-border);
-  border-radius: var(--radius-md);
-  padding: 0.75rem 0.9rem;
-  background: rgba(255, 255, 255, 0.6);
-  resize: vertical;
-  font-size: 0.875rem;
-  outline: none;
-  transition: border-color 0.15s;
-}
-.auth-guard-form textarea:focus {
-  border-color: var(--color-accent);
-}
-```
+1. Embedding 替代 LLM 做 dormant/condensed 匹配
+2. Session 统计写入 Lapwing 自省（"今天和 Kevin 聊了 5 个话题"）
+3. 桌面应用 session 可视化（话题切换指示器）
 
 ---
 
-## 8. CSS 导入顺序
+## 十二、风险与降级策略
 
-在 `globals.css` 末尾添加：
-
-```css
-@import "./sidebar.css";
-@import "./pages.css";
-```
-
-或在 `main.tsx` 中分别导入三个文件：
-
-```tsx
-import "./styles/globals.css";
-import "./styles/sidebar.css";
-import "./styles/pages.css";
-```
+| 风险 | 降级方案 |
+|------|----------|
+| LLM 话题检测误判（SAME 判成 NEW） | 保守策略：不确定时默认 SAME；误创建的短 session 会被 MIN_MESSAGES 机制自动清理 |
+| LLM 话题检测误判（NEW 判成 SAME） | 影响较小：只是上下文多了一些无关消息，不如当前"全部混在一起"糟糕 |
+| Session 系统 bug 导致消息丢失 | `SESSION_ENABLED=false` 一键回退到老路径；所有 fallback 逻辑保留 |
+| API 成本增加（每条消息多一次 LLM call） | Layer 1 时间间隔拦截大部分；Layer 2 用最便宜模型 + 极低 max_tokens |
+| Dormant + Condensed 太多占资源 | `SESSION_MAX_DORMANT_PER_CHAT=5` 硬上限；condensed 仅占磁盘不占内存 |
+| 快照文件解析失败 | 复活时 fallback 到空消息列表；DB 中的原始消息仍在，理论上可从 DB 重建 |
+| 快照文件被手动修改 | 解析器做防御性处理（跳过无法识别的行）；不影响 DB 完整性 |
 
 ---
 
-## 9. 文件操作清单
+## 十三、测试要点
 
-以下是 Claude Code 需要执行的操作，按顺序：
+### 单元测试（新增文件：`tests/core/test_session_manager.py`）
 
-### 9.1 安装依赖
+1. `test_create_first_session` — 没有 active 时创建
+2. `test_timeout_creates_new` — 超时自动新建
+3. `test_deactivate_moves_to_dormant` — 降级正确
+4. `test_short_session_deleted_not_dormant` — < MIN_MESSAGES 直接删
+5. `test_reactivate_from_dormant` — 从 dormant 复活，内存中上下文完整
+6. `test_condense_writes_snapshot` — 压缩写快照文件，格式正确
+7. `test_condense_clears_memory` — 压缩后内存缓存被清除
+8. `test_condense_memory_flush` — 压缩前触发 memory flush，Lapwing 通过 memory_note 写入记忆
+9. `test_condense_memory_flush_failure_non_blocking` — memory flush 失败不阻塞 condense 流程
+10. `test_reactivate_from_condensed` — 从 condensed 复活，快照解析正确，上下文完整恢复
+9. `test_reactivate_condensed_deletes_snapshot` — 复活后快照文件被删除
+10. `test_snapshot_parse_robustness` — 快照格式异常时不崩溃
+11. `test_max_dormant_eviction` — 超过上限时最老的被正确降级/删除
+12. `test_reap_expired_two_pass` — dormant → condensed 和 condensed → deleted 两级清理
+13. `test_session_disabled_fallback` — SESSION_ENABLED=false 走老路径
+14. `test_topic_detect_same` — LLM 返回 SAME
+15. `test_topic_detect_new` — LLM 返回 NEW
+16. `test_dormant_match_found` — 匹配到 dormant 话题
+17. `test_condensed_match_found` — 匹配到 condensed 话题
+18. `test_match_none` — 无匹配，创建新 session
 
-```bash
-cd desktop
-npm install react-router-dom@^6.28.0 lucide-react@^0.460.0
-```
+### 集成测试
 
-### 9.2 删除旧文件
-
-```bash
-rm desktop/src/App.tsx
-rm desktop/src/styles.css
-```
-
-> **不删除** `api.ts`（完整复用）、`main.tsx`（重写）、`vite-env.d.ts`（保留）。
-
-### 9.3 创建新文件
-
-按第 2 节目录结构创建所有文件。具体内容见第 3-7 节。
-
-文件创建顺序建议：
-1. `styles/globals.css` → `styles/sidebar.css` → `styles/pages.css`
-2. `components/StatusDot.tsx` → `EmptyState.tsx` → `StatCard.tsx` → `DataCard.tsx` → `BarMeter.tsx` → `EventBadge.tsx`
-3. `components/AuthGuard.tsx`
-4. `components/Sidebar.tsx`
-5. `components/AppShell.tsx`
-6. `pages/OverviewPage.tsx` → `MemoryPage.tsx` → `PersonaPage.tsx` → `TasksPage.tsx` → `EventsPage.tsx` → `AuthPage.tsx` → `SettingsPage.tsx`
-7. `router.tsx`
-8. 重写 `main.tsx`
-
-### 9.4 更新 `index.html`
-
-无需改动——现有的 `index.html` 已经有 `<div id="root">` 和 `<script type="module" src="/src/main.tsx">`。
-
-### 9.5 验证
-
-```bash
-cd desktop && npm run build
-```
-
-应零错误编译。如果有 TS 类型报错，根据 `api.ts` 中的现有类型定义修正。
+1. 完整四级流程：active → dormant → condensed → deleted
+2. Condensed 复活后继续对话，再次降级时重新生成快照
+3. Heartbeat reaper 正确触发两级扫描
+4. Compactor 限制在 session 内
+5. Proactive 消息写入正确 session
+6. `/clear` 命令行为
+7. QQ adapter 与 session 的交互
 
 ---
 
-## 10. 迁移对照表
+## 十四、文件清单
 
-| 旧 App.tsx 功能块 | 新位置 | 备注 |
-|---|---|---|
-| Bootstrap token / manual auth | `AuthGuard.tsx` | 提取为独立守卫 |
-| hero + reload + evolve 按钮 | `OverviewPage.tsx` | 页头操作 |
-| 状态面板 (chat_count 等) | `OverviewPage.tsx` | StatCard 组件 |
-| 兴趣图谱 | `MemoryPage.tsx` | BarMeter 组件 |
-| 记忆管理 | `MemoryPage.tsx` | 含删除操作 |
-| Auth 面板 + OAuth + Codex | `AuthPage.tsx` | 完整独立页 |
-| 事件流 | `EventsPage.tsx` | SSE 连接 |
-| 任务视图 + 详情 | `TasksPage.tsx` | 双栏列表+详情 |
-| 学习日志 | `PersonaPage.tsx` | 含进化操作 |
-| toolbar (chat 选择器 + 状态) | 各页面内置选择器 + Sidebar 底部状态 | 拆散到各页 |
-| 30s 定时轮询 | 各页面独立 useEffect | 按需轮询 |
-| latency telemetry | 暂不迁移（可后续添加到 hooks/ | 降低首版复杂度 |
-| Notification 权限申请 | `EventsPage.tsx` | SSE 事件触发 |
-
----
-
-## 11. 后续扩展点
-
-此蓝图只重构前端结构，以下功能可在后续迭代中添加：
-
-1. **`SettingsPage`** — 在线编辑 `.env`、Heartbeat 参数、LLM Router 配置
-   - 需要后端新增 `GET/POST /api/config` 端点
-2. **`SkillsPage`** — Skill 系统可视化（列表、状态、使用统计）
-   - 对接 Skill `_index.json` 和 `_registry.json`
-3. **`ChatPage`** — 内嵌对话界面（参考 AstrBot 的 WebChat）
-   - 需要后端新增 WebSocket 消息通道
-4. **深色模式** — CSS 变量已预备，只需添加 `[data-theme="dark"]` 覆盖
-5. **i18n** — 当前硬编码中文，可引入 `react-intl` 或简单 JSON map
-6. **移动端适配** — Sidebar 在窄屏切换为 overlay 抽屉
-
----
-
-## 12. 设计原则回顾
-
-- **零后端改动**：所有 API 端点和 `api.ts` 保持原样
-- **渐进增强**：7 个页面可以独立开发和测试
-- **AstrBot 模式借鉴**：Sidebar + 路由 + 分页配置，但用 React 而非 Vue
-- **保持 Lapwing 美学**：暖色渐变背景、毛玻璃卡片、柔和阴影，但升级字体和配色
-- **最小依赖**：只添加 `react-router-dom` 和 `lucide-react`
+| 操作 | 文件 |
+|------|------|
+| 新增 | `src/core/session_manager.py` |
+| 新增 | `src/heartbeat/actions/session_reaper.py` |
+| 新增 | `prompts/topic_detect.md` |
+| 新增 | `prompts/topic_match_dormant.md` |
+| 新增 | `prompts/topic_summarize.md` |
+| 新增 | `prompts/session_condense.md` |
+| 新增 | `prompts/session_memory_flush.md` |
+| 新增 | `tests/core/test_session_manager.py` |
+| 新增 | `data/memory/sessions/`（目录，运行时创建） |
+| 修改 | `src/memory/conversation.py` — 新增 session-aware 方法 + 缓存结构 |
+| 修改 | `src/core/brain.py` — `_ThinkCtx`, `_prepare_think`, `think`, `think_conversational` |
+| 修改 | `src/core/dispatcher.py` — history 来源 |
+| 修改 | `src/memory/compactor.py` — session 感知 |
+| 修改 | `src/heartbeat/actions/proactive.py` — 写入 active session |
+| 修改 | `src/app/telegram_app.py` — `/clear` 行为 |
+| 修改 | `config/settings.py` — 新增配置项 |
+| 修改 | `main.py` — 初始化 SessionManager |

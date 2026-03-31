@@ -5,6 +5,9 @@ import StatusDot from "../components/StatusDot";
 import EventBadge from "../components/EventBadge";
 import EmptyState from "../components/EmptyState";
 
+const TOOL_UPDATE_THROTTLE_MS = 500;
+const NOTIFIABLE_TYPES = ["interest_proactive", "proactive_message", "reminder_message"];
+
 function formatDate(v: string) {
   return new Date(v).toLocaleString("zh-CN");
 }
@@ -13,8 +16,14 @@ export default function EventsPage() {
   const [events, setEvents] = useState<DesktopEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const streamRef = useRef<EventSource | null>(null);
+  const toolUpdateLastSeen = useRef<Record<string, number>>({});
 
   useEffect(() => {
+    // 请求通知权限
+    if ("Notification" in window && Notification.permission === "default") {
+      void Notification.requestPermission();
+    }
+
     const stream = new EventSource(`${API_BASE}/api/events/stream`, {
       withCredentials: API_BASE.length > 0,
     });
@@ -24,7 +33,30 @@ export default function EventsPage() {
     stream.onerror = () => setConnected(false);
     stream.onmessage = (msg) => {
       const event = JSON.parse(msg.data) as DesktopEvent;
+
+      // 工具执行更新节流
+      if (event.type === "task.tool_execution_update") {
+        const key = event.payload.toolCallId ?? "__global__";
+        const now = Date.now();
+        const last = toolUpdateLastSeen.current[key] ?? 0;
+        if (now - last < TOOL_UPDATE_THROTTLE_MS) return;
+        toolUpdateLastSeen.current[key] = now;
+      }
+
       setEvents((prev) => [event, ...prev].slice(0, 50));
+
+      // 桌面通知
+      if (
+        NOTIFIABLE_TYPES.includes(event.type) &&
+        "Notification" in window &&
+        Notification.permission === "granted"
+      ) {
+        const title = event.type === "interest_proactive" ? "Lapwing 主动分享" : "Lapwing 主动消息";
+        const suffix = event.payload.topic ? `\n主题：${event.payload.topic}` : "";
+        new Notification(title, {
+          body: `${event.payload.text ?? "收到新消息"}${suffix}`,
+        });
+      }
     };
 
     return () => { stream.close(); setConnected(false); };

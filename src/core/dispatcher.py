@@ -49,7 +49,9 @@ class AgentDispatcher:
         self._memory = memory
         self._persona_prompt = load_prompt("lapwing_soul")
 
-    async def try_dispatch(self, chat_id: str, user_message: str) -> str | None:
+    async def try_dispatch(
+        self, chat_id: str, user_message: str, *, session_id: str | None = None
+    ) -> str | None:
         """尝试将用户消息分发给合适的 Agent。
 
         Returns:
@@ -72,7 +74,10 @@ class AgentDispatcher:
                 return None
 
             # 4. 从记忆中获取历史和用户画像，构建 AgentTask
-            history = await self._memory.get(chat_id)
+            if session_id is not None:
+                history = await self._memory.get_session_messages(session_id)
+            else:
+                history = await self._memory.get(chat_id)
             user_facts = await self._memory.get_user_facts(chat_id)
             task = AgentTask(
                 chat_id=chat_id,

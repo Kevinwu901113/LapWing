@@ -17,10 +17,18 @@ export default function OverviewPage() {
   const [busy, setBusy] = useState<"reload" | "evolve" | null>(null);
 
   useEffect(() => {
-    void Promise.all([getStatus(), getChats()]).then(([s, c]) => {
-      setStatus(s);
-      setChats(c);
-    });
+    let cancelled = false;
+
+    async function load() {
+      try {
+        const [s, c] = await Promise.all([getStatus(), getChats()]);
+        if (!cancelled) { setStatus(s); setChats(c); }
+      } catch {}
+    }
+
+    void load();
+    const timer = setInterval(load, 30_000);
+    return () => { cancelled = true; clearInterval(timer); };
   }, []);
 
   async function handleReload() {

@@ -29,23 +29,30 @@ class ConversationCompactor:
         max_messages = MAX_HISTORY_TURNS * 2
         return history_length >= int(max_messages * COMPACTION_TRIGGER_RATIO)
 
-    async def try_compact(self, chat_id: str) -> bool:
+    async def try_compact(self, chat_id: str, *, session_id: str | None = None) -> bool:
         """尝试压缩对话。返回是否执行了压缩。"""
-        if chat_id in self._compacting:
+        key = session_id or chat_id
+        if key in self._compacting:
             return False
 
-        history = await self._memory.get(chat_id)
+        if session_id is not None:
+            history = await self._memory.get_session_messages(session_id)
+        else:
+            history = await self._memory.get(chat_id)
         if not self.should_compact(len(history)):
             return False
 
-        self._compacting.add(chat_id)
+        self._compacting.add(key)
         try:
-            return await self._do_compact(chat_id, history)
+            return await self._do_compact(key, history, chat_id=chat_id, is_session=bool(session_id))
         finally:
-            self._compacting.discard(chat_id)
+            self._compacting.discard(key)
 
-    async def _do_compact(self, chat_id: str, history: list[dict]) -> bool:
+    async def _do_compact(
+        self, key: str, history: list[dict], *, chat_id: str | None = None, is_session: bool = False
+    ) -> bool:
         """执行压缩：摘要前半段对话，保留后半段。"""
+        actual_chat_id = chat_id or key
         # 压缩前 60% 的消息，保留后 40%
         compact_count = int(len(history) * 0.6)
         if compact_count < 4:
@@ -67,12 +74,12 @@ class ConversationCompactor:
                 [{"role": "user", "content": prompt}],
                 purpose="tool",
                 max_tokens=COMPACTION_SUMMARY_MAX_TOKENS,
-                session_key=f"chat:{chat_id}",
+                session_key=f"chat:{actual_chat_id}",
                 origin="memory.compactor",
             )
             summary = summary.strip()
         except Exception as exc:
-            logger.warning(f"[{chat_id}] Compaction LLM 调用失败: {exc}")
+            logger.warning(f"[{actual_chat_id}] Compaction LLM 调用失败: {exc}")
             return False
 
         if not summary:
@@ -96,9 +103,12 @@ class ConversationCompactor:
         new_history = [summary_message] + to_keep
 
         # 替换内存缓存（不删除数据库中的旧记录，只更新缓存）
-        self._memory.replace_history(chat_id, new_history)
+        if is_session:
+            self._memory.replace_session_history(key, new_history)
+        else:
+            self._memory.replace_history(key, new_history)
 
         logger.info(
-            f"[{chat_id}] Compaction 完成：压缩 {compact_count} 条 → 保留 {len(to_keep)} 条 + 1 条摘要"
+            f"[{actual_chat_id}] Compaction 完成：压缩 {compact_count} 条 → 保留 {len(to_keep)} 条 + 1 条摘要"
         )
         return True

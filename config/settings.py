@@ -227,6 +227,15 @@ FACT_EXTRACT_IDLE_SECONDS: int = int(os.getenv("FACT_EXTRACT_IDLE_SECONDS", "300
 FACT_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("FACT_EXTRACT_TURN_THRESHOLD", "3"))  # 满 N 轮触发提取
 INTEREST_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("INTEREST_EXTRACT_TURN_THRESHOLD", "5"))
 
+# ── Session 管理 ──
+SESSION_ENABLED: bool = os.getenv("SESSION_ENABLED", "false").lower() in ("true", "1")
+SESSION_TIMEOUT_MINUTES: int = int(os.getenv("SESSION_TIMEOUT_MINUTES", "30"))
+SESSION_DORMANT_TTL_HOURS: float = float(os.getenv("SESSION_DORMANT_TTL_HOURS", "3"))
+SESSION_MIN_MESSAGES_TO_KEEP: int = int(os.getenv("SESSION_MIN_MESSAGES_TO_KEEP", "4"))
+SESSION_MAX_DORMANT_PER_CHAT: int = int(os.getenv("SESSION_MAX_DORMANT_PER_CHAT", "5"))
+SESSION_TOPIC_DETECT_ENABLED: bool = False  # Phase 2: LLM 话题检测
+SESSION_SNAPSHOTS_DIR: Path = MEMORY_DIR / "sessions"
+
 # 语音转写（Whisper，可选；不填则回退到通用 LLM_* 配置）
 WHISPER_API_KEY: str = os.getenv("WHISPER_API_KEY", "")
 WHISPER_BASE_URL: str = os.getenv("WHISPER_BASE_URL", "")

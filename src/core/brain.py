@@ -61,6 +61,7 @@ class _ThinkCtx:
     approved_directory: str | None
     early_reply: str | None = None
     matched_experience_skills: list | None = None  # list[ExperienceSkill]
+    session_id: str | None = None
 
 
 class LapwingBrain:
@@ -87,6 +88,7 @@ class LapwingBrain:
         self.constitution_guard: ConstitutionGuard | None = None
         self.tactical_rules: TacticalRules | None = None
         self.evolution_engine: EvolutionEngine | None = None
+        self.session_manager = None  # Set externally (SessionManager | None)
 
     async def init_db(self) -> None:
         """初始化数据库连接和表结构。"""
@@ -95,6 +97,11 @@ class LapwingBrain:
     async def clear_short_term_memory(self, chat_id: str) -> None:
         """仅清除短期对话记忆。"""
         self.task_runtime.clear_chat_state(chat_id)
+        if self.session_manager is not None:
+            active = self.session_manager._get_active(chat_id)
+            if active is not None:
+                await self.session_manager.deactivate(active)
+                await self.memory.clear_session_cache(active.id)
         await self.memory.clear(chat_id)
 
     async def clear_all_memory(self, chat_id: str) -> None:
@@ -576,7 +583,19 @@ class LapwingBrain:
         send_fn 非空时，immediate_reply / agent_reply 会通过它发送（用于 conversational 模式）。
         返回 _ThinkCtx；若 early_reply 非 None 则表示已完成回复，调用方直接返回该值即可。
         """
-        await self.memory.append(chat_id, "user", user_message)
+        # Session 解析（启用时）
+        session_id = None
+        if self.session_manager is not None:
+            try:
+                session = await self.session_manager.resolve_session(chat_id, user_message)
+                session_id = session.id
+            except Exception as e:
+                logger.warning(f"[{chat_id}] Session resolution failed, using legacy path: {e}")
+
+        if session_id is not None:
+            await self.memory.append_to_session(chat_id, session_id, "user", user_message)
+        else:
+            await self.memory.append(chat_id, "user", user_message)
 
         self.fact_extractor.notify(chat_id)
         if self.interest_tracker is not None:
@@ -586,16 +605,23 @@ class LapwingBrain:
             self.task_runtime.resolve_pending_confirmation(chat_id, user_message)
         )
         if immediate_reply is not None:
-            await self.memory.append(chat_id, "assistant", immediate_reply)
+            if session_id is not None:
+                await self.memory.append_to_session(chat_id, session_id, "assistant", immediate_reply)
+            else:
+                await self.memory.append(chat_id, "assistant", immediate_reply)
             if send_fn is not None:
                 await send_fn(immediate_reply)
             return _ThinkCtx(messages=[], effective_user_message=effective_user_message,
-                             approved_directory=approved_directory, early_reply=immediate_reply)
+                             approved_directory=approved_directory, early_reply=immediate_reply,
+                             session_id=session_id)
 
         # 实时纠正检测：异步触发规则提取，不阻塞主回复流程
         if self.tactical_rules is not None:
             if self.tactical_rules.might_be_correction(user_message):
-                history = await self.memory.get(chat_id)
+                if session_id is not None:
+                    history = await self.memory.get_session_messages(session_id)
+                else:
+                    history = await self.memory.get(chat_id)
                 asyncio.create_task(
                     self.tactical_rules.process_correction(
                         chat_id, user_message, list(history)
@@ -605,20 +631,29 @@ class LapwingBrain:
         # Agent dispatch 优先
         if self.dispatcher is not None:
             try:
-                agent_reply = await self.dispatcher.try_dispatch(chat_id, effective_user_message)
+                agent_reply = await self.dispatcher.try_dispatch(
+                    chat_id, effective_user_message, session_id=session_id
+                )
                 if agent_reply is not None:
                     agent_reply = strip_internal_thinking_tags(agent_reply)
-                    await self.memory.append(chat_id, "assistant", agent_reply)
+                    if session_id is not None:
+                        await self.memory.append_to_session(chat_id, session_id, "assistant", agent_reply)
+                    else:
+                        await self.memory.append(chat_id, "assistant", agent_reply)
                     if send_fn is not None:
                         await send_fn(agent_reply)
                     return _ThinkCtx(messages=[], effective_user_message=effective_user_message,
-                                     approved_directory=approved_directory, early_reply=agent_reply)
+                                     approved_directory=approved_directory, early_reply=agent_reply,
+                                     session_id=session_id)
             except Exception as e:
                 logger.warning(f"[{chat_id}] Agent dispatch failed, falling back: {e}")
 
         # 压缩 + 组装 messages
-        await self.compactor.try_compact(chat_id)
-        history = await self.memory.get(chat_id)
+        await self.compactor.try_compact(chat_id, session_id=session_id)
+        if session_id is not None:
+            history = await self.memory.get_session_messages(session_id)
+        else:
+            history = await self.memory.get(chat_id)
         recent_messages = self._recent_messages(
             history,
             user_message=effective_user_message,
@@ -661,6 +696,7 @@ class LapwingBrain:
             effective_user_message=effective_user_message,
             approved_directory=approved_directory,
             matched_experience_skills=matched_experience_skills,
+            session_id=session_id,
         )
 
     async def think(self, chat_id: str, user_message: str, status_callback=None) -> str:
@@ -688,7 +724,10 @@ class LapwingBrain:
                 status_callback=status_callback,
             )
             reply = strip_internal_thinking_tags(reply)
-            await self.memory.append(chat_id, "assistant", reply)
+            if ctx.session_id is not None:
+                await self.memory.append_to_session(chat_id, ctx.session_id, "assistant", reply)
+            else:
+                await self.memory.append(chat_id, "assistant", reply)
             logger.debug(f"[{chat_id}] 回复生成成功，长度: {len(reply)}")
             duration = time.monotonic() - start_time
             self._schedule_trace_recording(user_message, reply, ctx.matched_experience_skills, duration)
@@ -696,7 +735,10 @@ class LapwingBrain:
 
         except Exception as e:
             logger.error(f"LLM 调用失败: {e}")
-            await self.memory.remove_last(chat_id)
+            if ctx.session_id is not None:
+                await self.memory.remove_last_session(ctx.session_id)
+            else:
+                await self.memory.remove_last(chat_id)
             return "抱歉，我刚才走神了一下。你能再说一次吗？"
 
     async def think_conversational(
@@ -761,7 +803,10 @@ class LapwingBrain:
 
             # 合并所有片段存入记忆
             memory_text = "\n\n".join(parts_sent) if parts_sent else full_reply
-            await self.memory.append(chat_id, "assistant", memory_text)
+            if ctx.session_id is not None:
+                await self.memory.append_to_session(chat_id, ctx.session_id, "assistant", memory_text)
+            else:
+                await self.memory.append(chat_id, "assistant", memory_text)
             logger.debug(f"[{chat_id}] 流式回复完成，片段数: {len(parts_sent)}")
             duration = time.monotonic() - start_time
             self._schedule_trace_recording(user_message, memory_text, ctx.matched_experience_skills, duration)
@@ -769,7 +814,10 @@ class LapwingBrain:
 
         except Exception as e:
             logger.error(f"LLM 调用失败（conversational）: {e}")
-            await self.memory.remove_last(chat_id)
+            if ctx.session_id is not None:
+                await self.memory.remove_last_session(ctx.session_id)
+            else:
+                await self.memory.remove_last(chat_id)
             error_msg = "抱歉，我刚才走神了一下。你能再说一次吗？"
             await send_fn(error_msg)
             return error_msg

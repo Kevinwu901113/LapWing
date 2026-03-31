@@ -122,7 +122,10 @@ class TelegramApp:
             return
         chat_id = str(update.message.chat_id)
         await self._container.brain.clear_short_term_memory(chat_id)
-        await update.message.reply_text("好的，已清空当前对话上下文，我们可以重新开始。")
+        if self._container.brain.session_manager is not None:
+            await update.message.reply_text("好的，已结束当前话题，下一条消息开始新对话。")
+        else:
+            await update.message.reply_text("好的，已清空当前对话上下文，我们可以重新开始。")
 
     async def cmd_clear(self, update, context) -> None:
         await self.cmd_new(update, context)

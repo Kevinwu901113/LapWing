@@ -200,7 +200,17 @@ class AppContainer:
             self.brain.experience_skill_manager = esm
             logger.info("经验技能系统已就绪")
 
+        # Session 管理系统
+        from config.settings import SESSION_ENABLED
+        if SESSION_ENABLED:
+            from src.core.session_manager import SessionManager
+            sm = SessionManager(memory=self.brain.memory, db=self.brain.memory._db)
+            await sm.init()
+            self.brain.session_manager = sm
+            logger.info("Session 系统已就绪")
+
     def _build_heartbeat(self, send_fn) -> HeartbeatEngine:
+        from src.heartbeat.actions.session_reaper import SessionReaperAction
         heartbeat = HeartbeatEngine(brain=self.brain, send_fn=send_fn)
         heartbeat.registry.register(CompactionCheckAction())
         heartbeat.registry.register(ProactiveMessageAction())
@@ -210,4 +220,5 @@ class AppContainer:
         heartbeat.registry.register(MemoryConsolidationAction())
         heartbeat.registry.register(SelfReflectionAction())
         heartbeat.registry.register(PromptEvolutionAction())
+        heartbeat.registry.register(SessionReaperAction())
         return heartbeat

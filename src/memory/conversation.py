@@ -28,6 +28,7 @@ class ConversationMemory:
     def __init__(self, db_path: Path):
         self._db_path = db_path
         self._store: dict[str, list[dict]] = {}
+        self._session_store: dict[str, list[dict]] = {}  # key = session_id
         self._db: aiosqlite.Connection | None = None
 
     async def init_db(self) -> None:
@@ -132,6 +133,38 @@ class ConversationMemory:
         except Exception:
             pass  # Column already exists
 
+        # Migration: add session_id column if missing
+        try:
+            await self._db.execute(
+                "ALTER TABLE conversations ADD COLUMN session_id TEXT"
+            )
+            await self._db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Sessions table
+        await self._db.executescript("""
+            CREATE TABLE IF NOT EXISTS sessions (
+                id              TEXT PRIMARY KEY,
+                chat_id         TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'active',
+                topic_summary   TEXT NOT NULL DEFAULT '',
+                topic_keywords  TEXT NOT NULL DEFAULT '[]',
+                snapshot_path   TEXT,
+                created_at      TEXT NOT NULL,
+                last_active_at  TEXT NOT NULL,
+                condensed_at    TEXT,
+                message_count   INTEGER NOT NULL DEFAULT 0
+            );
+            CREATE INDEX IF NOT EXISTS idx_sessions_chat_id_status
+                ON sessions(chat_id, status);
+            CREATE INDEX IF NOT EXISTS idx_sessions_last_active
+                ON sessions(last_active_at);
+            CREATE INDEX IF NOT EXISTS idx_conversations_session_id
+                ON conversations(session_id);
+        """)
+        await self._db.commit()
+
     async def _load_recent_history(self) -> None:
         """从数据库加载每个对话的最近历史到内存缓存。"""
         max_messages = MAX_HISTORY_TURNS * 2
@@ -212,6 +245,81 @@ class ConversationMemory:
             logger.info(f"已清除频道 {channel_id} 的对话记忆")
         except Exception as e:
             logger.error(f"清除频道 {channel_id} 记忆失败: {e}")
+
+    async def append_to_session(
+        self, chat_id: str, session_id: str, role: str, content: str, *, channel: str = "telegram"
+    ) -> None:
+        """追加消息到指定 session（先写缓存，再持久化）。"""
+        if session_id not in self._session_store:
+            self._session_store[session_id] = []
+        self._session_store[session_id].append({"role": role, "content": content})
+
+        try:
+            timestamp = datetime.now(timezone.utc).isoformat()
+            await self._db.execute(
+                "INSERT INTO conversations (chat_id, role, content, timestamp, channel, session_id) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (chat_id, role, content, timestamp, channel, session_id),
+            )
+            await self._db.commit()
+        except Exception as e:
+            logger.error(f"Session 消息写入数据库失败: {e}")
+
+    async def get_session_messages(self, session_id: str) -> list[dict]:
+        """获取指定 session 的对话历史（从缓存读取，不存在时从 DB 加载）。"""
+        if session_id not in self._session_store:
+            await self._load_session_history(session_id)
+        return self._session_store.get(session_id, [])
+
+    async def _load_session_history(self, session_id: str) -> None:
+        """从 DB 加载指定 session 的消息到内存缓存。"""
+        max_messages = MAX_HISTORY_TURNS * 2
+        try:
+            async with self._db.execute(
+                """SELECT role, content FROM (
+                    SELECT id, role, content FROM conversations
+                    WHERE session_id = ?
+                    ORDER BY id DESC
+                    LIMIT ?
+                ) ORDER BY id ASC""",
+                (session_id, max_messages),
+            ) as cursor:
+                messages = [
+                    {"role": row[0], "content": row[1]}
+                    async for row in cursor
+                ]
+            if messages:
+                self._session_store[session_id] = messages
+        except Exception as e:
+            logger.error(f"从 DB 加载 session {session_id} 历史失败: {e}")
+
+    async def load_session_from_snapshot(self, session_id: str, messages: list[dict]) -> None:
+        """从快照恢复的消息加载到内存缓存（用于 condensed session 复活）。"""
+        self._session_store[session_id] = list(messages)
+
+    async def clear_session_cache(self, session_id: str) -> None:
+        """清除指定 session 的内存缓存（session 被压缩归档或删除时调用）。"""
+        self._session_store.pop(session_id, None)
+
+    def replace_session_history(self, session_id: str, new_history: list[dict]) -> None:
+        """替换指定 session 的内存缓存（不修改数据库，供 Compactor 使用）。"""
+        self._session_store[session_id] = new_history
+
+    async def remove_last_session(self, session_id: str) -> None:
+        """移除指定 session 的最后一条消息（LLM 调用失败时回滚用）。"""
+        history = self._session_store.get(session_id, [])
+        if history:
+            history.pop()
+        try:
+            await self._db.execute(
+                """DELETE FROM conversations WHERE id = (
+                    SELECT id FROM conversations WHERE session_id = ? ORDER BY id DESC LIMIT 1
+                )""",
+                (session_id,),
+            )
+            await self._db.commit()
+        except Exception as e:
+            logger.error(f"移除 session {session_id} 最后一条消息失败: {e}")
 
     async def clear_chat_all(self, channel_id: str) -> None:
         """清除指定频道的全部记忆（短期 + 长期）。"""

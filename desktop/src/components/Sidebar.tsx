@@ -15,9 +15,10 @@ import StatusDot from "./StatusDot";
 type SidebarProps = {
   collapsed: boolean;
   onToggle: () => void;
+  online?: boolean;
 };
 
-const NAV_ITEMS = [
+const NAV_ITEMS: { to: string; icon: typeof LayoutDashboard; label: string; end?: boolean }[] = [
   { to: "/", icon: LayoutDashboard, label: "总览", end: true },
   { to: "/memory", icon: Brain, label: "记忆" },
   { to: "/persona", icon: Sparkles, label: "人格" },
@@ -25,9 +26,9 @@ const NAV_ITEMS = [
   { to: "/events", icon: Radio, label: "事件" },
   { to: "/auth", icon: Shield, label: "认证" },
   { to: "/settings", icon: Settings, label: "设置" },
-] as const;
+];
 
-export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
+export default function Sidebar({ collapsed, onToggle, online = false }: SidebarProps) {
   return (
     <aside className={`sidebar ${collapsed ? "sidebar--collapsed" : ""}`}>
       {/* 顶部 Logo 区域 */}
@@ -40,11 +41,11 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
 
       {/* 导航项 */}
       <nav className="sidebar-nav">
-        {NAV_ITEMS.map(({ to, icon: Icon, label, ...rest }) => (
+        {NAV_ITEMS.map(({ to, icon: Icon, label, end }) => (
           <NavLink
             key={to}
             to={to}
-            end={"end" in rest}
+            end={end}
             className={({ isActive }) =>
               `sidebar-item ${isActive ? "sidebar-item--active" : ""}`
             }
@@ -60,8 +61,8 @@ export default function Sidebar({ collapsed, onToggle }: SidebarProps) {
       <div className="sidebar-footer">
         {!collapsed && (
           <div className="sidebar-status">
-            <StatusDot online={true} />
-            <span>后端在线</span>
+            <StatusDot online={online} />
+            <span>{online ? "后端在线" : "后端离线"}</span>
           </div>
         )}
       </div>
