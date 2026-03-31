@@ -340,3 +340,93 @@ export async function startOpenAICodexOAuth(returnTo?: string, profileId?: strin
 export function getOAuthLoginSession(loginId: string) {
   return fetchJson<OAuthLoginSession>(`/api/auth/oauth/sessions/${encodeURIComponent(loginId)}`);
 }
+
+// ── Model Routing ──
+
+export type ModelInfo = {
+  id: string;
+  name: string;
+};
+
+export type ModelRoutingProvider = {
+  id: string;
+  name: string;
+  api_type: string;
+  base_url: string;
+  api_key_preview: string;
+  models: ModelInfo[];
+};
+
+export type SlotDefinition = {
+  name: string;
+  description: string;
+  requires_tools: string;
+};
+
+export type SlotAssignment = {
+  provider_id: string;
+  model_id: string;
+};
+
+export type ModelRoutingConfig = {
+  providers: ModelRoutingProvider[];
+  slots: Record<string, SlotAssignment>;
+  slot_definitions: Record<string, SlotDefinition>;
+};
+
+export function getModelRoutingConfig() {
+  return fetchJson<ModelRoutingConfig>("/api/model-routing/config");
+}
+
+export function addModelRoutingProvider(data: {
+  id: string;
+  name: string;
+  base_url: string;
+  api_key: string;
+  api_type: string;
+  models: ModelInfo[];
+}) {
+  return fetchJson<{ status: string; provider_id: string }>("/api/model-routing/providers", {
+    method: "POST",
+    body: JSON.stringify(data),
+  });
+}
+
+export function updateModelRoutingProvider(
+  providerId: string,
+  data: Partial<{
+    name: string;
+    base_url: string;
+    api_key: string;
+    api_type: string;
+    models: ModelInfo[];
+  }>,
+) {
+  return fetchJson<{ status: string }>(`/api/model-routing/providers/${encodeURIComponent(providerId)}`, {
+    method: "PUT",
+    body: JSON.stringify(data),
+  });
+}
+
+export function removeModelRoutingProvider(providerId: string) {
+  return fetchJson<{ status: string }>(`/api/model-routing/providers/${encodeURIComponent(providerId)}`, {
+    method: "DELETE",
+  });
+}
+
+export function assignModelRoutingSlot(slotId: string, providerId: string, modelId: string) {
+  return fetchJson<{ status: string; slot_id: string }>(
+    `/api/model-routing/slots/${encodeURIComponent(slotId)}`,
+    {
+      method: "PUT",
+      body: JSON.stringify({ provider_id: providerId, model_id: modelId }),
+    },
+  );
+}
+
+export function reloadModelRouting() {
+  return fetchJson<{ status: string; message: string }>("/api/model-routing/reload", {
+    method: "POST",
+    body: JSON.stringify({}),
+  });
+}

@@ -397,3 +397,140 @@
 .auth-guard-form textarea:focus {
   border-color: var(--color-accent);
 }
+
+/* ---------- 模型路由设置 ---------- */
+.routing-error {
+  color: var(--color-danger);
+  font-size: 0.85rem;
+  padding: 0.5rem 0;
+}
+
+.routing-save-msg {
+  color: var(--color-success);
+  font-size: 0.85rem;
+}
+
+.routing-provider-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.routing-provider-card:last-child { border-bottom: none; }
+
+.routing-provider-icon {
+  color: var(--color-text-muted);
+  padding-top: 0.1rem;
+  flex-shrink: 0;
+}
+
+.routing-provider-info { flex: 1; min-width: 0; }
+.routing-provider-name { font-weight: 600; font-size: 0.9rem; }
+.routing-provider-url {
+  color: var(--color-text-muted);
+  font-size: 0.8rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.routing-provider-meta {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+  flex-wrap: wrap;
+}
+
+.routing-provider-actions {
+  display: flex;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.routing-badge {
+  display: inline-block;
+  padding: 0.1rem 0.45rem;
+  border-radius: var(--radius-pill);
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  font-size: 0.72rem;
+  color: var(--color-text-secondary);
+}
+
+/* Provider 表单 */
+.routing-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 1rem;
+  margin-bottom: 1rem;
+}
+.routing-form-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.routing-form-head h3 { margin: 0; font-size: 0.95rem; }
+.routing-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.routing-input,
+.routing-select,
+.routing-textarea {
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  padding: 0.5rem 0.75rem;
+  background: rgba(255, 255, 255, 0.6);
+  font-size: 0.875rem;
+  outline: none;
+  transition: border-color 0.15s;
+  width: 100%;
+  box-sizing: border-box;
+}
+.routing-input:focus,
+.routing-select:focus,
+.routing-textarea:focus {
+  border-color: var(--color-accent);
+}
+.routing-textarea { resize: vertical; }
+
+/* Slot 分配区 */
+.routing-slots {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+
+.routing-slot-row {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid var(--color-border);
+}
+.routing-slot-row:last-of-type { border-bottom: none; }
+
+.routing-slot-info { flex: 1; min-width: 0; }
+.routing-slot-name { font-weight: 500; font-size: 0.875rem; }
+.routing-slot-desc { color: var(--color-text-muted); font-size: 0.78rem; margin-top: 0.1rem; }
+
+.routing-slot-controls {
+  display: flex;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+.routing-slot-controls .routing-select { width: 160px; }
+
+.routing-hint {
+  color: var(--color-text-muted);
+  font-size: 0.78rem;
+  margin-top: 0.75rem;
+}
