@@ -207,6 +207,38 @@ def _normalize_openai_messages_for_text_only(messages: list[dict[str, Any]]) -> 
     return normalized_messages
 
 
+def _merge_messages_for_minimax(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """MiniMax 不接受多个 system 消息或连续同 role 消息，在此合并。
+
+    处理顺序：
+    1. 提取所有 system 消息，内容合并为一条放在最前
+    2. 合并剩余消息中连续同 role 的相邻条目
+    """
+    system_parts: list[str] = []
+    non_system: list[dict[str, Any]] = []
+
+    for msg in messages:
+        role = msg.get("role", "")
+        content = str(msg.get("content") or "")
+        if role == "system":
+            if content:
+                system_parts.append(content)
+        else:
+            non_system.append({"role": role, "content": content})
+
+    # 合并连续同 role 的消息
+    merged: list[dict[str, Any]] = []
+    for msg in non_system:
+        if merged and merged[-1]["role"] == msg["role"]:
+            merged[-1]["content"] = merged[-1]["content"] + "\n\n" + msg["content"]
+        else:
+            merged.append(dict(msg))
+
+    if system_parts:
+        return [{"role": "system", "content": "\n\n".join(system_parts)}] + merged
+    return merged
+
+
 def _normalize_openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """保留 OpenAI 兼容格式的 function tools。"""
     return [tool for tool in tools if tool.get("type") == "function"]
@@ -569,8 +601,10 @@ class LLMRouter:
 
         messages = normalized.get("messages")
         if isinstance(messages, list):
-            normalized["messages"] = _normalize_openai_messages_for_text_only(
-                [message for message in messages if isinstance(message, dict)]
+            normalized["messages"] = _merge_messages_for_minimax(
+                _normalize_openai_messages_for_text_only(
+                    [message for message in messages if isinstance(message, dict)]
+                )
             )
 
         max_completion_tokens = normalized.get("max_completion_tokens")
@@ -601,6 +635,7 @@ class LLMRouter:
         normalized["n"] = 1
         normalized.pop("function_call", None)
         normalized.pop("parallel_tool_calls", None)
+        normalized.pop("tool_choice", None)  # MiniMax 不支持 tool_choice 参数
         if logger.isEnabledFor(logging.DEBUG):
             logger.debug(
                 "[%s] MiniMax OpenAI 参数规范化: "
@@ -795,6 +830,8 @@ class LLMRouter:
             }
             request_kwargs = self._normalize_minimax_openai_request(purpose, request_kwargs)
             response = await client.chat.completions.create(**request_kwargs)
+            if not response.choices:
+                return ""
             return response.choices[0].message.content or ""
 
         return await self._with_routing_retry(
@@ -898,6 +935,8 @@ class LLMRouter:
             }
             request_kwargs = self._normalize_minimax_openai_request(purpose, request_kwargs)
             response = await client.chat.completions.create(**request_kwargs)
+            if not response.choices:
+                return ToolTurnResult(text="", tool_calls=[], continuation_message=None)
             message = response.choices[0].message
             tool_calls, raw_tool_calls = _extract_openai_tool_calls(message)
             continuation_message = None

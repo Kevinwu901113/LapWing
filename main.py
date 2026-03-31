@@ -20,15 +20,26 @@ from src.auth.service import AuthManager
 
 def setup_logging() -> logging.Logger:
     LOGS_DIR.mkdir(exist_ok=True)
-    logging.basicConfig(
-        level=getattr(logging, LOG_LEVEL),
-        format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
-        handlers=[
-            logging.FileHandler(LOGS_DIR / "lapwing.log", encoding="utf-8", mode="a"),
-            logging.StreamHandler(),
-        ],
-    )
-    return logging.getLogger("lapwing")
+    level = getattr(logging, LOG_LEVEL)
+    fmt = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+
+    fh = logging.FileHandler(LOGS_DIR / "lapwing.log", encoding="utf-8", mode="a")
+    fh.setFormatter(fmt)
+    sh = logging.StreamHandler()
+    sh.setFormatter(fmt)
+
+    # 显式配置 lapwing logger，切断到 root 的传播，避免第三方库干扰导致重复
+    lapwing_logger = logging.getLogger("lapwing")
+    lapwing_logger.setLevel(level)
+    if not lapwing_logger.handlers:
+        lapwing_logger.addHandler(fh)
+        lapwing_logger.addHandler(sh)
+    lapwing_logger.propagate = False
+
+    # Root logger 共享同一组 handler 实例，让第三方库日志也能输出且不重复
+    logging.basicConfig(level=level, handlers=[fh, sh])
+
+    return lapwing_logger
 
 
 def build_parser() -> argparse.ArgumentParser:

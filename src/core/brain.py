@@ -284,6 +284,14 @@ class LapwingBrain:
         # Layer 0: 核心人格
         sections.append(self.system_prompt)
 
+        # Layer 0.1: 对话示例（紧跟人格核心，强化语气和风格）
+        try:
+            examples = load_prompt("lapwing_examples")
+            if examples:
+                sections.append(examples)
+        except Exception:
+            pass  # 示例文件不存在时静默跳过
+
         # Layer 1: 行为规则（从经验中学到的）
         rules = await read_memory_file(RULES_PATH, max_chars=800)
         if rules and "暂无规则" not in rules:
@@ -378,14 +386,24 @@ class LapwingBrain:
 
         return "\n\n".join(sections)
 
-    def _inject_voice_reminder(self, messages: list[dict]) -> None:
-        """深度注入：在对话历史倒数第 3 条位置插入 voice reminder。
+    _PERSONA_ANCHOR = (
+        "记住：你是 Lapwing，说话简洁自然，像发消息聊天。"
+        "不列清单，不用加粗标题，不在结尾提问。"
+        "有自己的反应和判断，不只是播报信息。"
+    )
 
-        使用 user role 包裹 [System Note] 标签，兼容所有模型（包括 MiniMax）。
-        对话太短时退化为追加到 system prompt 末尾。
+    def _inject_voice_reminder(self, messages: list[dict]) -> None:
+        """深度注入 voice reminder（+ 对话较长时附加 persona anchor）。
+
+        - 对话 >= 6 条：voice + anchor 合并注入在 depth-3
+        - 对话 >= 4 条：仅 voice 注入在 depth-2
+        - 对话更短：追加到 system prompt
         """
         voice_reminder = load_prompt("lapwing_voice")
-        if len(messages) >= 4:
+        if len(messages) >= 6:
+            content = f"[System Note]\n{voice_reminder}\n\n{self._PERSONA_ANCHOR}\n[/System Note]"
+            messages.insert(len(messages) - 2, {"role": "user", "content": content})
+        elif len(messages) >= 4:
             voice_msg = {"role": "user", "content": f"[System Note]\n{voice_reminder}\n[/System Note]"}
             messages.insert(len(messages) - 2, voice_msg)
         else:

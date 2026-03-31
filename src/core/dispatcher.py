@@ -192,15 +192,23 @@ class AgentDispatcher:
 
     async def _format_with_persona(self, chat_id: str, content: str) -> str:
         """通过 Lapwing 的人格对原始 Agent 输出进行润色转述。"""
-        voice_prompt = load_prompt("lapwing_voice")
+        persona_parts = [self._persona_prompt]  # soul
+        try:
+            examples = load_prompt("lapwing_examples")
+            if examples:
+                persona_parts.append(examples)
+        except Exception:
+            pass
+        persona_parts.append(load_prompt("lapwing_voice"))
+        persona_context = "\n\n".join(persona_parts)
+
         messages = [
-            {"role": "system", "content": voice_prompt},
+            {"role": "system", "content": persona_context},
             {
                 "role": "user",
                 "content": (
-                    "把以下信息用你自己的方式告诉用户，像和一个亲近的人聊天一样说。"
-                    "不要用列表、分隔线、加粗标题。不要说'根据搜索结果'、'以下是'。"
-                    "只说最有意思的一两条，加入你的反应。\n\n"
+                    "把以下信息用你自己的方式告诉 Kevin，像平常和他聊天一样说。"
+                    "只说最关键的内容，加入你自己的反应。\n\n"
                     f"{content}"
                 ),
             },
