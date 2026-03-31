@@ -1,0 +1,17 @@
+[Unit]
+Description=Lapwing Sentinel (Watchdog)
+Documentation=file:/home/kevin/lapwing/CLAUDE.md
+After=lapwing.service
+# Sentinel 不依赖 Lapwing 运行，能独立存活
+
+[Service]
+Type=simple
+ExecStart=/home/kevin/lapwing/venv/bin/python /home/kevin/lapwing/watchdog/sentinel.py
+WorkingDirectory=/home/kevin/lapwing
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

@@ -471,6 +471,8 @@ class TelegramApp:
                     send_fn=send_fn,
                     typing_fn=typing_fn,
                     status_callback=self._build_status_sender(task_token=task_token),
+                    adapter="telegram",
+                    user_id=str(message.from_user.id) if message.from_user else "",
                 )
                 logger.info("已回复 [%s]，长度: %s", chat_id, len(reply))
             finally:

@@ -371,7 +371,8 @@ class TestBrainTools:
             result = await brain.think("chat1", "把根目录删掉")
 
             assert "本地命令没有执行" in result
-            assert "检测到危险命令" in result
+            # VitalGuard 或 shell_executor 任意一层拦截都合法
+            assert "检测到危险命令" in result or "VitalGuard" in result or "伤害" in result
 
     async def test_tool_loop_limit_returns_fallback_reply(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \

@@ -35,6 +35,14 @@ from src.core.shell_policy import (
     is_rejection_message,
 )
 from src.policy.shell_runtime_policy import ShellRuntimePolicy
+from src.core.authority_gate import AuthLevel, authorize, identify as identify_auth
+from src.core.vital_guard import (
+    Verdict,
+    auto_backup,
+    check_compound,
+    check_file_target,
+    extract_vital_shell_targets,
+)
 from src.tools.registry import ToolRegistry, build_default_tool_registry
 from src.tools.shell_executor import ShellResult, execute as default_execute_shell
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult
@@ -42,6 +50,12 @@ from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExec
 logger = logging.getLogger("lapwing.task_runtime")
 
 _MAX_TOOL_ROUNDS = TASK_MAX_TOOL_ROUNDS
+
+# VitalGuard 对命令类型的分类（模块级常量，避免每次 execute_tool() 重建）
+_SHELL_TOOLS: frozenset[str] = frozenset({"execute_shell", "run_python_code"})
+_FILE_WRITE_TOOLS: frozenset[str] = frozenset({
+    "write_file", "file_write", "file_append", "apply_workspace_patch",
+})
 
 
 @dataclass(frozen=True)
@@ -253,6 +267,8 @@ class TaskRuntime:
         profile: str | RuntimeProfile = "chat_shell",
         on_interim_text: Callable[[str], "Awaitable[None]"] | None = None,
         on_typing: Callable[[], "Awaitable[None]"] | None = None,
+        adapter: str = "",
+        user_id: str = "",
     ) -> str:
         async def _emit_status(text: str) -> None:
             if status_callback is None:
@@ -494,6 +510,8 @@ class TaskRuntime:
                     event_bus=event_bus,
                     profile=profile_obj,
                     services=services,
+                    adapter=adapter,
+                    user_id=user_id,
                 )
                 duration_ms = max(int((time.perf_counter() - tool_started_at) * 1000), 0)
                 stdout_bytes = self._text_utf8_bytes(payload.get("stdout"))
@@ -801,6 +819,8 @@ class TaskRuntime:
         event_bus=None,
         workspace_root: str | None = None,
         services: dict[str, Any] | None = None,
+        adapter: str = "",
+        user_id: str = "",
     ) -> ToolExecutionResult:
         profile_obj = self._resolve_profile(profile)
         tool = self._tool_registry.get(request.name)
@@ -830,13 +850,61 @@ class TaskRuntime:
             )
             return ToolExecutionResult(success=False, payload=payload, reason=reason)
 
+        # ── AuthorityGate：权限检查 ─────────────────────────────────────────────
+        # adapter 为空 = 内部调用（heartbeat/agents），默认 OWNER 不受限
+        auth_level = identify_auth(adapter, user_id) if adapter else AuthLevel.OWNER
+        allowed, deny_reason = authorize(request.name, auth_level)
+        if not allowed:
+            if state is not None:
+                state.record_failure(deny_reason, "blocked")
+            payload = self._blocked_payload(
+                reason=deny_reason,
+                cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
+                command=str(request.arguments.get("command", "")).strip(),
+            )
+            return ToolExecutionResult(success=False, payload=payload, reason=deny_reason)
+
         shell_executor = deps.execute_shell if deps is not None else default_execute_shell
         shell_default_cwd = deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD
+
+        # ── VitalGuard：存活保护检查 ────────────────────────────────────────────
+        vg_command = str(request.arguments.get("command", "")).strip()
+
+        if request.name in _SHELL_TOOLS and vg_command:
+            guard = check_compound(vg_command)
+            if guard.verdict == Verdict.BLOCK:
+                reason = f"[VitalGuard] {guard.reason}"
+                if state is not None:
+                    state.record_failure(reason, "blocked")
+                payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command=vg_command)
+                return ToolExecutionResult(success=False, payload=payload, reason=reason)
+            if guard.verdict == Verdict.VERIFY_FIRST:
+                vital_targets = extract_vital_shell_targets(vg_command)
+                if vital_targets:
+                    await auto_backup(vital_targets)
+
+        elif request.name in _FILE_WRITE_TOOLS:
+            path_str = str(request.arguments.get("path", "")).strip()
+            if path_str:
+                target = Path(path_str).expanduser().resolve()
+                file_guard = check_file_target(target)
+                if file_guard.verdict == Verdict.BLOCK:
+                    reason = f"[VitalGuard] {file_guard.reason}"
+                    if state is not None:
+                        state.record_failure(reason, "blocked")
+                    payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command="")
+                    return ToolExecutionResult(success=False, payload=payload, reason=reason)
+                if file_guard.verdict == Verdict.VERIFY_FIRST:
+                    await auto_backup([target])
+
         context = ToolExecutionContext(
             execute_shell=shell_executor,
             shell_default_cwd=shell_default_cwd,
             workspace_root=workspace_root or str(ROOT_DIR),
             services=services or {},
+            adapter=adapter,
+            user_id=user_id,
+            auth_level=auth_level,
         )
 
         policy_hook = str(tool.metadata.get("policy_hook", "")).strip()
@@ -940,6 +1008,8 @@ class TaskRuntime:
         event_bus,
         services: dict[str, Any] | None = None,
         profile: str | RuntimeProfile = "chat_shell",
+        adapter: str = "",
+        user_id: str = "",
     ) -> tuple[str, dict[str, Any], bool]:
         execution = await self.execute_tool(
             request=ToolExecutionRequest(name=tool_call.name, arguments=tool_call.arguments),
@@ -950,6 +1020,8 @@ class TaskRuntime:
             chat_id=chat_id,
             event_bus=event_bus,
             services=services,
+            adapter=adapter,
+            user_id=user_id,
         )
         payload = execution.payload
         return json.dumps(payload, ensure_ascii=False), payload, execution.success

@@ -12,6 +12,7 @@ desktop/src-tauri/target/
 config/.env
 data/
 logs/
+skill_traces/
 .pytest_cache/
 .coverage
 .worktrees/

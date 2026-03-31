@@ -377,3 +377,24 @@ API_ALLOWED_ORIGINS: list[str] = [
 
 # 日志
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
+
+# 权限认证 (AuthorityGate)
+# OWNER_IDS：合并环境变量 + 已有的 Telegram/QQ Kevin ID
+OWNER_IDS: set[str] = {
+    item.strip()
+    for item in os.getenv("OWNER_IDS", "").split(",")
+    if item.strip()
+}
+if TELEGRAM_KEVIN_ID:
+    OWNER_IDS.add(TELEGRAM_KEVIN_ID)
+if QQ_KEVIN_ID:
+    OWNER_IDS.add(QQ_KEVIN_ID)
+
+TRUSTED_IDS: set[str] = {
+    item.strip()
+    for item in os.getenv("TRUSTED_IDS", "").split(",")
+    if item.strip()
+}
+
+# 桌面连接是否默认视为 OWNER（本地连接不做身份验证）
+DESKTOP_DEFAULT_OWNER: bool = os.getenv("DESKTOP_DEFAULT_OWNER", "true").lower() == "true"

@@ -240,6 +240,8 @@ class LapwingBrain:
         status_callback=None,
         on_interim_text=None,
         on_typing=None,
+        adapter: str = "",
+        user_id: str = "",
     ) -> str:
         constraints = extract_execution_constraints(
             user_message,
@@ -273,6 +275,8 @@ class LapwingBrain:
             services=services,
             on_interim_text=on_interim_text,
             on_typing=on_typing,
+            adapter=adapter,
+            user_id=user_id,
         )
 
     async def _build_system_prompt(self, chat_id: str, user_message: str = "") -> str:
@@ -766,6 +770,8 @@ class LapwingBrain:
         send_fn,
         typing_fn=None,
         status_callback=None,
+        adapter: str = "",
+        user_id: str = "",
     ) -> str:
         """边查边说模式：中间文字通过 send_fn 实时发出，供 Telegram 对话使用。
 
@@ -810,6 +816,8 @@ class LapwingBrain:
                 status_callback=status_callback,
                 on_interim_text=on_interim_text,
                 on_typing=on_typing,
+                adapter=adapter,
+                user_id=user_id,
             )
             full_reply = strip_internal_thinking_tags(full_reply)
 

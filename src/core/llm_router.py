@@ -213,24 +213,38 @@ def _merge_messages_for_minimax(messages: list[dict[str, Any]]) -> list[dict[str
     处理顺序：
     1. 提取所有 system 消息，内容合并为一条放在最前
     2. 合并剩余消息中连续同 role 的相邻条目
+       — 但 tool 相关消息（role=tool、带 tool_calls 的 assistant）不参与合并，
+         且保留 tool_calls / tool_call_id / name 等字段，否则 MiniMax 会返回
+         "tool result's tool id() not found" 400 错误。
     """
     system_parts: list[str] = []
     non_system: list[dict[str, Any]] = []
 
     for msg in messages:
         role = msg.get("role", "")
-        content = str(msg.get("content") or "")
         if role == "system":
+            content = str(msg.get("content") or "")
             if content:
                 system_parts.append(content)
         else:
-            non_system.append({"role": role, "content": content})
+            # 保留完整字段（tool_calls, tool_call_id, name 等）
+            non_system.append(dict(msg))
 
-    # 合并连续同 role 的消息
+    def _is_tool_related(msg: dict[str, Any]) -> bool:
+        """判断消息是否属于工具调用链，不能被合并。"""
+        return msg.get("role") == "tool" or bool(msg.get("tool_calls"))
+
+    # 合并连续同 role 的消息，但跳过 tool 相关消息
     merged: list[dict[str, Any]] = []
     for msg in non_system:
-        if merged and merged[-1]["role"] == msg["role"]:
-            merged[-1]["content"] = merged[-1]["content"] + "\n\n" + msg["content"]
+        if _is_tool_related(msg):
+            merged.append(msg)
+        elif (
+            merged
+            and merged[-1]["role"] == msg["role"]
+            and not _is_tool_related(merged[-1])
+        ):
+            merged[-1]["content"] = str(merged[-1].get("content") or "") + "\n\n" + str(msg.get("content") or "")
         else:
             merged.append(dict(msg))
 

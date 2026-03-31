@@ -169,6 +169,15 @@ def run_telegram_bot(logger: logging.Logger) -> int:
         return 1
 
     logger.info("Lapwing 正在启动...")
+
+    # 生成/更新 vital manifest（供 Sentinel 哨兵使用）
+    try:
+        from src.core.vital_guard import save_manifest
+        save_manifest()
+        logger.info("Vital manifest 已更新。")
+    except Exception as _manifest_err:
+        logger.warning("Vital manifest 生成失败: %s", _manifest_err)
+
     container = AppContainer(db_path=DB_PATH, data_dir=DATA_DIR)
 
     telegram_app = TelegramApp(container=container, tg_config={"kevin_id": TELEGRAM_KEVIN_ID})
@@ -217,6 +226,8 @@ def run_telegram_bot(logger: logging.Logger) -> int:
                 send_fn=send_fn,
                 typing_fn=typing_fn,
                 status_callback=noop_status,
+                adapter="qq",
+                user_id=str(raw_event.get("user_id", "")),
             )
 
         qq_adapter = QQAdapter(config=qq_config, on_message=_qq_on_message)

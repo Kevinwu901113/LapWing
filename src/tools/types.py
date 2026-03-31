@@ -24,6 +24,10 @@ class ToolExecutionContext:
     shell_default_cwd: str
     workspace_root: str = ""
     services: dict[str, Any] = field(default_factory=dict)
+    # 身份信息（由 adapter 层注入；默认 OWNER 保持内部 agent/heartbeat 不受限）
+    adapter: str = ""
+    user_id: str = ""
+    auth_level: int = 2  # 2 = AuthLevel.OWNER
 
 
 @dataclass
