@@ -202,7 +202,7 @@ class ProactiveRuntime:
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": "请做出判断"},
                 ],
-                purpose="heartbeat",
+                slot="heartbeat_proactive",
                 max_tokens=256,
                 session_key=f"chat:{ctx.chat_id}",
                 origin=f"heartbeat.decision.{ctx.beat_type}",
