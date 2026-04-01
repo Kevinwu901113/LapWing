@@ -43,14 +43,19 @@ export default function LogsPage() {
       void getRecentLogs(500, levelFilter !== "全部" ? levelFilter : undefined).then((r) =>
         setHistLines(r.lines),
       );
+    } else {
+      // Clear stale historical lines when switching back to live mode
+      setHistLines([]);
     }
   }, [live, levelFilter]);
 
   const allLines = live ? lines : histLines;
 
   // Client-side filtering
+  // When live=false, level filtering is already done server-side by getRecentLogs,
+  // so skip re-filtering by level. Module and search filters always apply client-side.
   const visible = allLines.filter((line) => {
-    if (levelFilter !== "全部" && line.level.toUpperCase() !== levelFilter) return false;
+    if (live && levelFilter !== "全部" && line.level.toUpperCase() !== levelFilter) return false;
     if (moduleFilter && !line.logger.includes(moduleFilter)) return false;
     if (search && !line.message.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
@@ -142,7 +147,7 @@ export default function LogsPage() {
         </button>
 
         {/* Clear */}
-        <button className="btn btn-sm" onClick={clear}>
+        <button className="btn btn-sm" onClick={() => { clear(); setExpandedIdx(null); }}>
           清空
         </button>
       </div>
@@ -156,7 +161,7 @@ export default function LogsPage() {
             const expanded = expandedIdx === idx;
             return (
               <div
-                key={idx}
+                key={`${line.timestamp}-${line.logger}-${idx}`}
                 className={`log-line${expanded ? " expanded" : ""}`}
                 onClick={() => setExpandedIdx(expanded ? null : idx)}
               >
@@ -164,7 +169,7 @@ export default function LogsPage() {
                 <span className={`log-level ${levelClass(line.level)}`}>{line.level.toUpperCase()}</span>
                 <span className="log-logger">{line.logger}</span>
                 <span className={`log-message${expanded ? " wrap" : ""}`}>
-                  {expanded ? formatLine(line).split(" — ").slice(1).join(" — ") : line.message}
+                  {line.message}
                 </span>
               </div>
             );
