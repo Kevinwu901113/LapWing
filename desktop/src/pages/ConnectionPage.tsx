@@ -5,7 +5,9 @@ import "../styles/pages.css";
 
 export default function ConnectionPage() {
   const navigate = useNavigate();
-  const [serverUrl, setServerUrl] = useState("http://127.0.0.1:8765");
+  const [serverUrl, setServerUrl] = useState(
+    () => localStorage.getItem("lapwing_server_url") ?? "http://127.0.0.1:8765",
+  );
   const [bootstrapToken, setBootstrapToken] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +47,7 @@ export default function ConnectionPage() {
       localStorage.setItem("lapwing_token", result.token);
       navigate("/", { replace: true });
     } catch (err) {
-      localStorage.removeItem("lapwing_server_url");
+      // Keep lapwing_server_url so the field stays pre-populated on retry
       setError(err instanceof Error ? err.message : "连接失败");
     } finally {
       setLoading(false);
