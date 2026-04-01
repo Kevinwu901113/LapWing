@@ -5,14 +5,7 @@ import ToolStatus from "../components/ToolStatus";
 import AgentPanel from "../components/AgentPanel";
 import StatusDot from "../components/StatusDot";
 import type { ChatMessage } from "../api";
-
-// Mirror of the local type in AgentPanel (not exported from there)
-type ToolLogEntry = {
-  toolName: string;
-  status: "running" | "done" | "error";
-  duration_ms?: number;
-  timestamp: string;
-};
+import type { ToolLogEntry } from "../components/AgentPanel";
 
 export default function ChatPage() {
   const { messages, status, toolStatus, send, reconnect } = useWebSocket();
@@ -21,13 +14,17 @@ export default function ChatPage() {
   const [allMessages, setAllMessages] = useState<ChatMessage[]>([]);
   const prevMessagesLen = useRef(0);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   // Sync new messages from hook into allMessages
   useEffect(() => {
     const newMessages = messages.slice(prevMessagesLen.current);
     if (newMessages.length > 0) {
       prevMessagesLen.current = messages.length;
-      setAllMessages(prev => [...prev, ...newMessages]);
+      setAllMessages(prev => {
+        const combined = [...prev, ...newMessages];
+        return combined.length > 500 ? combined.slice(-500) : combined;
+      });
     }
   }, [messages]);
 
@@ -77,6 +74,13 @@ export default function ChatPage() {
       e.preventDefault();
       handleSend();
     }
+  };
+
+  const autoResize = () => {
+    const ta = textareaRef.current;
+    if (!ta) return;
+    ta.style.height = "auto";
+    ta.style.height = `${Math.min(ta.scrollHeight, 120)}px`;
   };
 
   const isOnline = status === "connected";
@@ -165,9 +169,11 @@ export default function ChatPage() {
           }}
         >
           <textarea
+            ref={textareaRef}
             value={input}
             onChange={e => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
+            onInput={autoResize}
             placeholder="输入消息… (Enter 发送，Shift+Enter 换行)"
             rows={1}
             disabled={!isOnline}

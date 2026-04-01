@@ -23,6 +23,7 @@ export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retryDelay = useRef(1000);
+  const interimIdRef = useRef<string | null>(null);
 
   const connect = useCallback(() => {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
@@ -56,15 +57,17 @@ export function useWebSocket() {
             return updated.length > 500 ? updated.slice(-500) : updated;
           });
           setToolStatus(null); // Clear tool status when reply arrives
+          interimIdRef.current = null; // Clear interim tracking
         } else if (msg.type === "interim") {
-          // Streaming interim response - update last assistant message or add new
+          // Track streaming message by stable interim ID
+          const interimId = interimIdRef.current ?? (interimIdRef.current = crypto.randomUUID());
           setMessages(prev => {
             const last = prev[prev.length - 1];
-            if (last?.role === "assistant" && last.id === msg.id) {
+            if (last?.role === "assistant" && last.id === interimId) {
               return [...prev.slice(0, -1), { ...last, content: msg.content ?? "" }];
             }
             return [...prev, {
-              id: msg.id ?? crypto.randomUUID(),
+              id: interimId,
               role: "assistant" as const,
               content: msg.content ?? "",
               timestamp: new Date().toISOString(),
@@ -124,7 +127,11 @@ export function useWebSocket() {
     connect();
     return () => {
       if (retryRef.current) clearTimeout(retryRef.current);
-      wsRef.current?.close();
+      if (wsRef.current) {
+        wsRef.current.onclose = null; // prevent reconnect on intentional close
+        wsRef.current.close();
+        wsRef.current = null;
+      }
     };
   }, [connect]);
 

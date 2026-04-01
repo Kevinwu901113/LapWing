@@ -1,6 +1,6 @@
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
 
-type ToolLogEntry = {
+export type ToolLogEntry = {
   toolName: string;
   status: "running" | "done" | "error";
   duration_ms?: number;
