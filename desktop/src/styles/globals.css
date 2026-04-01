@@ -1,136 +1,292 @@
-@import url("https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&family=Noto+Sans+SC:wght@400;500;700&display=swap");
-@import "./sidebar.css";
+@import "./tokens.css";
 @import "./pages.css";
 
-:root {
-  /* 色彩系统 */
-  --color-bg: #f5f1ea;
-  --color-surface: rgba(255, 255, 255, 0.72);
-  --color-surface-hover: rgba(255, 255, 255, 0.88);
-  --color-surface-solid: #ffffff;
-  --color-border: rgba(22, 56, 95, 0.08);
-  --color-border-active: rgba(22, 56, 95, 0.2);
-
-  --color-text-primary: #1a2332;
-  --color-text-secondary: #526075;
-  --color-text-muted: #8494a7;
-
-  --color-accent: #2d6be4;
-  --color-accent-soft: rgba(45, 107, 228, 0.1);
-  --color-success: #2f9e72;
-  --color-success-soft: rgba(47, 158, 114, 0.12);
-  --color-danger: #c44536;
-  --color-danger-soft: rgba(196, 69, 54, 0.1);
-  --color-warning: #d4940a;
-
-  /* 侧栏 */
-  --sidebar-width: 240px;
-  --sidebar-collapsed-width: 68px;
-  --sidebar-bg: rgba(26, 35, 50, 0.95);
-  --sidebar-text: rgba(255, 255, 255, 0.7);
-  --sidebar-text-active: #ffffff;
-  --sidebar-item-hover: rgba(255, 255, 255, 0.08);
-  --sidebar-item-active: rgba(45, 107, 228, 0.2);
-
-  /* 圆角 */
-  --radius-sm: 8px;
-  --radius-md: 14px;
-  --radius-lg: 20px;
-  --radius-pill: 999px;
-
-  /* 阴影 */
-  --shadow-card: 0 2px 12px rgba(31, 43, 61, 0.06);
-  --shadow-card-hover: 0 8px 32px rgba(31, 43, 61, 0.1);
-  --shadow-sidebar: 4px 0 24px rgba(0, 0, 0, 0.08);
-
-  /* 排版 */
-  font-family: "Outfit", "Noto Sans SC", sans-serif;
-  font-size: 15px;
-  line-height: 1.55;
-  color: var(--color-text-primary);
-
-  /* 背景 */
-  color-scheme: light;
-  background:
-    radial-gradient(ellipse at 10% 0%, rgba(255, 184, 108, 0.35), transparent 50%),
-    radial-gradient(ellipse at 90% 10%, rgba(109, 181, 255, 0.3), transparent 40%),
-    var(--color-bg);
-  background-attachment: fixed;
-}
-
-* {
+/* ---------- Reset / Base ---------- */
+*, *::before, *::after {
   box-sizing: border-box;
-  margin: 0;
 }
 
-body {
-  min-height: 100vh;
-  min-width: 320px;
+html, body {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-sans);
+  font-size: 13px;
   -webkit-font-smoothing: antialiased;
 }
 
-button, select, textarea, input {
-  font: inherit;
-  color: inherit;
+#root {
+  height: 100%;
 }
 
-/* ---------- 通用按钮 ---------- */
+/* ---------- Typography utilities ---------- */
+.text-muted {
+  color: var(--text-muted);
+  font-size: 11px;
+}
+
+.text-secondary {
+  color: var(--text-secondary);
+}
+
+.section-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ---------- Button utilities ---------- */
 .btn {
+  cursor: pointer;
+  border: none;
+  outline: none;
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
-  border: none;
-  border-radius: var(--radius-pill);
-  padding: 0.6rem 1.1rem;
+  gap: 6px;
+  border-radius: var(--radius-md);
+  font-size: 13px;
   font-weight: 500;
-  font-size: 0.875rem;
+  transition: background 0.15s;
+}
+
+.btn-primary {
+  background: var(--accent);
+  color: #0f1117;
+  padding: 6px 14px;
+}
+.btn-primary:hover {
+  filter: brightness(1.1);
+}
+
+.btn-ghost {
+  background: transparent;
+  color: var(--text-secondary);
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+}
+.btn-ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+
+.btn-danger {
+  background: var(--red-dim);
+  color: var(--red);
+  padding: 6px 12px;
+  border: 1px solid transparent;
+}
+.btn-danger:hover {
+  background: var(--red);
+  color: white;
+}
+
+.btn-sm {
+  padding: 4px 10px;
+  font-size: 12px;
+}
+
+.btn-icon {
+  background: transparent;
+  color: var(--text-muted);
+  padding: 6px;
+  border: none;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  transition: all 0.18s ease;
-  white-space: nowrap;
+}
+.btn-icon:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
 }
 
-.btn:hover { transform: translateY(-1px); }
-.btn:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
-
-.btn-primary { background: var(--color-accent); color: #fff; }
-.btn-primary:hover { background: #2560d0; }
-
-.btn-soft {
-  background: var(--color-surface);
-  color: var(--color-text-primary);
-  border: 1px solid var(--color-border);
-}
-.btn-soft:hover { background: var(--color-surface-hover); border-color: var(--color-border-active); }
-
-.btn-danger { background: var(--color-danger); color: #fff; }
-.btn-danger-soft { background: var(--color-danger-soft); color: var(--color-danger); }
-
-.btn-sm { padding: 0.4rem 0.75rem; font-size: 0.8rem; }
-.btn-icon { padding: 0.5rem; border-radius: var(--radius-sm); }
-
-/* ---------- 动画 ---------- */
-@keyframes fade-up {
-  from { opacity: 0; transform: translateY(8px); }
-  to { opacity: 1; transform: translateY(0); }
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-@keyframes fade-in {
+/* ---------- Animations ---------- */
+@keyframes fadeIn {
   from { opacity: 0; }
   to { opacity: 1; }
 }
 
-.animate-in {
-  animation: fade-up 0.4s ease both;
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
-/* 交错动画 */
-.stagger-1 { animation-delay: 0.05s; }
-.stagger-2 { animation-delay: 0.1s; }
-.stagger-3 { animation-delay: 0.15s; }
-.stagger-4 { animation-delay: 0.2s; }
+.animate-in {
+  animation: slideUp 0.2s ease-out;
+}
 
-/* ---------- 滚动条 ---------- */
-::-webkit-scrollbar { width: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: rgba(22, 56, 95, 0.15); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: rgba(22, 56, 95, 0.25); }
+/* ---------- Scrollbar (dark) ---------- */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.12);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.2);
+}
+
+/* ---------- Sidebar ---------- */
+.sidebar {
+  position: fixed;
+  left: 0;
+  top: 0;
+  height: 100vh;
+  width: var(--sidebar-collapsed);
+  background: var(--bg-surface);
+  border-right: 1px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  z-index: 100;
+  transition: width 200ms ease;
+}
+.sidebar:hover {
+  width: var(--sidebar-expanded);
+}
+
+.sidebar-logo {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--accent);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.sidebar-header {
+  padding: 12px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 52px;
+  flex-shrink: 0;
+}
+
+.sidebar-nav {
+  flex: 1;
+  padding: 8px 0;
+  overflow: hidden;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 13px;
+  white-space: nowrap;
+  border-radius: 0;
+  transition: background 0.15s, color 0.15s;
+  cursor: pointer;
+}
+.sidebar-item:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+}
+.sidebar-item--active {
+  color: var(--accent);
+  background: var(--accent-dim);
+}
+.sidebar-item svg {
+  flex-shrink: 0;
+}
+.sidebar-item span {
+  overflow: hidden;
+}
+
+.sidebar-footer {
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.sidebar-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 8px;
+  color: var(--text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+/* ---------- StatusDot ---------- */
+.status-dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.status-dot--online {
+  background: var(--green);
+  box-shadow: 0 0 6px var(--green);
+}
+.status-dot--offline {
+  background: var(--text-muted);
+}
+
+/* ---------- Card base ---------- */
+.card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 16px;
+}
+
+.card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.card-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+/* ---------- Form elements ---------- */
+input, select, textarea {
+  background: var(--bg-input);
+  border: 1px solid var(--border-input);
+  border-radius: var(--radius-md);
+  color: var(--text-primary);
+  font-size: 13px;
+  font-family: var(--font-sans);
+  padding: 6px 10px;
+  outline: none;
+}
+input:focus, select:focus, textarea:focus {
+  border-color: var(--accent-border);
+}
+select {
+  cursor: pointer;
+}
+
+/* ---------- Divider ---------- */
+.divider {
+  height: 1px;
+  background: var(--border);
+  margin: 12px 0;
+}
