@@ -212,6 +212,26 @@ button:disabled {
 }
 .sidebar-item span {
   overflow: hidden;
+  opacity: 0;
+  white-space: nowrap;
+  transition: opacity 100ms ease 100ms;
+}
+
+.sidebar:hover .sidebar-item span {
+  opacity: 1;
+}
+
+.sidebar-status span,
+.sidebar-logo {
+  overflow: hidden;
+  opacity: 0;
+  white-space: nowrap;
+  transition: opacity 100ms ease 100ms;
+}
+
+.sidebar:hover .sidebar-status span,
+.sidebar:hover .sidebar-logo {
+  opacity: 1;
 }
 
 .sidebar-footer {
