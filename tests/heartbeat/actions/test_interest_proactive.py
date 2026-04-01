@@ -95,15 +95,16 @@ class TestInterestProactiveAction:
             await InterestProactiveAction().execute(make_ctx(silence_hours=1.0), mock_brain, mock_send_fn)
         mock_send_fn.assert_not_called()
 
-    async def test_uses_heartbeat_purpose(self, mock_brain, mock_send_fn):
+    async def test_uses_heartbeat_slot(self, mock_brain, mock_send_fn):
         results = [{"title": "Python 文章", "url": "https://example.com/python", "snippet": "最新趋势"}]
         with patch("src.heartbeat.actions.interest_proactive.load_prompt", return_value="{topic}\n{search_results}\n{user_facts_summary}"), \
              patch("src.heartbeat.actions.interest_proactive.web_search.search", AsyncMock(return_value=results)):
             await InterestProactiveAction().execute(make_ctx(), mock_brain, mock_send_fn)
-        assert mock_brain.router.complete.call_args.kwargs["purpose"] == "heartbeat"
+        assert mock_brain.router.complete.call_args.kwargs["slot"] == "heartbeat_proactive"
 
-    async def test_sanitizes_thinking_tags_before_send_and_store(self, mock_brain, mock_send_fn):
-        mock_brain.router.complete = AsyncMock(return_value="<think>内部</think>这条给你")
+    async def test_forwards_clean_router_output(self, mock_brain, mock_send_fn):
+        # Router strips thinking tags internally; action just forwards clean content.
+        mock_brain.router.complete = AsyncMock(return_value="这条给你")
         results = [{"title": "Python 文章", "url": "https://example.com/python", "snippet": "最新趋势"}]
 
         with patch("src.heartbeat.actions.interest_proactive.load_prompt", return_value="{topic}\n{search_results}\n{user_facts_summary}"), \

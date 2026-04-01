@@ -6,7 +6,6 @@ from datetime import datetime, timezone
 
 from config.settings import RULES_PATH
 from src.core.prompt_loader import load_prompt
-from src.core.reasoning_tags import strip_internal_thinking_tags
 
 logger = logging.getLogger("lapwing.tactical_rules")
 
@@ -58,7 +57,7 @@ class TacticalRules:
                 session_key="system:tactical_rules",
                 origin="core.tactical_rules.analyze",
             )
-            result = strip_internal_thinking_tags(result).strip()
+            result = result.strip()
             if not result or result == "（无）" or "不是纠正" in result:
                 return None
             return result

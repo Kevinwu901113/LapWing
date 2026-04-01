@@ -98,7 +98,7 @@ class ConstitutionGuard:
                 result_tool_name="constitution_verdict",
                 result_tool_description="提交宪法校验结果",
                 slot="persona_expression",
-                max_tokens=512,
+                max_tokens=1536,  # 从 512 提高，防止 thinking 截断
                 session_key="system:constitution_guard",
                 origin="core.constitution_guard",
             )

@@ -589,6 +589,106 @@ class TestLLMRouterTools:
             }
 
 
+@pytest.mark.asyncio
+class TestCompleteStructuredSlot:
+    """验证 complete_structured 的 slot 参数正确路由。"""
+
+    async def test_complete_structured_slot_routes_to_correct_model(self):
+        """complete_structured(slot=...) 应使用 slot 对应的模型，而非 purpose 默认模型。"""
+        with patch.dict("os.environ", {
+            "LLM_API_KEY": "generic-key",
+            "LLM_BASE_URL": "https://generic.api.com/v1",
+            "LLM_MODEL": "glm-4-flash",
+        }, clear=True):
+            from src.core.llm_router import LLMRouter
+
+            router = LLMRouter()
+
+            tool_call = MagicMock()
+            tool_call.id = "call_1"
+            tool_call.function.name = "submit_result"
+            tool_call.function.arguments = '{"approved": true, "violations": []}'
+
+            message = MagicMock()
+            message.content = ""
+            message.tool_calls = [tool_call]
+
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock(message=message)]
+
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+            # persona_expression maps to "chat" purpose
+            router._clients["persona_expression"] = mock_client
+            router._api_types["persona_expression"] = "openai"
+            router._base_urls["persona_expression"] = "https://generic.api.com/v1"
+
+            schema = {
+                "type": "object",
+                "properties": {
+                    "approved": {"type": "boolean"},
+                    "violations": {"type": "array", "items": {"type": "string"}},
+                },
+                "required": ["approved", "violations"],
+            }
+
+            result = await router.complete_structured(
+                [{"role": "user", "content": "检查宪法"}],
+                result_schema=schema,
+                result_tool_name="submit_result",
+                slot="persona_expression",
+                max_tokens=512,
+                session_key="system:test",
+                origin="test",
+            )
+
+            assert result == {"approved": True, "violations": []}
+            mock_client.chat.completions.create.assert_called_once()
+
+    async def test_complete_structured_without_slot_falls_back_to_purpose(self):
+        """不传 slot 时应回退到 purpose 路由（向后兼容）。"""
+        with patch.dict("os.environ", {
+            "LLM_API_KEY": "generic-key",
+            "LLM_BASE_URL": "https://generic.api.com/v1",
+            "LLM_MODEL": "glm-4-flash",
+        }, clear=True):
+            from src.core.llm_router import LLMRouter
+
+            router = LLMRouter()
+
+            tool_call = MagicMock()
+            tool_call.id = "call_1"
+            tool_call.function.name = "submit_result"
+            tool_call.function.arguments = '{"result": "ok"}'
+
+            message = MagicMock()
+            message.content = ""
+            message.tool_calls = [tool_call]
+
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock(message=message)]
+
+            mock_client = MagicMock()
+            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
+
+            router._clients["chat"] = mock_client
+            router._api_types["chat"] = "openai"
+            router._base_urls["chat"] = "https://generic.api.com/v1"
+
+            result = await router.complete_structured(
+                [{"role": "user", "content": "test"}],
+                result_schema={"type": "object", "properties": {"result": {"type": "string"}}},
+                result_tool_name="submit_result",
+                # no slot= passed
+                purpose="chat",
+                max_tokens=256,
+            )
+
+            assert result == {"result": "ok"}
+            mock_client.chat.completions.create.assert_called_once()
+
+
 class _FakeAuthManager:
     def __init__(self, candidates):
         self._candidates = list(candidates)
@@ -599,6 +699,7 @@ class _FakeAuthManager:
         self,
         *,
         purpose,
+        slot=None,
         session_key=None,
         allow_failover=True,
         exclude_profiles=None,
@@ -634,6 +735,7 @@ class _FakeAuthManagerByPurpose(_FakeAuthManager):
         self,
         *,
         purpose,
+        slot=None,
         session_key=None,
         allow_failover=True,
         exclude_profiles=None,

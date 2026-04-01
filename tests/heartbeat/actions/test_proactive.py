@@ -53,12 +53,13 @@ class TestProactiveMessageAction:
             "c1", "assistant", "你好，好久不见，最近怎么样？"
         )
 
-    async def test_uses_heartbeat_purpose(self, ctx, mock_brain, mock_send_fn):
+    async def test_uses_heartbeat_slot(self, ctx, mock_brain, mock_send_fn):
         await ProactiveMessageAction().execute(ctx, mock_brain, mock_send_fn)
-        assert mock_brain.router.complete.call_args.kwargs.get("purpose") == "heartbeat"
+        assert mock_brain.router.complete.call_args.kwargs.get("slot") == "heartbeat_proactive"
 
-    async def test_sanitizes_thinking_tags_before_send_and_store(self, ctx, mock_brain, mock_send_fn):
-        mock_brain.router.complete = AsyncMock(return_value="<think>内部</think>你好")
+    async def test_forwards_clean_router_output(self, ctx, mock_brain, mock_send_fn):
+        # Router strips thinking tags internally; action just forwards clean content.
+        mock_brain.router.complete = AsyncMock(return_value="你好")
 
         await ProactiveMessageAction().execute(ctx, mock_brain, mock_send_fn)
 
@@ -169,7 +170,8 @@ class TestReminderDispatchAction:
 
         mock_send_fn.assert_awaited_once_with("提醒你：喝水")
 
-    async def test_reminder_sanitizes_model_message(self, minute_ctx, mock_brain, mock_send_fn):
+    async def test_reminder_forwards_clean_router_output(self, minute_ctx, mock_brain, mock_send_fn):
+        # Router strips thinking tags internally; action just forwards clean content.
         mock_brain.memory.get_due_reminders = AsyncMock(return_value=[
             {
                 "id": 101,
@@ -185,7 +187,7 @@ class TestReminderDispatchAction:
                 "cancelled_at": None,
             }
         ])
-        mock_brain.router.complete = AsyncMock(return_value="<think>内部</think>提醒你去散步")
+        mock_brain.router.complete = AsyncMock(return_value="提醒你去散步")
 
         await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_send_fn)
 

@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable
 
 from src.auth.service import AuthManager
 from src.core.openai_codex_runtime import OpenAICodexRuntime
+from src.core.reasoning_tags import strip_internal_thinking_tags
 from config.settings import (
     LLM_BASE_URL,
     LLM_MODEL,
@@ -166,7 +167,11 @@ def _extract_json_from_text(text: str) -> dict[str, Any]:
     import re as _re
 
     # 1. 剥离 <think>...</think> 推理块
-    cleaned = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
+    # 1a. 剥离完整的 <think>...</think> 块
+    cleaned = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL)
+    # 1b. 处理未闭合的 <think>（被 max_tokens 截断的情况）
+    cleaned = _re.sub(r"<think>.*$", "", cleaned, flags=_re.DOTALL)
+    cleaned = cleaned.strip()
     # 2. 剥离 markdown code fence
     cleaned = _re.sub(r"^```(?:json)?\s*", "", cleaned, flags=_re.MULTILINE)
     cleaned = _re.sub(r"\s*```$", "", cleaned, flags=_re.MULTILINE).strip()
@@ -967,7 +972,29 @@ class LLMRouter:
             response = await client.chat.completions.create(**request_kwargs)
             if not response.choices:
                 return ""
-            return response.choices[0].message.content or ""
+            content = response.choices[0].message.content or ""
+            stripped = strip_internal_thinking_tags(content)
+            if not stripped and "<think" in content.lower():
+                # 模型把所有 tokens 花在思考上，注入反思考指令并重试
+                retry_max_tokens = max(max_tokens * 3, 1024)
+                logger.info(
+                    "[%s] 响应仅含 thinking 内容，自动重试 max_tokens=%d→%d",
+                    effective_key, max_tokens, retry_max_tokens,
+                )
+                retry_kwargs = {
+                    "model": model,
+                    "max_tokens": retry_max_tokens,
+                    "messages": [
+                        {"role": "system", "content": "不要使用 <think> 标签，直接输出最终内容。"},
+                        *messages,
+                    ],
+                }
+                retry_kwargs = self._normalize_minimax_openai_request(effective_key, retry_kwargs)
+                retry_response = await client.chat.completions.create(**retry_kwargs)
+                if retry_response.choices:
+                    content = retry_response.choices[0].message.content or ""
+                    stripped = strip_internal_thinking_tags(content)
+            return stripped
 
         return await self._with_routing_retry(
             purpose=auth_purpose,
@@ -1128,6 +1155,7 @@ class LLMRouter:
         result_tool_name: str = "submit_result",
         result_tool_description: str = "提交结构化结果",
         purpose: str = "chat",
+        slot: str | None = None,
         max_tokens: int = 1024,
         session_key: str | None = None,
         allow_failover: bool = True,
@@ -1151,6 +1179,9 @@ class LLMRouter:
         Raises:
             ValueError: 模型未返回 tool call 或解析失败
         """
+        effective_key = slot or purpose
+        auth_purpose = _SLOT_TO_PURPOSE.get(effective_key, effective_key)
+
         tool_def = {
             "type": "function",
             "function": {
@@ -1163,7 +1194,8 @@ class LLMRouter:
         return await self._complete_structured_inner(
             messages=messages,
             tool_def=tool_def,
-            purpose=purpose,
+            purpose=auth_purpose,
+            routing_key=effective_key if effective_key != auth_purpose else None,
             max_tokens=max_tokens,
             session_key=session_key,
             allow_failover=allow_failover,
@@ -1177,11 +1209,13 @@ class LLMRouter:
         purpose: str,
         max_tokens: int,
         *,
+        routing_key: str | None = None,
         session_key: str | None = None,
         allow_failover: bool = True,
         origin: str | None = None,
     ) -> dict[str, Any]:
         """内部实现：forced tool call 并提取 arguments。"""
+        effective_key = routing_key or purpose
 
         async def _runner(candidate, client, model, api_type):
             tool_name = tool_def["function"]["name"]
@@ -1205,7 +1239,7 @@ class LLMRouter:
                 return tool_calls[0].arguments
 
             if api_type == "openai_codex":
-                account_id = self._ensure_openai_codex_candidate(candidate, purpose=purpose)
+                account_id = self._ensure_openai_codex_candidate(candidate, purpose=effective_key)
                 turn = await self._codex_runtime.complete(
                     model=model,
                     messages=messages,
@@ -1218,17 +1252,30 @@ class LLMRouter:
                 return turn.tool_calls[0].arguments
 
             # OpenAI-compatible (MiniMax, GLM, etc.)
+
+            # MiniMax 会 pop tool_choice，模型可能不走 tool call。
+            # 注入指令抑制 <think> 输出、强制 JSON 格式。
+            structured_messages = list(messages)  # 浅拷贝
+            if self._is_minimax_openai(effective_key):
+                anti_think = (
+                    "重要：不要使用 <think> 标签。不要输出任何思考过程。"
+                    "如果无法调用工具，直接输出纯 JSON，不要有任何其他文字。"
+                )
+                structured_messages.insert(0, {"role": "system", "content": anti_think})
+
             request_kwargs = {
                 "model": model,
                 "max_tokens": max_tokens,
-                "messages": messages,
+                "messages": structured_messages,
                 "tools": _normalize_openai_tools([tool_def]),
                 "tool_choice": {
                     "type": "function",
                     "function": {"name": tool_name},
                 },
             }
-            request_kwargs = self._normalize_minimax_openai_request(purpose, request_kwargs)
+            if self._is_minimax_openai(effective_key):
+                request_kwargs["response_format"] = {"type": "json_object"}
+            request_kwargs = self._normalize_minimax_openai_request(effective_key, request_kwargs)
             response = await client.chat.completions.create(**request_kwargs)
 
             if not response.choices:
@@ -1248,6 +1295,7 @@ class LLMRouter:
 
         return await self._with_routing_retry(
             purpose=purpose,
+            routing_key=routing_key,
             session_key=session_key,
             allow_failover=allow_failover,
             origin=origin,
@@ -1256,24 +1304,26 @@ class LLMRouter:
 
     def build_tool_result_message(
         self,
-        purpose: str,
         tool_results: list[tuple[ToolCallRequest, str]],
         *,
+        purpose: str = "chat",
+        slot: str | None = None,
         session_key: str | None = None,
     ) -> dict[str, Any] | list[dict[str, Any]]:
         """根据 provider 生成下一轮 continuation message。"""
         if not tool_results:
             raise ValueError("tool_results 不能为空")
 
+        effective_key = slot or purpose
         effective_model = self._effective_model_for_purpose(
-            purpose,
+            effective_key,
             session_key=session_key,
         )
-        base_url = self._base_urls.get(purpose, LLM_BASE_URL)
-        if session_key and self._session_model_overrides.get((session_key, purpose)):
+        base_url = self._base_urls.get(effective_key, LLM_BASE_URL)
+        if session_key and self._session_model_overrides.get((session_key, effective_key)):
             api_type = _detect_api_type(base_url, effective_model)
         else:
-            api_type = self._api_types.get(purpose, _detect_api_type(base_url, effective_model))
+            api_type = self._api_types.get(effective_key, _detect_api_type(base_url, effective_model))
 
         if api_type == "anthropic":
             return {
