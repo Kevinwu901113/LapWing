@@ -69,6 +69,7 @@ export default function MemoryPage() {
   // Load per-chat data when chatId changes
   useEffect(() => {
     if (!chatId) return;
+    setPage(1);
     void getMemory(chatId).then((r) => setMemories(r.items));
     void getInterests(chatId).then((r) => setInterests(r.items));
   }, [chatId]);
@@ -95,6 +96,20 @@ export default function MemoryPage() {
     });
   }, [memories, search]);
 
+  // Normalized interests for the interests tab
+  const normalizedInterests = useMemo(() => {
+    const weights = interests.map((i) => i.weight);
+    const minW = Math.min(...weights);
+    const maxW = Math.max(...weights);
+    const range = maxW - minW || 1;
+    return interests.map((item) => {
+      const normalized = (item.weight - minW) / range;
+      const size = 12 + normalized * 10;
+      const opacity = 0.5 + normalized * 0.5;
+      return { topic: item.topic, weight: item.weight, size, opacity };
+    });
+  }, [interests]);
+
   const totalPages = Math.max(1, Math.ceil(filteredMemories.length / PAGE_SIZE));
   const pagedMemories = filteredMemories.slice(
     (page - 1) * PAGE_SIZE,
@@ -108,15 +123,23 @@ export default function MemoryPage() {
   }
 
   async function handleSaveKevin() {
-    await updatePersonaFile("kevin", kevinContent);
-    setKevinSaved(true);
-    setTimeout(() => setKevinSaved(false), 2000);
+    try {
+      await updatePersonaFile("kevin", kevinContent);
+      setKevinSaved(true);
+      setTimeout(() => setKevinSaved(false), 2000);
+    } catch (err) {
+      console.error("Failed to save kevin file:", err);
+    }
   }
 
   async function handleSaveSelf() {
-    await updatePersonaFile("self", selfContent);
-    setSelfSaved(true);
-    setTimeout(() => setSelfSaved(false), 2000);
+    try {
+      await updatePersonaFile("self", selfContent);
+      setSelfSaved(true);
+      setTimeout(() => setSelfSaved(false), 2000);
+    } catch (err) {
+      console.error("Failed to save self file:", err);
+    }
   }
 
   async function handleDeleteKnowledge(topic: string) {
@@ -294,36 +317,25 @@ export default function MemoryPage() {
                   padding: "16px 0",
                 }}
               >
-                {(() => {
-                  const weights = interests.map((i) => i.weight);
-                  const minW = Math.min(...weights);
-                  const maxW = Math.max(...weights);
-                  const range = maxW - minW || 1;
-                  return interests.map((item) => {
-                    const normalized = (item.weight - minW) / range;
-                    const size = 12 + normalized * 10;
-                    const opacity = 0.5 + normalized * 0.5;
-                    return (
-                      <div
-                        key={item.topic}
-                        title={`${item.topic} (权重: ${item.weight.toFixed(2)})`}
-                        style={{
-                          padding: "6px 12px",
-                          borderRadius: 99,
-                          background: "var(--accent-dim)",
-                          border: "1px solid var(--accent-border)",
-                          color: "var(--accent)",
-                          fontSize: size,
-                          opacity,
-                          cursor: "default",
-                          userSelect: "none",
-                        }}
-                      >
-                        {item.topic}
-                      </div>
-                    );
-                  });
-                })()}
+                {normalizedInterests.map((item) => (
+                  <div
+                    key={item.topic}
+                    title={`${item.topic} (权重: ${item.weight.toFixed(2)})`}
+                    style={{
+                      padding: "6px 12px",
+                      borderRadius: 99,
+                      background: "var(--accent-dim)",
+                      border: "1px solid var(--accent-border)",
+                      color: "var(--accent)",
+                      fontSize: item.size,
+                      opacity: item.opacity,
+                      cursor: "default",
+                      userSelect: "none",
+                    }}
+                  >
+                    {item.topic}
+                  </div>
+                ))}
               </div>
             )}
           </div>
@@ -445,9 +457,13 @@ export default function MemoryPage() {
                         <span
                           style={{ fontSize: 11, color: "var(--text-muted)" }}
                         >
-                          {new Date(note.updated_at).toLocaleDateString(
-                            "zh-CN",
-                          )}
+                          {(() => {
+                            if (!note.updated_at) return "";
+                            const d = new Date(note.updated_at);
+                            return isNaN(d.getTime())
+                              ? ""
+                              : d.toLocaleDateString("zh-CN");
+                          })()}
                         </span>
                         <button
                           className="btn-icon"
