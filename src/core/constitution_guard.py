@@ -97,7 +97,7 @@ class ConstitutionGuard:
                 result_schema=_CONSTITUTION_CHECK_SCHEMA,
                 result_tool_name="constitution_verdict",
                 result_tool_description="提交宪法校验结果",
-                purpose="chat",
+                slot="persona_expression",
                 max_tokens=512,
                 session_key="system:constitution_guard",
                 origin="core.constitution_guard",

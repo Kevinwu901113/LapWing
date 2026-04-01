@@ -29,6 +29,22 @@ _MINIMAX_DEFAULT_TEMPERATURE = 1.0
 _MINIMAX_DEFAULT_TOP_P = 0.95
 _MODEL_PURPOSES: tuple[str, ...] = ("chat", "tool", "heartbeat")
 
+# Mapping from new slot names to legacy purposes (for AuthManager)
+_PURPOSE_TO_DEFAULT_SLOT: dict[str, str] = {
+    "chat": "main_conversation",
+    "tool": "agent_execution",
+    "heartbeat": "heartbeat_proactive",
+}
+_SLOT_TO_PURPOSE: dict[str, str] = {
+    "main_conversation": "chat",
+    "persona_expression": "chat",
+    "self_reflection": "chat",
+    "lightweight_judgment": "tool",
+    "memory_processing": "tool",
+    "agent_execution": "tool",
+    "heartbeat_proactive": "heartbeat",
+}
+
 
 @dataclass
 class ToolCallRequest:
@@ -367,8 +383,13 @@ def _extract_anthropic_tool_calls(response: Any) -> list[ToolCallRequest]:
 class LLMRouter:
     """按 purpose 路由到对应 LLM client。"""
 
-    def __init__(self, auth_manager: AuthManager | None = None) -> None:
+    def __init__(
+        self,
+        auth_manager: AuthManager | None = None,
+        model_config=None,
+    ) -> None:
         self._auth_manager = auth_manager or AuthManager()
+        self._model_config = model_config
         self._codex_runtime = OpenAICodexRuntime()
         self._clients: dict[str, Any] = {}
         self._models: dict[str, str] = {}
@@ -378,10 +399,61 @@ class LLMRouter:
         self._model_options: list[ModelOption] = []
         self._model_options_by_ref: dict[str, ModelOption] = {}
         self._model_options_by_alias: dict[str, ModelOption] = {}
-        self._setup_clients()
+        self._setup_routing()
         self._setup_model_options()
 
-    def _setup_clients(self) -> None:
+    def _setup_routing(self) -> None:
+        """Load routing config from ModelConfigManager or fall back to .env."""
+        if self._model_config is None:
+            self._setup_clients_legacy()
+            return
+
+        from src.core.model_config import SLOT_DEFINITIONS
+
+        for slot_id in SLOT_DEFINITIONS:
+            resolved = self._model_config.resolve_slot(slot_id)
+            if resolved is None:
+                logger.warning(f"Slot '{slot_id}' not configured, will use fallback")
+                continue
+
+            base_url, model, api_key, api_type = resolved
+            self._base_urls[slot_id] = base_url
+            self._models[slot_id] = model
+            self._api_types[slot_id] = api_type
+            self._clients.setdefault(slot_id, None)
+            logger.info(
+                f"[{slot_id}] 已注册模型路由: "
+                f"{model} ({base_url[:40]}..., {api_type})"
+            )
+            # Push slot config to AuthManager for per-slot credential resolution
+            auth_purpose = _SLOT_TO_PURPOSE.get(slot_id, "chat")
+            self._auth_manager.register_slot_config(
+                slot_id,
+                auth_purpose,
+                base_url=base_url,
+                model=model,
+                api_type=api_type,
+                api_key=api_key,
+            )
+
+        # Register legacy purpose keys for backward compatibility
+        for purpose, default_slot in _PURPOSE_TO_DEFAULT_SLOT.items():
+            if purpose not in self._models and default_slot in self._models:
+                self._models[purpose] = self._models[default_slot]
+                self._base_urls[purpose] = self._base_urls[default_slot]
+                self._api_types[purpose] = self._api_types[default_slot]
+                self._clients.setdefault(purpose, None)
+
+    def reload_routing(self) -> None:
+        """Hot-reload routing config. Call after frontend saves new config."""
+        self._clients.clear()
+        self._models.clear()
+        self._api_types.clear()
+        self._base_urls.clear()
+        self._setup_routing()
+        logger.info("Model routing reloaded")
+
+    def _setup_clients_legacy(self) -> None:
         """记录各 purpose 的基础路由配置；credential 改由 auth_manager 按请求解析。"""
         if not LLM_BASE_URL or not LLM_MODEL:
             raise ValueError(
@@ -599,16 +671,16 @@ class LLMRouter:
 
     def _resolve_client(
         self,
-        purpose: str,
+        routing_key: str,
         auth_value: str | None = None,
         *,
         model_override: str | None = None,
     ) -> tuple[Any, str, str]:
-        client_override = self._clients.get(purpose)
-        model = model_override or self._models.get(purpose, LLM_MODEL)
-        base_url = self._base_urls.get(purpose, LLM_BASE_URL)
+        client_override = self._clients.get(routing_key)
+        model = model_override or self._models.get(routing_key, LLM_MODEL)
+        base_url = self._base_urls.get(routing_key, LLM_BASE_URL)
         if model_override is None:
-            api_type = self._api_types.get(purpose, _detect_api_type(base_url, model))
+            api_type = self._api_types.get(routing_key, _detect_api_type(base_url, model))
         else:
             api_type = _detect_api_type(base_url, model)
 
@@ -616,7 +688,7 @@ class LLMRouter:
             return client_override, model, api_type
 
         if not auth_value:
-            raise ValueError(f"[{purpose}] 当前请求没有可用 credential。")
+            raise ValueError(f"[{routing_key}] 当前请求没有可用 credential。")
 
         if api_type == "openai_codex":
             raise RuntimeError("openai-codex 模型不应走 OpenAI SDK client 分支。")
@@ -633,20 +705,20 @@ class LLMRouter:
             )
         return client, model, api_type
 
-    def _is_minimax_openai(self, purpose: str) -> bool:
+    def _is_minimax_openai(self, routing_key: str) -> bool:
         api_type = self._api_types.get(
-            purpose,
-            _detect_api_type(LLM_BASE_URL, self._models.get(purpose, LLM_MODEL)),
+            routing_key,
+            _detect_api_type(LLM_BASE_URL, self._models.get(routing_key, LLM_MODEL)),
         )
-        base_url = self._base_urls.get(purpose, LLM_BASE_URL)
+        base_url = self._base_urls.get(routing_key, LLM_BASE_URL)
         return api_type == "openai" and _is_minimax_base_url(base_url)
 
     def _normalize_minimax_openai_request(
         self,
-        purpose: str,
+        routing_key: str,
         request_kwargs: dict[str, Any],
     ) -> dict[str, Any]:
-        if not self._is_minimax_openai(purpose):
+        if not self._is_minimax_openai(routing_key):
             return request_kwargs
 
         normalized = dict(request_kwargs)
@@ -725,23 +797,30 @@ class LLMRouter:
         self,
         *,
         purpose: str,
+        routing_key: str | None = None,
         session_key: str | None,
         allow_failover: bool,
         origin: str | None,
         runner: Callable[[Any, Any, str, str], Awaitable[Any]],
     ) -> Any:
+        # routing_key is used for dict lookups (slot name or purpose)
+        # purpose is used for AuthManager (must be chat/tool/heartbeat)
+        effective_key = routing_key or purpose
         excluded_profiles: set[str] = set()
         last_exc: Exception | None = None
-        session_model_override = (
-            self._session_model_overrides.get((session_key, purpose))
-            if session_key
-            else None
-        )
-        client_override = self._clients.get(purpose)
+        # Check both slot-specific and purpose-level overrides
+        session_model_override = None
+        if session_key:
+            session_model_override = (
+                self._session_model_overrides.get((session_key, effective_key))
+                or self._session_model_overrides.get((session_key, purpose))
+            )
+        client_override = self._clients.get(effective_key)
 
         while True:
             candidates = self._auth_manager.resolve_candidates(
                 purpose=purpose,
+                slot=effective_key if effective_key != purpose else None,
                 session_key=session_key,
                 allow_failover=allow_failover,
                 exclude_profiles=excluded_profiles,
@@ -750,7 +829,7 @@ class LLMRouter:
             if not candidates:
                 if last_exc is not None:
                     raise last_exc
-                raise RuntimeError(f"[{purpose}] 没有可用的 auth candidate。")
+                raise RuntimeError(f"[{effective_key}] 没有可用的 auth candidate。")
 
             for candidate in candidates:
                 refresh_attempted = False
@@ -765,7 +844,7 @@ class LLMRouter:
                             model_for_attempt = candidate_model
                             use_model_override = True
                         else:
-                            model_for_attempt = self._models.get(purpose, LLM_MODEL)
+                            model_for_attempt = self._models.get(effective_key, LLM_MODEL)
                             use_model_override = False
 
                         resolved_codex_model = _extract_openai_codex_model(model_for_attempt)
@@ -775,7 +854,7 @@ class LLMRouter:
                             api_type = "openai_codex"
                         else:
                             client, model, api_type = self._resolve_client(
-                                purpose,
+                                effective_key,
                                 auth_value=current_candidate.auth_value,
                                 model_override=model_for_attempt if use_model_override else None,
                             )
@@ -829,14 +908,18 @@ class LLMRouter:
         purpose: str = "chat",
         max_tokens: int = 1024,
         *,
+        slot: str | None = None,
         session_key: str | None = None,
         allow_failover: bool = True,
         origin: str | None = None,
     ) -> str:
-        """向对应 purpose 的模型发送请求，返回回复文本。"""
+        """向对应 purpose/slot 的模型发送请求，返回回复文本。"""
+        effective_key = slot or purpose
+        auth_purpose = _SLOT_TO_PURPOSE.get(effective_key, effective_key)
+
         async def _runner(candidate, client, model, api_type):
             if api_type == "openai_codex":
-                account_id = self._ensure_openai_codex_candidate(candidate, purpose=purpose)
+                account_id = self._ensure_openai_codex_candidate(candidate, purpose=effective_key)
                 turn = await self._codex_runtime.complete(
                     model=model,
                     messages=messages,
@@ -865,7 +948,7 @@ class LLMRouter:
                     retry_max_tokens = max(max_tokens * 4, 512)
                     if retry_max_tokens > max_tokens:
                         logger.info(
-                            f"[{purpose}] Anthropic 响应仅返回 thinking，"
+                            f"[{effective_key}] Anthropic 响应仅返回 thinking，"
                             f"自动重试并提升 max_tokens 到 {retry_max_tokens}"
                         )
                         retry_kwargs = dict(request_kwargs)
@@ -880,25 +963,26 @@ class LLMRouter:
                 "max_tokens": max_tokens,
                 "messages": messages,
             }
-            request_kwargs = self._normalize_minimax_openai_request(purpose, request_kwargs)
+            request_kwargs = self._normalize_minimax_openai_request(effective_key, request_kwargs)
             response = await client.chat.completions.create(**request_kwargs)
             if not response.choices:
                 return ""
             return response.choices[0].message.content or ""
 
         return await self._with_routing_retry(
-            purpose=purpose,
+            purpose=auth_purpose,
+            routing_key=effective_key if effective_key != auth_purpose else None,
             session_key=session_key,
             allow_failover=allow_failover,
             origin=origin,
             runner=_runner,
         )
 
-    async def query_lightweight(self, system: str, user: str) -> str:
+    async def query_lightweight(self, system: str, user: str, *, slot: str | None = None) -> str:
         """用轻量模型做简单任务（分类、提取、判断）。
 
         使用较低 max_tokens（1000），不需要 tool calling。
-        路由到 chat purpose（通常是最快的模型），温度由底层模型路由决定。
+        slot 参数可指定具体 slot（如 "memory_processing"），不传则用默认路径。
         """
         messages = [
             {"role": "system", "content": system},
@@ -908,6 +992,7 @@ class LLMRouter:
             messages,
             purpose="chat",
             max_tokens=1000,
+            slot=slot,
             origin="query_lightweight",
         )
 
@@ -918,14 +1003,18 @@ class LLMRouter:
         purpose: str = "chat",
         max_tokens: int = 1024,
         *,
+        slot: str | None = None,
         session_key: str | None = None,
         allow_failover: bool = True,
         origin: str | None = None,
     ) -> ToolTurnResult:
         """向模型发送支持工具的一轮请求，并统一返回 tool call 结构。"""
+        effective_key = slot or purpose
+        auth_purpose = _SLOT_TO_PURPOSE.get(effective_key, effective_key)
+
         async def _runner(candidate, client, model, api_type):
             if api_type == "openai_codex":
-                account_id = self._ensure_openai_codex_candidate(candidate, purpose=purpose)
+                account_id = self._ensure_openai_codex_candidate(candidate, purpose=effective_key)
                 turn = await self._codex_runtime.complete(
                     model=model,
                     messages=messages,
@@ -1002,7 +1091,7 @@ class LLMRouter:
                 "tool_choice": "auto",
                 "parallel_tool_calls": False,
             }
-            request_kwargs = self._normalize_minimax_openai_request(purpose, request_kwargs)
+            request_kwargs = self._normalize_minimax_openai_request(effective_key, request_kwargs)
             response = await client.chat.completions.create(**request_kwargs)
             if not response.choices:
                 return ToolTurnResult(text="", tool_calls=[], continuation_message=None)
@@ -1023,7 +1112,8 @@ class LLMRouter:
             )
 
         return await self._with_routing_retry(
-            purpose=purpose,
+            purpose=auth_purpose,
+            routing_key=effective_key if effective_key != auth_purpose else None,
             session_key=session_key,
             allow_failover=allow_failover,
             origin=origin,

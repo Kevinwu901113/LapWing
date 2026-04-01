@@ -288,7 +288,7 @@ class TaskRuntime:
             await _emit_status("stage:planning")
             reply = await self._router.complete(
                 messages,
-                purpose="chat",
+                slot="main_conversation",
                 session_key=f"chat:{chat_id}",
                 origin="task_runtime.chat",
             )
@@ -327,7 +327,7 @@ class TaskRuntime:
             turn = await self._router.complete_with_tools(
                 self._with_shell_state_context(messages, state),
                 tools=tools,
-                purpose="chat",
+                slot="main_conversation",
                 session_key=f"chat:{chat_id}",
                 origin="task_runtime.chat",
             )
@@ -591,7 +591,7 @@ class TaskRuntime:
                     break
 
             result_message = self._router.build_tool_result_message(
-                purpose="chat",
+                slot="main_conversation",
                 tool_results=tool_results,
                 session_key=f"chat:{chat_id}",
             )

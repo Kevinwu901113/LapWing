@@ -387,7 +387,7 @@ class ExperienceSkillManager:
                 result_schema=_SKILL_MATCH_SCHEMA,
                 result_tool_name="skill_match",
                 result_tool_description="提交匹配的技能 ID 列表",
-                purpose="tool",
+                slot="lightweight_judgment",
             )
         except Exception as exc:
             logger.warning("Level 2 技能匹配 LLM 调用失败: %s", exc)

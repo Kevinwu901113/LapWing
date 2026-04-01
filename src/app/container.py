@@ -51,7 +51,9 @@ class AppContainer:
         self._db_path = db_path
         self._data_dir = data_dir
 
-        self.brain = brain or LapwingBrain(db_path=self._db_path)
+        from src.core.model_config import ModelConfigManager
+        _model_config = ModelConfigManager()
+        self.brain = brain or LapwingBrain(db_path=self._db_path, model_config=_model_config)
         self.task_view_store = task_view_store or TaskViewStore()
         self.latency_monitor = LatencyMonitor()
         self.event_bus = event_bus or DesktopEventBus()

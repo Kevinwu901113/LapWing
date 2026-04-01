@@ -76,7 +76,7 @@ class InterestTracker:
 
             response = await self._router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="memory_processing",
                 max_tokens=256,
                 session_key=f"chat:{chat_id}",
                 origin="memory.interest_tracker.extract",

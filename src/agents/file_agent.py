@@ -64,7 +64,7 @@ class FileAgent(BaseAgent):
         try:
             raw = await router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="agent_execution",
                 max_tokens=512,
                 session_key=f"chat:{task.chat_id}",
                 origin="agent.file.parse",

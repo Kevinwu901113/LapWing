@@ -217,7 +217,7 @@ class ProactiveRuntime:
                 result_schema=_HEARTBEAT_DECISION_SCHEMA,
                 result_tool_name="heartbeat_decision",
                 result_tool_description="提交心跳决策",
-                purpose="heartbeat",
+                slot="heartbeat_proactive",
                 max_tokens=256,
                 session_key=f"chat:{ctx.chat_id}",
                 origin=f"heartbeat.decision.{ctx.beat_type}",

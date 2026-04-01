@@ -39,7 +39,7 @@ class ProactiveMessageAction(HeartbeatAction):
 
             reply = await brain.router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="heartbeat",
+                slot="heartbeat_proactive",
                 max_tokens=200,
                 session_key=f"chat:{ctx.chat_id}",
                 origin="heartbeat.proactive_message",
@@ -119,7 +119,7 @@ class ReminderDispatchAction(HeartbeatAction):
                 )
                 message = await brain.router.complete(
                     [{"role": "user", "content": prompt}],
-                    purpose="heartbeat",
+                    slot="heartbeat_proactive",
                     max_tokens=120,
                     session_key=f"chat:{ctx.chat_id}",
                     origin="heartbeat.reminder_dispatch",

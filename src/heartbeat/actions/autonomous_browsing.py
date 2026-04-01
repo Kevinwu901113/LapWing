@@ -79,7 +79,7 @@ class AutonomousBrowsingAction(HeartbeatAction):
             )
             summary = await brain.router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="heartbeat",
+                slot="heartbeat_proactive",
                 max_tokens=300,
                 session_key=f"chat:{ctx.chat_id}",
                 origin="heartbeat.autonomous_browsing",
@@ -173,7 +173,7 @@ class AutonomousBrowsingAction(HeartbeatAction):
             )
             result = await brain.router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="heartbeat",
+                slot="heartbeat_proactive",
                 max_tokens=50,
                 session_key=f"chat:{chat_id}",
                 origin="heartbeat.browsing.recent_topic",

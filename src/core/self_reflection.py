@@ -45,7 +45,7 @@ class SelfReflection:
         try:
             result = await self._router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="tool",
+                slot="self_reflection",
                 max_tokens=512,
                 session_key=f"chat:{chat_id}",
                 origin="core.self_reflection.daily",

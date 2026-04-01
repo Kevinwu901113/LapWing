@@ -153,7 +153,7 @@ class AgentDispatcher:
                 result_schema=_DISPATCH_DECISION_SCHEMA,
                 result_tool_name="dispatch_decision",
                 result_tool_description="决定将用户请求分派给哪个 agent",
-                purpose="tool",
+                slot="lightweight_judgment",
                 max_tokens=512,
                 session_key=f"chat:{chat_id}",
                 origin="core.dispatcher.classify",
@@ -217,7 +217,7 @@ class AgentDispatcher:
         ]
         result = await self._router.complete(
             messages,
-            purpose="chat",
+            slot="persona_expression",
             session_key=f"chat:{chat_id}",
             origin="core.dispatcher.persona_format",
         )

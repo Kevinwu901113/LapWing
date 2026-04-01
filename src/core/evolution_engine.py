@@ -95,7 +95,7 @@ class EvolutionEngine:
                 result_schema=_EVOLUTION_DIFF_SCHEMA,
                 result_tool_name="submit_evolution",
                 result_tool_description="提交人格进化 diff",
-                purpose="chat",
+                slot="persona_expression",
                 max_tokens=2048,
                 session_key="system:evolution_engine",
                 origin="core.evolution_engine",

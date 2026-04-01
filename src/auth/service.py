@@ -445,6 +445,37 @@ class AuthManager:
         self._session_pins: dict[tuple[str, str], str] = {}
         self._provider_mismatch_warnings: set[tuple[str, str, str, str]] = set()
         self._purpose_configs = self._build_purpose_configs()
+        # Slot-level config overrides (populated by LLMRouter._setup_routing)
+        self._slot_configs: dict[str, PurposeConfig] = {}
+        self._slot_api_keys: dict[str, str] = {}
+
+    def register_slot_config(
+        self,
+        slot_id: str,
+        purpose: str,
+        *,
+        base_url: str,
+        model: str,
+        api_type: str,
+        api_key: str | None = None,
+    ) -> None:
+        """Register a slot-level routing config.
+
+        Called by LLMRouter._setup_routing() so that each slot
+        (e.g. 'lightweight_judgment') can have its own provider/model
+        even when multiple slots share the same purpose ('tool').
+        """
+        inferred_provider = _infer_provider_from_route(base_url, model)
+        self._slot_configs[slot_id] = PurposeConfig(
+            purpose=purpose,
+            base_url=base_url,
+            model=model,
+            api_type=api_type,
+            source="model_routing_config",
+            provider=inferred_provider or None,
+        )
+        if api_key:
+            self._slot_api_keys[slot_id] = api_key
 
     def list_profiles(self, provider: str | None = None) -> list[dict[str, Any]]:
         return self.store.list_profiles(provider)
@@ -615,13 +646,18 @@ class AuthManager:
         self,
         *,
         purpose: str,
+        slot: str | None = None,
         session_key: str | None = None,
         allow_failover: bool = True,
         exclude_profiles: set[str] | None = None,
         origin: str | None = None,
     ) -> list[ResolvedAuthCandidate]:
         exclude_profiles = exclude_profiles or set()
-        purpose_config = self._purpose_configs[purpose]
+        # Use slot-level config if available (allows different providers per slot)
+        if slot and slot in self._slot_configs:
+            purpose_config = self._slot_configs[slot]
+        else:
+            purpose_config = self._purpose_configs[purpose]
         binding_purpose, binding_profile_id = self._resolve_binding(purpose)
         if binding_profile_id:
             store_data = self.store.read()
@@ -709,7 +745,7 @@ class AuthManager:
                 base_url=purpose_config.base_url,
                 model=purpose_config.model,
                 api_type=purpose_config.api_type,
-                auth_value=self._env_api_key_for_purpose(purpose),
+                auth_value=self._env_api_key_for_purpose(purpose, slot=slot),
                 auth_kind="env",
                 source="env_fallback",
                 session_key=session_key,
@@ -859,7 +895,12 @@ class AuthManager:
             provider=provider or None,
         )
 
-    def _env_api_key_for_purpose(self, purpose: str) -> str:
+    def _env_api_key_for_purpose(self, purpose: str, slot: str | None = None) -> str:
+        # Check slot-level api_key override first (from model_routing.json)
+        if slot:
+            slot_key = self._slot_api_keys.get(slot, "").strip()
+            if slot_key:
+                return slot_key
         mapping = {
             "chat": LLM_CHAT_API_KEY or LLM_API_KEY,
             "tool": LLM_TOOL_API_KEY or LLM_API_KEY,

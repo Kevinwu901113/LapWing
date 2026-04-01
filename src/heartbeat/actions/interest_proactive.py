@@ -54,7 +54,7 @@ class InterestProactiveAction(HeartbeatAction):
 
             message = await brain.router.complete(
                 [{"role": "user", "content": prompt}],
-                purpose="heartbeat",
+                slot="heartbeat_proactive",
                 max_tokens=300,
                 session_key=f"chat:{ctx.chat_id}",
                 origin="heartbeat.interest_proactive",
