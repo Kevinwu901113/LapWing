@@ -1,3 +1,5 @@
+/* Depends on tokens.css (imported via globals.css) */
+
 /* ---------- Main layout ---------- */
 .app-main {
   flex: 1;

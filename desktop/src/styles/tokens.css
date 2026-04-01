@@ -42,6 +42,10 @@
   /* Typography */
   --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
   --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+
+  /* Backward compat — remove when AppShell.tsx is rewritten in Step 2 */
+  --sidebar-width: var(--sidebar-expanded);
+  --sidebar-collapsed-width: var(--sidebar-collapsed);
 }
 
 /* Light mode override */
