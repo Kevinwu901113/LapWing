@@ -6,8 +6,8 @@
     "distDir": "../dist"
   },
   "package": {
-    "productName": "Lapwing Desktop",
-    "version": "0.1.0"
+    "productName": "Lapwing",
+    "version": "0.2.0"
   },
   "tauri": {
     "allowlist": {
@@ -20,6 +20,8 @@
         "title": "Lapwing Desktop",
         "width": 1280,
         "height": 880,
+        "minWidth": 1024,
+        "minHeight": 680,
         "resizable": true
       }
     ],
