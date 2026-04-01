@@ -1,4 +1,5 @@
 import { ChevronLeft, ChevronRight } from "lucide-react";
+import type { CSSProperties } from "react";
 
 type PaginationProps = {
   page: number;
@@ -24,7 +25,7 @@ function buildPageNumbers(page: number, totalPages: number): (number | "...")[] 
 export default function Pagination({ page, totalPages, onChange }: PaginationProps) {
   const pageNumbers = buildPageNumbers(page, totalPages);
 
-  const btnStyle = (active: boolean, disabled: boolean): React.CSSProperties => ({
+  const btnStyle = (active: boolean, disabled: boolean): CSSProperties => ({
     minWidth: 32,
     height: 32,
     padding: "0 6px",

@@ -572,7 +572,7 @@ export function deleteScheduledTask(id: string): Promise<{ success: boolean }> {
 }
 export function getRecentLogs(lines?: number, level?: string): Promise<LogLines> {
   const params = new URLSearchParams();
-  if (lines) params.set("lines", String(lines));
+  if (lines !== undefined) params.set("lines", String(lines));
   if (level) params.set("level", level);
   return fetchJson<LogLines>(`/api/logs/recent?${params}`);
 }

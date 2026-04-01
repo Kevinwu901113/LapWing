@@ -1,10 +1,5 @@
 import { CheckCircle2, XCircle, Loader2 } from "lucide-react";
-
-type ToolCallInfo = {
-  name: string;
-  status: "running" | "done" | "error";
-  duration_ms?: number;
-};
+import type { ToolCallInfo } from "../api";
 
 type ChatBubbleProps = {
   role: "user" | "assistant" | "system";

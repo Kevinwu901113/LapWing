@@ -1,3 +1,4 @@
+import { useId } from "react";
 import {
   AreaChart as RechartsAreaChart,
   Area,
@@ -42,7 +43,8 @@ export default function AreaChart({
   height = 120,
   label,
 }: AreaChartProps) {
-  const gradientId = "area-gradient";
+  const uid = useId();
+  const gradientId = `area-gradient-${uid}`;
 
   return (
     <div>
@@ -62,11 +64,11 @@ export default function AreaChart({
           <CartesianGrid stroke="rgba(255,255,255,0.05)" vertical={false} />
           <XAxis
             dataKey="name"
-            tick={{ fontSize: 11, fill: "#6b7084" }}
+            tick={{ fontSize: 11, fill: "var(--text-muted)" }}
             axisLine={false}
             tickLine={false}
           />
-          <YAxis tick={{ fontSize: 11, fill: "#6b7084" }} axisLine={false} tickLine={false} />
+          <YAxis tick={{ fontSize: 11, fill: "var(--text-muted)" }} axisLine={false} tickLine={false} />
           <Tooltip content={<CustomTooltip />} />
           <Area
             type="monotone"

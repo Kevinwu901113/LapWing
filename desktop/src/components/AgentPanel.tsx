@@ -76,7 +76,7 @@ export default function AgentPanel({ status, toolLog, sessionInfo }: AgentPanelP
         ) : (
           recent.map((entry, i) => (
             <div
-              key={i}
+              key={`${entry.timestamp}-${entry.toolName}`}
               style={{
                 display: "flex",
                 alignItems: "center",

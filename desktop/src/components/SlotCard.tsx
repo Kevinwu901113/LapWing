@@ -1,3 +1,5 @@
+import type { CSSProperties, ChangeEvent } from "react";
+
 type SlotCardProps = {
   slotId: string;
   slotName: string;
@@ -8,7 +10,7 @@ type SlotCardProps = {
   onChange: (providerId: string, model: string) => void;
 };
 
-const selectStyle: React.CSSProperties = {
+const selectStyle: CSSProperties = {
   background: "var(--bg-card)",
   border: "1px solid var(--border)",
   borderRadius: 4,
@@ -31,13 +33,13 @@ export default function SlotCard({
   const activeProvider = providers.find((p) => p.id === selectedProvider);
   const modelOptions = activeProvider?.models ?? [];
 
-  function handleProviderChange(e: React.ChangeEvent<HTMLSelectElement>) {
+  function handleProviderChange(e: ChangeEvent<HTMLSelectElement>) {
     const newProvider = providers.find((p) => p.id === e.target.value);
     const firstModel = newProvider?.models[0] ?? "";
     onChange(e.target.value, firstModel);
   }
 
-  function handleModelChange(e: React.ChangeEvent<HTMLSelectElement>) {
+  function handleModelChange(e: ChangeEvent<HTMLSelectElement>) {
     onChange(selectedProvider, e.target.value);
   }
 

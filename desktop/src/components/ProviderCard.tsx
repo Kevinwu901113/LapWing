@@ -1,7 +1,6 @@
 import { Pencil, Trash2 } from "lucide-react";
 
 type ProviderCardProps = {
-  id: string;
   name: string;
   apiType: string;
   baseUrl: string;
