@@ -6,6 +6,7 @@ import PersonaPage from "./pages/PersonaPage";
 import TasksPage from "./pages/TasksPage";
 import AuthPage from "./pages/AuthPage";
 import SettingsPage from "./pages/SettingsPage";
+import ChatPage from "./pages/ChatPage";
 
 export const router = createHashRouter([
   {
@@ -13,6 +14,7 @@ export const router = createHashRouter([
     element: <AppShell />,
     children: [
       { index: true, element: <DashboardPage /> },
+      { path: "chat", element: <ChatPage /> },
       { path: "memory", element: <MemoryPage /> },
       { path: "persona", element: <PersonaPage /> },
       { path: "tasks", element: <TasksPage /> },
