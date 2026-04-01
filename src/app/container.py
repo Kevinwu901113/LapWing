@@ -100,6 +100,11 @@ class AppContainer:
         await self.channel_manager.start_all()
 
         await self.api_server.start()
+
+        # 将心跳引擎注入 API 状态，供 /api/heartbeat/status 使用
+        if self.api_server._app is not None:
+            self.api_server._app.state.heartbeat = self.heartbeat
+
         self._started = True
         logger.info("应用容器启动完成")
 

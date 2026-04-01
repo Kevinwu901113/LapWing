@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -93,6 +94,7 @@ def create_app(
     app.state.latency_monitor = latency_monitor
     app.state.started_at = datetime.now(timezone.utc).isoformat()
     app.state.auth_manager = getattr(brain, "auth_manager", None)
+    app.state.heartbeat = None
 
     # Mount model routing API if ModelConfigManager is available
     _model_config = getattr(brain, "_model_config", None)
@@ -643,6 +645,144 @@ def create_app(
             _active_desktop_ws.pop(connection_id, None)
             _notify_desktop_presence(b, connected=bool(_active_desktop_ws))
 
+    # ── 系统资源统计 ──
+
+    @app.get("/api/system/stats")
+    async def get_system_stats():
+        import psutil
+        cpu_pct = await asyncio.to_thread(psutil.cpu_percent, 0.5)
+        mem = psutil.virtual_memory()
+        disk = psutil.disk_usage('/')
+
+        # 从 /proc/cpuinfo 获取 CPU 型号（如可用）
+        cpu_model = "Unknown"
+        try:
+            with open("/proc/cpuinfo") as f:
+                for line in f:
+                    if line.startswith("model name"):
+                        cpu_model = line.split(":")[1].strip()
+                        break
+        except Exception:
+            pass
+
+        return {
+            "cpu_percent": cpu_pct,
+            "cpu_model": cpu_model,
+            "memory_total_gb": round(mem.total / 1024**3, 2),
+            "memory_used_gb": round(mem.used / 1024**3, 2),
+            "memory_percent": mem.percent,
+            "disk_total_gb": round(disk.total / 1024**3, 2),
+            "disk_used_gb": round(disk.used / 1024**3, 2),
+            "disk_percent": disk.percent,
+        }
+
+    @app.get("/api/system/api-usage")
+    async def get_api_usage():
+        # 占位符 — 未来可从使用日志获取
+        return {"providers": []}
+
+    # ── 心跳状态 ──
+
+    @app.get("/api/heartbeat/status")
+    async def get_heartbeat_status():
+        heartbeat = getattr(app.state, "heartbeat", None)
+        if heartbeat is None:
+            return {"actions": [], "interval_seconds": 0}
+
+        actions = []
+        for action in heartbeat.registry._actions.values():
+            actions.append({
+                "name": action.name,
+                "beat_types": getattr(action, "beat_types", []),
+                "selection_mode": getattr(action, "selection_mode", "decide"),
+                "enabled": getattr(action, "enabled", True),
+                "last_run": getattr(action, "last_run", None),
+                "history_24h": getattr(action, "history_24h", []),
+            })
+
+        return {
+            "actions": actions,
+            "interval_seconds": getattr(heartbeat, "interval_seconds", 0),
+        }
+
+    # ── 人格变更日志 ──
+
+    @app.get("/api/persona/changelog")
+    async def get_persona_changelog():
+        from config.settings import CHANGELOG_PATH
+        entries = []
+        try:
+            text = CHANGELOG_PATH.read_text(encoding="utf-8")
+            # 按 ## 标题分割
+            sections = re.split(r'^## ', text, flags=re.MULTILINE)
+            for section in sections:
+                if not section.strip():
+                    continue
+                lines = section.strip().split('\n')
+                header = lines[0].strip()  # 例如 "2024-01-15 — personality update"
+                parts = header.split('—', 1)
+                date = parts[0].strip() if parts else header
+                summary = parts[1].strip() if len(parts) > 1 else ""
+                content = '\n'.join(lines[1:]).strip()
+                entries.append({"date": date, "summary": summary, "content": content})
+        except Exception:
+            pass
+        return {"entries": entries}
+
+    # ── 记忆摘要 ──
+
+    @app.get("/api/memory/summaries")
+    async def get_memory_summaries():
+        from config.settings import CONVERSATION_SUMMARIES_DIR
+        items = []
+        try:
+            files = sorted(CONVERSATION_SUMMARIES_DIR.glob("*.md"), reverse=True)[:50]
+            for f in files:
+                try:
+                    content = f.read_text(encoding="utf-8")
+                    items.append({
+                        "filename": f.name,
+                        "date": f.stem,
+                        "content": content,
+                    })
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return {"items": items}
+
+    # ── 知识笔记 ──
+
+    @app.get("/api/knowledge/notes")
+    async def get_knowledge_notes():
+        from config.settings import DATA_DIR as _DATA_DIR
+        knowledge_dir = _DATA_DIR / "knowledge"
+        items = []
+        try:
+            for f in sorted(knowledge_dir.glob("*.md"), key=lambda x: x.stat().st_mtime, reverse=True):
+                try:
+                    content = f.read_text(encoding="utf-8")
+                    items.append({
+                        "topic": f.stem,
+                        "content": content,
+                        "updated_at": datetime.fromtimestamp(f.stat().st_mtime).isoformat(),
+                    })
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return {"items": items}
+
+    @app.delete("/api/knowledge/notes/{topic}")
+    async def delete_knowledge_note(topic: str):
+        from config.settings import DATA_DIR as _DATA_DIR
+        knowledge_dir = _DATA_DIR / "knowledge"
+        note_path = knowledge_dir / f"{topic}.md"
+        if not note_path.exists():
+            raise HTTPException(status_code=404, detail="笔记不存在")
+        note_path.unlink()
+        return {"success": True}
+
     # 托管构建好的前端静态文件（SPA 回退到 index.html）
     if _DIST_DIR.exists():
         @app.get("/{full_path:path}", include_in_schema=False)
@@ -675,6 +815,7 @@ class LocalApiServer:
         self._port = port
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None
+        self._app: FastAPI | None = None  # 保存 FastAPI 实例以便外部注入状态
 
     async def start(self) -> None:
         if self._task is not None:
@@ -686,6 +827,7 @@ class LocalApiServer:
             self._task_view_store,
             self._latency_monitor,
         )
+        self._app = app
         config = uvicorn.Config(
             app,
             host=self._host,
