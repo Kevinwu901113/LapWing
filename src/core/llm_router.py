@@ -22,7 +22,7 @@ from config.settings import (
     NIM_MODEL,
 )
 
-logger = logging.getLogger("lapwing.llm_router")
+logger = logging.getLogger("lapwing.core.llm_router")
 
 _RECOVERABLE_FAILURES = {"auth", "rate_limit", "timeout", "billing"}
 

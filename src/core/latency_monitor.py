@@ -20,7 +20,7 @@ from config.settings import (
     TOOL_LOOP_SLO_WEB_P95_MS,
 )
 
-logger = logging.getLogger("lapwing.latency")
+logger = logging.getLogger("lapwing.core.latency_monitor")
 
 
 def _now_iso() -> str:

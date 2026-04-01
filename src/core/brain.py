@@ -25,10 +25,7 @@ from src.tools.shell_executor import execute as execute_shell
 from src.tools.types import ToolExecutionRequest
 from config.settings import (
     CHAT_WEB_TOOLS_ENABLED,
-    CONVERSATION_SUMMARIES_DIR,
-    KEVIN_NOTES_PATH,
     MAX_HISTORY_TURNS,
-    RULES_PATH,
     SHELL_ALLOW_SUDO,
     SHELL_DEFAULT_CWD,
     SHELL_ENABLED,
@@ -48,9 +45,8 @@ if TYPE_CHECKING:
     from src.core.tactical_rules import TacticalRules
     from src.core.evolution_engine import EvolutionEngine
 
-logger = logging.getLogger("lapwing.brain")
+logger = logging.getLogger("lapwing.core.brain")
 
-_RELATED_MEMORY_LIMIT = 300
 
 
 @dataclasses.dataclass
@@ -85,7 +81,6 @@ class LapwingBrain:
         self.experience_skill_manager: ExperienceSkillManager | None = None
         self.event_bus = None
         self._system_prompt: str | None = None
-        self.dispatcher = None  # Set externally by main.py (AgentDispatcher | None)
         self.constitution_guard: ConstitutionGuard | None = None
         self.tactical_rules: TacticalRules | None = None
         self.evolution_engine: EvolutionEngine | None = None
@@ -133,6 +128,11 @@ class LapwingBrain:
                 logger.info("已从 prompts/lapwing_soul.md 加载 Lapwing 人格 prompt（fallback）")
         return self._system_prompt
 
+    @property
+    def desktop_connected(self) -> bool:
+        """Whether any desktop client is currently connected."""
+        return getattr(self, "_desktop_connected", False)
+
     def reload_persona(self) -> None:
         """重新加载人格 prompt。"""
         from src.core.prompt_loader import reload_prompt, clear_cache
@@ -167,71 +167,6 @@ class LapwingBrain:
 
     def reset_model(self, chat_id: str) -> dict[str, Any]:
         return self.router.clear_session_model(session_key=self._chat_session_key(chat_id))
-
-    def _split_facts(self, facts: list[dict]) -> list[dict]:
-        """过滤掉 memory_summary_* 条目，返回普通事实列表。"""
-        return [
-            fact for fact in facts
-            if not str(fact.get("fact_key", "")).startswith("memory_summary_")
-        ]
-
-    def _truncate_related_memory(self, text: str) -> str:
-        stripped = text.strip()
-        if len(stripped) <= _RELATED_MEMORY_LIMIT:
-            return stripped
-        return stripped[: _RELATED_MEMORY_LIMIT - 3].rstrip() + "..."
-
-    def _format_related_history_hits(
-        self,
-        hits: list[dict],
-        existing_dates: set[str],
-    ) -> str:
-        lines: list[str] = []
-        for hit in hits:
-            metadata = hit.get("metadata") or {}
-            text = self._truncate_related_memory(str(hit.get("text", "")))
-            if not text:
-                continue
-
-            date_str = str(metadata.get("date", "")).strip()
-            if date_str and date_str in existing_dates:
-                continue
-
-            if date_str:
-                lines.append(f"- {date_str}: {text}")
-            else:
-                lines.append(f"- {text}")
-
-        return "\n".join(lines)
-
-    def _tool_runtime_instruction(self) -> str:
-        """返回动态运行时状态说明（工具开关、当前目录等）。行为规则已移至 lapwing_capabilities.md。"""
-        sections: list[str] = []
-
-        if SHELL_ENABLED:
-            sections.append(
-                "## 本地执行状态\n\n"
-                f"Shell 工具已启用（execute_shell、read_file、write_file）。\n"
-                f"当前工作目录：{SHELL_DEFAULT_CWD}"
-            )
-        else:
-            sections.append(
-                "## 本地执行状态\n\n"
-                "Shell 工具当前已禁用。如果被要求执行命令或修改本地文件，必须明确说明执行功能已关闭，不能编造结果。"
-            )
-
-        if CHAT_WEB_TOOLS_ENABLED:
-            sections.append(
-                "## 联网状态\n\n"
-                "联网工具已启用（web_search、web_fetch）。"
-            )
-        else:
-            sections.append(
-                "## 联网状态\n\n"
-                "联网工具当前已禁用。若被要求查询最新网页信息，需明确说明无法联网检索。"
-            )
-
-        return "\n\n".join(sections)
 
     async def _complete_chat(
         self,
@@ -283,138 +218,21 @@ class LapwingBrain:
         )
 
     async def _build_system_prompt(self, chat_id: str, user_message: str = "") -> str:
-        """按优先级分层组装 system prompt。"""
-        from src.memory.file_memory import read_memory_file, read_recent_summaries
-
-        sections: list[str] = []
-
-        # Layer 0: 核心人格
-        sections.append(self.system_prompt)
-
-        # Layer 0.1: 对话示例（紧跟人格核心，强化语气和风格）
-        try:
-            examples = load_prompt("lapwing_examples")
-            if examples:
-                sections.append(examples)
-        except Exception:
-            pass  # 示例文件不存在时静默跳过
-
-        # Layer 1: 行为规则（从经验中学到的）
-        rules = await read_memory_file(RULES_PATH, max_chars=800)
-        if rules and "暂无规则" not in rules:
-            sections.append(f"## 你从经验中学到的规则\n\n{rules}")
-        
-        # Layer 0.5: 当前时间（增强版）
-        from datetime import datetime, timezone, timedelta
-        now_utc = datetime.now(timezone.utc)
-        taipei_tz = timezone(timedelta(hours=8))
-        now_taipei = now_utc.astimezone(taipei_tz)
-
-        weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
-        weekday = weekday_names[now_taipei.weekday()]
-        yesterday = (now_taipei - timedelta(days=1)).strftime('%m月%d日')
-
-        sections.append(
-            f"## 现在\n\n"
-            f"现在是 {now_taipei.strftime('%Y年%m月%d日 %H:%M')}，{weekday}。"
-            f"昨天是{yesterday}。\n"
-            f"当你提到时间时请基于这个时间判断，不要凭感觉推测。"
+        """按优先级分层组装 system prompt — delegates to prompt_builder."""
+        from src.core.prompt_builder import build_system_prompt
+        return await build_system_prompt(
+            system_prompt=self.system_prompt,
+            chat_id=chat_id,
+            user_message=user_message,
+            memory=self.memory,
+            vector_store=self.vector_store,
+            knowledge_manager=self.knowledge_manager,
+            skill_manager=self.skill_manager,
         )
 
-        # Layer 2: 对 Kevin 的了解（文件化记忆）
-        kevin_notes = await read_memory_file(KEVIN_NOTES_PATH, max_chars=1000)
-        if kevin_notes:
-            sections.append(f"## 你对他的了解\n\n{kevin_notes}")
-
-        # Layer 2.5: SQLite facts 补充（保留兼容）
-        facts = await self.memory.get_user_facts(chat_id)
-        if facts:
-            regular_facts = self._split_facts(facts)
-            if regular_facts:
-                facts_text = "\n".join(
-                    f"- {fact['fact_key']}: {fact['fact_value']}" for fact in regular_facts[:10]
-                )
-                sections.append(
-                    "## 补充信息（自动提取）\n\n"
-                    f"{facts_text}"
-                )
-
-        # Layer 3: 文件化对话摘要
-        recent_summaries = await read_recent_summaries(CONVERSATION_SUMMARIES_DIR)
-        if recent_summaries:
-            sections.append(f"## 最近的对话\n\n{recent_summaries}")
-
-        # Layer 4: 语义检索（保留原逻辑）
-        if user_message and self.vector_store is not None:
-            try:
-                hits = await self.vector_store.search(chat_id, user_message, n_results=2)
-            except Exception as exc:
-                logger.warning(f"[{chat_id}] 检索相关历史记忆失败: {exc}")
-            else:
-                related_text = self._format_related_history_hits(hits, set())
-                if related_text:
-                    sections.append(
-                        "## 相关历史记忆\n\n"
-                        "以下是通过语义检索找到的相关历史片段。"
-                        "仅当它确实能帮助当前回复时再自然引用。\n\n"
-                        f"{related_text}"
-                    )
-
-        # Layer 5: 知识笔记（保留原逻辑）
-        if user_message and self.knowledge_manager is not None:
-            notes = self.knowledge_manager.get_relevant_notes(user_message)
-            if notes:
-                notes_text = "\n\n".join(
-                    f"### {note['topic']}\n{note['content']}"
-                    for note in notes
-                )
-                sections.append(
-                    "## 你积累的相关知识\n\n"
-                    "以下是你之前浏览网页时记录的笔记，与当前话题可能相关。"
-                    "如果对话中用到了，可以自然地引用或补充。\n\n"
-                    f"{notes_text}"
-                )
-
-        # Layer 6: 技能目录（保留原逻辑）
-        if self.skill_manager is not None and self.skill_manager.has_model_visible_skills():
-            skills_catalog = self.skill_manager.render_catalog_for_prompt()
-            if skills_catalog:
-                sections.append(
-                    "## 可用技能目录\n\n"
-                    "以下是当前可用的技能，你可以在确实需要时调用 `activate_skill` 按需加载。\n\n"
-                    f"{skills_catalog}"
-                )
-
-        # Layer 7: 能力描述与工具状态
-        sections.append(load_prompt("lapwing_capabilities"))
-
-        if user_message:
-            sections.append(self._tool_runtime_instruction())
-
-        return "\n\n".join(sections)
-
-    _PERSONA_ANCHOR = (
-        "记住：你是 Lapwing，说话简洁自然，像发消息聊天。"
-        "不列清单，不用加粗标题，不在结尾提问。"
-        "有自己的反应和判断，不只是播报信息。"
-    )
-
     def _inject_voice_reminder(self, messages: list[dict]) -> None:
-        """深度注入 voice reminder（+ 对话较长时附加 persona anchor）。
-
-        - 对话 >= 6 条：voice + anchor 合并注入在 depth-3
-        - 对话 >= 4 条：仅 voice 注入在 depth-2
-        - 对话更短：追加到 system prompt
-        """
-        voice_reminder = load_prompt("lapwing_voice")
-        if len(messages) >= 6:
-            content = f"[System Note]\n{voice_reminder}\n\n{self._PERSONA_ANCHOR}\n[/System Note]"
-            messages.insert(len(messages) - 2, {"role": "user", "content": content})
-        elif len(messages) >= 4:
-            voice_msg = {"role": "user", "content": f"[System Note]\n{voice_reminder}\n[/System Note]"}
-            messages.insert(len(messages) - 2, voice_msg)
-        else:
-            messages[0]["content"] = messages[0]["content"] + "\n\n" + voice_reminder
+        from src.core.prompt_builder import inject_voice_reminder
+        inject_voice_reminder(messages)
 
     def _recent_messages(
         self,
@@ -652,26 +470,6 @@ class LapwingBrain:
                         chat_id, user_message, list(history)
                     )
                 )
-
-        # Agent dispatch 优先
-        if self.dispatcher is not None:
-            try:
-                agent_reply = await self.dispatcher.try_dispatch(
-                    chat_id, effective_user_message, session_id=session_id
-                )
-                if agent_reply is not None:
-                    agent_reply = strip_internal_thinking_tags(agent_reply)
-                    if session_id is not None:
-                        await self.memory.append_to_session(chat_id, session_id, "assistant", agent_reply)
-                    else:
-                        await self.memory.append(chat_id, "assistant", agent_reply)
-                    if send_fn is not None:
-                        await send_fn(agent_reply)
-                    return _ThinkCtx(messages=[], effective_user_message=effective_user_message,
-                                     approved_directory=approved_directory, early_reply=agent_reply,
-                                     session_id=session_id)
-            except Exception as e:
-                logger.warning(f"[{chat_id}] Agent dispatch failed, falling back: {e}")
 
         # 压缩 + 组装 messages
         await self.compactor.try_compact(chat_id, session_id=session_id)

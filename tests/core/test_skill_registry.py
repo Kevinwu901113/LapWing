@@ -91,11 +91,13 @@ def test_record_execution_match_rate(tmp_path):
 # ---------------------------------------------------------------------------
 
 
-def test_match_level_distribution_quick(tmp_path):
+def test_match_level_distribution_quick_maps_to_index(tmp_path):
+    """quick is mapped to index since quick_match was removed."""
     reg = _make_registry(tmp_path)
     reg.load()
     reg.record_execution(skill_id="s", match_level="quick")
-    assert reg._data["match_level_distribution"]["quick"] == 1
+    assert reg._data["match_level_distribution"]["index"] == 1
+    assert "quick" not in reg._data["match_level_distribution"]
 
 
 def test_match_level_distribution_index(tmp_path):
@@ -154,7 +156,7 @@ def test_recent_matches_appended_for_skill(tmp_path):
     recent = reg._data["recent_matches"]
     assert len(recent) == 1
     assert recent[0]["skill_id"] == "literature_survey"
-    assert recent[0]["match_level"] == "quick"
+    assert recent[0]["match_level"] == "index"  # quick maps to index
     assert "调研论文" in recent[0]["request_summary"]
 
 

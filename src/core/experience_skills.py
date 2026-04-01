@@ -19,7 +19,7 @@ import yaml
 if TYPE_CHECKING:
     from src.core.llm_router import LLMRouter
 
-logger = logging.getLogger("lapwing.experience_skills")
+logger = logging.getLogger("lapwing.core.experience_skills")
 
 _INITIAL_CATEGORIES = ["research", "coding", "daily", "content", "system"]
 _MAX_INJECT_SKILLS = 3
@@ -44,13 +44,6 @@ _SKILL_MATCH_SCHEMA = {
 
 
 @dataclass(frozen=True)
-class SkillTriggers:
-    keywords: list[str] = field(default_factory=list)
-    patterns: list[str] = field(default_factory=list)
-    examples: list[str] = field(default_factory=list)
-
-
-@dataclass(frozen=True)
 class ExperienceSkillMeta:
     id: str
     name: str
@@ -66,7 +59,6 @@ class ExperienceSkillMeta:
     success_rate: float
     agents: list[str]
     tools: list[str]
-    triggers: SkillTriggers
     size_tokens: int
 
 
@@ -96,7 +88,6 @@ class _IndexEntry:
     category: str
     status: str
     summary: str
-    triggers: SkillTriggers
     agents: list[str]
     use_count: int
     last_used: str | None
@@ -192,7 +183,6 @@ class ExperienceSkillManager:
                         category=skill.meta.category,
                         status=skill.meta.status,
                         summary=summary,
-                        triggers=skill.meta.triggers,
                         agents=skill.meta.agents,
                         use_count=skill.meta.use_count,
                         last_used=skill.meta.last_used,
@@ -276,13 +266,6 @@ class ExperienceSkillManager:
             logger.warning("技能 %s status 值非法: %s", path, status)
             return None
 
-        triggers_raw = fm.get("triggers", {}) or {}
-        triggers = SkillTriggers(
-            keywords=_normalize_list(triggers_raw.get("keywords")),
-            patterns=_normalize_list(triggers_raw.get("patterns")),
-            examples=_normalize_list(triggers_raw.get("examples")),
-        )
-
         last_used_raw = fm.get("last_used")
         last_used = str(last_used_raw) if last_used_raw is not None else None
 
@@ -301,49 +284,13 @@ class ExperienceSkillManager:
             success_rate=float(fm.get("success_rate", 0.0)),
             agents=_normalize_list(fm.get("agents")),
             tools=_normalize_list(fm.get("tools")),
-            triggers=triggers,
             size_tokens=int(fm.get("size_tokens", 0)),
         )
 
         return ExperienceSkill(meta=meta, body=body, file_path=path)
 
     # ------------------------------------------------------------------
-    # Level 1 快速匹配
-    # ------------------------------------------------------------------
-
-    def quick_match(self, user_request: str) -> list[MatchResult]:
-        """关键词 + 正则匹配，零 LLM 成本。"""
-        if not self._index_loaded:
-            self.load_index()
-
-        request_lower = user_request.lower()
-        results: list[MatchResult] = []
-
-        for entry in self._index:
-            if entry.status not in ("active", "draft"):
-                continue
-
-            score = 0.0
-
-            for kw in entry.triggers.keywords:
-                if kw.lower() in request_lower:
-                    score += 1.0
-
-            for pattern in entry.triggers.patterns:
-                try:
-                    if re.search(pattern, user_request):
-                        score += 2.0
-                except re.error:
-                    pass
-
-            if score > 0:
-                results.append(MatchResult(skill_id=entry.id, match_level="quick", score=score))
-
-        results.sort(key=lambda r: r.score, reverse=True)
-        return results
-
-    # ------------------------------------------------------------------
-    # Level 2 索引匹配（LLM 选择）
+    # 索引匹配（LLM 选择）
     # ------------------------------------------------------------------
 
     async def index_match(
@@ -367,19 +314,13 @@ class ExperienceSkillManager:
         ]
         skill_list = "\n".join(numbered_lines)
 
-        from src.core.prompt_loader import load_prompt
-        try:
-            template = load_prompt("skill_index_match")
-            prompt = template.replace("{skill_list}", skill_list).replace("{user_request}", user_request)
-        except Exception:
-            # fallback inline prompt
-            prompt = (
-                f"以下是我积累的经验列表：\n\n{skill_list}\n\n"
-                f"当前任务：{user_request}\n\n"
-                "请从上面选择最相关的 0-3 个经验（按相关度排序）。"
-                "如果没有合适的直接返回空列表。"
-                "请使用 skill_match 工具提交你的选择。"
-            )
+        prompt = (
+            f"以下是我积累的经验列表：\n\n{skill_list}\n\n"
+            f"当前任务：{user_request}\n\n"
+            "请从上面的经验列表中，选出对当前任务最有参考价值的 0-3 个（按相关度排序）。"
+            "如果没有任何一条真正相关，直接返回空列表。"
+            "\n\n请使用 skill_match 工具提交你的选择。"
+        )
 
         try:
             parsed = await self._router.complete_structured(
@@ -411,29 +352,17 @@ class ExperienceSkillManager:
     # ------------------------------------------------------------------
 
     async def retrieve(self, user_request: str) -> list[ExperienceSkill]:
-        """编排 L1 → L2 检索，返回 0-3 个匹配技能。"""
+        """Retrieve 0-3 relevant experience skills via LLM index matching."""
         if not self._index_loaded:
             self.load_index()
 
         if not self._index:
             return []
 
-        # Level 1 快速匹配
-        quick_results = self.quick_match(user_request)
+        # Direct LLM index matching (no keyword/regex pre-filter)
+        match_results = await self.index_match(user_request)
 
-        if len(quick_results) == 1 and quick_results[0].score >= 1.0:
-            # 唯一命中，直接使用
-            match_results = quick_results
-        elif len(quick_results) >= 1:
-            # 多个命中，交给 LLM 精选
-            candidate_ids = {r.skill_id for r in quick_results}
-            candidates = [e for e in self._index if e.id in candidate_ids]
-            match_results = await self.index_match(user_request, candidates)
-        else:
-            # 无命中，全量索引匹配
-            match_results = await self.index_match(user_request)
-
-        # 加载技能全文
+        # Load full skill content
         skills: list[ExperienceSkill] = []
         for result in match_results:
             skill = self._load_skill_by_id(result.skill_id)
@@ -566,11 +495,6 @@ class ExperienceSkillManager:
             "category": e.category,
             "status": e.status,
             "summary": e.summary,
-            "triggers": {
-                "keywords": e.triggers.keywords,
-                "patterns": e.triggers.patterns,
-                "examples": e.triggers.examples,
-            },
             "agents": e.agents,
             "use_count": e.use_count,
             "last_used": str(e.last_used) if e.last_used is not None else None,
@@ -580,18 +504,12 @@ class ExperienceSkillManager:
 
     @staticmethod
     def _deserialize_entry(d: dict[str, Any]) -> _IndexEntry:
-        triggers_raw = d.get("triggers", {}) or {}
         return _IndexEntry(
             id=d.get("id", ""),
             name=d.get("name", ""),
             category=d.get("category", ""),
             status=d.get("status", "active"),
             summary=d.get("summary", ""),
-            triggers=SkillTriggers(
-                keywords=_normalize_list(triggers_raw.get("keywords")),
-                patterns=_normalize_list(triggers_raw.get("patterns")),
-                examples=_normalize_list(triggers_raw.get("examples")),
-            ),
             agents=_normalize_list(d.get("agents")),
             use_count=int(d.get("use_count", 0)),
             last_used=d.get("last_used"),

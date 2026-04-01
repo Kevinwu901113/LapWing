@@ -3,115 +3,56 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.tools.web_search import web_search, SearchResult
+from src.tools.web_search import search
 
 
 @pytest.mark.asyncio
 class TestWebSearch:
 
-    async def test_returns_list_of_search_results(self):
-        """正常搜索返回 SearchResult 列表。"""
-        mock_raw = [
-            {"title": "Python 官网", "href": "https://python.org", "body": "Python 编程语言官方网站"},
-            {"title": "PyPI", "href": "https://pypi.org", "body": "Python 包索引"},
+    async def test_returns_list_of_dicts(self):
+        """正常搜索返回 dict 列表。"""
+        mock_results = [
+            {"title": "Python 官网", "url": "https://python.org", "snippet": "Python 编程语言官方网站"},
+            {"title": "PyPI", "url": "https://pypi.org", "snippet": "Python 包索引"},
         ]
 
-        mock_ddgs = AsyncMock()
-        mock_ddgs.atext = AsyncMock(return_value=mock_raw)
-
-        mock_ctx = MagicMock()
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ddgs)
-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
-
-        with patch("src.tools.web_search.AsyncDDGS", return_value=mock_ctx):
-            results = await web_search("Python", max_results=5)
+        with patch("src.tools.web_search._ddg_search", new=AsyncMock(return_value=mock_results)):
+            results = await search("Python", max_results=5)
 
         assert isinstance(results, list)
         assert len(results) == 2
-        assert all(isinstance(r, SearchResult) for r in results)
 
     async def test_maps_fields_correctly(self):
-        """SearchResult 字段正确映射（title/href/body → title/url/snippet）。"""
-        mock_raw = [
-            {"title": "示例标题", "href": "https://example.com", "body": "这是摘要内容"},
+        """搜索结果字段含 title/url/snippet。"""
+        mock_results = [
+            {"title": "示例标题", "url": "https://example.com", "snippet": "这是摘要内容"},
         ]
 
-        mock_ddgs = AsyncMock()
-        mock_ddgs.atext = AsyncMock(return_value=mock_raw)
-
-        mock_ctx = MagicMock()
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ddgs)
-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
-
-        with patch("src.tools.web_search.AsyncDDGS", return_value=mock_ctx):
-            results = await web_search("测试", max_results=5)
+        with patch("src.tools.web_search._ddg_search", new=AsyncMock(return_value=mock_results)):
+            results = await search("测试", max_results=5)
 
         assert len(results) == 1
-        assert results[0].title == "示例标题"
-        assert results[0].url == "https://example.com"
-        assert results[0].snippet == "这是摘要内容"
+        assert results[0]["title"] == "示例标题"
+        assert results[0]["url"] == "https://example.com"
+        assert results[0]["snippet"] == "这是摘要内容"
 
-    async def test_max_results_forwarded_to_library(self):
-        """max_results 参数被正确传递给底层库。"""
-        mock_raw = [
-            {"title": f"结果{i}", "href": f"https://example.com/{i}", "body": f"摘要{i}"}
-            for i in range(3)
+    async def test_falls_back_to_bing_when_ddg_empty(self):
+        """DDG 无结果时回退 Bing。"""
+        bing_results = [
+            {"title": "Bing 结果", "url": "https://bing.com", "snippet": "摘要"},
         ]
 
-        mock_ddgs = AsyncMock()
-        mock_ddgs.atext = AsyncMock(return_value=mock_raw)
+        with patch("src.tools.web_search._ddg_search", new=AsyncMock(return_value=[])), \
+             patch("src.tools.web_search._bing_search", new=AsyncMock(return_value=bing_results)):
+            results = await search("测试")
 
-        mock_ctx = MagicMock()
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ddgs)
-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
+        assert len(results) == 1
+        assert results[0]["title"] == "Bing 结果"
 
-        with patch("src.tools.web_search.AsyncDDGS", return_value=mock_ctx):
-            results = await web_search("测试", max_results=3)
-
-        # 验证 atext 被调用时传入了正确的 max_results 参数
-        mock_ddgs.atext.assert_called_once_with("测试", max_results=3)
-        assert len(results) == 3
-
-    async def test_slices_results_when_library_over_returns(self):
-        """当库返回超过 max_results 的结果时，截断到 max_results 条。"""
-        mock_raw = [
-            {"title": f"结果{i}", "href": f"https://example.com/{i}", "body": f"摘要{i}"}
-            for i in range(5)
-        ]
-
-        mock_ddgs = AsyncMock()
-        mock_ddgs.atext = AsyncMock(return_value=mock_raw)
-
-        mock_ctx = MagicMock()
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ddgs)
-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
-
-        with patch("src.tools.web_search.AsyncDDGS", return_value=mock_ctx):
-            results = await web_search("测试", max_results=3)
-
-        assert len(results) == 3
-
-    async def test_returns_empty_list_on_exception(self):
-        """AsyncDDGS 抛异常时返回空列表。"""
-        mock_ctx = MagicMock()
-        mock_ctx.__aenter__ = AsyncMock(side_effect=Exception("网络连接失败"))
-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
-
-        with patch("src.tools.web_search.AsyncDDGS", return_value=mock_ctx):
-            results = await web_search("测试")
-
-        assert results == []
-
-    async def test_returns_empty_list_for_empty_results(self):
-        """搜索结果为空时返回空列表。"""
-        mock_ddgs = AsyncMock()
-        mock_ddgs.atext = AsyncMock(return_value=[])
-
-        mock_ctx = MagicMock()
-        mock_ctx.__aenter__ = AsyncMock(return_value=mock_ddgs)
-        mock_ctx.__aexit__ = AsyncMock(return_value=None)
-
-        with patch("src.tools.web_search.AsyncDDGS", return_value=mock_ctx):
-            results = await web_search("不存在的查询词xyz123")
+    async def test_returns_empty_list_when_both_fail(self):
+        """DDG 和 Bing 都失败时返回空列表。"""
+        with patch("src.tools.web_search._ddg_search", new=AsyncMock(return_value=[])), \
+             patch("src.tools.web_search._bing_search", new=AsyncMock(return_value=[])):
+            results = await search("不存在的查询xyz123")
 
         assert results == []

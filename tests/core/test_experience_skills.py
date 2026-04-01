@@ -39,14 +39,6 @@ agents:
   - researcher
 tools:
   - web_search
-triggers:
-  keywords:
-    - 测试
-    - test
-  patterns:
-    - "测试.*场景"
-  examples:
-    - "帮我测试一下这个功能"
 size_tokens: 300
 ---
 
@@ -172,9 +164,6 @@ def test_parse_skill_file_valid(tmp_path):
     assert skill.meta.success_rate == 0.8
     assert "researcher" in skill.meta.agents
     assert "web_search" in skill.meta.tools
-    assert "测试" in skill.meta.triggers.keywords
-    assert "test" in skill.meta.triggers.keywords
-    assert "测试.*场景" in skill.meta.triggers.patterns
     assert "什么时候用" in skill.body
 
 
@@ -192,7 +181,7 @@ def test_parse_skill_file_id_mismatch(tmp_path):
     cat_dir.mkdir()
     skill_file = cat_dir / "actual_name.md"
     skill_file.write_text(
-        "---\nid: wrong_name\nname: Test\ncategory: research\nstatus: active\ntriggers:\n  keywords: []\n---\nbody",
+        "---\nid: wrong_name\nname: Test\ncategory: research\nstatus: active\n---\nbody",
         encoding="utf-8",
     )
     mgr = _make_manager(tmp_path)
@@ -204,7 +193,7 @@ def test_parse_skill_file_category_mismatch(tmp_path):
     cat_dir.mkdir()
     skill_file = cat_dir / "test_skill.md"
     skill_file.write_text(
-        "---\nid: test_skill\nname: Test\ncategory: research\nstatus: active\ntriggers:\n  keywords: []\n---\nbody",
+        "---\nid: test_skill\nname: Test\ncategory: research\nstatus: active\n---\nbody",
         encoding="utf-8",
     )
     mgr = _make_manager(tmp_path)
@@ -292,10 +281,6 @@ last_used: null
 success_rate: 0.0
 agents: []
 tools: []
-triggers:
-  keywords: []
-  patterns: []
-  examples: []
 size_tokens: 100
 ---
 body
@@ -311,101 +296,6 @@ body
 
     assert mgr._index[0].id == "skill_b"  # highest use_count
     assert mgr._index[-1].id == "skill_c"  # lowest use_count
-
-
-# ---------------------------------------------------------------------------
-# quick_match
-# ---------------------------------------------------------------------------
-
-
-def test_quick_match_keyword_hit(tmp_path):
-    skills_dir = tmp_path / "skills"
-    cat_dir = skills_dir / "research"
-    cat_dir.mkdir(parents=True)
-    (cat_dir / "test_skill.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
-
-    mgr = ExperienceSkillManager(
-        skills_dir=skills_dir,
-        traces_dir=tmp_path / "traces",
-        router=MagicMock(),
-    )
-    mgr.rebuild_index()
-
-    results = mgr.quick_match("帮我测试这个功能")
-    assert len(results) == 1
-    assert results[0].skill_id == "test_skill"
-    assert results[0].match_level == "quick"
-    assert results[0].score >= 1.0
-
-
-def test_quick_match_regex_hit(tmp_path):
-    skills_dir = tmp_path / "skills"
-    cat_dir = skills_dir / "research"
-    cat_dir.mkdir(parents=True)
-    (cat_dir / "test_skill.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
-
-    mgr = ExperienceSkillManager(
-        skills_dir=skills_dir,
-        traces_dir=tmp_path / "traces",
-        router=MagicMock(),
-    )
-    mgr.rebuild_index()
-
-    results = mgr.quick_match("测试一个完整的场景")
-    assert any(r.skill_id == "test_skill" for r in results)
-    # Regex "测试.*场景" should match and add score 2.0
-
-
-def test_quick_match_no_hits(tmp_path):
-    skills_dir = tmp_path / "skills"
-    cat_dir = skills_dir / "research"
-    cat_dir.mkdir(parents=True)
-    (cat_dir / "test_skill.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
-
-    mgr = ExperienceSkillManager(
-        skills_dir=skills_dir,
-        traces_dir=tmp_path / "traces",
-        router=MagicMock(),
-    )
-    mgr.rebuild_index()
-
-    results = mgr.quick_match("完全不相关的请求比如煮饭")
-    assert results == []
-
-
-def test_quick_match_ignores_deprecated(tmp_path):
-    skills_dir = tmp_path / "skills"
-    cat_dir = skills_dir / "research"
-    cat_dir.mkdir(parents=True)
-    deprecated_content = VALID_SKILL_CONTENT.replace("status: active", "status: deprecated")
-    (cat_dir / "test_skill.md").write_text(deprecated_content, encoding="utf-8")
-
-    mgr = ExperienceSkillManager(
-        skills_dir=skills_dir,
-        traces_dir=tmp_path / "traces",
-        router=MagicMock(),
-    )
-    mgr.rebuild_index()
-
-    results = mgr.quick_match("帮我测试")
-    assert results == []
-
-
-def test_quick_match_case_insensitive(tmp_path):
-    skills_dir = tmp_path / "skills"
-    cat_dir = skills_dir / "research"
-    cat_dir.mkdir(parents=True)
-    (cat_dir / "test_skill.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
-
-    mgr = ExperienceSkillManager(
-        skills_dir=skills_dir,
-        traces_dir=tmp_path / "traces",
-        router=MagicMock(),
-    )
-    mgr.rebuild_index()
-
-    results = mgr.quick_match("TEST this feature")
-    assert any(r.skill_id == "test_skill" for r in results)
 
 
 # ---------------------------------------------------------------------------

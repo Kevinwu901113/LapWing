@@ -265,7 +265,8 @@ async def test_status_sender_ignores_stale_task_token(app_with_container):
 
 
 @pytest.mark.asyncio
-async def test_status_sender_formats_report_stage(app_with_container):
+async def test_status_sender_report_stage_silenced(app_with_container):
+    """stage:* 消息在 report 模式下也被静默（由 LLM 中间文字充当进度提示）。"""
     app, _ = app_with_container
     app._bot = SimpleNamespace(send_message=AsyncMock(), send_chat_action=AsyncMock())
     app._active_status_tokens["42"] = "token-1"
@@ -274,11 +275,8 @@ async def test_status_sender_formats_report_stage(app_with_container):
     with patch("config.settings.TELEGRAM_PROGRESS_STYLE", "report"):
         await sender("42", "stage:executing:web_search:1:2")
 
-    app._bot.send_message.assert_awaited_once()
-    sent = app._bot.send_message.await_args.kwargs
-    assert sent["chat_id"] == 42
-    assert sent["parse_mode"] == "HTML"
-    assert "执行中：web_search（1/2）" in sent["text"]
+    app._bot.send_message.assert_not_called()
+    app._bot.send_chat_action.assert_awaited_once()
 
 
 @pytest.mark.asyncio

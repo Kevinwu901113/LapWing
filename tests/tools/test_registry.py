@@ -184,7 +184,7 @@ async def test_web_search_tool_uses_default_max_results_from_settings():
         shell_default_cwd="/tmp",
     )
 
-    with patch("src.tools.registry.web_search.search", new_callable=AsyncMock) as mock_search:
+    with patch("src.tools.handlers.web_search.search", new_callable=AsyncMock) as mock_search:
         mock_search.return_value = [
             {"title": "t1", "url": "https://a.example", "snippet": "s1"},
         ]
@@ -195,11 +195,9 @@ async def test_web_search_tool_uses_default_max_results_from_settings():
 
     mock_search.assert_awaited_once_with("lapwing", max_results=SEARCH_MAX_RESULTS)
     assert result.success is True
-    assert result.payload == {
-        "query": "lapwing",
-        "count": 1,
-        "results": [{"title": "t1", "url": "https://a.example", "snippet": "s1"}],
-    }
+    assert result.payload["query"] == "lapwing"
+    assert result.payload["count"] == 1
+    assert result.payload["results"] == [{"title": "t1", "url": "https://a.example", "snippet": "s1"}]
 
 
 @pytest.mark.asyncio
@@ -210,7 +208,7 @@ async def test_web_search_tool_clamps_max_results_and_returns_failure_payload():
         shell_default_cwd="/tmp",
     )
 
-    with patch("src.tools.registry.web_search.search", new_callable=AsyncMock) as mock_search:
+    with patch("src.tools.handlers.web_search.search", new_callable=AsyncMock) as mock_search:
         mock_search.side_effect = RuntimeError("boom")
         result = await registry.execute(
             ToolExecutionRequest(
@@ -241,7 +239,7 @@ async def test_web_fetch_tool_returns_standard_payload_and_truncates_text():
         error="",
     )
 
-    with patch("src.tools.registry.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
+    with patch("src.tools.handlers.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
         mock_fetch.return_value = fetched
         result = await registry.execute(
             ToolExecutionRequest(

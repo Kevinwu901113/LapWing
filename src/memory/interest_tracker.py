@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from config.settings import INTEREST_EXTRACT_TURN_THRESHOLD, INTERESTS_PATH
 from src.core.prompt_loader import load_prompt
 
-logger = logging.getLogger("lapwing.interest_tracker")
+logger = logging.getLogger("lapwing.memory.interest_tracker")
 
 _EXTRACTION_WINDOW = 10
 

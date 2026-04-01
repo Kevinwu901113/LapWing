@@ -139,12 +139,12 @@ class TestRunExtraction:
         await extractor._run_extraction("chat1")
         router.complete.assert_not_called()
 
-    async def test_uses_tool_purpose_for_llm_call(self, extractor, router):
-        """LLM 调用使用 purpose='tool' 以节省成本。"""
+    async def test_uses_memory_processing_slot_for_llm_call(self, extractor, router):
+        """LLM 调用使用 slot=memory_processing 以节省成本。"""
         router.complete = AsyncMock(return_value="[]")
         await extractor._run_extraction("chat1")
         router.complete.assert_called_once()
-        assert router.complete.call_args.kwargs.get("purpose") == "tool"
+        assert router.complete.call_args.kwargs.get("slot") == "memory_processing"
 
     async def test_clears_extracting_flag_after_completion(self, extractor):
         """提取完成后 _extracting 标记被清除。"""

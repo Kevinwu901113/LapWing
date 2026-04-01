@@ -404,3 +404,5 @@ TRUSTED_IDS: set[str] = {
 
 # 桌面连接是否默认视为 OWNER（本地连接不做身份验证）
 DESKTOP_DEFAULT_OWNER: bool = os.getenv("DESKTOP_DEFAULT_OWNER", "true").lower() == "true"
+DESKTOP_WS_CHAT_ID_PREFIX: str = os.getenv("DESKTOP_WS_CHAT_ID_PREFIX", "desktop")
+DESKTOP_AUTH_TOKENS_PATH: Path = AUTH_DIR / "desktop-tokens.json"

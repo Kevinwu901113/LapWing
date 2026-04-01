@@ -4,13 +4,27 @@ from __future__ import annotations
 
 import json
 import logging
-import shlex
-from pathlib import Path
 from typing import Any
 
-from config.settings import ROOT_DIR, SEARCH_MAX_RESULTS
-from src.core import verifier
-from src.tools import code_runner, file_editor, web_fetcher, web_search
+from src.tools.handlers import (
+    _blocked_payload,
+    activate_skill_tool,
+    apply_workspace_patch_tool,
+    execute_shell_tool,
+    file_append_tool,
+    file_list_directory_tool,
+    file_read_segment_tool,
+    file_write_tool,
+    memory_note_tool,
+    read_file_tool,
+    run_python_code_tool,
+    verify_code_result_tool,
+    verify_workspace_tool,
+    weather_tool,
+    web_fetch_tool,
+    web_search_tool,
+    write_file_tool,
+)
 from src.tools.types import (
     ToolExecutionContext,
     ToolExecutionRequest,
@@ -19,466 +33,6 @@ from src.tools.types import (
 )
 
 logger = logging.getLogger("lapwing.tools.registry")
-
-_WEB_SEARCH_MAX_RESULTS_CAP = 10
-_WEB_FETCH_MAX_CHARS_CAP = 8000
-
-
-def _blocked_payload(*, reason: str, cwd: str, command: str = "") -> dict[str, Any]:
-    return {
-        "command": command,
-        "stdout": "",
-        "stderr": "",
-        "return_code": -1,
-        "timed_out": False,
-        "blocked": True,
-        "reason": reason,
-        "cwd": cwd,
-        "stdout_truncated": False,
-        "stderr_truncated": False,
-    }
-
-
-def _workspace_root(context: ToolExecutionContext) -> Path:
-    raw = context.workspace_root.strip() if context.workspace_root else ""
-    if not raw:
-        return ROOT_DIR.resolve()
-    return Path(raw).resolve()
-
-
-def _file_payload(result: file_editor.FileEditResult) -> dict[str, Any]:
-    payload: dict[str, Any] = {
-        "operation": result.operation,
-        "path": result.path,
-        "success": result.success,
-        "changed": result.changed,
-        "reason": result.reason,
-        "content": result.content,
-        "diff": result.diff,
-        "backup_path": result.backup_path,
-        "metadata": result.metadata,
-    }
-    return payload
-
-
-async def _execute_shell_tool(
-    request: ToolExecutionRequest,
-    context: ToolExecutionContext,
-) -> ToolExecutionResult:
-    command = str(request.arguments.get("command", "")).strip()
-    if not command:
-        reason = "工具参数缺少 command。"
-        return ToolExecutionResult(
-            success=False,
-            reason=reason,
-            payload=_blocked_payload(reason=reason, cwd=context.shell_default_cwd, command=""),
-        )
-
-    result = await context.execute_shell(command)
-    payload = {
-        "command": command,
-        **result.to_dict(),
-    }
-    return ToolExecutionResult(
-        success=(result.return_code == 0 and not result.blocked and not result.timed_out),
-        payload=payload,
-        reason=result.reason or "",
-        shell_result=result,
-    )
-
-
-async def _read_file_tool(
-    request: ToolExecutionRequest,
-    context: ToolExecutionContext,
-) -> ToolExecutionResult:
-    path = str(request.arguments.get("path", "")).strip()
-    if not path:
-        payload = {"error": "缺少 path 参数", "stdout": "", "return_code": -1}
-        return ToolExecutionResult(success=False, payload=payload, reason="缺少 path 参数")
-
-    result = await context.execute_shell(f"cat {shlex.quote(path)}")
-    payload = {"path": path, **result.to_dict()}
-    return ToolExecutionResult(
-        success=(result.return_code == 0 and not result.blocked and not result.timed_out),
-        payload=payload,
-        reason=result.reason or "",
-        shell_result=result,
-    )
-
-
-async def _write_file_tool(
-    request: ToolExecutionRequest,
-    context: ToolExecutionContext,
-) -> ToolExecutionResult:
-    path = str(request.arguments.get("path", "")).strip()
-    content = str(request.arguments.get("content", ""))
-    if not path:
-        payload = {"error": "缺少 path 参数", "stdout": "", "return_code": -1}
-        return ToolExecutionResult(success=False, payload=payload, reason="缺少 path 参数")
-
-    await context.execute_shell(f"mkdir -p $(dirname {shlex.quote(path)})")
-    write_cmd = f"cat > {shlex.quote(path)} << 'LAPWING_EOF'\n{content}\nLAPWING_EOF"
-    result = await context.execute_shell(write_cmd)
-    payload = {"path": path, "action": "written", **result.to_dict()}
-    return ToolExecutionResult(
-        success=(result.return_code == 0 and not result.blocked and not result.timed_out),
-        payload=payload,
-        reason=result.reason or "",
-        shell_result=result,
-    )
-
-
-def _clamp_web_search_max_results(raw: Any) -> int:
-    try:
-        resolved = int(raw)
-    except (TypeError, ValueError):
-        resolved = SEARCH_MAX_RESULTS
-    return max(1, min(_WEB_SEARCH_MAX_RESULTS_CAP, resolved))
-
-
-def _clamp_web_fetch_max_chars(raw: Any) -> int:
-    try:
-        resolved = int(raw)
-    except (TypeError, ValueError):
-        return _WEB_FETCH_MAX_CHARS_CAP
-    return max(1, min(_WEB_FETCH_MAX_CHARS_CAP, resolved))
-
-
-async def _web_search_tool(
-    request: ToolExecutionRequest,
-    context: ToolExecutionContext,
-) -> ToolExecutionResult:
-    del context
-
-    query = str(request.arguments.get("query", "")).strip()
-    if not query:
-        payload = {
-            "query": "",
-            "count": 0,
-            "results": [],
-        }
-        return ToolExecutionResult(
-            success=False,
-            payload=payload,
-            reason="缺少 query 参数",
-        )
-
-    max_results = _clamp_web_search_max_results(request.arguments.get("max_results"))
-    try:
-        results = await web_search.search(query, max_results=max_results)
-    except Exception as exc:
-        payload = {"query": query, "count": 0, "results": []}
-        return ToolExecutionResult(
-            success=False,
-            payload=payload,
-            reason=f"web_search 执行失败: {exc}",
-        )
-
-    payload = {
-        "query": query,
-        "count": len(results),
-        "results": [
-            {
-                "title": str(item.get("title", "")),
-                "url": str(item.get("url", "")),
-                "snippet": str(item.get("snippet", "")),
-            }
-            for item in results
-        ],
-    }
-    payload["_system_hint"] = (
-        "以上是搜索摘要。如果这些摘要不包含回答用户问题所需的具体数据"
-        "（如具体排名、比分、日期、数字），请用 web_fetch 抓取相关 URL 获取完整内容后再回答。"
-        "不要用你的训练知识填补搜索结果中缺失的具体信息。"
-    )
-    return ToolExecutionResult(success=True, payload=payload, reason="")
-
-
-async def _web_fetch_tool(
-    request: ToolExecutionRequest,
-    context: ToolExecutionContext,
-) -> ToolExecutionResult:
-    del context
-
-    url = str(request.arguments.get("url", "")).strip()
-    if not url:
-        payload = {
-            "url": "",
-            "title": "",
-            "text": "",
-            "success": False,
-            "error": "缺少 url 参数",
-        }
-        return ToolExecutionResult(success=False, payload=payload, reason="缺少 url 参数")
-
-    try:
-        fetched = await web_fetcher.fetch(url)
-    except Exception as exc:
-        payload = {
-            "url": url,
-            "title": "",
-            "text": "",
-            "success": False,
-            "error": f"web_fetch 执行失败: {exc}",
-        }
-        return ToolExecutionResult(
-            success=False,
-            payload=payload,
-            reason=payload["error"],
-        )
-
-    max_chars = _clamp_web_fetch_max_chars(request.arguments.get("max_chars"))
-    text = fetched.text[:max_chars]
-    payload = {
-        "url": fetched.url,
-        "title": fetched.title,
-        "text": text,
-        "success": fetched.success,
-        "error": fetched.error,
-    }
-    return ToolExecutionResult(
-        success=fetched.success,
-        payload=payload,
-        reason=fetched.error,
-    )
-
-
-async def _activate_skill_tool(
-    request: ToolExecutionRequest,
-    context: ToolExecutionContext,
-) -> ToolExecutionResult:
-    skill_manager = context.services.get("skill_manager")
-    if skill_manager is None:
-        payload = {
-            "success": False,
-            "reason": "skill_manager 不可用",
-            "skill_name": "",
-            "content": "",
-            "resources": [],
-            "metadata": {},
-        }
-        return ToolExecutionResult(success=False, payload=payload, reason="skill_manager 不可用")
-
-    name = str(request.arguments.get("name", "")).strip().lower()
-    user_input = str(request.arguments.get("user_input", "")).strip()
-    if not name:
-        payload = {
-            "success": False,
-            "reason": "缺少 name 参数",
-            "skill_name": "",
-            "content": "",
-            "resources": [],
-            "metadata": {},
-        }
-        return ToolExecutionResult(success=False, payload=payload, reason="缺少 name 参数")
-
-    try:
-        activated = skill_manager.activate(name, user_input=user_input)
-    except KeyError:
-        payload = {
-            "success": False,
-            "reason": f"技能不存在: {name}",
-            "skill_name": name,
-            "content": "",
-            "resources": [],
-            "metadata": {},
-        }
-        return ToolExecutionResult(success=False, payload=payload, reason=f"技能不存在: {name}")
-    except Exception as exc:
-        payload = {
-            "success": False,
-            "reason": f"激活技能失败: {exc}",
-            "skill_name": name,
-            "content": "",
-            "resources": [],
-            "metadata": {},
-        }
-        return ToolExecutionResult(success=False, payload=payload, reason=f"激活技能失败: {exc}")
-
-    payload = {
-        "success": True,
-        "reason": "",
-        "skill_name": activated.get("skill_name", name),
-        "skill_dir": activated.get("skill_dir", ""),
-        "content": activated.get("content", ""),
-        "resources": activated.get("resources", []),
-        "metadata": activated.get("metadata", {}),
-        "wrapped_content": activated.get("wrapped_content", ""),
-    }
-    return ToolExecutionResult(success=True, payload=payload, reason="")
-
-
-async def _file_read_segment_tool(
-    request: ToolExecutionRequest,
-    context: ToolExecutionContext,
-) -> ToolExecutionResult:
-    path = str(request.arguments.get("path", "")).strip()
-    start_line = int(request.arguments.get("start_line", 1) or 1)
-    end_line = int(request.arguments.get("end_line", 10**9) or 10**9)
-    result = file_editor.read_file_segment(
-        path,
-        start_line=start_line,
-        end_line=end_line,
-        root_dir=_workspace_root(context),
-    )
-    payload = _file_payload(result)
-    return ToolExecutionResult(success=result.success, payload=payload, reason=result.reason)
-
-
-async def _file_write_tool(
-    request: ToolExecutionRequest,
-    context: ToolExecutionContext,
-) -> ToolExecutionResult:
-    path = str(request.arguments.get("path", "")).strip()
-    content = str(request.arguments.get("content", ""))
-    result = file_editor.write_file(
-        path,
-        content=content,
-        root_dir=_workspace_root(context),
-    )
-    payload = _file_payload(result)
-    return ToolExecutionResult(success=result.success, payload=payload, reason=result.reason)
-
-
-async def _file_append_tool(
-    request: ToolExecutionRequest,
-    context: ToolExecutionContext,
-) -> ToolExecutionResult:
-    path = str(request.arguments.get("path", "")).strip()
-    content = str(request.arguments.get("content", ""))
-    result = file_editor.append_to_file(
-        path,
-        content=content,
-        root_dir=_workspace_root(context),
-    )
-    payload = _file_payload(result)
-    return ToolExecutionResult(success=result.success, payload=payload, reason=result.reason)
-
-
-async def _file_list_directory_tool(
-    request: ToolExecutionRequest,
-    context: ToolExecutionContext,
-) -> ToolExecutionResult:
-    path = str(request.arguments.get("path", "")).strip()
-    if not path:
-        path = "."
-    result = file_editor.list_directory(path, root_dir=_workspace_root(context))
-    payload = _file_payload(result)
-    return ToolExecutionResult(success=result.success, payload=payload, reason=result.reason)
-
-
-async def _apply_workspace_patch_tool(
-    request: ToolExecutionRequest,
-    context: ToolExecutionContext,
-) -> ToolExecutionResult:
-    operations = request.arguments.get("operations")
-    if not isinstance(operations, list) or not operations:
-        payload = {"success": False, "reason": "缺少 operations 参数", "changed_files": []}
-        return ToolExecutionResult(success=False, payload=payload, reason="缺少 operations 参数")
-
-    tx = file_editor.transactional_apply(operations, root_dir=_workspace_root(context))
-    payload = {
-        "success": tx.success,
-        "reason": tx.reason,
-        "changed_files": tx.changed_files,
-        "rolled_back": tx.rolled_back,
-        "results": [
-            {
-                "operation": item.operation,
-                "path": item.path,
-                "success": item.success,
-                "changed": item.changed,
-                "reason": item.reason,
-                "metadata": item.metadata,
-            }
-            for item in tx.results
-        ],
-    }
-    return ToolExecutionResult(success=tx.success, payload=payload, reason=tx.reason)
-
-
-async def _run_python_code_tool(
-    request: ToolExecutionRequest,
-    context: ToolExecutionContext,
-) -> ToolExecutionResult:
-    del context
-    code = str(request.arguments.get("code", ""))
-    timeout = int(request.arguments.get("timeout", 10) or 10)
-    result = await code_runner.run_python(code, timeout=timeout)
-    payload = {
-        "stdout": result.stdout,
-        "stderr": result.stderr,
-        "exit_code": result.exit_code,
-        "timed_out": result.timed_out,
-    }
-    success = (result.exit_code == 0 and not result.timed_out)
-    return ToolExecutionResult(success=success, payload=payload, reason=result.stderr.strip())
-
-
-async def _verify_code_result_tool(
-    request: ToolExecutionRequest,
-    context: ToolExecutionContext,
-) -> ToolExecutionResult:
-    del context
-    exit_code_raw = request.arguments.get("exit_code", -1)
-    try:
-        exit_code = int(exit_code_raw)
-    except (TypeError, ValueError):
-        exit_code = -1
-    result = code_runner.CodeResult(
-        stdout=str(request.arguments.get("stdout", "")),
-        stderr=str(request.arguments.get("stderr", "")),
-        exit_code=exit_code,
-        timed_out=bool(request.arguments.get("timed_out", False)),
-    )
-    require_stdout = bool(request.arguments.get("require_stdout", False))
-    verified = verifier.verify_code_result(result, require_stdout=require_stdout)
-    payload = {
-        "passed": verified.passed,
-        "status": verified.status,
-        "reason": verified.reason,
-        "checks": verified.checks,
-        "artifacts": verified.artifacts,
-    }
-    return ToolExecutionResult(
-        success=verified.passed,
-        payload=payload,
-        reason=verified.reason,
-    )
-
-
-async def _verify_workspace_tool(
-    request: ToolExecutionRequest,
-    context: ToolExecutionContext,
-) -> ToolExecutionResult:
-    changed_files = request.arguments.get("changed_files")
-    if not isinstance(changed_files, list):
-        payload = {"passed": False, "status": "failed", "reason": "缺少 changed_files 参数"}
-        return ToolExecutionResult(success=False, payload=payload, reason="缺少 changed_files 参数")
-
-    pytest_targets_raw = request.arguments.get("pytest_targets")
-    pytest_targets = (
-        [str(item) for item in pytest_targets_raw if str(item).strip()]
-        if isinstance(pytest_targets_raw, list)
-        else None
-    )
-    verified = await verifier.verify_workspace(
-        changed_files=[str(item) for item in changed_files],
-        root_dir=_workspace_root(context),
-        pytest_targets=pytest_targets,
-    )
-    payload = {
-        "passed": verified.passed,
-        "status": verified.status,
-        "reason": verified.reason,
-        "checks": verified.checks,
-        "artifacts": verified.artifacts,
-    }
-    return ToolExecutionResult(
-        success=verified.passed,
-        payload=payload,
-        reason=verified.reason,
-    )
 
 
 class ToolRegistry:
@@ -585,14 +139,11 @@ def build_default_tool_registry() -> ToolRegistry:
             json_schema={
                 "type": "object",
                 "properties": {
-                    "command": {
-                        "type": "string",
-                        "description": "要执行的 shell 命令",
-                    }
+                    "command": {"type": "string", "description": "要执行的 shell 命令"}
                 },
                 "required": ["command"],
             },
-            executor=_execute_shell_tool,
+            executor=execute_shell_tool,
             capability="shell",
             risk_level="high",
             metadata={"policy_hook": "shell_command"},
@@ -605,15 +156,10 @@ def build_default_tool_registry() -> ToolRegistry:
             description="读取服务器上的文件内容。用于查看配置文件、日志、代码等。",
             json_schema={
                 "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "文件的绝对路径",
-                    }
-                },
+                "properties": {"path": {"type": "string", "description": "文件的绝对路径"}},
                 "required": ["path"],
             },
-            executor=_read_file_tool,
+            executor=read_file_tool,
             capability="shell",
             risk_level="medium",
         )
@@ -626,18 +172,12 @@ def build_default_tool_registry() -> ToolRegistry:
             json_schema={
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "文件的绝对路径",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "要写入的内容",
-                    },
+                    "path": {"type": "string", "description": "文件的绝对路径"},
+                    "content": {"type": "string", "description": "要写入的内容"},
                 },
                 "required": ["path", "content"],
             },
-            executor=_write_file_tool,
+            executor=write_file_tool,
             capability="shell",
             risk_level="high",
         )
@@ -650,10 +190,7 @@ def build_default_tool_registry() -> ToolRegistry:
             json_schema={
                 "type": "object",
                 "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "搜索关键词或问题",
-                    },
+                    "query": {"type": "string", "description": "搜索关键词或问题"},
                     "max_results": {
                         "type": "integer",
                         "description": "可选，返回结果数量（1-10，默认使用 SEARCH_MAX_RESULTS）",
@@ -661,7 +198,7 @@ def build_default_tool_registry() -> ToolRegistry:
                 },
                 "required": ["query"],
             },
-            executor=_web_search_tool,
+            executor=web_search_tool,
             capability="web",
             risk_level="medium",
         )
@@ -674,18 +211,12 @@ def build_default_tool_registry() -> ToolRegistry:
             json_schema={
                 "type": "object",
                 "properties": {
-                    "url": {
-                        "type": "string",
-                        "description": "需要抓取的网页 URL（http/https）",
-                    },
-                    "max_chars": {
-                        "type": "integer",
-                        "description": "可选，正文最大字符数（默认 4000）",
-                    },
+                    "url": {"type": "string", "description": "需要抓取的网页 URL（http/https）"},
+                    "max_chars": {"type": "integer", "description": "可选，正文最大字符数（默认 4000）"},
                 },
                 "required": ["url"],
             },
-            executor=_web_fetch_tool,
+            executor=web_fetch_tool,
             capability="web",
             risk_level="medium",
         )
@@ -701,18 +232,12 @@ def build_default_tool_registry() -> ToolRegistry:
             json_schema={
                 "type": "object",
                 "properties": {
-                    "name": {
-                        "type": "string",
-                        "description": "技能名称（必须来自 system prompt 的可用技能目录）",
-                    },
-                    "user_input": {
-                        "type": "string",
-                        "description": "用户对该技能的附加输入（可选）",
-                    },
+                    "name": {"type": "string", "description": "技能名称（必须来自 system prompt 的可用技能目录）"},
+                    "user_input": {"type": "string", "description": "用户对该技能的附加输入（可选）"},
                 },
                 "required": ["name"],
             },
-            executor=_activate_skill_tool,
+            executor=activate_skill_tool,
             capability="skill",
             risk_level="low",
         )
@@ -731,7 +256,7 @@ def build_default_tool_registry() -> ToolRegistry:
                 },
                 "required": ["path", "start_line", "end_line"],
             },
-            executor=_file_read_segment_tool,
+            executor=file_read_segment_tool,
             capability="file",
             capabilities=("workspace",),
             risk_level="low",
@@ -750,7 +275,7 @@ def build_default_tool_registry() -> ToolRegistry:
                 },
                 "required": ["path", "content"],
             },
-            executor=_file_write_tool,
+            executor=file_write_tool,
             capability="file",
             capabilities=("workspace",),
             risk_level="high",
@@ -769,7 +294,7 @@ def build_default_tool_registry() -> ToolRegistry:
                 },
                 "required": ["path", "content"],
             },
-            executor=_file_append_tool,
+            executor=file_append_tool,
             capability="file",
             capabilities=("workspace",),
             risk_level="medium",
@@ -782,12 +307,10 @@ def build_default_tool_registry() -> ToolRegistry:
             description="列出工作区目录内容。",
             json_schema={
                 "type": "object",
-                "properties": {
-                    "path": {"type": "string"},
-                },
+                "properties": {"path": {"type": "string"}},
                 "required": ["path"],
             },
-            executor=_file_list_directory_tool,
+            executor=file_list_directory_tool,
             capability="file",
             capabilities=("workspace",),
             risk_level="low",
@@ -801,14 +324,11 @@ def build_default_tool_registry() -> ToolRegistry:
             json_schema={
                 "type": "object",
                 "properties": {
-                    "operations": {
-                        "type": "array",
-                        "items": {"type": "object"},
-                    },
+                    "operations": {"type": "array", "items": {"type": "object"}},
                 },
                 "required": ["operations"],
             },
-            executor=_apply_workspace_patch_tool,
+            executor=apply_workspace_patch_tool,
             capability="code",
             capabilities=("file", "workspace"),
             risk_level="high",
@@ -827,7 +347,7 @@ def build_default_tool_registry() -> ToolRegistry:
                 },
                 "required": ["code"],
             },
-            executor=_run_python_code_tool,
+            executor=run_python_code_tool,
             capability="code",
             capabilities=("execution",),
             risk_level="medium",
@@ -849,7 +369,7 @@ def build_default_tool_registry() -> ToolRegistry:
                 },
                 "required": ["stdout", "stderr", "exit_code", "timed_out"],
             },
-            executor=_verify_code_result_tool,
+            executor=verify_code_result_tool,
             capability="verify",
             capabilities=("code",),
             visibility="internal",
@@ -869,29 +389,13 @@ def build_default_tool_registry() -> ToolRegistry:
                 },
                 "required": ["changed_files"],
             },
-            executor=_verify_workspace_tool,
+            executor=verify_workspace_tool,
             capability="verify",
             capabilities=("workspace", "code"),
             visibility="internal",
             risk_level="low",
         )
     )
-
-    async def _execute_memory_note(
-        request: ToolExecutionRequest,
-        context: ToolExecutionContext,
-    ) -> ToolExecutionResult:
-        from src.tools.memory_note import write_note
-
-        target = str(request.arguments.get("target", "")).strip()
-        content = str(request.arguments.get("content", "")).strip()
-        result = await write_note(target, content)
-
-        return ToolExecutionResult(
-            success=result.get("success", False),
-            reason=result.get("reason", ""),
-            payload=result,
-        )
 
     registry.register(
         ToolSpec(
@@ -917,8 +421,28 @@ def build_default_tool_registry() -> ToolRegistry:
                 },
                 "required": ["target", "content"],
             },
-            executor=_execute_memory_note,
+            executor=memory_note_tool,
             capability="memory",
+            risk_level="low",
+        )
+    )
+
+    registry.register(
+        ToolSpec(
+            name="get_weather",
+            description="查询指定城市或地点的当前天气（温度、天气状况、风速）。",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "location": {
+                        "type": "string",
+                        "description": "要查询天气的城市或地点名称，如「东京」「Los Angeles」「台北」",
+                    },
+                },
+                "required": ["location"],
+            },
+            executor=weather_tool,
+            capability="web",
             risk_level="low",
         )
     )
@@ -967,18 +491,9 @@ def build_default_tool_registry() -> ToolRegistry:
             json_schema={
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "文件路径（相对于 data/memory/）",
-                    },
-                    "old_text": {
-                        "type": "string",
-                        "description": "要替换的原文（必须精确匹配）",
-                    },
-                    "new_text": {
-                        "type": "string",
-                        "description": "替换后的新文本",
-                    },
+                    "path": {"type": "string", "description": "文件路径（相对于 data/memory/）"},
+                    "old_text": {"type": "string", "description": "要替换的原文（必须精确匹配）"},
+                    "new_text": {"type": "string", "description": "替换后的新文本"},
                 },
                 "required": ["path", "old_text", "new_text"],
             },
@@ -992,14 +507,8 @@ def build_default_tool_registry() -> ToolRegistry:
             json_schema={
                 "type": "object",
                 "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "文件路径（相对于 data/memory/）",
-                    },
-                    "text_to_remove": {
-                        "type": "string",
-                        "description": "要从文件中删除的特定文本。不提供则删除整个文件。",
-                    },
+                    "path": {"type": "string", "description": "文件路径（相对于 data/memory/）"},
+                    "text_to_remove": {"type": "string", "description": "要从文件中删除的特定文本。不提供则删除整个文件。"},
                 },
                 "required": ["path"],
             },
@@ -1012,12 +521,7 @@ def build_default_tool_registry() -> ToolRegistry:
             description="在所有记忆文件中搜索包含关键词的内容。用于查找之前记录的特定信息。",
             json_schema={
                 "type": "object",
-                "properties": {
-                    "keyword": {
-                        "type": "string",
-                        "description": "搜索关键词",
-                    },
-                },
+                "properties": {"keyword": {"type": "string", "description": "搜索关键词"}},
                 "required": ["keyword"],
             },
             executor=MEMORY_CRUD_EXECUTORS["memory_search"],
@@ -1046,10 +550,7 @@ def build_default_tool_registry() -> ToolRegistry:
                         "type": "string",
                         "description": "要执行的任务描述，这会成为你收到的 prompt。",
                     },
-                    "repeat": {
-                        "type": "boolean",
-                        "description": "是否重复执行，默认 true。",
-                    },
+                    "repeat": {"type": "boolean", "description": "是否重复执行，默认 true。"},
                 },
                 "required": ["schedule", "task_description"],
             },
@@ -1070,12 +571,7 @@ def build_default_tool_registry() -> ToolRegistry:
             description="取消一个定时任务。",
             json_schema={
                 "type": "object",
-                "properties": {
-                    "task_id": {
-                        "type": "string",
-                        "description": "要取消的任务 ID",
-                    },
-                },
+                "properties": {"task_id": {"type": "string", "description": "要取消的任务 ID"}},
                 "required": ["task_id"],
             },
             executor=SCHEDULE_EXECUTORS["cancel_scheduled_task"],

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from config.settings import JOURNAL_DIR
 from src.core.prompt_loader import load_prompt
 
-logger = logging.getLogger("lapwing.self_reflection")
+logger = logging.getLogger("lapwing.core.self_reflection")
 
 
 class SelfReflection:

@@ -13,7 +13,7 @@ import shutil
 import sys
 from typing import Any
 
-logger = logging.getLogger("lapwing.skills")
+logger = logging.getLogger("lapwing.core.skills")
 
 _NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _MAX_NAME_LEN = 64

@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from config.settings import RULES_PATH
 from src.core.prompt_loader import load_prompt
 
-logger = logging.getLogger("lapwing.tactical_rules")
+logger = logging.getLogger("lapwing.core.tactical_rules")
 
 
 class TacticalRules:

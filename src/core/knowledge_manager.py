@@ -4,10 +4,11 @@ import logging
 import re
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from config.settings import DATA_DIR
 
-logger = logging.getLogger("lapwing.knowledge")
+logger = logging.getLogger("lapwing.core.knowledge_manager")
 
 _KNOWLEDGE_DIR = DATA_DIR / "knowledge"
 _MAX_NOTE_SIZE = 3000    # 单条笔记最大字符数（超出时截断）
@@ -60,47 +61,33 @@ class KnowledgeManager:
         logger.info(f"[knowledge] 保存笔记: {safe_topic}.md ({len(content)} 字符)")
         return path
 
-    def get_relevant_notes(self, query: str, max_notes: int = 3) -> list[dict]:
-        """根据查询文本找到相关知识笔记。
+    def get_relevant_notes(self, query: str = "", max_chars: int = 2000) -> list[dict]:
+        """Load all knowledge notes up to a character budget.
 
-        使用文件名（主题）与查询文本的关键词重叠度评分。
-
-        Args:
-            query: 用户消息或当前话题文本
-            max_notes: 最多返回几条笔记
-
-        Returns:
-            [{"topic": str, "content": str}, ...]，按相关度排序
+        No matching — the LLM decides what's relevant from context.
+        Notes are returned newest-first (by file modification time).
         """
         all_files = list(_KNOWLEDGE_DIR.glob("*.md"))
         if not all_files:
             return []
 
-        scored: list[tuple[float, Path, str]] = []
-        query_lower = query.lower()
-
-        for f in all_files:
-            topic = f.stem  # 文件名不含扩展名
-            score = _relevance_score(topic, query_lower)
-            if score > 0:
-                scored.append((score, f, topic))
-
-        scored.sort(key=lambda x: x[0], reverse=True)
+        # Sort by modification time, newest first
+        all_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
 
         results = []
         total_chars = 0
-        for _, f, topic in scored[:max_notes]:
+        for f in all_files:
             try:
                 text = f.read_text(encoding="utf-8")
             except Exception as exc:
-                logger.warning(f"[knowledge] 读取笔记失败: {f.name} — {exc}")
+                logger.warning("[knowledge] read failed: %s — %s", f.name, exc)
                 continue
-            # 控制注入总量
-            remaining = _INJECT_TOTAL_LIMIT - total_chars
+
+            remaining = max_chars - total_chars
             if remaining <= 0:
                 break
             excerpt = text[:remaining]
-            results.append({"topic": topic, "content": excerpt})
+            results.append({"topic": f.stem, "content": excerpt})
             total_chars += len(excerpt)
 
         return results
@@ -118,25 +105,3 @@ def _sanitize_filename(name: str) -> str:
     return name[:64]  # 限制文件名长度
 
 
-def _relevance_score(topic: str, query_lower: str) -> float:
-    """计算主题与查询的相关度分数（简单字符匹配）。"""
-    topic_lower = topic.lower().replace("_", " ")
-    score = 0.0
-
-    # 完整主题出现在查询中
-    if topic_lower in query_lower:
-        score += 3.0
-    # 查询中的片段出现在主题中
-    elif topic_lower and any(
-        part in query_lower for part in topic_lower.split()
-        if len(part) >= 2
-    ):
-        score += 1.5
-    # 主题片段在查询中有部分匹配
-    elif any(char in query_lower for char in topic_lower if '\u4e00' <= char <= '\u9fff'):
-        # 中文字符逐字匹配
-        overlap = sum(1 for c in topic_lower if c in query_lower and '\u4e00' <= c <= '\u9fff')
-        if overlap >= 2:
-            score += overlap * 0.5
-
-    return score

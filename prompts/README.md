@@ -27,22 +27,11 @@
 | `heartbeat_consolidation.md` | 记忆整合 Prompt — 合并长期记忆 |
 | `compaction.md` | 对话 Compaction Prompt — 压缩过长对话历史 |
 
-## Agents
+## QQ 群聊
 
 | 文件 | 用途 |
 |------|------|
-| `agent_dispatcher.md` | Agent 分发器决策 Prompt |
-| `agent_file.md` | 文件 Agent Prompt |
-| `agent_researcher.md` | Researcher Agent 人格 |
-| `agent_todo.md` | Todo Agent Prompt |
-| `agent_weather.md` | 天气 Agent Prompt |
-| `browser_analyze.md` | 浏览器 Agent 分析 Prompt |
-| `coder_generate.md` | Coder Agent 代码生成 |
-| `coder_fix.md` | Coder Agent 代码修复 |
-| `coder_workspace_plan.md` | Coder Agent 工作区规划 |
-| `coder_workspace_fix.md` | Coder Agent 工作区修复 |
-| `researcher_extract_query.md` | Researcher 查询提取 |
-| `researcher_summarize.md` | Researcher 摘要 |
+| `group_engage_decision.md` | 群聊参与决策 Prompt — LLM 决定是否参与群聊 |
 
 ## Heartbeat
 
@@ -53,5 +42,3 @@
 | `heartbeat_interest_proactive.md` | 兴趣驱动主动推送 Prompt |
 | `heartbeat_autonomous_browsing.md` | 自主浏览决策 Prompt |
 | `interest_extract.md` | 兴趣提取 Prompt |
-
-

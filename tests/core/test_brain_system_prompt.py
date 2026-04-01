@@ -30,13 +30,15 @@ def _mock_load_prompt(name, **kwargs):
 def base_brain_stack(**overrides):
     """返回 ExitStack，包含所有标准 mock。overrides 可替换特定路径 mock。"""
     stack = ExitStack()
-    stack.enter_context(patch("src.core.brain.load_prompt", side_effect=_mock_load_prompt))
+    load_fn = overrides.get("load_fn", _mock_load_prompt)
+    stack.enter_context(patch("src.core.brain.load_prompt", side_effect=load_fn))
+    stack.enter_context(patch("src.core.prompt_builder.load_prompt", side_effect=load_fn))
     stack.enter_context(patch("src.core.brain.LLMRouter"))
     stack.enter_context(patch("src.core.brain.ConversationMemory"))
     stack.enter_context(patch("src.core.brain.SOUL_PATH", overrides.get("soul", _NONEXISTENT / "soul.md")))
-    stack.enter_context(patch("src.core.brain.RULES_PATH", overrides.get("rules", _NONEXISTENT / "rules.md")))
-    stack.enter_context(patch("src.core.brain.KEVIN_NOTES_PATH", overrides.get("kevin", _NONEXISTENT / "kevin.md")))
-    stack.enter_context(patch("src.core.brain.CONVERSATION_SUMMARIES_DIR", overrides.get("summaries", _NONEXISTENT / "summaries")))
+    stack.enter_context(patch("src.core.prompt_builder.RULES_PATH", overrides.get("rules", _NONEXISTENT / "rules.md")))
+    stack.enter_context(patch("src.core.prompt_builder.KEVIN_NOTES_PATH", overrides.get("kevin", _NONEXISTENT / "kevin.md")))
+    stack.enter_context(patch("src.core.prompt_builder.CONVERSATION_SUMMARIES_DIR", overrides.get("summaries", _NONEXISTENT / "summaries")))
     return stack
 
 
@@ -73,14 +75,7 @@ class TestLayerOrdering:
                 return "CAPABILITIES"
             return ""
 
-        with ExitStack() as stack:
-            stack.enter_context(patch("src.core.brain.load_prompt", side_effect=mock_load))
-            stack.enter_context(patch("src.core.brain.LLMRouter"))
-            stack.enter_context(patch("src.core.brain.ConversationMemory"))
-            stack.enter_context(patch("src.core.brain.SOUL_PATH", _NONEXISTENT / "soul.md"))
-            stack.enter_context(patch("src.core.brain.RULES_PATH", _NONEXISTENT / "rules.md"))
-            stack.enter_context(patch("src.core.brain.KEVIN_NOTES_PATH", kevin_file))
-            stack.enter_context(patch("src.core.brain.CONVERSATION_SUMMARIES_DIR", _NONEXISTENT / "summaries"))
+        with base_brain_stack(kevin=kevin_file, load_fn=mock_load):
             from src.core.brain import LapwingBrain
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.get_user_facts = AsyncMock(return_value=[])

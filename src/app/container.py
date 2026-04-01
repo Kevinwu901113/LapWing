@@ -121,14 +121,6 @@ class AppContainer:
         logger.info("应用容器资源清理完成")
 
     async def _configure_brain_dependencies(self) -> None:
-        from src.agents.base import AgentRegistry
-        from src.agents.browser import BrowserAgent
-        from src.agents.coder import CoderAgent
-        from src.agents.file_agent import FileAgent
-        from src.agents.researcher import ResearcherAgent
-        from src.agents.todo_agent import TodoAgent
-        from src.agents.weather_agent import WeatherAgent
-        from src.core.dispatcher import AgentDispatcher
         from src.core.knowledge_manager import KnowledgeManager
         from src.core.skills import SkillManager
         from src.core.self_reflection import SelfReflection
@@ -145,30 +137,6 @@ class AppContainer:
             extra_dirs=[Path(item) for item in SKILLS_EXTRA_DIRS],
         )
         self.brain.skill_manager.reload()
-
-        registry = AgentRegistry()
-        registry.register(
-            ResearcherAgent(
-                memory=self.brain.memory,
-                knowledge_manager=self.brain.knowledge_manager,
-            )
-        )
-        registry.register(CoderAgent(memory=self.brain.memory, runtime=self.brain.task_runtime))
-        registry.register(
-            BrowserAgent(
-                memory=self.brain.memory,
-                knowledge_manager=self.brain.knowledge_manager,
-            )
-        )
-        registry.register(FileAgent(memory=self.brain.memory, runtime=self.brain.task_runtime))
-        registry.register(WeatherAgent())
-        registry.register(TodoAgent(memory=self.brain.memory))
-
-        self.brain.dispatcher = AgentDispatcher(
-            registry=registry,
-            router=self.brain.router,
-            memory=self.brain.memory,
-        )
 
         self.brain.interest_tracker = InterestTracker(
             memory=self.brain.memory,

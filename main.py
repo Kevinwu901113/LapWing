@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+from logging.handlers import RotatingFileHandler
 from typing import Any
 
 from config.settings import (
@@ -21,23 +22,57 @@ from src.auth.service import AuthManager
 def setup_logging() -> logging.Logger:
     LOGS_DIR.mkdir(exist_ok=True)
     level = getattr(logging, LOG_LEVEL)
-    fmt = logging.Formatter("%(asctime)s [%(name)s] %(levelname)s: %(message)s")
+    fmt = logging.Formatter(
+        "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
 
-    fh = logging.FileHandler(LOGS_DIR / "lapwing.log", encoding="utf-8", mode="a")
-    fh.setFormatter(fmt)
-    sh = logging.StreamHandler()
-    sh.setFormatter(fmt)
-
-    # 显式配置 lapwing logger，切断到 root 的传播，避免第三方库干扰导致重复
+    # ── Lapwing logger (project code) ──
     lapwing_logger = logging.getLogger("lapwing")
     lapwing_logger.setLevel(level)
-    if not lapwing_logger.handlers:
-        lapwing_logger.addHandler(fh)
-        lapwing_logger.addHandler(sh)
-    lapwing_logger.propagate = False
+    lapwing_logger.propagate = False  # never propagate to root
 
-    # Root logger 共享同一组 handler 实例，让第三方库日志也能输出且不重复
-    logging.basicConfig(level=level, handlers=[fh, sh])
+    if not lapwing_logger.handlers:
+        # Main log: rotated, 10MB per file, keep 5 backups
+        main_fh = RotatingFileHandler(
+            LOGS_DIR / "lapwing.log",
+            encoding="utf-8",
+            maxBytes=10 * 1024 * 1024,
+            backupCount=5,
+        )
+        main_fh.setFormatter(fmt)
+        main_fh.setLevel(level)
+
+        # Console: same level
+        console_sh = logging.StreamHandler()
+        console_sh.setFormatter(fmt)
+        console_sh.setLevel(level)
+
+        lapwing_logger.addHandler(main_fh)
+        lapwing_logger.addHandler(console_sh)
+
+    # ── Root logger (third-party libraries) ──
+    # Separate handlers — never share with lapwing logger
+    root_logger = logging.getLogger()
+    root_logger.setLevel(logging.WARNING)  # only warnings+ from third-party
+
+    if not root_logger.handlers:
+        lib_fh = RotatingFileHandler(
+            LOGS_DIR / "libraries.log",
+            encoding="utf-8",
+            maxBytes=5 * 1024 * 1024,
+            backupCount=2,
+        )
+        lib_fh.setFormatter(fmt)
+        lib_fh.setLevel(logging.WARNING)
+        root_logger.addHandler(lib_fh)
+
+    # ── Quiet down noisy libraries ──
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("httpcore").setLevel(logging.WARNING)
+    logging.getLogger("chromadb").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn").setLevel(logging.WARNING)
+    logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
     return lapwing_logger
 
@@ -232,6 +267,8 @@ def run_telegram_bot(logger: logging.Logger) -> int:
 
         qq_adapter = QQAdapter(config=qq_config, on_message=_qq_on_message)
         qq_adapter.router = container.brain.router  # Inject LLM router for group decisions
+        if qq_adapter._decider is not None:
+            qq_adapter._decider.set_router(container.brain.router)
         container.channel_manager.register(ChannelType.QQ, qq_adapter)
         logger.info("QQ 通道已注册（群聊: %s）", QQ_GROUP_IDS or "无")
 

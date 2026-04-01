@@ -118,7 +118,7 @@ class TestDeduplication:
 
             call_count = 0
 
-            async def side_effect(system, user):
+            async def side_effect(system, user, **kwargs):
                 nonlocal call_count
                 call_count += 1
                 if call_count == 1:

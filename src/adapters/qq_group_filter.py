@@ -1,62 +1,133 @@
-"""轻量级群消息过滤器 — 不走 LLM，纯规则判断。"""
+"""Group chat engagement decider — LLM-based, no keyword matching."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import logging
+import time
+from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
     from src.adapters.qq_group_context import GroupContext, GroupMessage
+    from src.core.llm_router import LLMRouter
+
+logger = logging.getLogger("lapwing.adapters.qq_group_filter")
+
+# Structured output schema for engagement decision
+_ENGAGE_DECISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "engage": {
+            "type": "boolean",
+            "description": "是否应该参与这条消息的讨论",
+        },
+        "reason": {
+            "type": "string",
+            "description": "简短说明原因",
+        },
+    },
+    "required": ["engage"],
+}
 
 
-class GroupMessageFilter:
-    """Tier-1 filter: pure rules, zero LLM cost."""
+class GroupEngagementDecider:
+    """Decide whether to engage in a group message using LLM judgment.
+
+    Only hard rule: never respond to own messages.
+    Everything else is decided by a lightweight LLM call.
+    """
 
     def __init__(
         self,
         self_id: str,
         self_names: list[str],
         kevin_id: str,
-        interest_keywords: list[str],
-        cooldown_seconds: int = 60,
+        cooldown_seconds: int = 30,
     ) -> None:
         self.self_id = self_id
-        self.self_names = [n.lower() for n in self_names]
+        self.self_names = self_names
         self.kevin_id = kevin_id
-        self.interest_keywords = [k.lower() for k in interest_keywords]
         self.cooldown_seconds = cooldown_seconds
+        self._last_engage_time: dict[str, float] = {}  # group_id -> timestamp
+        self._router: LLMRouter | None = None
 
-    def should_engage(self, msg: GroupMessage, ctx: GroupContext) -> tuple[bool, str]:
+    def set_router(self, router: "LLMRouter") -> None:
+        self._router = router
+
+    async def should_engage(
+        self,
+        msg: "GroupMessage",
+        ctx: "GroupContext",
+    ) -> tuple[bool, str]:
+        """Decide whether this group message warrants engagement.
+
+        Returns (should_engage, reason).
         """
-        Decide whether this group message warrants Brain evaluation.
-        Returns (should_pass, reason).
-        """
+        # Only hard rule: skip own messages
         if msg.user_id == self.self_id:
             return False, "self"
 
-        if msg.is_at_self:
-            return True, "at_self"
+        # Cooldown enforcement
+        group_id = ctx.group_id if hasattr(ctx, "group_id") else "default"
+        now = time.time()
+        last = self._last_engage_time.get(group_id, 0)
+        if now - last < self.cooldown_seconds:
+            return False, "cooldown"
 
-        if msg.is_reply_to_self:
-            return True, "reply_to_self"
+        # LLM decision
+        if self._router is None:
+            return False, "no_router"
 
-        text_lower = msg.text.lower()
-        for name in self.self_names:
-            if name in text_lower:
-                return True, "name_mention"
+        try:
+            engage, reason = await self._llm_decide(msg, ctx)
+            if engage:
+                self._last_engage_time[group_id] = now
+            return engage, reason
+        except Exception as exc:
+            logger.warning("[group_decider] LLM decision failed: %s", exc)
+            return False, f"llm_error: {exc}"
 
-        if msg.user_id == self.kevin_id:
-            return True, "kevin_speaking"
+    async def _llm_decide(
+        self,
+        msg: "GroupMessage",
+        ctx: "GroupContext",
+    ) -> tuple[bool, str]:
+        """Ask LLM whether to engage with this message."""
+        assert self._router is not None
 
-        for keyword in self.interest_keywords:
-            if keyword in text_lower:
-                if ctx.seconds_since_last_reply() < self.cooldown_seconds:
-                    return False, "keyword_cooldown"
-                return True, f"keyword:{keyword}"
+        # Build context: recent messages
+        recent = ctx.recent_messages(8)
+        context_lines = []
+        for m in recent:
+            sender = "我" if m.user_id == self.self_id else (
+                "Kevin" if m.user_id == self.kevin_id else f"群友{m.user_id[-4:]}"
+            )
+            context_lines.append(f"{sender}: {m.text[:100]}")
+        context_text = "\n".join(context_lines) if context_lines else "(无最近消息)"
 
-        recent = ctx.recent_messages(15)
-        if len(recent) >= 10:
-            time_span = msg.timestamp - recent[-10].timestamp
-            if time_span < 120 and ctx.seconds_since_last_reply() > self.cooldown_seconds * 3:
-                return True, "active_chat"
+        prompt = (
+            f"你是 Lapwing，在一个QQ群里。你的名字包括：{', '.join(self.self_names)}。"
+            f"Kevin（你的恋人）的QQ号末四位是 {self.kevin_id[-4:] if len(self.kevin_id) >= 4 else self.kevin_id}。\n\n"
+            f"最近的群聊记录：\n{context_text}\n\n"
+            f"最新一条消息来自 {'Kevin' if msg.user_id == self.kevin_id else f'群友{msg.user_id[-4:]}'}：\n"
+            f"{msg.text[:200]}\n\n"
+            "判断你是否应该回复这条消息。考虑：\n"
+            "- 有人在叫你或提到你吗？\n"
+            "- Kevin 在说话吗？\n"
+            "- 话题是你感兴趣或能参与的吗？\n"
+            "- 还是普通群聊你不需要插嘴？\n"
+        )
 
-        return False, "no_match"
+        result = await self._router.complete_structured(
+            [{"role": "user", "content": prompt}],
+            result_schema=_ENGAGE_DECISION_SCHEMA,
+            result_tool_name="engage_decision",
+            result_tool_description="决定是否参与群聊消息",
+            slot="lightweight_judgment",
+            max_tokens=256,
+            session_key="system:group_engage",
+            origin="adapters.group_decider",
+        )
+
+        engage = bool(result.get("engage", False))
+        reason = str(result.get("reason", "llm_decision"))
+        return engage, reason

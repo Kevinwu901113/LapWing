@@ -6,7 +6,7 @@ import logging
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import FastAPI, Query, Request, Response
+from fastapi import FastAPI, Query, Request, Response, WebSocket, WebSocketDisconnect
 from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
@@ -22,7 +22,7 @@ from config.settings import (
 )
 from src.core.latency_monitor import LatencyMonitor
 
-logger = logging.getLogger("lapwing.api")
+logger = logging.getLogger("lapwing.api.server")
 
 _DIST_DIR = Path(__file__).parent.parent.parent / "desktop" / "dist"
 
@@ -169,6 +169,30 @@ def create_app(
         if auth_manager is None:
             raise HTTPException(status_code=503, detail="Auth manager not available")
         return auth_manager.auth_status()
+
+    @app.post("/api/auth/desktop-token")
+    async def create_desktop_token(request: Request):
+        """Generate a long-lived token for the desktop client."""
+        import secrets
+        from config.settings import API_BOOTSTRAP_TOKEN_PATH, AUTH_DIR
+        body = await request.json()
+        bootstrap = body.get("bootstrap_token", "")
+        if API_BOOTSTRAP_TOKEN_PATH.exists():
+            expected = API_BOOTSTRAP_TOKEN_PATH.read_text().strip()
+            if bootstrap != expected:
+                raise HTTPException(status_code=401, detail="Invalid bootstrap token")
+        token = secrets.token_urlsafe(32)
+        token_path = AUTH_DIR / "desktop-tokens.json"
+        tokens: list = []
+        if token_path.exists():
+            tokens = json.loads(token_path.read_text(encoding="utf-8"))
+        tokens.append({
+            "token": token,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "label": body.get("label", "desktop"),
+        })
+        token_path.write_text(json.dumps(tokens, indent=2, ensure_ascii=False), encoding="utf-8")
+        return {"token": token}
 
     @app.post("/api/auth/import/codex-cache")
     async def post_import_codex_cache(payload: CodexCacheImportRequest):
@@ -357,6 +381,267 @@ def create_app(
         if task is None:
             raise HTTPException(status_code=404, detail="Task not found")
         return task
+
+    # ── Log streaming (J3) ──
+
+    @app.get("/api/logs/stream")
+    async def stream_logs(
+        level: str = Query("INFO", pattern="^(DEBUG|INFO|WARNING|ERROR)$"),
+        module: str = Query("", description="Filter by logger name prefix"),
+    ):
+        """SSE stream of log entries for the frontend log viewer."""
+        import queue as _queue
+
+        log_queue: _queue.Queue = _queue.Queue(maxsize=500)
+
+        class _QueueHandler(logging.Handler):
+            def emit(self, record):
+                try:
+                    entry = {
+                        "timestamp": self.format(record).split(" [")[0],
+                        "level": record.levelname,
+                        "logger": record.name,
+                        "message": record.getMessage(),
+                    }
+                    log_queue.put_nowait(entry)
+                except _queue.Full:
+                    pass
+
+        handler = _QueueHandler()
+        handler.setLevel(getattr(logging, level))
+        handler.setFormatter(logging.Formatter("%(asctime)s"))
+        lapwing_logger = logging.getLogger("lapwing")
+        lapwing_logger.addHandler(handler)
+
+        async def event_generator():
+            try:
+                while True:
+                    try:
+                        entry = await asyncio.to_thread(log_queue.get, timeout=1.0)
+                        if module and not entry["logger"].startswith(f"lapwing.{module}"):
+                            continue
+                        yield f"data: {json.dumps(entry, ensure_ascii=False)}\n\n"
+                    except Exception:
+                        yield ": keepalive\n\n"
+            finally:
+                lapwing_logger.removeHandler(handler)
+
+        return StreamingResponse(event_generator(), media_type="text/event-stream")
+
+    @app.get("/api/logs/recent")
+    async def get_recent_logs(
+        lines: int = Query(200, ge=1, le=2000),
+        level: str = Query("INFO"),
+    ):
+        """Return recent log lines from the log file."""
+        from config.settings import LOGS_DIR as _LOGS_DIR
+        log_file = _LOGS_DIR / "lapwing.log"
+        if not log_file.exists():
+            return {"lines": []}
+        all_lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
+        recent = all_lines[-lines:]
+        level_priority = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}
+        min_priority = level_priority.get(level, 1)
+        filtered = []
+        for line in recent:
+            for lvl, pri in level_priority.items():
+                if f" {lvl}: " in line and pri >= min_priority:
+                    filtered.append(line)
+                    break
+        return {"lines": filtered, "total": len(all_lines)}
+
+    # ── Platform config + feature flags (J4) ──
+
+    @app.get("/api/config/platforms")
+    async def get_platform_config():
+        from config import settings
+        return {
+            "telegram": {
+                "enabled": bool(settings.TELEGRAM_TOKEN),
+                "proxy_url": settings.TELEGRAM_PROXY_URL,
+                "kevin_id": settings.TELEGRAM_KEVIN_ID,
+                "text_mode": settings.TELEGRAM_TEXT_MODE,
+            },
+            "qq": {
+                "enabled": settings.QQ_ENABLED,
+                "ws_url": settings.QQ_WS_URL,
+                "self_id": settings.QQ_SELF_ID,
+                "kevin_id": settings.QQ_KEVIN_ID,
+                "group_ids": settings.QQ_GROUP_IDS,
+                "group_cooldown": settings.QQ_GROUP_COOLDOWN,
+            },
+        }
+
+    @app.get("/api/config/features")
+    async def get_feature_flags():
+        from config import settings
+        return {
+            "shell_enabled": settings.SHELL_ENABLED,
+            "web_tools_enabled": settings.CHAT_WEB_TOOLS_ENABLED,
+            "skills_enabled": settings.SKILLS_ENABLED,
+            "experience_skills_enabled": settings.EXPERIENCE_SKILLS_ENABLED,
+            "session_enabled": settings.SESSION_ENABLED,
+            "memory_crud_enabled": settings.MEMORY_CRUD_ENABLED,
+            "auto_memory_extract_enabled": settings.AUTO_MEMORY_EXTRACT_ENABLED,
+            "self_schedule_enabled": settings.SELF_SCHEDULE_ENABLED,
+            "qq_enabled": settings.QQ_ENABLED,
+        }
+
+    # ── Persona files (J4) ──
+
+    @app.get("/api/persona/files")
+    async def get_persona_files():
+        from config.settings import SOUL_PATH, IDENTITY_DIR, PROMPTS_DIR
+        files = {}
+        for name, path in [
+            ("soul", SOUL_PATH),
+            ("voice", PROMPTS_DIR / "lapwing_voice.md"),
+            ("capabilities", PROMPTS_DIR / "lapwing_capabilities.md"),
+            ("constitution", IDENTITY_DIR / "constitution.md"),
+        ]:
+            if path.exists():
+                files[name] = {
+                    "path": str(path),
+                    "content": path.read_text(encoding="utf-8"),
+                }
+        return {"files": files}
+
+    @app.post("/api/persona/files/{file_name}")
+    async def update_persona_file(file_name: str, request: Request):
+        body = await request.json()
+        content = body.get("content", "")
+        from config.settings import SOUL_PATH, IDENTITY_DIR, PROMPTS_DIR
+        path_map = {
+            "soul": SOUL_PATH,
+            "voice": PROMPTS_DIR / "lapwing_voice.md",
+            "capabilities": PROMPTS_DIR / "lapwing_capabilities.md",
+            "constitution": IDENTITY_DIR / "constitution.md",
+        }
+        path = path_map.get(file_name)
+        if path is None:
+            raise HTTPException(status_code=404, detail=f"Unknown persona file: {file_name}")
+        path.write_text(content, encoding="utf-8")
+        brain = app.state.brain
+        if hasattr(brain, "reload_persona"):
+            brain.reload_persona()
+        return {"success": True, "file": file_name}
+
+    # ── Scheduled tasks CRUD (J4) ──
+
+    @app.get("/api/scheduled-tasks")
+    async def get_scheduled_tasks():
+        from config.settings import SCHEDULED_TASKS_PATH
+        if not SCHEDULED_TASKS_PATH.exists():
+            return {"tasks": []}
+        data = json.loads(SCHEDULED_TASKS_PATH.read_text(encoding="utf-8"))
+        return {"tasks": data if isinstance(data, list) else []}
+
+    @app.delete("/api/scheduled-tasks/{task_id}")
+    async def delete_scheduled_task(task_id: str):
+        from config.settings import SCHEDULED_TASKS_PATH
+        if not SCHEDULED_TASKS_PATH.exists():
+            raise HTTPException(status_code=404, detail="No tasks found")
+        data = json.loads(SCHEDULED_TASKS_PATH.read_text(encoding="utf-8"))
+        updated = [t for t in data if t.get("id") != task_id]
+        if len(updated) == len(data):
+            raise HTTPException(status_code=404, detail=f"Task {task_id} not found")
+        SCHEDULED_TASKS_PATH.write_text(
+            json.dumps(updated, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        return {"success": True, "task_id": task_id}
+
+    # ── WebSocket chat (K1) ──
+
+    _active_desktop_ws: dict[str, WebSocket] = {}
+
+    def _notify_desktop_presence(b, *, connected: bool) -> None:
+        b._desktop_connected = connected
+        logger.info("Desktop presence: %s", "connected" if connected else "disconnected")
+
+    @app.websocket("/ws/chat")
+    async def websocket_chat(ws: WebSocket):
+        """WebSocket endpoint for desktop chat."""
+        from config.settings import DESKTOP_DEFAULT_OWNER, DESKTOP_WS_CHAT_ID_PREFIX
+        token = ws.query_params.get("token", "")
+        if not DESKTOP_DEFAULT_OWNER and not token:
+            await ws.close(code=4001, reason="Authentication required")
+            return
+
+        await ws.accept()
+        connection_id = str(id(ws))
+        _active_desktop_ws[connection_id] = ws
+
+        b = app.state.brain
+        _notify_desktop_presence(b, connected=True)
+        await ws.send_json({"type": "presence_ack", "status": "connected"})
+
+        try:
+            while True:
+                raw = await ws.receive_text()
+                try:
+                    msg = json.loads(raw)
+                except json.JSONDecodeError:
+                    await ws.send_json({"type": "error", "message": "Invalid JSON"})
+                    continue
+
+                msg_type = msg.get("type", "")
+
+                if msg_type == "ping":
+                    await ws.send_json({"type": "pong"})
+                    continue
+
+                if msg_type == "message":
+                    content = str(msg.get("content", "")).strip()
+                    if not content:
+                        continue
+
+                    chat_id = f"{DESKTOP_WS_CHAT_ID_PREFIX}:{connection_id}"
+
+                    async def send_fn(text: str) -> None:
+                        try:
+                            await ws.send_json({"type": "interim", "content": text})
+                        except Exception:
+                            pass
+
+                    async def typing_fn() -> None:
+                        try:
+                            await ws.send_json({"type": "typing"})
+                        except Exception:
+                            pass
+
+                    async def status_callback(cid: str, status_text: str) -> None:
+                        try:
+                            await ws.send_json({
+                                "type": "status",
+                                "phase": "executing",
+                                "text": status_text,
+                            })
+                        except Exception:
+                            pass
+
+                    try:
+                        await ws.send_json({"type": "status", "phase": "thinking", "text": ""})
+                        reply = await b.think_conversational(
+                            chat_id=chat_id,
+                            user_message=content,
+                            send_fn=send_fn,
+                            typing_fn=typing_fn,
+                            status_callback=status_callback,
+                            adapter="desktop",
+                            user_id="owner",
+                        )
+                        await ws.send_json({"type": "reply", "content": reply, "final": True})
+                    except Exception as exc:
+                        await ws.send_json({
+                            "type": "error",
+                            "message": f"处理消息失败: {exc}",
+                        })
+
+        except WebSocketDisconnect:
+            pass
+        finally:
+            _active_desktop_ws.pop(connection_id, None)
+            _notify_desktop_presence(b, connected=bool(_active_desktop_ws))
 
     # 托管构建好的前端静态文件（SPA 回退到 index.html）
     if _DIST_DIR.exists():

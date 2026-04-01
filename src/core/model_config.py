@@ -15,7 +15,7 @@ from typing import Any
 
 from config.settings import DATA_DIR
 
-logger = logging.getLogger("lapwing.model_config")
+logger = logging.getLogger("lapwing.core.model_config")
 
 CONFIG_PATH = Path(DATA_DIR) / "config" / "model_routing.json"
 

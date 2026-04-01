@@ -5,7 +5,7 @@ import logging
 from config.settings import CONSTITUTION_PATH
 from src.core.prompt_loader import load_prompt
 
-logger = logging.getLogger("lapwing.constitution_guard")
+logger = logging.getLogger("lapwing.core.constitution_guard")
 
 # 硬编码底线（不依赖 LLM，绝对不可绕过）
 _HARD_IDENTITY_MARKERS = [

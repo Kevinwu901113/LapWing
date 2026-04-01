@@ -469,7 +469,7 @@ class TestLLMRouterTools:
                 },
             )
 
-            assert normalized["max_completion_tokens"] == 2048
+            assert normalized["max_completion_tokens"] == 4096
             assert normalized["temperature"] == 1.0
             assert normalized["top_p"] == 0.95
             assert normalized["n"] == 1

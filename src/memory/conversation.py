@@ -9,7 +9,7 @@ import aiosqlite
 
 from config.settings import MAX_HISTORY_TURNS
 
-logger = logging.getLogger("lapwing.memory")
+logger = logging.getLogger("lapwing.memory.conversation")
 
 _VALID_RECURRENCE_TYPES = {"once", "daily", "weekly"}
 _TIME_OF_DAY_PATTERN = re.compile(r"^\d{2}:\d{2}$")

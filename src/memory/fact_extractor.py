@@ -8,7 +8,7 @@ import re
 from config.settings import FACT_EXTRACT_IDLE_SECONDS, FACT_EXTRACT_TURN_THRESHOLD
 from src.core.prompt_loader import load_prompt
 
-logger = logging.getLogger("lapwing.fact_extractor")
+logger = logging.getLogger("lapwing.memory.fact_extractor")
 
 # 提取时使用的最近对话条数（控制 token 用量）
 _EXTRACTION_WINDOW = 10

@@ -12,7 +12,7 @@ try:
 except ImportError:  # pragma: no cover - 依赖缺失时延迟到运行期报错
     chromadb = None
 
-logger = logging.getLogger("lapwing.memory.vector")
+logger = logging.getLogger("lapwing.memory.vector_store")
 
 _MAX_COLLECTION_NAME = 63
 _MAX_SAFE_CHAT_SEGMENT = 40

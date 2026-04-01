@@ -9,6 +9,7 @@ from enum import Enum
 class ChannelType(Enum):
     TELEGRAM = "telegram"
     QQ = "qq"
+    DESKTOP = "desktop"
 
 
 class BaseAdapter(ABC):

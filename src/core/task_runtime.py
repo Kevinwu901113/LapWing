@@ -36,7 +36,7 @@ from src.core.shell_policy import (
     is_confirmation_message,
     is_rejection_message,
 )
-from src.policy.shell_runtime_policy import ShellRuntimePolicy
+from src.core.shell_policy import ShellRuntimePolicy
 from src.core.authority_gate import AuthLevel, authorize, identify as identify_auth
 from src.core.vital_guard import (
     Verdict,
@@ -49,7 +49,7 @@ from src.tools.registry import ToolRegistry, build_default_tool_registry
 from src.tools.shell_executor import ShellResult, execute as default_execute_shell
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult
 
-logger = logging.getLogger("lapwing.task_runtime")
+logger = logging.getLogger("lapwing.core.task_runtime")
 
 _MAX_TOOL_ROUNDS = TASK_MAX_TOOL_ROUNDS
 
@@ -213,7 +213,7 @@ class TaskRuntime:
         skill_activation_enabled: bool = False,
     ) -> list[dict[str, Any]]:
         """chat 场景工具集：按需暴露 shell / web / activate_skill，memory_note 始终可用。"""
-        tool_names: set[str] = {"memory_note"}  # memory_note 始终可用
+        tool_names: set[str] = {"memory_note", "get_weather"}  # always available
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
         if web_enabled:

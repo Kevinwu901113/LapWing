@@ -44,7 +44,7 @@ from src.auth.storage import AuthStore
 if TYPE_CHECKING:
     from src.auth.openai_codex import OpenAICodexAuthProvider
 
-logger = logging.getLogger("lapwing.auth")
+logger = logging.getLogger("lapwing.auth.service")
 
 _OAUTH_LOGIN_TTL_SECONDS = 10 * 60
 

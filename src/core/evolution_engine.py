@@ -15,7 +15,7 @@ from config.settings import (
 )
 from src.core.prompt_loader import load_prompt
 
-logger = logging.getLogger("lapwing.evolution_engine")
+logger = logging.getLogger("lapwing.core.evolution_engine")
 
 _BACKUP_DIR = DATA_DIR / "backups" / "soul"
 

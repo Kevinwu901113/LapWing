@@ -37,9 +37,9 @@ def make_brain():
     stack.enter_context(patch("src.core.brain.LLMRouter"))
     stack.enter_context(patch("src.core.brain.ConversationMemory"))
     stack.enter_context(patch("src.core.brain.SOUL_PATH", _NONEXISTENT / "soul.md"))
-    stack.enter_context(patch("src.core.brain.RULES_PATH", _NONEXISTENT / "rules.md"))
-    stack.enter_context(patch("src.core.brain.KEVIN_NOTES_PATH", _NONEXISTENT / "kevin.md"))
-    stack.enter_context(patch("src.core.brain.CONVERSATION_SUMMARIES_DIR", _NONEXISTENT / "summaries"))
+    stack.enter_context(patch("src.core.prompt_builder.RULES_PATH", _NONEXISTENT / "rules.md"))
+    stack.enter_context(patch("src.core.prompt_builder.KEVIN_NOTES_PATH", _NONEXISTENT / "kevin.md"))
+    stack.enter_context(patch("src.core.prompt_builder.CONVERSATION_SUMMARIES_DIR", _NONEXISTENT / "summaries"))
     return stack
 
 

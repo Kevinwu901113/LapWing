@@ -18,7 +18,7 @@ from src.adapters.base import BaseAdapter, ChannelType
 from src.app.telegram_delivery import send_telegram_reply_text, send_telegram_text_to_chat
 from src.core.reasoning_tags import strip_internal_thinking_tags
 
-logger = logging.getLogger("lapwing.app.telegram")
+logger = logging.getLogger("lapwing.app.telegram_app")
 
 
 class TelegramApp:

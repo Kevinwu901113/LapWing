@@ -9,7 +9,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("lapwing.trace_recorder")
+logger = logging.getLogger("lapwing.core.trace_recorder")
 
 _DATE_FORMAT = "%Y-%m-%d"
 _ARCHIVE_THRESHOLD = 500

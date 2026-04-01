@@ -14,10 +14,10 @@ from websockets.protocol import State as WsState
 
 from src.adapters.base import BaseAdapter, ChannelType
 from src.adapters.qq_group_context import GroupContext, GroupMessage
-from src.adapters.qq_group_filter import GroupMessageFilter
+from src.adapters.qq_group_filter import GroupEngagementDecider
 from src.core.prompt_loader import load_prompt
 
-logger = logging.getLogger("lapwing.adapter.qq")
+logger = logging.getLogger("lapwing.adapters.qq_adapter")
 
 MAX_QQ_MSG_LENGTH = 4000
 
@@ -75,14 +75,13 @@ class QQAdapter(BaseAdapter):
         # Group chat
         self._allowed_groups: set[str] = set(config.get("group_ids", []))
         self._group_contexts: dict[str, GroupContext] = {}
-        self._group_filter: GroupMessageFilter | None = None
+        self._decider: GroupEngagementDecider | None = None
         if self._allowed_groups:
-            self._group_filter = GroupMessageFilter(
+            self._decider = GroupEngagementDecider(
                 self_id=self.self_id,
                 self_names=config.get("self_names", ["Lapwing", "lapwing"]),
                 kevin_id=self.kevin_id,
-                interest_keywords=config.get("interest_keywords", []),
-                cooldown_seconds=config.get("group_cooldown", 60),
+                cooldown_seconds=config.get("group_cooldown", 30),
             )
         self._group_context_size: int = config.get("group_context_size", 30)
         self.router = None  # Injected by main.py for group engagement decisions
@@ -232,14 +231,10 @@ class QQAdapter(BaseAdapter):
 
             if not text:
                 return
-            if self._group_filter is None:
+            if self._decider is None:
                 return
 
-            should_engage, reason = self._group_filter.should_engage(group_msg, ctx)
-            if not should_engage:
-                return
-
-            asyncio.create_task(self._handle_group_engagement(ctx, group_msg, reason))
+            asyncio.create_task(self._evaluate_and_engage(ctx, group_msg))
 
     async def _mark_as_read(self, user_id: str) -> None:
         """标记私聊消息已读。"""
@@ -280,6 +275,15 @@ class QQAdapter(BaseAdapter):
         return sender.get("card", "") or sender.get("nickname", "") or str(event.get("user_id", ""))
 
     # ── 群聊参与决策与执行 ───────────────────────────────
+
+    async def _evaluate_and_engage(self, ctx: "GroupContext", msg: "GroupMessage") -> None:
+        """Run LLM engagement decision, then handle if appropriate."""
+        if self._decider is None:
+            return
+        should_engage, reason = await self._decider.should_engage(msg, ctx)
+        if not should_engage:
+            return
+        await self._handle_group_engagement(ctx, msg, reason)
 
     async def _handle_group_engagement(
         self, ctx: GroupContext, msg: GroupMessage, reason: str

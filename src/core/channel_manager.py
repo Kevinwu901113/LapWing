@@ -7,7 +7,7 @@ from typing import Optional
 
 from src.adapters.base import BaseAdapter, ChannelType
 
-logger = logging.getLogger("lapwing.channel_manager")
+logger = logging.getLogger("lapwing.core.channel_manager")
 
 
 class ChannelManager:

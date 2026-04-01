@@ -20,7 +20,7 @@ from src.core.shell_policy import (
     should_validate_after_success,
 )
 from src.core.task_runtime import LoopDetectionConfig, RuntimeDeps, TaskRuntime
-from src.policy.shell_runtime_policy import ShellRuntimePolicy
+from src.core.shell_policy import ShellRuntimePolicy
 from src.tools.registry import build_default_tool_registry
 from src.tools.shell_executor import ShellResult
 from src.tools.types import ToolExecutionRequest
@@ -73,7 +73,7 @@ async def test_chat_tools_from_registry():
 
     _memory_crud = {"memory_list", "memory_read", "memory_edit", "memory_delete", "memory_search"}
     _schedule = {"schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"}
-    assert names == {"execute_shell", "read_file", "write_file", "web_search", "web_fetch", "memory_note"} | _memory_crud | _schedule
+    assert names == {"execute_shell", "read_file", "write_file", "web_search", "web_fetch", "memory_note", "get_weather"} | _memory_crud | _schedule
 
 
 @pytest.mark.asyncio
@@ -85,7 +85,7 @@ async def test_chat_tools_excludes_web_when_disabled():
 
     _memory_crud = {"memory_list", "memory_read", "memory_edit", "memory_delete", "memory_search"}
     _schedule = {"schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"}
-    assert names == {"execute_shell", "read_file", "write_file", "memory_note"} | _memory_crud | _schedule
+    assert names == {"execute_shell", "read_file", "write_file", "memory_note", "get_weather"} | _memory_crud | _schedule
 
 
 @pytest.mark.asyncio
@@ -398,7 +398,7 @@ async def test_complete_chat_supports_web_tool_call_and_tool_result_roundtrip():
         }
     )
 
-    with patch("src.tools.registry.web_search.search", new_callable=AsyncMock) as mock_search:
+    with patch("src.tools.handlers.web_search.search", new_callable=AsyncMock) as mock_search:
         mock_search.return_value = [
             {
                 "title": "A股收盘快讯",

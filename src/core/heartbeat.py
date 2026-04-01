@@ -7,7 +7,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-logger = logging.getLogger("lapwing.heartbeat")
+logger = logging.getLogger("lapwing.core.heartbeat")
 
 
 @dataclass

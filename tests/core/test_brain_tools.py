@@ -206,8 +206,8 @@ class TestBrainTools:
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
              patch("src.core.brain.ConversationMemory"), \
-             patch("src.core.brain.SHELL_ENABLED", False), \
-             patch("src.core.brain.CHAT_WEB_TOOLS_ENABLED", False):
+             patch("src.core.prompt_builder.SHELL_ENABLED", False), \
+             patch("src.core.prompt_builder.CHAT_WEB_TOOLS_ENABLED", False):
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
@@ -232,10 +232,10 @@ class TestBrainTools:
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
              patch("src.core.brain.ConversationMemory"), \
-             patch("src.core.brain.SHELL_ENABLED", False), \
-             patch("src.core.brain.CHAT_WEB_TOOLS_ENABLED", True), \
-             patch("src.tools.registry.web_search.search", new_callable=AsyncMock) as mock_search, \
-             patch("src.tools.registry.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
+             patch("src.core.prompt_builder.SHELL_ENABLED", False), \
+             patch("src.core.prompt_builder.CHAT_WEB_TOOLS_ENABLED", True), \
+             patch("src.tools.handlers.web_search.search", new_callable=AsyncMock) as mock_search, \
+             patch("src.tools.handlers.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
@@ -576,7 +576,8 @@ class TestBrainTools:
     async def test_shell_state_context_merges_into_single_system_message(self):
         with patch("src.core.brain.load_prompt", return_value="基础人格prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+             patch("src.core.brain.ConversationMemory"), \
+             patch("src.core.brain.SOUL_PATH", Path("/nonexistent/soul.md")):
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))

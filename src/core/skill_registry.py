@@ -9,7 +9,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-logger = logging.getLogger("lapwing.skill_registry")
+logger = logging.getLogger("lapwing.core.skill_registry")
 
 _DAILY_STATS_MAX_DAYS = 90
 _RECENT_MATCHES_MAX = 50
@@ -20,7 +20,6 @@ _DEFAULT_REGISTRY: dict[str, Any] = {
     "total_without_skill": 0,
     "skill_match_rate": 0.0,
     "match_level_distribution": {
-        "quick": 0,
         "index": 0,
         "semantic": 0,
         "none": 0,
@@ -87,9 +86,12 @@ class SkillRegistryManager:
 
         # 匹配级别分布
         dist = self._data.setdefault("match_level_distribution", {
-            "quick": 0, "index": 0, "semantic": 0, "none": 0
+            "index": 0, "semantic": 0, "none": 0
         })
-        level_key = match_level if match_level in ("quick", "index", "semantic") else "none"
+        # Map "quick" to "index" (quick_match no longer exists)
+        if match_level == "quick":
+            match_level = "index"
+        level_key = match_level if match_level in ("index", "semantic") else "none"
         dist[level_key] = dist.get(level_key, 0) + 1
 
         # daily_stats
