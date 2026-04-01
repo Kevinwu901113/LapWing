@@ -685,10 +685,6 @@ export default function SettingsPage() {
     ]);
   }, []);
 
-  function handleSlotChange(slotId: string, providerId: string, modelId: string) {
-    setSlotDraft((d) => ({ ...d, [slotId]: { provider_id: providerId, model_id: modelId } }));
-  }
-
   // Slot provider change resets model to first available
   function handleSlotProviderChange(slotId: string, providerId: string) {
     const provider = config?.providers.find((p) => p.id === providerId);
