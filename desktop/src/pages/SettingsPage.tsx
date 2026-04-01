@@ -12,8 +12,6 @@ import {
   type ModelInfo,
   type SlotAssignment,
 } from "../api";
-import DataCard from "../components/DataCard";
-import EmptyState from "../components/EmptyState";
 
 const SLOT_ORDER = [
   "main_conversation",
@@ -211,16 +209,14 @@ export default function SettingsPage() {
 
       {error && <div className="routing-error">{error}</div>}
 
-      <DataCard
-        title="Provider 注册"
-        className="stagger-1"
-        actions={
-          <button className="btn btn-sm" onClick={openAdd}>
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+          <p className="card-title" style={{ margin: 0 }}>Provider 注册</p>
+          <button className="btn btn-sm btn-ghost" onClick={openAdd}>
             <Plus size={13} />
             添加 Provider
           </button>
-        }
-      >
+        </div>
         {showForm && (
           <div className="routing-form">
             <div className="routing-form-head">
@@ -283,7 +279,7 @@ export default function SettingsPage() {
         )}
 
         {!config || config.providers.length === 0 ? (
-          <EmptyState message="尚未添加任何 Provider。" />
+          <p className="empty-hint">尚未添加任何 Provider。</p>
         ) : (
           <div className="list-stack">
             {config.providers.map((p) => (
@@ -306,7 +302,7 @@ export default function SettingsPage() {
                     <Pencil size={13} />
                   </button>
                   <button
-                    className="btn btn-sm btn-icon btn-danger-soft"
+                    className="btn btn-sm btn-icon btn-danger"
                     onClick={() => void handleDelete(p.id)}
                     title="删除"
                   >
@@ -317,11 +313,12 @@ export default function SettingsPage() {
             ))}
           </div>
         )}
-      </DataCard>
+      </div>
 
-      <DataCard title="模型分配" className="stagger-2">
+      <div className="card">
+        <p className="card-title">模型分配</p>
         {!config || config.providers.length === 0 ? (
-          <EmptyState message="请先添加至少一个 Provider。" />
+          <p className="empty-hint">请先添加至少一个 Provider。</p>
         ) : (
           <div className="routing-slots">
             {SLOT_ORDER.map((slotId) => {
@@ -365,7 +362,7 @@ export default function SettingsPage() {
             </p>
           </div>
         )}
-      </DataCard>
+      </div>
     </div>
   );
 }

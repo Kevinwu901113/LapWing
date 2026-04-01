@@ -3,8 +3,6 @@ import {
   getChats, getTasks, getTask,
   type ChatSummary, type TaskSummary, type TaskDetail,
 } from "../api";
-import DataCard from "../components/DataCard";
-import EmptyState from "../components/EmptyState";
 
 function formatDate(v: string | null) {
   return v ? new Date(v).toLocaleString("zh-CN") : "—";
@@ -55,46 +53,51 @@ export default function TasksPage() {
         </select>
       </header>
 
-      <div className="two-col">
-        <DataCard title={`任务列表 (${tasks.length})`} className="stagger-1">
+      <div className="stat-grid-2">
+        <div className="card">
+          <p className="card-title">任务列表 ({tasks.length})</p>
           {tasks.length === 0 ? (
-            <EmptyState message="暂无任务记录。" />
+            <p className="empty-hint">暂无任务记录。</p>
           ) : (
-            <div className="list-stack">
+            <div>
               {tasks.map((task) => (
                 <div
                   key={task.task_id}
-                  className={`task-row ${selectedId === task.task_id ? "task-row--active" : ""}`}
                   onClick={() => setSelectedId(task.task_id)}
+                  style={{
+                    padding: "8px 0",
+                    borderBottom: "1px solid var(--border)",
+                    cursor: "pointer",
+                    background: selectedId === task.task_id ? "var(--bg-hover, rgba(255,255,255,0.05))" : "transparent",
+                  }}
                 >
-                  <p className="task-row-id">{task.task_id}</p>
-                  <p className="task-row-text">{task.text || "（无文本）"}</p>
-                  <span className="list-row-muted">
+                  <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)" }}>{task.task_id}</p>
+                  <p style={{ margin: "2px 0", fontSize: 13, color: "var(--text-primary)" }}>{task.text || "（无文本）"}</p>
+                  <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
                     {task.status} · {formatDate(task.updated_at ?? null)}
                   </span>
                 </div>
               ))}
             </div>
           )}
-        </DataCard>
+        </div>
 
-        <DataCard title="任务详情" className="stagger-2">
+        <div className="card">
+          <p className="card-title">任务详情</p>
           {!detail ? (
-            <EmptyState message="选择左侧任务查看详情。" />
+            <p className="empty-hint">选择左侧任务查看详情。</p>
           ) : (
-            <div className="task-detail">
-              <div className="task-detail-header">
-                <strong>{detail.task_id}</strong>
-                <span className={`task-status task-status--${detail.status}`}>
-                  {detail.status}
-                </span>
+            <div>
+              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+                <strong style={{ fontSize: 13, color: "var(--text-primary)" }}>{detail.task_id}</strong>
+                <span className="badge badge-accent">{detail.status}</span>
               </div>
-              <pre className="task-detail-events">
+              <pre style={{ margin: 0, fontSize: 11, color: "var(--text-secondary)", whiteSpace: "pre-wrap", overflowY: "auto", maxHeight: 400 }}>
                 {JSON.stringify(detail.events, null, 2)}
               </pre>
             </div>
           )}
-        </DataCard>
+        </div>
       </div>
     </div>
   );

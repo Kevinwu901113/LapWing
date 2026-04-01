@@ -430,3 +430,156 @@ export function reloadModelRouting() {
     body: JSON.stringify({}),
   });
 }
+
+// ===== New types for redesign =====
+
+export type SystemStats = {
+  cpu_percent: number;
+  cpu_model: string;
+  memory_total_gb: number;
+  memory_used_gb: number;
+  memory_percent: number;
+  disk_total_gb: number;
+  disk_used_gb: number;
+  disk_percent: number;
+};
+
+export type ApiUsageProvider = {
+  name: string;
+  used: number;
+  limit: number;
+  unit: string;
+};
+export type ApiUsage = { providers: ApiUsageProvider[] };
+
+export type HeartbeatActionState = {
+  name: string;
+  beat_types: string[];
+  selection_mode: string;
+  enabled: boolean;
+  last_run?: string | null;
+  history_24h?: number[];
+};
+export type HeartbeatStatus = {
+  actions: HeartbeatActionState[];
+  interval_seconds: number;
+};
+
+export type PlatformConfig = {
+  telegram?: { enabled: boolean; token_preview?: string; proxy_url?: string; kevin_id?: string };
+  qq?: { enabled: boolean; ws_url?: string; self_id?: string; kevin_id?: string; group_ids?: string[]; cooldown_seconds?: number };
+  desktop?: { enabled: boolean; token_preview?: string };
+};
+
+export type FeatureFlag = { key: string; label: string; description?: string; enabled: boolean };
+export type FeatureFlags = { flags: FeatureFlag[] };
+
+export type ChangelogEntry = { date: string; summary: string; content: string };
+export type Changelog = { entries: ChangelogEntry[] };
+
+export type ConversationSummary = { filename: string; date: string; content: string };
+export type ConversationSummaries = { items: ConversationSummary[] };
+
+export type KnowledgeNote = { topic: string; content: string; updated_at: string };
+export type KnowledgeNotes = { items: KnowledgeNote[] };
+
+export type ScheduledTask = {
+  id: string;
+  title: string;
+  description?: string;
+  status: "pending" | "running" | "completed";
+  scheduled_at?: string;
+  recurrence?: string;
+  created_at?: string;
+};
+export type ScheduledTasks = { tasks: ScheduledTask[] };
+
+export type LogLine = {
+  timestamp: string;
+  level: string;
+  logger: string;
+  message: string;
+};
+export type LogLines = { lines: LogLine[] };
+
+export type ChatMessage = {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  timestamp: string;
+  toolCalls?: ToolCallInfo[];
+};
+
+export type ToolCallInfo = {
+  name: string;
+  status: "running" | "done" | "error";
+  duration_ms?: number;
+};
+
+export type ToolStatusInfo = {
+  phase: "thinking" | "searching" | "executing" | "done";
+  text: string;
+  toolName?: string;
+};
+
+// New endpoint function stubs (implementations in Step 12):
+export function getSystemStats(): Promise<SystemStats> {
+  return fetchJson<SystemStats>("/api/system/stats");
+}
+export function getApiUsage(): Promise<ApiUsage> {
+  return fetchJson<ApiUsage>("/api/system/api-usage");
+}
+export function getHeartbeatStatus(): Promise<HeartbeatStatus> {
+  return fetchJson<HeartbeatStatus>("/api/heartbeat/status");
+}
+export function getPlatformConfig(): Promise<PlatformConfig> {
+  return fetchJson<PlatformConfig>("/api/config/platforms");
+}
+export function getFeatureFlags(): Promise<FeatureFlags> {
+  return fetchJson<FeatureFlags>("/api/config/features");
+}
+export function getPersonaFiles(): Promise<Record<string, string>> {
+  return fetchJson<Record<string, string>>("/api/persona/files");
+}
+export function updatePersonaFile(name: string, content: string): Promise<{ success: boolean }> {
+  return fetchJson<{ success: boolean }>(`/api/persona/files/${name}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content }),
+  });
+}
+export function getChangelog(): Promise<Changelog> {
+  return fetchJson<Changelog>("/api/persona/changelog");
+}
+export function getConversationSummaries(): Promise<ConversationSummaries> {
+  return fetchJson<ConversationSummaries>("/api/memory/summaries");
+}
+export function getKnowledgeNotes(): Promise<KnowledgeNotes> {
+  return fetchJson<KnowledgeNotes>("/api/knowledge/notes");
+}
+export function deleteKnowledgeNote(topic: string): Promise<{ success: boolean }> {
+  return fetchJson<{ success: boolean }>(`/api/knowledge/notes/${encodeURIComponent(topic)}`, {
+    method: "DELETE",
+  });
+}
+export function getScheduledTasks(): Promise<ScheduledTasks> {
+  return fetchJson<ScheduledTasks>("/api/scheduled-tasks");
+}
+export function deleteScheduledTask(id: string): Promise<{ success: boolean }> {
+  return fetchJson<{ success: boolean }>(`/api/scheduled-tasks/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+}
+export function getRecentLogs(lines?: number, level?: string): Promise<LogLines> {
+  const params = new URLSearchParams();
+  if (lines) params.set("lines", String(lines));
+  if (level) params.set("level", level);
+  return fetchJson<LogLines>(`/api/logs/recent?${params}`);
+}
+export function createDesktopToken(bootstrapToken: string): Promise<{ token: string }> {
+  return fetchJson<{ token: string }>("/api/auth/desktop-token", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ bootstrap_token: bootstrapToken }),
+  });
+}

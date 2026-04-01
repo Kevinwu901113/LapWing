@@ -4,9 +4,6 @@ import {
   getChats, getInterests, getMemory, deleteMemory,
   type ChatSummary, type InterestItem, type MemoryItem,
 } from "../api";
-import DataCard from "../components/DataCard";
-import BarMeter from "../components/BarMeter";
-import EmptyState from "../components/EmptyState";
 
 function formatDate(v: string | null) {
   return v ? new Date(v).toLocaleString("zh-CN") : "暂无";
@@ -47,9 +44,9 @@ export default function MemoryPage() {
           <p className="page-subtitle">管理 Lapwing 的记忆和兴趣图谱</p>
         </div>
         <select
-          className="chat-selector"
           value={chatId}
           onChange={(e) => setChatId(e.target.value)}
+          style={{ background: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 4, padding: "4px 8px", fontSize: 13, color: "var(--text-primary)" }}
         >
           {chats.map((c) => (
             <option key={c.chat_id} value={c.chat_id}>{c.chat_id}</option>
@@ -57,43 +54,38 @@ export default function MemoryPage() {
         </select>
       </header>
 
-      {/* 双列布局 */}
-      <div className="two-col">
-        {/* 兴趣图谱 */}
-        <DataCard title="兴趣图谱" className="stagger-1">
+      <div className="stat-grid-2">
+        <div className="card">
+          <p className="card-title">兴趣图谱</p>
           {interests.length === 0 ? (
-            <EmptyState message="暂无兴趣记录。" />
+            <p className="empty-hint">暂无兴趣记录。</p>
           ) : (
-            <div className="list-stack">
+            <div>
               {interests.map((item) => (
-                <BarMeter
-                  key={item.topic}
-                  label={item.topic}
-                  value={item.weight}
-                  max={8}
-                />
+                <div key={item.topic} style={{ display: "flex", alignItems: "center", gap: 8, padding: "4px 0" }}>
+                  <span style={{ flex: 1, fontSize: 13, color: "var(--text-primary)" }}>{item.topic}</span>
+                  <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{item.weight}</span>
+                </div>
               ))}
             </div>
           )}
-        </DataCard>
+        </div>
 
-        {/* 记忆列表 */}
-        <DataCard title={`记忆 (${memory.length})`} className="stagger-2">
+        <div className="card">
+          <p className="card-title">记忆 ({memory.length})</p>
           {memory.length === 0 ? (
-            <EmptyState message="当前没有可见记忆。" />
+            <p className="empty-hint">当前没有可见记忆。</p>
           ) : (
-            <div className="list-stack">
+            <div>
               {memory.map((item) => (
-                <div key={item.fact_key} className="memory-row">
-                  <div className="memory-row-content">
-                    <p className="memory-row-key">#{item.index} [{item.fact_key}]</p>
-                    <p className="memory-row-value">{item.fact_value}</p>
-                    <span className="list-row-muted">
-                      更新于 {formatDate(item.updated_at)}
-                    </span>
+                <div key={item.fact_key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 0", borderBottom: "1px solid var(--border)" }}>
+                  <div style={{ flex: 1 }}>
+                    <p style={{ margin: 0, fontSize: 13, fontWeight: 600, color: "var(--text-primary)" }}>#{item.index} [{item.fact_key}]</p>
+                    <p style={{ margin: "2px 0 0", fontSize: 13, color: "var(--text-secondary)" }}>{item.fact_value}</p>
+                    <span style={{ fontSize: 11, color: "var(--text-muted)" }}>更新于 {formatDate(item.updated_at)}</span>
                   </div>
                   <button
-                    className="btn btn-danger-soft btn-sm btn-icon"
+                    className="btn btn-danger btn-sm btn-icon"
                     onClick={() => void handleDelete(item.fact_key)}
                     title="删除"
                   >
@@ -103,7 +95,7 @@ export default function MemoryPage() {
               ))}
             </div>
           )}
-        </DataCard>
+        </div>
       </div>
     </div>
   );

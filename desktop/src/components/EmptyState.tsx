@@ -1,3 +1,0 @@
-export default function EmptyState({ message }: { message: string }) {
-  return <p className="empty-state">{message}</p>;
-}

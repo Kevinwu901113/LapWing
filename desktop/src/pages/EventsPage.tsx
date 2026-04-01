@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { API_BASE, type DesktopEvent } from "../api";
-import DataCard from "../components/DataCard";
 import StatusDot from "../components/StatusDot";
-import EventBadge from "../components/EventBadge";
-import EmptyState from "../components/EmptyState";
 
 const TOOL_UPDATE_THROTTLE_MS = 500;
 const NOTIFIABLE_TYPES = ["interest_proactive", "proactive_message", "reminder_message"];
@@ -19,7 +16,6 @@ export default function EventsPage() {
   const toolUpdateLastSeen = useRef<Record<string, number>>({});
 
   useEffect(() => {
-    // 请求通知权限
     if ("Notification" in window && Notification.permission === "default") {
       void Notification.requestPermission();
     }
@@ -34,7 +30,6 @@ export default function EventsPage() {
     stream.onmessage = (msg) => {
       const event = JSON.parse(msg.data) as DesktopEvent;
 
-      // 工具执行更新节流
       if (event.type === "task.tool_execution_update") {
         const key = event.payload.toolCallId ?? "__global__";
         const now = Date.now();
@@ -45,7 +40,6 @@ export default function EventsPage() {
 
       setEvents((prev) => [event, ...prev].slice(0, 50));
 
-      // 桌面通知
       if (
         NOTIFIABLE_TYPES.includes(event.type) &&
         "Notification" in window &&
@@ -77,16 +71,17 @@ export default function EventsPage() {
         </div>
       </header>
 
-      <DataCard title={`最近事件 (${events.length})`} className="stagger-1">
+      <div className="card">
+        <p className="card-title">最近事件 ({events.length})</p>
         {events.length === 0 ? (
-          <EmptyState message="等待来自 SSE 的事件…" />
+          <p className="empty-hint">等待来自 SSE 的事件…</p>
         ) : (
-          <div className="list-stack">
+          <div>
             {events.map((event, i) => (
-              <div key={`${event.timestamp}-${i}`} className="event-row">
-                <EventBadge type={event.type} />
-                <p className="event-row-text">{event.payload.text ?? "（无文本）"}</p>
-                <span className="list-row-muted">
+              <div key={`${event.timestamp}-${i}`} style={{ padding: "8px 0", borderBottom: "1px solid var(--border)" }}>
+                <span className="badge badge-accent" style={{ fontSize: 11 }}>{event.type}</span>
+                <p style={{ margin: "4px 0 2px", fontSize: 13, color: "var(--text-primary)" }}>{event.payload.text ?? "（无文本）"}</p>
+                <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
                   {event.payload.chat_id ?? "unknown"} · {formatDate(event.timestamp)}
                   {event.payload.task_id ? ` · ${event.payload.task_id}` : ""}
                   {event.payload.tool_name ? ` · ${event.payload.tool_name}` : ""}
@@ -95,7 +90,7 @@ export default function EventsPage() {
             ))}
           </div>
         )}
-      </DataCard>
+      </div>
     </div>
   );
 }
