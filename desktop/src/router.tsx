@@ -7,6 +7,7 @@ import TasksPage from "./pages/TasksPage";
 import AuthPage from "./pages/AuthPage";
 import SettingsPage from "./pages/SettingsPage";
 import ChatPage from "./pages/ChatPage";
+import LogsPage from "./pages/LogsPage";
 
 export const router = createHashRouter([
   {
@@ -20,6 +21,7 @@ export const router = createHashRouter([
       { path: "tasks", element: <TasksPage /> },
       { path: "auth", element: <AuthPage /> },
       { path: "settings", element: <SettingsPage /> },
+      { path: "logs", element: <LogsPage /> },
     ],
   },
 ]);
