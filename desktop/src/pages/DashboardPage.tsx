@@ -20,20 +20,24 @@ export default function DashboardPage() {
   const [systemStats, setSystemStats] = useState<SystemStats | null>(null);
   const [apiUsage, setApiUsage] = useState<ApiUsage | null>(null);
   const [heartbeatStatus, setHeartbeatStatus] = useState<HeartbeatStatus | null>(null);
+  const [heartbeatLoaded, setHeartbeatLoaded] = useState(false);
   const [platformConfig, setPlatformConfig] = useState<PlatformConfig | null>(null);
   const [chats, setChats] = useState<ChatSummary[]>([]);
+  const [fetchError, setFetchError] = useState(false);
 
   // Poll all data every 30s
   useEffect(() => {
     let cancelled = false;
     async function fetchAll() {
-      await Promise.allSettled([
+      const results = await Promise.allSettled([
         getSystemStats().then(d => { if (!cancelled) setSystemStats(d); }),
         getApiUsage().then(d => { if (!cancelled) setApiUsage(d); }),
-        getHeartbeatStatus().then(d => { if (!cancelled) setHeartbeatStatus(d); }),
+        getHeartbeatStatus().then(d => { if (!cancelled) { setHeartbeatStatus(d); setHeartbeatLoaded(true); } }).catch(() => { if (!cancelled) setHeartbeatLoaded(true); }),
         getPlatformConfig().then(d => { if (!cancelled) setPlatformConfig(d); }),
         getChats().then(d => { if (!cancelled) setChats(d); }),
       ]);
+      const allFailed = results.every(r => r.status === "rejected");
+      if (!cancelled) setFetchError(allFailed);
     }
     void fetchAll();
     const timer = setInterval(fetchAll, 30_000);
@@ -59,6 +63,12 @@ export default function DashboardPage() {
 
   return (
     <div className="animate-in">
+      {fetchError && (
+        <div style={{ background: "var(--red-dim)", border: "1px solid var(--red)", borderRadius: "var(--radius-md)", padding: "8px 14px", marginBottom: 16, fontSize: 13, color: "var(--red)" }}>
+          无法连接到后端服务器，显示的数据可能不完整。
+        </div>
+      )}
+
       {/* Row 1 */}
       <div className="stat-grid-4" style={{ marginBottom: 20 }}>
         {/* CPU */}
@@ -104,7 +114,9 @@ export default function DashboardPage() {
             {(apiUsage?.providers ?? []).map(p => (
               <RingChart key={p.name} value={p.used} max={p.limit || 1} label={p.name} unit={p.unit} size={80} />
             ))}
-            {!apiUsage && <span className="text-muted">加载中…</span>}
+            {(!apiUsage || apiUsage.providers.length === 0) && (
+              <span style={{ color: "var(--text-muted)", fontSize: 13 }}>暂无数据</span>
+            )}
           </div>
         </div>
         {/* Conversations */}
@@ -117,7 +129,9 @@ export default function DashboardPage() {
       {/* Row 3 */}
       <div className="card">
         <div className="card-header"><span className="card-title">心跳活动（过去 24 小时）</span></div>
-        {heartbeatStatus ? (
+        {!heartbeatLoaded ? (
+          <p className="empty-hint">加载中…</p>
+        ) : heartbeatStatus && heartbeatStatus.actions.length > 0 ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {heartbeatStatus.actions.map(action => (
               <HeatmapBar
