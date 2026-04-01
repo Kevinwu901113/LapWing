@@ -1,11 +1,9 @@
 import { useEffect, useState } from "react";
 import { Outlet } from "react-router-dom";
 import Sidebar from "./Sidebar";
-import AuthGuard from "./AuthGuard";
 import { getStatus } from "../api";
 
 export default function AppShell() {
-  const [collapsed, setCollapsed] = useState(false);
   const [online, setOnline] = useState(false);
 
   useEffect(() => {
@@ -26,22 +24,11 @@ export default function AppShell() {
   }, []);
 
   return (
-    <AuthGuard>
-      <div style={{
-        display: "flex",
-        minHeight: "100vh",
-      }}>
-        <Sidebar collapsed={collapsed} onToggle={() => setCollapsed(!collapsed)} online={online} />
-        <main style={{
-          flex: 1,
-          marginLeft: collapsed ? "var(--sidebar-collapsed-width)" : "var(--sidebar-width)",
-          padding: "1.5rem 2rem 3rem",
-          transition: "margin-left 0.25s ease",
-          maxWidth: "1100px",
-        }}>
-          <Outlet />
-        </main>
-      </div>
-    </AuthGuard>
+    <div style={{ display: "flex", minHeight: "100vh" }}>
+      <Sidebar online={online} />
+      <main className="app-main">
+        <Outlet />
+      </main>
+    </div>
   );
 }
