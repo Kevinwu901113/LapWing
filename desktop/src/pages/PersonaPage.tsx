@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import TabBar from "../components/TabBar";
 import MarkdownEditor from "../components/MarkdownEditor";
 import {
@@ -47,6 +47,13 @@ function PersonaEditorLayout({
 }: PersonaEditorLayoutProps) {
   const [saving, setSaving] = useState(false);
   const [savedMsg, setSavedMsg] = useState("");
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current !== null) clearTimeout(timerRef.current);
+    };
+  }, []);
 
   async function handleSave() {
     if (!onSave) return;
@@ -54,7 +61,9 @@ function PersonaEditorLayout({
     try {
       await onSave();
       setSavedMsg("✓ 已保存");
-      setTimeout(() => setSavedMsg(""), 2000);
+      timerRef.current = setTimeout(() => setSavedMsg(""), 2000);
+    } catch {
+      setSavedMsg("保存失败");
     } finally {
       setSaving(false);
     }
@@ -240,8 +249,8 @@ export default function PersonaPage() {
               <p className="empty-hint">暂无进化记录</p>
             ) : (
               <div className="timeline">
-                {changelog.map((entry) => {
-                  const key = entry.date;
+                {changelog.map((entry, i) => {
+                  const key = `${entry.date}-${i}`;
                   const expanded = expandedChangelog === key;
                   return (
                     <div key={key} className="timeline-item">
@@ -309,7 +318,7 @@ export default function PersonaPage() {
                         wordBreak: "break-word",
                       }}
                     >
-                      {expanded ? item.content : preview + (hasMore && !expanded ? "…" : "")}
+                      {expanded ? item.content : preview + (hasMore ? "…" : "")}
                     </pre>
                   </div>
                 );

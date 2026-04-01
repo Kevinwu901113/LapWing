@@ -538,8 +538,8 @@ export function getPlatformConfig(): Promise<PlatformConfig> {
 export function getFeatureFlags(): Promise<FeatureFlags> {
   return fetchJson<FeatureFlags>("/api/config/features");
 }
-export function getPersonaFiles(): Promise<Record<string, string>> {
-  return fetchJson<Record<string, string>>("/api/persona/files");
+export function getPersonaFiles(): Promise<Record<string, string | undefined>> {
+  return fetchJson<Record<string, string | undefined>>("/api/persona/files");
 }
 export function updatePersonaFile(name: string, content: string): Promise<{ success: boolean }> {
   return fetchJson<{ success: boolean }>(`/api/persona/files/${name}`, {
