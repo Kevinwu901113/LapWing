@@ -57,7 +57,7 @@ class TodoAgent(BaseAgent):
             raw = await router.complete(
                 [{"role": "user", "content": prompt}],
                 purpose="tool",
-                max_tokens=320,
+                max_tokens=512,
                 session_key=f"chat:{chat_id}",
                 origin="agent.todo.parse",
             )
@@ -70,9 +70,20 @@ class TodoAgent(BaseAgent):
         try:
             data = json.loads(text)
         except json.JSONDecodeError:
-            return {"action": "error", "reason": "我这次没看懂待办/提醒操作，你可以再说得明确一点。"}
+            # 模型可能在 JSON 前后附加了说明文字，尝试从文本中提取第一个完整 JSON 对象
+            match = re.search(r"\{.*\}", text, re.DOTALL)
+            if match:
+                try:
+                    data = json.loads(match.group())
+                except json.JSONDecodeError:
+                    logger.warning(f"[todo] JSON 解析失败（提取后仍无效），raw={raw!r}")
+                    return {"action": "error", "reason": "我这次没看懂待办/提醒操作，你可以再说得明确一点。"}
+            else:
+                logger.warning(f"[todo] JSON 解析失败（无 JSON 对象），raw={raw!r}")
+                return {"action": "error", "reason": "我这次没看懂待办/提醒操作，你可以再说得明确一点。"}
 
         if not isinstance(data, dict):
+            logger.warning(f"[todo] JSON 类型非预期 {type(data)}，raw={raw!r}")
             return {"action": "error", "reason": "我这次没看懂待办/提醒操作，你可以再说得明确一点。"}
         return data
 

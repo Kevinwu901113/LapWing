@@ -62,12 +62,4 @@
 
 {user_message}
 
-## 输出要求
-
-只输出 JSON，不要有任何其他文字。
-
-需要分发时：
-{"agent": "agent_name", "mode": "default|snippet|workspace_patch", "reason": "brief reason"}
-
-不需要分发时：
-{"agent": null}
+请使用 dispatch_decision 工具提交你的判断。

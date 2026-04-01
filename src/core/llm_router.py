@@ -138,6 +138,44 @@ def _safe_parse_json(raw: str | None) -> dict[str, Any]:
     return data if isinstance(data, dict) else {}
 
 
+def _extract_json_from_text(text: str) -> dict[str, Any]:
+    """Fallback：从 LLM 自由文本中提取 JSON。
+
+    处理 <think> 块、markdown code fence、多余前缀等干扰。
+    用于 MiniMax 等不支持 forced tool_choice 的模型。
+
+    Raises:
+        ValueError: 所有解析尝试均失败
+    """
+    import re as _re
+
+    # 1. 剥离 <think>...</think> 推理块
+    cleaned = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL).strip()
+    # 2. 剥离 markdown code fence
+    cleaned = _re.sub(r"^```(?:json)?\s*", "", cleaned, flags=_re.MULTILINE)
+    cleaned = _re.sub(r"\s*```$", "", cleaned, flags=_re.MULTILINE).strip()
+    # 3. 直接尝试 json.loads（最理想情况）
+    try:
+        data = json.loads(cleaned)
+        if isinstance(data, dict):
+            logger.debug("_extract_json_from_text: 直接解析成功")
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+    # 4. 正则提取第一个 JSON object（处理前后有多余文字的情况）
+    json_match = _re.search(r"\{.*\}", cleaned, _re.DOTALL)
+    if json_match:
+        try:
+            data = json.loads(json_match.group())
+            if isinstance(data, dict):
+                logger.debug("_extract_json_from_text: 正则提取成功")
+                return data
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    raise ValueError(f"_extract_json_from_text 解析失败: {text[:200]}")
+
+
 def _is_minimax_base_url(base_url: str) -> bool:
     return "minimax" in base_url.lower()
 
@@ -983,6 +1021,140 @@ class LLMRouter:
                 tool_calls=tool_calls,
                 continuation_message=continuation_message,
             )
+
+        return await self._with_routing_retry(
+            purpose=purpose,
+            session_key=session_key,
+            allow_failover=allow_failover,
+            origin=origin,
+            runner=_runner,
+        )
+
+    async def complete_structured(
+        self,
+        messages: list[dict],
+        *,
+        result_schema: dict[str, Any],
+        result_tool_name: str = "submit_result",
+        result_tool_description: str = "提交结构化结果",
+        purpose: str = "chat",
+        max_tokens: int = 1024,
+        session_key: str | None = None,
+        allow_failover: bool = True,
+        origin: str | None = None,
+    ) -> dict[str, Any]:
+        """用 forced tool call 获取结构化 JSON 输出。
+
+        将 result_schema 包装为一个 tool，强制模型调用它，
+        从 tool call arguments 中提取结构化数据。
+
+        Args:
+            messages: 对话消息列表
+            result_schema: JSON Schema（OpenAI function parameters 格式）
+            result_tool_name: 工具名称
+            result_tool_description: 工具描述
+            其余参数同 complete_with_tools
+
+        Returns:
+            解析后的 dict（tool call 的 arguments）
+
+        Raises:
+            ValueError: 模型未返回 tool call 或解析失败
+        """
+        tool_def = {
+            "type": "function",
+            "function": {
+                "name": result_tool_name,
+                "description": result_tool_description,
+                "parameters": result_schema,
+            },
+        }
+
+        return await self._complete_structured_inner(
+            messages=messages,
+            tool_def=tool_def,
+            purpose=purpose,
+            max_tokens=max_tokens,
+            session_key=session_key,
+            allow_failover=allow_failover,
+            origin=origin,
+        )
+
+    async def _complete_structured_inner(
+        self,
+        messages: list[dict],
+        tool_def: dict[str, Any],
+        purpose: str,
+        max_tokens: int,
+        *,
+        session_key: str | None = None,
+        allow_failover: bool = True,
+        origin: str | None = None,
+    ) -> dict[str, Any]:
+        """内部实现：forced tool call 并提取 arguments。"""
+
+        async def _runner(candidate, client, model, api_type):
+            tool_name = tool_def["function"]["name"]
+
+            if api_type == "anthropic":
+                system, anthropic_messages = _split_system_messages(messages)
+                request_kwargs: dict[str, Any] = {
+                    "model": model,
+                    "max_tokens": max_tokens,
+                    "messages": anthropic_messages,
+                    "tools": _normalize_anthropic_tools([tool_def]),
+                    "tool_choice": {"type": "tool", "name": tool_name},
+                }
+                if system is not None:
+                    request_kwargs["system"] = system
+
+                response = await client.messages.create(**request_kwargs)
+                tool_calls = _extract_anthropic_tool_calls(response)
+                if not tool_calls:
+                    raise ValueError("Anthropic 未返回 tool call")
+                return tool_calls[0].arguments
+
+            if api_type == "openai_codex":
+                account_id = self._ensure_openai_codex_candidate(candidate, purpose=purpose)
+                turn = await self._codex_runtime.complete(
+                    model=model,
+                    messages=messages,
+                    tools=[tool_def],
+                    access_token=candidate.auth_value,
+                    account_id=account_id,
+                )
+                if not turn.tool_calls:
+                    raise ValueError("Codex 未返回 tool call")
+                return turn.tool_calls[0].arguments
+
+            # OpenAI-compatible (MiniMax, GLM, etc.)
+            request_kwargs = {
+                "model": model,
+                "max_tokens": max_tokens,
+                "messages": messages,
+                "tools": _normalize_openai_tools([tool_def]),
+                "tool_choice": {
+                    "type": "function",
+                    "function": {"name": tool_name},
+                },
+            }
+            request_kwargs = self._normalize_minimax_openai_request(purpose, request_kwargs)
+            response = await client.chat.completions.create(**request_kwargs)
+
+            if not response.choices:
+                raise ValueError("OpenAI-compatible 未返回 choices")
+
+            message = response.choices[0].message
+            tool_calls, _ = _extract_openai_tool_calls(message)
+            if tool_calls:
+                return tool_calls[0].arguments
+
+            # Fallback：MiniMax 等不支持 forced tool_choice 的模型
+            text = _normalize_openai_message_content(message.content)
+            if not text:
+                raise ValueError("模型未返回 tool call 且无文本输出")
+
+            return _extract_json_from_text(text)
 
         return await self._with_routing_retry(
             purpose=purpose,

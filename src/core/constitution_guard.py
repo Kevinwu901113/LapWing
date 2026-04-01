@@ -1,8 +1,6 @@
 """宪法校验器 — 在进化和规则更新时强制检查是否违反宪法。"""
 
-import json
 import logging
-import re
 
 from config.settings import CONSTITUTION_PATH
 from src.core.prompt_loader import load_prompt
@@ -20,6 +18,22 @@ _FORBIDDEN_SELF_REFERENCES = [
     "我是程序", "我是机器人", "我是助手", "我是虚拟助手",
     "I am an AI", "As an AI", "I'm an AI",
 ]
+
+_CONSTITUTION_CHECK_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "approved": {
+            "type": "boolean",
+            "description": "true = 不违反宪法，false = 违反",
+        },
+        "violations": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "被违反的宪法条款及原因，无违反则为空数组",
+        },
+    },
+    "required": ["approved", "violations"],
+}
 
 
 class ConstitutionGuard:
@@ -78,27 +92,20 @@ class ConstitutionGuard:
         )
 
         try:
-            response = await self._router.complete(
+            result = await self._router.complete_structured(
                 [{"role": "user", "content": prompt}],
+                result_schema=_CONSTITUTION_CHECK_SCHEMA,
+                result_tool_name="constitution_verdict",
+                result_tool_description="提交宪法校验结果",
                 purpose="chat",
                 max_tokens=512,
                 session_key="system:constitution_guard",
                 origin="core.constitution_guard",
             )
-            return self._parse_validation(response)
-        except Exception as exc:
-            logger.error(f"宪法校验 LLM 调用失败: {exc}")
-            return {"approved": False, "violations": [f"校验失败: {exc}"]}
-
-    def _parse_validation(self, text: str) -> dict:
-        try:
-            cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.MULTILINE)
-            cleaned = re.sub(r"\s*```$", "", cleaned.strip(), flags=re.MULTILINE).strip()
-            data = json.loads(cleaned)
             return {
-                "approved": bool(data.get("approved", False)),
-                "violations": list(data.get("violations", [])),
+                "approved": bool(result.get("approved", False)),
+                "violations": list(result.get("violations", [])),
             }
-        except Exception:
-            logger.warning(f"宪法校验结果解析失败: {text[:200]}")
-            return {"approved": False, "violations": ["校验结果解析失败"]}
+        except Exception as exc:
+            logger.error(f"宪法校验失败: {exc}")
+            return {"approved": False, "violations": [f"校验失败: {exc}"]}

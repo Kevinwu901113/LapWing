@@ -33,6 +33,22 @@ _SHELL_COMMAND_PATTERNS = [
 
 _VALID_AGENT_MODES: set[str] = {"default", "snippet", "workspace_patch"}
 
+_DISPATCH_DECISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "agent": {
+            "type": ["string", "null"],
+            "description": "要调用的 agent 名称，或 null 表示不需要 agent",
+        },
+        "mode": {
+            "type": "string",
+            "enum": ["auto", "confirm", "plan"],
+            "description": "执行模式",
+        },
+    },
+    "required": ["agent"],
+}
+
 
 @dataclass(frozen=True)
 class DispatchDecision:
@@ -131,42 +147,28 @@ class AgentDispatcher:
             .replace("{available_agents}", agents_json)
             .replace("{user_message}", user_message)
         )
-        raw = await self._router.complete(
-            [{"role": "user", "content": prompt}],
-            purpose="tool",
-            max_tokens=512,
-            session_key=f"chat:{chat_id}",
-            origin="core.dispatcher.classify",
-        )
-        return self._parse_decision(raw)
-
-    def _parse_decision(self, raw: str) -> DispatchDecision | None:
-        """防御性解析 LLM 返回的决策 JSON。
-
-        Returns:
-            DispatchDecision，或 None（解析失败或 agent 为 null）。
-        """
-        if raw is None:
-            return None
-        # 去除 markdown 代码块标记
-        text = re.sub(r"^```(?:json)?\s*", "", raw.strip(), flags=re.MULTILINE)
-        text = re.sub(r"\s*```$", "", text.strip(), flags=re.MULTILINE).strip()
         try:
-            data = json.loads(text)
-        except (json.JSONDecodeError, ValueError):
+            result = await self._router.complete_structured(
+                [{"role": "user", "content": prompt}],
+                result_schema=_DISPATCH_DECISION_SCHEMA,
+                result_tool_name="dispatch_decision",
+                result_tool_description="决定将用户请求分派给哪个 agent",
+                purpose="tool",
+                max_tokens=512,
+                session_key=f"chat:{chat_id}",
+                origin="core.dispatcher.classify",
+            )
+        except Exception:
             return None
-        if not isinstance(data, dict):
-            return None
-        agent = data.get("agent")
-        if agent is None:
-            return None
-        if not isinstance(agent, str):
+
+        agent = result.get("agent")
+        if not agent or not isinstance(agent, str):
             return None
         agent_name = agent.strip()
         if not agent_name:
             return None
 
-        mode_raw = data.get("mode")
+        mode_raw = result.get("mode")
         if isinstance(mode_raw, str) and mode_raw.strip() in _VALID_AGENT_MODES:
             mode: AgentMode = mode_raw.strip()  # type: ignore[assignment]
         else:

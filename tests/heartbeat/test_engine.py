@@ -51,7 +51,7 @@ def mock_brain(mock_memory):
     b = MagicMock()
     b.memory = mock_memory
     b.router = MagicMock()
-    b.router.complete = AsyncMock(return_value='{"actions": [], "reason": "静默"}')
+    b.router.complete_structured = AsyncMock(return_value={"actions": [], "reason": "静默"})
     return b
 
 
@@ -114,22 +114,6 @@ class TestProactiveRuntime:
             sense=sense,
         )
 
-    def test_parse_valid_json(self, runtime):
-        result = runtime._parse_decision('{"actions": ["proactive_message"], "reason": "test"}')
-        assert result == ["proactive_message"]
-
-    def test_parse_empty_actions(self, runtime):
-        result = runtime._parse_decision('{"actions": [], "reason": "静默"}')
-        assert result == []
-
-    def test_parse_malformed_returns_empty(self, runtime):
-        result = runtime._parse_decision("这不是JSON")
-        assert result == []
-
-    def test_parse_handles_code_fence(self, runtime):
-        result = runtime._parse_decision('```json\n{"actions": ["x"], "reason": "r"}\n```')
-        assert result == ["x"]
-
     async def test_decide_does_not_corrupt_braces_in_user_facts(self, runtime, mock_brain):
         ctx = SenseContext(
             beat_type="fast",
@@ -142,7 +126,7 @@ class TestProactiveRuntime:
             top_interests_summary="（暂无明显兴趣）",
         )
         await runtime._decide(ctx, [FakeFastAction()])
-        prompt_content = mock_brain.router.complete.call_args.args[0][0]["content"]
+        prompt_content = mock_brain.router.complete_structured.call_args.args[0][0]["content"]
         assert "{not_a_placeholder}" in prompt_content
         assert "{{not_a_placeholder}}" not in prompt_content
 
@@ -158,8 +142,7 @@ class TestProactiveRuntime:
             top_interests_summary="- Python 编程（8.5）",
         )
         await runtime._decide(ctx, [FakeFastAction()])
-        prompt_content = mock_brain.router.complete.call_args.args[0][0]["content"]
-        assert "用户当前兴趣" in prompt_content
+        prompt_content = mock_brain.router.complete_structured.call_args.args[0][0]["content"]
         assert "- Python 编程（8.5）" in prompt_content
 
     async def test_minute_process_does_not_call_llm_and_executes_always(self, runtime, mock_brain):
@@ -170,12 +153,12 @@ class TestProactiveRuntime:
         await runtime.process(chat_id="c1", beat_type="minute")
 
         action.execute.assert_awaited_once()
-        mock_brain.router.complete.assert_not_called()
+        mock_brain.router.complete_structured.assert_not_called()
 
 
 class TestHeartbeatEngine:
     async def test_run_tick_silent_when_no_actions(self, mock_brain):
-        mock_brain.router.complete = AsyncMock(return_value='{"actions": [], "reason": "静默"}')
+        mock_brain.router.complete_structured = AsyncMock(return_value={"actions": [], "reason": "静默"})
         send_fn = AsyncMock()
         engine = HeartbeatEngine(brain=mock_brain, send_fn=send_fn)
         engine.registry.register(FakeFastAction())

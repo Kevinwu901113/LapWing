@@ -10,7 +10,7 @@ from src.core.dispatcher import AgentDispatcher
 # ---- 测试用 Mock Agent ----
 
 class MockSearchAgent(BaseAgent):
-    # 使用 researcher，模拟“深度研究任务”分发目标
+    # 使用 researcher，模拟"深度研究任务"分发目标
     name = "researcher"
     description = "搜索信息"
     capabilities = ["web_search"]
@@ -39,12 +39,10 @@ class TestE2EDispatch:
         agent_registry.register(MockSearchAgent())
 
         router = AsyncMock()
-        router.complete = AsyncMock(
-            side_effect=[
-                '{"agent": "researcher", "mode": "default", "reason": "用户要求深度研究"}',
-                "Lapwing润色后的结果",
-            ]
+        router.complete_structured = AsyncMock(
+            return_value={"agent": "researcher", "mode": "default"}
         )
+        router.complete = AsyncMock(return_value="Lapwing润色后的结果")
 
         # 构建 memory mock
         memory = AsyncMock()
@@ -62,8 +60,9 @@ class TestE2EDispatch:
         # 验证结果是经人格格式化后的文本
         assert result == "Lapwing润色后的结果"
 
-        # 一次分类 + 一次人格格式化
-        assert router.complete.call_count == 2
+        # 一次分类（complete_structured）+ 一次人格格式化（complete）
+        assert router.complete_structured.call_count == 1
+        assert router.complete.call_count == 1
 
     async def test_empty_registry_bypasses_llm_completely(self):
         """空注册表时，dispatcher 直接返回 None，完全不调用 LLM（零开销验证）。"""
@@ -86,5 +85,5 @@ class TestE2EDispatch:
         # 验证返回 None（回退到正常对话）
         assert result is None
 
-        # 验证 router.complete 从未被调用（零开销）
-        router.complete.assert_not_called()
+        # 验证 router.complete_structured 从未被调用（零开销）
+        router.complete_structured.assert_not_called()

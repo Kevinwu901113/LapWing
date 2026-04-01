@@ -20,9 +20,8 @@
 
 ## 固定输出结构
 
-严格输出一个 JSON 对象，不要输出任何解释文字：
+严格输出一个 JSON 对象，不要任何解释文字、前缀或后缀，直接输出 JSON：
 
-```json
 {
   "domain": "todo",
   "action": "add",
@@ -36,7 +35,6 @@
   "time_of_day": null,
   "reason": null
 }
-```
 
 ## 字段规范
 

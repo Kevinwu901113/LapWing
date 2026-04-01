@@ -1,9 +1,7 @@
 """Diff-based 人格进化引擎。"""
 
 import asyncio
-import json
 import logging
-import re
 import shutil
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -20,6 +18,43 @@ from src.core.prompt_loader import load_prompt
 logger = logging.getLogger("lapwing.evolution_engine")
 
 _BACKUP_DIR = DATA_DIR / "backups" / "soul"
+
+_EVOLUTION_DIFF_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "diffs": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["add", "modify", "remove"],
+                    },
+                    "location": {
+                        "type": "string",
+                        "description": "被修改的原文片段（modify/remove时需精确匹配）",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "新内容（add/modify时填写）",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "用一句自然的话说这次改了什么",
+                    },
+                },
+                "required": ["action", "description"],
+            },
+            "description": "提议的变更列表",
+        },
+        "summary": {
+            "type": "string",
+            "description": "用一句随意的话总结这次变化",
+        },
+    },
+    "required": ["diffs", "summary"],
+}
 
 
 class EvolutionEngine:
@@ -55,8 +90,11 @@ class EvolutionEngine:
         )
 
         try:
-            raw = await self._router.complete(
+            changes = await self._router.complete_structured(
                 [{"role": "user", "content": prompt}],
+                result_schema=_EVOLUTION_DIFF_SCHEMA,
+                result_tool_name="submit_evolution",
+                result_tool_description="提交人格进化 diff",
                 purpose="chat",
                 max_tokens=2048,
                 session_key="system:evolution_engine",
@@ -65,14 +103,11 @@ class EvolutionEngine:
         except Exception as exc:
             return {"success": False, "error": f"LLM 调用失败: {exc}"}
 
-        # 3. 解析 diff
-        changes = self._parse_diff(raw)
-        if not changes.get("diffs"):
-            summary = changes.get("summary", "无变更")
-            return {"success": False, "error": f"无有效变更: {summary}"}
-
-        diffs = changes["diffs"]
+        diffs = changes.get("diffs", [])
         summary = changes.get("summary", "")
+
+        if not diffs:
+            return {"success": False, "error": f"无有效变更: {summary}"}
 
         # 4. 数量检查（宪法：最多5处）
         if len(diffs) > 5:
@@ -141,21 +176,6 @@ class EvolutionEngine:
             return {"success": True, "reverted_to": latest.name}
         except Exception as exc:
             return {"success": False, "error": f"回滚失败: {exc}"}
-
-    def _parse_diff(self, text: str) -> dict:
-        """解析 LLM 返回的 diff JSON。"""
-        try:
-            match = re.search(r"\{.*\}", text, re.DOTALL)
-            if not match:
-                return {"diffs": [], "summary": "无法解析"}
-            data = json.loads(match.group())
-            return {
-                "diffs": data.get("diffs", []),
-                "summary": data.get("summary", ""),
-            }
-        except Exception as exc:
-            logger.warning(f"解析进化 diff 失败: {exc}")
-            return {"diffs": [], "summary": "解析失败"}
 
     def _apply_diffs(self, soul: str, diffs: list[dict]) -> str:
         """将 diff 应用到 soul 文本。

@@ -23,14 +23,4 @@
 - 微调措辞、追加小段内容通常是允许的
 - 如果变更只是让描述更准确或更丰富，通常不违规
 
-输出严格 JSON，不要有其他文字：
-
-```json
-{{"approved": true, "violations": []}}
-```
-
-或者：
-
-```json
-{{"approved": false, "violations": ["违反了[具体哪条]，因为[原因]"]}}
-```
+请使用 constitution_verdict 工具提交你的判断。

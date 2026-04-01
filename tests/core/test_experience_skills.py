@@ -72,7 +72,7 @@ def _make_skill_file(tmp_path: Path, category: str = "research", skill_id: str =
 
 def _make_manager(tmp_path: Path) -> ExperienceSkillManager:
     router = MagicMock()
-    router.complete = AsyncMock(return_value='{"selected": []}')
+    router.complete_structured = AsyncMock(return_value={"selected": []})
     return ExperienceSkillManager(
         skills_dir=tmp_path / "skills",
         traces_dir=tmp_path / "traces",
@@ -421,7 +421,7 @@ async def test_index_match_selects_relevant(tmp_path):
     (cat_dir / "test_skill.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
 
     router = MagicMock()
-    router.complete = AsyncMock(return_value='{"selected": ["test_skill"]}')
+    router.complete_structured = AsyncMock(return_value={"selected": ["test_skill"]})
 
     mgr = ExperienceSkillManager(
         skills_dir=skills_dir,
@@ -444,7 +444,7 @@ async def test_index_match_handles_llm_failure(tmp_path):
     (cat_dir / "test_skill.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
 
     router = MagicMock()
-    router.complete = AsyncMock(side_effect=Exception("LLM unavailable"))
+    router.complete_structured = AsyncMock(side_effect=Exception("LLM unavailable"))
 
     mgr = ExperienceSkillManager(
         skills_dir=skills_dir,
@@ -458,14 +458,14 @@ async def test_index_match_handles_llm_failure(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_index_match_handles_invalid_json(tmp_path):
+async def test_index_match_handles_parse_failure(tmp_path):
     skills_dir = tmp_path / "skills"
     cat_dir = skills_dir / "research"
     cat_dir.mkdir(parents=True)
     (cat_dir / "test_skill.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
 
     router = MagicMock()
-    router.complete = AsyncMock(return_value="not valid json at all")
+    router.complete_structured = AsyncMock(side_effect=ValueError("parse failed"))
 
     mgr = ExperienceSkillManager(
         skills_dir=skills_dir,
@@ -486,8 +486,8 @@ async def test_index_match_caps_at_three(tmp_path):
     (cat_dir / "test_skill.md").write_text(VALID_SKILL_CONTENT, encoding="utf-8")
 
     router = MagicMock()
-    router.complete = AsyncMock(
-        return_value='{"selected": ["test_skill", "test_skill", "test_skill", "test_skill"]}'
+    router.complete_structured = AsyncMock(
+        return_value={"selected": ["test_skill", "test_skill", "test_skill", "test_skill"]}
     )
 
     mgr = ExperienceSkillManager(
@@ -507,7 +507,7 @@ async def test_index_match_empty_index(tmp_path):
     skills_dir.mkdir(parents=True)
 
     router = MagicMock()
-    router.complete = AsyncMock(return_value='{"selected": []}')
+    router.complete_structured = AsyncMock(return_value={"selected": []})
 
     mgr = ExperienceSkillManager(
         skills_dir=skills_dir,

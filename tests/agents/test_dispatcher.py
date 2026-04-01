@@ -75,7 +75,7 @@ class TestAgentDispatcher:
         dispatcher = make_dispatcher(registry=AgentRegistry(), router=router)
         result = await dispatcher.try_dispatch("chat1", "帮我搜索一下Python教程")
         assert result is None
-        router.complete.assert_not_called()
+        router.complete_structured.assert_not_called()
 
     # 2. _classify 返回 None 时，try_dispatch 返回 None
     async def test_returns_none_when_classify_returns_null(self):
@@ -83,7 +83,7 @@ class TestAgentDispatcher:
         registry.register(FakeResearcherAgent())
 
         router = AsyncMock()
-        router.complete = AsyncMock(return_value='{"agent": null}')
+        router.complete_structured = AsyncMock(return_value={"agent": None})
 
         dispatcher = make_dispatcher(registry=registry, router=router)
         result = await dispatcher.try_dispatch("chat1", "今天天气怎么样")
@@ -96,12 +96,10 @@ class TestAgentDispatcher:
         registry.register(agent)
 
         router = AsyncMock()
-        router.complete = AsyncMock(
-            side_effect=[
-                '{"agent": "researcher", "mode": "default", "reason": "用户要求深度研究"}',
-                "这是经过人格格式化后的搜索结果。",
-            ]
+        router.complete_structured = AsyncMock(
+            return_value={"agent": "researcher", "mode": "default"}
         )
+        router.complete = AsyncMock(return_value="这是经过人格格式化后的搜索结果。")
 
         dispatcher = make_dispatcher(registry=registry, router=router)
 
@@ -109,8 +107,9 @@ class TestAgentDispatcher:
             result = await dispatcher.try_dispatch("chat1", "请深度研究 Python 教程路线并给总结")
 
         assert result == "这是经过人格格式化后的搜索结果。"
-        # 一次分类 + 一次人格转述
-        assert router.complete.call_count == 2
+        # 一次分类（complete_structured） + 一次人格转述（complete）
+        assert router.complete_structured.call_count == 1
+        assert router.complete.call_count == 1
 
     # 4. needs_persona_formatting=False → 直接返回 content，不调用 _format_with_persona
     async def test_routes_to_agent_without_persona_format(self):
@@ -118,8 +117,8 @@ class TestAgentDispatcher:
         registry.register(FakeCoderAgent())
 
         router = AsyncMock()
-        router.complete = AsyncMock(
-            return_value='{"agent": "coder", "mode": "snippet", "reason": "用户要写代码"}'
+        router.complete_structured = AsyncMock(
+            return_value={"agent": "coder", "mode": "snippet"}
         )
 
         dispatcher = make_dispatcher(registry=registry, router=router)
@@ -128,8 +127,9 @@ class TestAgentDispatcher:
             result = await dispatcher.try_dispatch("chat1", "帮我写一个Python脚本")
 
         assert result == "```python\nprint('hello')\n```"
-        # 只调用了一次（分类），没有调用人格格式化
-        assert router.complete.call_count == 1
+        # 只调用了一次分类，没有调用人格格式化
+        assert router.complete_structured.call_count == 1
+        router.complete.assert_not_called()
 
     # 5. classify 返回未知 agent 名称 → 返回 None
     async def test_returns_none_when_agent_not_found(self):
@@ -137,7 +137,7 @@ class TestAgentDispatcher:
         registry.register(FakeResearcherAgent())
 
         router = AsyncMock()
-        router.complete = AsyncMock(return_value='{"agent": "nonexistent_agent"}')
+        router.complete_structured = AsyncMock(return_value={"agent": "nonexistent_agent"})
 
         dispatcher = make_dispatcher(registry=registry, router=router)
 
@@ -146,13 +146,13 @@ class TestAgentDispatcher:
 
         assert result is None
 
-    # 6. router.complete 抛出异常 → try_dispatch 返回 None（不崩溃）
+    # 6. router.complete_structured 抛出异常 → try_dispatch 返回 None（不崩溃）
     async def test_returns_none_on_llm_failure(self):
         registry = AgentRegistry()
         registry.register(FakeResearcherAgent())
 
         router = AsyncMock()
-        router.complete = AsyncMock(side_effect=Exception("API timeout"))
+        router.complete_structured = AsyncMock(side_effect=Exception("API timeout"))
 
         dispatcher = make_dispatcher(registry=registry, router=router)
 
@@ -173,7 +173,7 @@ class TestAgentDispatcher:
         registry.register(failing_agent)
 
         router = AsyncMock()
-        router.complete = AsyncMock(return_value='{"agent": "researcher"}')
+        router.complete_structured = AsyncMock(return_value={"agent": "researcher"})
 
         dispatcher = make_dispatcher(registry=registry, router=router)
 
@@ -207,7 +207,7 @@ class TestAgentDispatcher:
         memory.get_user_facts = AsyncMock(return_value=facts)
 
         router = AsyncMock()
-        router.complete = AsyncMock(return_value='{"agent": "researcher"}')
+        router.complete_structured = AsyncMock(return_value={"agent": "researcher"})
 
         dispatcher = make_dispatcher(registry=registry, router=router, memory=memory)
 
@@ -232,20 +232,20 @@ class TestAgentDispatcher:
         result = await dispatcher.try_dispatch("chat1", "北京今天天气怎么样")
 
         assert result == "北京当前天气晴朗"
-        router.complete.assert_not_called()
+        router.complete_structured.assert_not_called()
 
     async def test_search_request_no_longer_quick_matches_researcher(self):
         registry = AgentRegistry()
         registry.register(FakeResearcherAgent())
 
         router = AsyncMock()
-        router.complete = AsyncMock(return_value='{"agent": null}')
+        router.complete_structured = AsyncMock(return_value={"agent": None})
         dispatcher = make_dispatcher(registry=registry, router=router)
 
         result = await dispatcher.try_dispatch("chat1", "帮我搜一下华南理工大学最近消息")
 
         assert result is None
-        router.complete.assert_called_once()
+        router.complete_structured.assert_called_once()
 
     async def test_quick_match_routes_todo_without_llm_classify(self):
         registry = AgentRegistry()
@@ -257,7 +257,7 @@ class TestAgentDispatcher:
         result = await dispatcher.try_dispatch("chat1", "列出我的待办")
 
         assert result == "当前待办："
-        router.complete.assert_not_called()
+        router.complete_structured.assert_not_called()
 
     async def test_quick_match_routes_reminder_to_todo_without_llm_classify(self):
         registry = AgentRegistry()
@@ -269,7 +269,7 @@ class TestAgentDispatcher:
         result = await dispatcher.try_dispatch("chat1", "每周提醒我交周报")
 
         assert result == "当前待办："
-        router.complete.assert_not_called()
+        router.complete_structured.assert_not_called()
 
     async def test_shell_like_request_bypasses_file_agent_classification(self):
         registry = AgentRegistry()
@@ -285,66 +285,23 @@ class TestAgentDispatcher:
         registry.register(FakeFileAgent())
 
         router = AsyncMock()
-        router.complete = AsyncMock(return_value='{"agent": "file"}')
+        router.complete_structured = AsyncMock(return_value={"agent": "file"})
 
         dispatcher = make_dispatcher(registry=registry, router=router)
         result = await dispatcher.try_dispatch("chat1", "看看 /home/Lapwing 下有什么文件")
 
         assert result is None
-        router.complete.assert_not_called()
+        router.complete_structured.assert_not_called()
 
     async def test_embedded_absolute_path_also_bypasses_classification(self):
         registry = AgentRegistry()
         registry.register(FakeResearcherAgent())
 
         router = AsyncMock()
-        router.complete = AsyncMock(return_value='{"agent": "researcher"}')
+        router.complete_structured = AsyncMock(return_value={"agent": "researcher"})
 
         dispatcher = make_dispatcher(registry=registry, router=router)
         result = await dispatcher.try_dispatch("chat1", "在/home下新建一个Lapwing文件夹")
 
         assert result is None
-        router.complete.assert_not_called()
-
-    # 9. _parse_decision 正常解析 agent 名称
-    def test_parse_decision_returns_agent_name(self):
-        dispatcher = make_dispatcher()
-        result = dispatcher._parse_decision('{"agent": "researcher"}')
-        assert result is not None
-        assert result.agent_name == "researcher"
-        assert result.mode == "default"
-
-    # 10. _parse_decision 返回 None（agent 为 null）
-    def test_parse_decision_returns_none_for_null(self):
-        dispatcher = make_dispatcher()
-        result = dispatcher._parse_decision('{"agent": null}')
-        assert result is None
-
-    # 11. _parse_decision 正确处理 markdown 代码块包装
-    def test_parse_decision_strips_code_fence(self):
-        dispatcher = make_dispatcher()
-        raw = '```json\n{"agent": "coder", "mode": "workspace_patch", "reason": "用户要写代码"}\n```'
-        result = dispatcher._parse_decision(raw)
-        assert result is not None
-        assert result.agent_name == "coder"
-        assert result.mode == "workspace_patch"
-
-    # 12. _parse_decision 对格式错误的 JSON 返回 None
-    def test_parse_decision_returns_none_for_malformed_json(self):
-        dispatcher = make_dispatcher()
-        result = dispatcher._parse_decision("这不是JSON")
-        assert result is None
-
-    def test_parse_decision_falls_back_to_default_mode_for_invalid_mode(self):
-        dispatcher = make_dispatcher()
-        result = dispatcher._parse_decision('{"agent": "weather", "mode": "invalid"}')
-        assert result is not None
-        assert result.agent_name == "weather"
-        assert result.mode == "default"
-
-    def test_parse_decision_defaults_coder_to_snippet_mode_when_missing_mode(self):
-        dispatcher = make_dispatcher()
-        result = dispatcher._parse_decision('{"agent": "coder"}')
-        assert result is not None
-        assert result.agent_name == "coder"
-        assert result.mode == "snippet"
+        router.complete_structured.assert_not_called()

@@ -22,12 +22,4 @@
 - 如果兴趣信息不明确，不要为了行动而行动
 - 宁可静默，不要过度打扰
 
-## 输出
-
-只输出 JSON：
-
-{{"actions": ["action_name"], "reason": "理由"}}
-
-或静默时：
-
-{{"actions": [], "reason": "暂无需要行动的理由"}}
+请使用 heartbeat_decision 工具提交你的决策。

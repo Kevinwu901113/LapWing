@@ -3,7 +3,6 @@
 import asyncio
 import json
 import logging
-import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -126,6 +125,19 @@ class SenseLayer:
         )
 
 
+_HEARTBEAT_DECISION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "actions": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "要执行的心跳动作列表，空数组表示不执行",
+        },
+    },
+    "required": ["actions"],
+}
+
+
 class ProactiveRuntime:
     """心跳行为编排器：接收 tick，决定并执行 action。"""
 
@@ -197,34 +209,24 @@ class ProactiveRuntime:
             available_actions=json.dumps(payload, ensure_ascii=False),
         )
         try:
-            response = await self._brain.router.complete(
+            result = await self._brain.router.complete_structured(
                 [
                     {"role": "system", "content": prompt},
                     {"role": "user", "content": "请做出判断"},
                 ],
+                result_schema=_HEARTBEAT_DECISION_SCHEMA,
+                result_tool_name="heartbeat_decision",
+                result_tool_description="提交心跳决策",
                 purpose="heartbeat",
                 max_tokens=256,
                 session_key=f"chat:{ctx.chat_id}",
                 origin=f"heartbeat.decision.{ctx.beat_type}",
             )
-            return self._parse_decision(response)
+            actions = result.get("actions", [])
+            return [a for a in actions if isinstance(a, str)]
         except Exception as exc:
             logger.warning(f"[{ctx.chat_id}] 心跳决策失败: {exc}")
             return []
-
-    def _parse_decision(self, text: str) -> list[str]:
-        """防御性解析返回的决策 JSON，失败时返回空列表。"""
-
-        try:
-            cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.MULTILINE)
-            cleaned = re.sub(r"\s*```$", "", cleaned.strip(), flags=re.MULTILINE).strip()
-            data = json.loads(cleaned)
-            actions = data.get("actions", [])
-            if isinstance(actions, list):
-                return [a for a in actions if isinstance(a, str)]
-        except Exception:
-            pass
-        return []
 
 
 class HeartbeatEngine:

@@ -25,6 +25,18 @@ _INITIAL_CATEGORIES = ["research", "coding", "daily", "content", "system"]
 _MAX_INJECT_SKILLS = 3
 _SUMMARY_MAX_CHARS = 150
 
+_SKILL_MATCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "selected": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "匹配的 skill ID 列表",
+        },
+    },
+    "required": ["selected"],
+}
+
 
 # ---------------------------------------------------------------------------
 # 数据类
@@ -366,29 +378,19 @@ class ExperienceSkillManager:
                 f"当前任务：{user_request}\n\n"
                 "请从上面选择最相关的 0-3 个经验（按相关度排序）。"
                 "如果没有合适的直接返回空列表。"
-                "只返回 JSON，格式：{{\"selected\": [\"id1\", \"id2\"]}}"
+                "请使用 skill_match 工具提交你的选择。"
             )
 
         try:
-            response = await self._router.complete(
+            parsed = await self._router.complete_structured(
                 messages=[{"role": "user", "content": prompt}],
+                result_schema=_SKILL_MATCH_SCHEMA,
+                result_tool_name="skill_match",
+                result_tool_description="提交匹配的技能 ID 列表",
                 purpose="tool",
             )
         except Exception as exc:
             logger.warning("Level 2 技能匹配 LLM 调用失败: %s", exc)
-            return []
-
-        # 解析响应
-        response_text = response.strip()
-        # 提取 JSON block（可能被 markdown code fence 包裹）
-        json_match = re.search(r"\{.*\}", response_text, re.DOTALL)
-        if not json_match:
-            return []
-
-        try:
-            parsed = json.loads(json_match.group())
-        except json.JSONDecodeError as exc:
-            logger.warning("Level 2 响应 JSON 解析失败: %s — %s", exc, response_text[:200])
             return []
 
         selected_ids = parsed.get("selected", [])

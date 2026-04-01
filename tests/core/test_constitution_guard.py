@@ -47,7 +47,7 @@ class TestValidateEvolution:
         from src.core.constitution_guard import ConstitutionGuard
 
         router = MagicMock()
-        router.complete = AsyncMock(return_value='{"approved": true, "violations": []}')
+        router.complete_structured = AsyncMock(return_value={"approved": True, "violations": []})
         guard = ConstitutionGuard(router)
 
         with patch.object(type(guard), "constitution", new_callable=lambda: property(lambda self: "宪法内容")):
@@ -63,8 +63,8 @@ class TestValidateEvolution:
         from src.core.constitution_guard import ConstitutionGuard
 
         router = MagicMock()
-        router.complete = AsyncMock(
-            return_value='{"approved": false, "violations": ["违反了身份规则"]}'
+        router.complete_structured = AsyncMock(
+            return_value={"approved": False, "violations": ["违反了身份规则"]}
         )
         guard = ConstitutionGuard(router)
 
@@ -81,7 +81,7 @@ class TestValidateEvolution:
         from src.core.constitution_guard import ConstitutionGuard
 
         router = MagicMock()
-        router.complete = AsyncMock(side_effect=RuntimeError("network error"))
+        router.complete_structured = AsyncMock(side_effect=RuntimeError("network error"))
         guard = ConstitutionGuard(router)
 
         with patch.object(type(guard), "constitution", new_callable=lambda: property(lambda self: "宪法内容")):
@@ -90,29 +90,6 @@ class TestValidateEvolution:
                 [{"action": "add", "description": "测试"}],
             )
 
-        assert result["approved"] is False
-        assert len(result["violations"]) > 0
-
-
-class TestParseValidation:
-    def test_parses_valid_json(self):
-        from src.core.constitution_guard import ConstitutionGuard
-        guard = ConstitutionGuard(MagicMock())
-        result = guard._parse_validation('{"approved": true, "violations": []}')
-        assert result == {"approved": True, "violations": []}
-
-    def test_parses_fenced_json(self):
-        from src.core.constitution_guard import ConstitutionGuard
-        guard = ConstitutionGuard(MagicMock())
-        text = '```json\n{"approved": false, "violations": ["违规"]}\n```'
-        result = guard._parse_validation(text)
-        assert result["approved"] is False
-        assert result["violations"] == ["违规"]
-
-    def test_returns_not_approved_on_invalid_json(self):
-        from src.core.constitution_guard import ConstitutionGuard
-        guard = ConstitutionGuard(MagicMock())
-        result = guard._parse_validation("not valid json at all")
         assert result["approved"] is False
         assert len(result["violations"]) > 0
 

@@ -15,37 +15,6 @@ def _make_guard(approved=True, hard_violations=None):
     return guard
 
 
-class TestParseDiff:
-    def test_parses_valid_diff(self, tmp_path):
-        with patch("src.core.evolution_engine.DATA_DIR", tmp_path), \
-             patch("src.core.evolution_engine._BACKUP_DIR", tmp_path / "backups"):
-            from src.core.evolution_engine import EvolutionEngine
-            engine = EvolutionEngine(MagicMock(), MagicMock())
-
-        json_str = '{"diffs": [{"action": "add", "location": "", "content": "新内容", "description": "追加了内容"}], "summary": "小改动"}'
-        result = engine._parse_diff(json_str)
-        assert len(result["diffs"]) == 1
-        assert result["summary"] == "小改动"
-
-    def test_returns_empty_on_no_json(self, tmp_path):
-        with patch("src.core.evolution_engine.DATA_DIR", tmp_path), \
-             patch("src.core.evolution_engine._BACKUP_DIR", tmp_path / "backups"):
-            from src.core.evolution_engine import EvolutionEngine
-            engine = EvolutionEngine(MagicMock(), MagicMock())
-
-        result = engine._parse_diff("没有 JSON 内容")
-        assert result["diffs"] == []
-
-    def test_returns_empty_on_malformed_json(self, tmp_path):
-        with patch("src.core.evolution_engine.DATA_DIR", tmp_path), \
-             patch("src.core.evolution_engine._BACKUP_DIR", tmp_path / "backups"):
-            from src.core.evolution_engine import EvolutionEngine
-            engine = EvolutionEngine(MagicMock(), MagicMock())
-
-        result = engine._parse_diff('{"diffs": [broken')
-        assert result["diffs"] == []
-
-
 class TestApplyDiffs:
     def _make_engine(self, tmp_path):
         with patch("src.core.evolution_engine.DATA_DIR", tmp_path), \
@@ -108,9 +77,9 @@ class TestEvolve:
     async def test_full_evolution_cycle(self, tmp_path):
         soul_path, rules_path, changelog_path, journal_dir, backup_dir = self._patch_paths(tmp_path)
 
-        diff_response = '{"diffs": [{"action": "add", "location": "", "content": "她学会了倾听。", "description": "加了倾听"}], "summary": "微调了一处"}'
+        diff_response = {"diffs": [{"action": "add", "location": "", "content": "她学会了倾听。", "description": "加了倾听"}], "summary": "微调了一处"}
         router = MagicMock()
-        router.complete = AsyncMock(return_value=diff_response)
+        router.complete_structured = AsyncMock(return_value=diff_response)
         guard = _make_guard(approved=True)
 
         with patch("src.core.evolution_engine.SOUL_PATH", soul_path), \
@@ -133,9 +102,9 @@ class TestEvolve:
     async def test_rejects_when_constitution_fails(self, tmp_path):
         soul_path, rules_path, changelog_path, journal_dir, backup_dir = self._patch_paths(tmp_path)
 
-        diff_response = '{"diffs": [{"action": "remove", "location": "白发", "content": "", "description": "删除"}], "summary": "删除了白发"}'
+        diff_response = {"diffs": [{"action": "remove", "location": "白发", "content": "", "description": "删除"}], "summary": "删除了白发"}
         router = MagicMock()
-        router.complete = AsyncMock(return_value=diff_response)
+        router.complete_structured = AsyncMock(return_value=diff_response)
         guard = _make_guard(approved=False)
 
         with patch("src.core.evolution_engine.SOUL_PATH", soul_path), \
@@ -156,9 +125,9 @@ class TestEvolve:
         soul_path, rules_path, changelog_path, journal_dir, backup_dir = self._patch_paths(tmp_path)
 
         diffs = [{"action": "add", "location": "", "content": f"内容{i}", "description": f"改动{i}"} for i in range(6)]
-        diff_response = f'{{"diffs": {__import__("json").dumps(diffs)}, "summary": "太多了"}}'
+        diff_response = {"diffs": diffs, "summary": "太多了"}
         router = MagicMock()
-        router.complete = AsyncMock(return_value=diff_response)
+        router.complete_structured = AsyncMock(return_value=diff_response)
         guard = _make_guard(approved=True)
 
         with patch("src.core.evolution_engine.SOUL_PATH", soul_path), \
@@ -198,9 +167,9 @@ class TestEvolve:
         soul_path, rules_path, changelog_path, journal_dir, backup_dir = self._patch_paths(tmp_path)
         original_content = soul_path.read_text(encoding="utf-8")
 
-        diff_response = '{"diffs": [{"action": "modify", "location": "Lapwing", "content": "Robot", "description": "改名"}], "summary": "改了名字"}'
+        diff_response = {"diffs": [{"action": "modify", "location": "Lapwing", "content": "Robot", "description": "改名"}], "summary": "改了名字"}
         router = MagicMock()
-        router.complete = AsyncMock(return_value=diff_response)
+        router.complete_structured = AsyncMock(return_value=diff_response)
         # LLM approves but hard constraints catch it
         guard = MagicMock()
         guard.validate_evolution = AsyncMock(return_value={"approved": True, "violations": []})

@@ -134,14 +134,15 @@ class LapwingBrain:
 
     def reload_persona(self) -> None:
         """重新加载人格 prompt。"""
-        from src.core.prompt_loader import reload_prompt
+        from src.core.prompt_loader import reload_prompt, clear_cache
+        clear_cache()
         if SOUL_PATH.exists():
             self._system_prompt = SOUL_PATH.read_text(encoding="utf-8")
         else:
             self._system_prompt = reload_prompt("lapwing_soul")
         reload_prompt("lapwing_voice")
         reload_prompt("lapwing_capabilities")
-        logger.info("已重新加载 Lapwing 人格 prompt")
+        logger.info("已重新加载所有 prompt 缓存")
 
     def reload_skills(self) -> None:
         if self.skill_manager is None:
