@@ -46,10 +46,12 @@ class TodoAgent(BaseAgent):
     async def _parse_command(self, chat_id: str, user_message: str, router) -> dict:
         now_local = datetime.now().astimezone()
         today = now_local.strftime("%Y-%m-%d")
+        current_time = now_local.strftime("%H:%M")
         tz_name = now_local.tzname() or "UTC"
         prompt = (
             load_prompt("agent_todo")
             .replace("{today}", today)
+            .replace("{current_time}", current_time)
             .replace("{timezone}", tz_name)
             .replace("{user_message}", user_message)
         )
@@ -57,7 +59,7 @@ class TodoAgent(BaseAgent):
             raw = await router.complete(
                 [{"role": "user", "content": prompt}],
                 slot="agent_execution",
-                max_tokens=320,
+                max_tokens=800,
                 session_key=f"chat:{chat_id}",
                 origin="agent.todo.parse",
             )
@@ -163,6 +165,16 @@ class TodoAgent(BaseAgent):
         content = str(command.get("content") or "").strip()
         if not content:
             return AgentResult(content="要添加提醒的话，请告诉我提醒内容。", needs_persona_formatting=False)
+
+        # 如果 LLM 返回了相对时间，在代码层计算绝对时间
+        relative = command.get("relative_minutes")
+        if relative is not None and command.get("trigger_at") is None:
+            try:
+                minutes = int(relative)
+                trigger_time = datetime.now().astimezone() + timedelta(minutes=minutes)
+                command["trigger_at"] = trigger_time.strftime("%Y-%m-%d %H:%M")
+            except (ValueError, TypeError):
+                pass
 
         recurrence = self._normalize_recurrence(
             command.get("recurrence_type") or command.get("recurrence")

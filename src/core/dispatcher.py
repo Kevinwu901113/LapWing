@@ -25,6 +25,8 @@ _TODO_PATTERNS = [
     r"(?:列出|查看|看看|显示).{0,8}(?:提醒|闹钟)",
     r"(?:取消|删除|移除|关闭).{0,8}(?:提醒|闹钟)",
     r"(?:每天|每周).{0,8}(?:提醒)",
+    r"(?:有什么|有哪些|查看|看看|列出|目前).{0,8}(?:日程|schedule)",
+    r"(?:日程|schedule).{0,8}(?:有什么|有哪些|查看|看看)",
 ]
 _SHELL_COMMAND_PATTERNS = [
     r"\b(?:ls|pwd|cat|mkdir|touch|mv|cp|chmod|chown|find|grep)\b",

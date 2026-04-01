@@ -2,6 +2,7 @@
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -28,6 +29,7 @@ _RECOVERABLE_FAILURES = {"auth", "rate_limit", "timeout", "billing"}
 _MINIMAX_MAX_COMPLETION_TOKENS = MINIMAX_MAX_COMPLETION_TOKENS
 _MINIMAX_DEFAULT_TEMPERATURE = 1.0
 _MINIMAX_DEFAULT_TOP_P = 0.95
+_THINKING_RETRY_COOLDOWN_SECONDS = 30.0
 _MODEL_PURPOSES: tuple[str, ...] = ("chat", "tool", "heartbeat")
 
 # Mapping from new slot names to legacy purposes (for AuthManager)
@@ -404,6 +406,7 @@ class LLMRouter:
         self._model_options: list[ModelOption] = []
         self._model_options_by_ref: dict[str, ModelOption] = {}
         self._model_options_by_alias: dict[str, ModelOption] = {}
+        self._last_error_ts: dict[str, float] = {}
         self._setup_routing()
         self._setup_model_options()
 
@@ -769,7 +772,7 @@ class LLMRouter:
             logger.debug(
                 "[%s] MiniMax OpenAI 参数规范化: "
                 "max_completion_tokens=%s temperature=%s top_p=%s n=%s has_tools=%s",
-                purpose,
+                routing_key,
                 normalized.get("max_completion_tokens"),
                 normalized.get("temperature"),
                 normalized.get("top_p"),
@@ -777,6 +780,20 @@ class LLMRouter:
                 bool(normalized.get("tools")),
             )
         return normalized
+
+    def _debug_log_request(self, label: str, routing_key: str, request_kwargs: dict[str, Any]) -> None:
+        if not logger.isEnabledFor(logging.DEBUG):
+            return
+        logger.debug(
+            "[%s][%s] API request: model=%s max_completion_tokens=%s messages=%d has_tools=%s has_response_format=%s",
+            routing_key,
+            label,
+            request_kwargs.get("model"),
+            request_kwargs.get("max_completion_tokens") or request_kwargs.get("max_tokens"),
+            len(request_kwargs.get("messages", [])),
+            bool(request_kwargs.get("tools")),
+            bool(request_kwargs.get("response_format")),
+        )
 
     def model_for(self, purpose: str, *, session_key: str | None = None) -> str:
         """返回指定 purpose 实际使用的模型名。"""
@@ -869,6 +886,8 @@ class LLMRouter:
                     except Exception as exc:
                         failure_kind = _classify_provider_exception(exc)
                         last_exc = exc
+                        if failure_kind in ("rate_limit", "other"):
+                            self._last_error_ts[effective_key] = time.monotonic()
                         if (
                             failure_kind == "auth"
                             and current_candidate.profile_id
@@ -969,31 +988,41 @@ class LLMRouter:
                 "messages": messages,
             }
             request_kwargs = self._normalize_minimax_openai_request(effective_key, request_kwargs)
+            self._debug_log_request("complete", effective_key, request_kwargs)
             response = await client.chat.completions.create(**request_kwargs)
             if not response.choices:
                 return ""
             content = response.choices[0].message.content or ""
-            stripped = strip_internal_thinking_tags(content)
+            stripped = strip_internal_thinking_tags(content).strip()
             if not stripped and "<think" in content.lower():
-                # 模型把所有 tokens 花在思考上，注入反思考指令并重试
-                retry_max_tokens = max(max_tokens * 3, 1024)
-                logger.info(
-                    "[%s] 响应仅含 thinking 内容，自动重试 max_tokens=%d→%d",
-                    effective_key, max_tokens, retry_max_tokens,
-                )
-                retry_kwargs = {
-                    "model": model,
-                    "max_tokens": retry_max_tokens,
-                    "messages": [
-                        {"role": "system", "content": "不要使用 <think> 标签，直接输出最终内容。"},
-                        *messages,
-                    ],
-                }
-                retry_kwargs = self._normalize_minimax_openai_request(effective_key, retry_kwargs)
-                retry_response = await client.chat.completions.create(**retry_kwargs)
-                if retry_response.choices:
-                    content = retry_response.choices[0].message.content or ""
-                    stripped = strip_internal_thinking_tags(content)
+                # 模型把所有 tokens 花在思考上，检查冷却期后决定是否重试
+                last_err = self._last_error_ts.get(effective_key, 0.0)
+                elapsed = time.monotonic() - last_err
+                if elapsed < _THINKING_RETRY_COOLDOWN_SECONDS:
+                    logger.warning(
+                        "[%s] 响应仅含 thinking 内容，但近期有错误 (%.1fs ago)，跳过自动重试",
+                        effective_key, elapsed,
+                    )
+                else:
+                    retry_max_tokens = max(max_tokens * 3, 1024)
+                    logger.info(
+                        "[%s] 响应仅含 thinking 内容，自动重试 max_tokens=%d→%d",
+                        effective_key, max_tokens, retry_max_tokens,
+                    )
+                    retry_kwargs = {
+                        "model": model,
+                        "max_tokens": retry_max_tokens,
+                        "messages": [
+                            {"role": "system", "content": "不要使用 <think> 标签，直接输出最终内容。"},
+                            *messages,
+                        ],
+                    }
+                    retry_kwargs = self._normalize_minimax_openai_request(effective_key, retry_kwargs)
+                    self._debug_log_request("complete/thinking_retry", effective_key, retry_kwargs)
+                    retry_response = await client.chat.completions.create(**retry_kwargs)
+                    if retry_response.choices:
+                        content = retry_response.choices[0].message.content or ""
+                        stripped = strip_internal_thinking_tags(content).strip()
             return stripped
 
         return await self._with_routing_retry(
@@ -1119,6 +1148,7 @@ class LLMRouter:
                 "parallel_tool_calls": False,
             }
             request_kwargs = self._normalize_minimax_openai_request(effective_key, request_kwargs)
+            self._debug_log_request("complete_with_tools", effective_key, request_kwargs)
             response = await client.chat.completions.create(**request_kwargs)
             if not response.choices:
                 return ToolTurnResult(text="", tool_calls=[], continuation_message=None)
@@ -1273,9 +1303,8 @@ class LLMRouter:
                     "function": {"name": tool_name},
                 },
             }
-            if self._is_minimax_openai(effective_key):
-                request_kwargs["response_format"] = {"type": "json_object"}
             request_kwargs = self._normalize_minimax_openai_request(effective_key, request_kwargs)
+            self._debug_log_request("complete_structured", effective_key, request_kwargs)
             response = await client.chat.completions.create(**request_kwargs)
 
             if not response.choices:
@@ -1363,7 +1392,7 @@ def _classify_provider_exception(exc: Exception) -> str:
     if status_code in {401, 403} or "authentication" in class_name or "unauthorized" in message:
         return "auth"
     if (
-        status_code == 429
+        status_code in {429, 529}
         or "ratelimit" in class_name
         or "rate limit" in message
         or "stop reason: error" in message
