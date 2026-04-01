@@ -1,10 +1,18 @@
-const DEFAULT_API_BASE =
-  typeof window !== "undefined" && ["http:", "https:"].includes(window.location.protocol)
-    ? ""
-    : "http://127.0.0.1:8765";
+export function getApiBase(): string {
+  if (typeof window !== "undefined") {
+    const stored = localStorage.getItem("lapwing_server_url");
+    if (stored) return stored.replace(/\/$/, "");
+  }
+  // fall back to env var or default
+  const envBase = import.meta.env.VITE_LAPWING_API_BASE as string | undefined;
+  if (envBase) return envBase;
+  if (typeof window !== "undefined" && ["http:", "https:"].includes(window.location.protocol)) {
+    return "";
+  }
+  return "http://127.0.0.1:8765";
+}
 
-export const API_BASE = (import.meta.env.VITE_LAPWING_API_BASE as string | undefined) ?? DEFAULT_API_BASE;
-const REQUEST_CREDENTIALS: RequestCredentials = API_BASE ? "include" : "same-origin";
+const REQUEST_CREDENTIALS: RequestCredentials = "include";
 
 export type StatusResponse = {
   online: boolean;
@@ -202,12 +210,19 @@ export type TaskDetail = TaskSummary & {
 };
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-    },
+  const { headers: initHeaders, ...restInit } = init ?? {};
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...(initHeaders as Record<string, string> | undefined),
+  };
+  const token = typeof window !== "undefined" ? localStorage.getItem("lapwing_token") : null;
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+  const response = await fetch(`${getApiBase()}${path}`, {
+    headers,
     credentials: REQUEST_CREDENTIALS,
-    ...init,
+    ...restInit,
   });
 
   if (!response.ok) {

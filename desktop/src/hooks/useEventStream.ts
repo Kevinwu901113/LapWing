@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { API_BASE } from "../api";
+import { getApiBase } from "../api";
 import type { DesktopEvent } from "../api";
 
 const MAX_EVENTS = 500;
@@ -18,7 +18,7 @@ export function useEventStream() {
     function connect() {
       if (unmountedRef.current) return;
 
-      const es = new EventSource(`${API_BASE}/api/events/stream`);
+      const es = new EventSource(`${getApiBase()}/api/events/stream`);
       esRef.current = es;
 
       es.onopen = () => {

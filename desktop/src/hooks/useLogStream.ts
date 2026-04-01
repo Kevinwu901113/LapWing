@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { API_BASE } from "../api";
+import { getApiBase } from "../api";
 import type { LogLine } from "../api";
 
 const MAX_LINES = 2000;
@@ -31,7 +31,7 @@ export function useLogStream(level: string, module: string) {
     if (level && level !== "全部") params.set("level", level);
     if (module) params.set("module", module);
 
-    const url = `${API_BASE}/api/logs/stream?${params.toString()}`;
+    const url = `${getApiBase()}/api/logs/stream?${params.toString()}`;
     const es = new EventSource(url);
     esRef.current = es;
 

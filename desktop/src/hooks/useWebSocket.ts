@@ -1,13 +1,12 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { API_BASE } from "../api";
+import { getApiBase } from "../api";
 import type { ChatMessage, ToolStatusInfo } from "../api";
 
 type WsStatus = "connecting" | "connected" | "disconnected";
 
 function getWsUrl(): string {
-  // Read server URL from localStorage first, then fall back to API_BASE
-  const stored = localStorage.getItem("lapwing_server_url");
-  const base = stored || API_BASE || "http://127.0.0.1:8765";
+  // getApiBase() already reads lapwing_server_url from localStorage first
+  const base = getApiBase() || "http://127.0.0.1:8765";
   // Transform http → ws, https → wss
   return base.replace(/^http/, "ws") + "/ws/chat";
 }
