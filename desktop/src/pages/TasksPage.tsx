@@ -1,103 +1,91 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import {
-  getChats, getTasks, getTask,
-  type ChatSummary, type TaskSummary, type TaskDetail,
+  getScheduledTasks,
+  deleteScheduledTask,
+  type ScheduledTask,
 } from "../api";
+import TaskItem from "../components/TaskItem";
 
-function formatDate(v: string | null) {
-  return v ? new Date(v).toLocaleString("zh-CN") : "—";
+type Filter = "all" | "pending" | "completed";
+
+const FILTER_LABELS: Record<Filter, string> = {
+  all: "全部",
+  pending: "待执行",
+  completed: "已完成",
+};
+
+function matchesFilter(task: ScheduledTask, filter: Filter): boolean {
+  if (filter === "all") return true;
+  if (filter === "pending") return task.status === "pending" || task.status === "running";
+  return task.status === "completed";
 }
 
 export default function TasksPage() {
-  const [chats, setChats] = useState<ChatSummary[]>([]);
-  const [chatId, setChatId] = useState("");
-  const [tasks, setTasks] = useState<TaskSummary[]>([]);
-  const [selectedId, setSelectedId] = useState("");
-  const [detail, setDetail] = useState<TaskDetail | null>(null);
+  const [tasks, setTasks] = useState<ScheduledTask[]>([]);
+  const [filter, setFilter] = useState<Filter>("all");
 
-  useEffect(() => {
-    void getChats().then((c) => {
-      setChats(c);
-      if (c.length > 0 && !chatId) setChatId(c[0].chat_id);
-    });
+  const load = useCallback(() => {
+    void getScheduledTasks().then((r) => setTasks(r.tasks));
   }, []);
 
   useEffect(() => {
-    if (!chatId) return;
-    void getTasks(chatId, undefined, 20).then((r) => {
-      setTasks(r.items);
-      if (r.items.length > 0) setSelectedId(r.items[0].task_id);
-    });
-  }, [chatId]);
+    load();
+    const id = setInterval(load, 30_000);
+    return () => clearInterval(id);
+  }, [load]);
 
-  useEffect(() => {
-    if (!selectedId) { setDetail(null); return; }
-    void getTask(selectedId).then(setDetail);
-  }, [selectedId]);
+  const handleDelete = useCallback(
+    (id: string) => {
+      void deleteScheduledTask(id).then(() => load());
+    },
+    [load]
+  );
+
+  const activeCount = tasks.filter(
+    (t) => t.status === "pending" || t.status === "running"
+  ).length;
+
+  const visible = tasks.filter((t) => matchesFilter(t, filter));
 
   return (
-    <div className="page">
-      <header className="page-header animate-in">
-        <div>
+    <div className="tab-page animate-in">
+      <header className="page-header">
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <h1 className="page-title">任务</h1>
-          <p className="page-subtitle">Agent 团队的任务执行记录</p>
+          {activeCount > 0 && (
+            <span className="badge badge-warning">{activeCount}</span>
+          )}
         </div>
-        <select
-          className="chat-selector"
-          value={chatId}
-          onChange={(e) => setChatId(e.target.value)}
-        >
-          {chats.map((c) => (
-            <option key={c.chat_id} value={c.chat_id}>{c.chat_id}</option>
-          ))}
-        </select>
       </header>
 
-      <div className="stat-grid-2">
-        <div className="card">
-          <p className="card-title">任务列表 ({tasks.length})</p>
-          {tasks.length === 0 ? (
-            <p className="empty-hint">暂无任务记录。</p>
-          ) : (
-            <div>
-              {tasks.map((task) => (
-                <div
-                  key={task.task_id}
-                  onClick={() => setSelectedId(task.task_id)}
-                  style={{
-                    padding: "8px 0",
-                    borderBottom: "1px solid var(--border)",
-                    cursor: "pointer",
-                    background: selectedId === task.task_id ? "var(--bg-hover, rgba(255,255,255,0.05))" : "transparent",
-                  }}
-                >
-                  <p style={{ margin: 0, fontSize: 12, color: "var(--text-muted)" }}>{task.task_id}</p>
-                  <p style={{ margin: "2px 0", fontSize: 13, color: "var(--text-primary)" }}>{task.text || "（无文本）"}</p>
-                  <span style={{ fontSize: 11, color: "var(--text-muted)" }}>
-                    {task.status} · {formatDate(task.updated_at ?? null)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        {(["all", "pending", "completed"] as Filter[]).map((f) => (
+          <button
+            key={f}
+            className={`btn btn-sm${filter === f ? " btn-primary" : ""}`}
+            onClick={() => setFilter(f)}
+          >
+            {FILTER_LABELS[f]}
+          </button>
+        ))}
+      </div>
 
-        <div className="card">
-          <p className="card-title">任务详情</p>
-          {!detail ? (
-            <p className="empty-hint">选择左侧任务查看详情。</p>
-          ) : (
-            <div>
-              <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
-                <strong style={{ fontSize: 13, color: "var(--text-primary)" }}>{detail.task_id}</strong>
-                <span className="badge badge-accent">{detail.status}</span>
-              </div>
-              <pre style={{ margin: 0, fontSize: 11, color: "var(--text-secondary)", whiteSpace: "pre-wrap", overflowY: "auto", maxHeight: 400 }}>
-                {JSON.stringify(detail.events, null, 2)}
-              </pre>
-            </div>
-          )}
-        </div>
+      <div className="card">
+        {visible.length === 0 ? (
+          <p className="empty-hint">暂无任务</p>
+        ) : (
+          visible.map((task) => (
+            <TaskItem
+              key={task.id}
+              id={task.id}
+              title={task.title}
+              status={task.status}
+              scheduledAt={task.scheduled_at}
+              recurrence={task.recurrence}
+              onDelete={() => handleDelete(task.id)}
+            />
+          ))
+        )}
       </div>
     </div>
   );
