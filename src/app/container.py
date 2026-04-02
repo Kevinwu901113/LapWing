@@ -210,11 +210,8 @@ class AppContainer:
         heartbeat.registry.register(PromptEvolutionAction())
         heartbeat.registry.register(SessionReaperAction())
         # Wave 1 actions
-        from config.settings import AUTO_MEMORY_EXTRACT_ENABLED, SELF_SCHEDULE_ENABLED
+        from config.settings import AUTO_MEMORY_EXTRACT_ENABLED
         if AUTO_MEMORY_EXTRACT_ENABLED:
             from src.heartbeat.actions.auto_memory import AutoMemoryAction
             heartbeat.registry.register(AutoMemoryAction())
-        if SELF_SCHEDULE_ENABLED:
-            from src.heartbeat.actions.scheduled_tasks import ScheduledTasksAction
-            heartbeat.registry.register(ScheduledTasksAction())
         return heartbeat

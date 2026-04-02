@@ -529,29 +529,51 @@ def build_default_tool_registry() -> ToolRegistry:
             risk_level="low",
         ))
 
-    # ── 自主调度（Wave 1）──
+    # ── 提醒 / 定时任务 ──
     if SELF_SCHEDULE_ENABLED:
         from src.tools.schedule_task import SCHEDULE_EXECUTORS
         registry.register(ToolSpec(
             name="schedule_task",
             description=(
-                "设置提醒或定时任务。Kevin 说「5分钟后叫我」「每天早上9点提醒我」时用这个。"
-                "schedule 用自然语言描述（如'5分钟后'、'每天晚上11点'、'每隔2小时'、'明天早上8点'）。"
+                "设置提醒或定时任务。"
+                "用户说「5分钟后叫我」「每天早上9点提醒我」「后天下午3点提醒我交文档」时用这个。"
             ),
             json_schema={
                 "type": "object",
                 "properties": {
-                    "schedule": {
+                    "content": {
                         "type": "string",
-                        "description": "时间安排。支持: '每天HH:MM'、'每隔N小时'、'每隔N分钟'、'YYYY-MM-DD HH:MM'（单次）、'明天/后天 HH:MM'",
+                        "description": "提醒内容，如「下楼」「查邮件」「交文档初稿」",
                     },
-                    "task_description": {
+                    "trigger_type": {
                         "type": "string",
-                        "description": "要执行的任务描述，这会成为你收到的 prompt。",
+                        "enum": ["delay", "daily", "once", "interval"],
+                        "description": (
+                            "触发方式。"
+                            "delay=N分钟/小时后（一次性），"
+                            "daily=每天固定时间，"
+                            "once=指定日期时间（一次性），"
+                            "interval=每隔N分钟/小时重复"
+                        ),
                     },
-                    "repeat": {"type": "boolean", "description": "是否重复执行，默认 true。"},
+                    "delay_minutes": {
+                        "type": "integer",
+                        "description": "仅 delay 类型：延迟多少分钟。如「5分钟后」填 5，「2小时后」填 120",
+                    },
+                    "time_of_day": {
+                        "type": "string",
+                        "description": "仅 daily 类型：每天触发时间，HH:MM 格式（24小时制）。如「早上9点」填 09:00",
+                    },
+                    "once_datetime": {
+                        "type": "string",
+                        "description": "仅 once 类型：触发日期时间，YYYY-MM-DD HH:MM 格式。如「明天下午3点」填对应日期",
+                    },
+                    "interval_minutes": {
+                        "type": "integer",
+                        "description": "仅 interval 类型：间隔多少分钟。如「每隔2小时」填 120，「每隔30分钟」填 30",
+                    },
                 },
-                "required": ["schedule", "task_description"],
+                "required": ["content", "trigger_type"],
             },
             executor=SCHEDULE_EXECUTORS["schedule_task"],
             capability="schedule",
@@ -559,7 +581,7 @@ def build_default_tool_registry() -> ToolRegistry:
         ))
         registry.register(ToolSpec(
             name="list_scheduled_tasks",
-            description="查看所有已安排的定时任务。",
+            description="查看当前所有活跃的提醒和定时任务。",
             json_schema={"type": "object", "properties": {}},
             executor=SCHEDULE_EXECUTORS["list_scheduled_tasks"],
             capability="schedule",
@@ -567,11 +589,16 @@ def build_default_tool_registry() -> ToolRegistry:
         ))
         registry.register(ToolSpec(
             name="cancel_scheduled_task",
-            description="取消一个定时任务。",
+            description="取消一个提醒或定时任务。",
             json_schema={
                 "type": "object",
-                "properties": {"task_id": {"type": "string", "description": "要取消的任务 ID"}},
-                "required": ["task_id"],
+                "properties": {
+                    "reminder_id": {
+                        "type": "integer",
+                        "description": "要取消的提醒 ID（从 list_scheduled_tasks 获取）",
+                    },
+                },
+                "required": ["reminder_id"],
             },
             executor=SCHEDULE_EXECUTORS["cancel_scheduled_task"],
             capability="schedule",

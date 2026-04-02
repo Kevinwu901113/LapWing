@@ -1,13 +1,13 @@
 {
-  "total_executions": 111,
+  "total_executions": 116,
   "total_with_skill": 0,
-  "total_without_skill": 111,
+  "total_without_skill": 116,
   "skill_match_rate": 0.0,
   "match_level_distribution": {
     "quick": 0,
     "index": 0,
     "semantic": 0,
-    "none": 111
+    "none": 116
   },
   "daily_stats": [
     {
@@ -33,7 +33,7 @@
     },
     {
       "date": "2026-04-02",
-      "executions": 40,
+      "executions": 45,
       "with_skill": 0,
       "skills_created": 0,
       "skills_updated": 0

@@ -68,8 +68,8 @@ class LapwingBrain:
         self._model_config = model_config
         self.router = LLMRouter(auth_manager=self.auth_manager, model_config=model_config)
         self.tool_registry = build_default_tool_registry()
-        self.task_runtime = TaskRuntime(router=self.router, tool_registry=self.tool_registry)
         self.memory = ConversationMemory(db_path)
+        self.task_runtime = TaskRuntime(router=self.router, tool_registry=self.tool_registry, memory=self.memory)
         self.fact_extractor = FactExtractor(self.memory, self.router)
         from src.memory.compactor import ConversationCompactor
         self.compactor = ConversationCompactor(self.memory, self.router)

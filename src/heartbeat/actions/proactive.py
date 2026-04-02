@@ -159,6 +159,7 @@ class ReminderDispatchAction(HeartbeatAction):
             "once": "一次性",
             "daily": "每天",
             "weekly": "每周",
+            "interval": "周期",
         }
         return mapping.get(str(recurrence_type or "").lower(), "一次性")
 

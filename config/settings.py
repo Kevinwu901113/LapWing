@@ -231,7 +231,6 @@ INTEREST_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("INTEREST_EXTRACT_TURN_THRE
 MEMORY_CRUD_ENABLED: bool = os.getenv("MEMORY_CRUD_ENABLED", "true").lower() in ("true", "1", "yes")
 AUTO_MEMORY_EXTRACT_ENABLED: bool = os.getenv("AUTO_MEMORY_EXTRACT_ENABLED", "true").lower() in ("true", "1", "yes")
 SELF_SCHEDULE_ENABLED: bool = os.getenv("SELF_SCHEDULE_ENABLED", "true").lower() in ("true", "1", "yes")
-SCHEDULED_TASKS_PATH: Path = DATA_DIR / "scheduled_tasks.json"
 
 # ── Session 管理 ──
 SESSION_ENABLED: bool = os.getenv("SESSION_ENABLED", "false").lower() in ("true", "1")

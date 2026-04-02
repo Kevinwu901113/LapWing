@@ -1,0 +1,54 @@
+cd ~/lapwing && python3 << 'PYEOF'
+import asyncio
+from openai import AsyncOpenAI
+
+async def test():
+    client = AsyncOpenAI(
+        api_key="sk-cp-DG3QI_XxHPU2xuWF55HL_TqFxOaYZi0P8Zu7QSVF62OYzR-M6XeZeWBTrb38NsKatCMuUjIHyw5i3dMktJdQBlJEwmjhV9H6G9JgKinxsEDyPT8xGtvWMqI",  # 从 .env 里复制
+        base_url="https://api.minimaxi.com/v1"
+    )
+    
+    tools = [{
+        "type": "function",
+        "function": {
+            "name": "schedule_task",
+            "description": "设置提醒或定时任务",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "schedule": {"type": "string", "description": "时间，如 5分钟后"},
+                    "task_description": {"type": "string", "description": "任务内容"}
+                },
+                "required": ["schedule", "task_description"]
+            }
+        }
+    }]
+    
+    # 测试1: 简单系统prompt
+    r1 = await client.chat.completions.create(
+        model="MiniMax-M2.7",
+        messages=[
+            {"role": "system", "content": "你是助手。"},
+            {"role": "user", "content": "5分钟后叫我"}
+        ],
+        tools=tools,
+    )
+    msg1 = r1.choices[0].message
+    print(f"Test 1 (simple): tool_calls={bool(msg1.tool_calls)}, content={msg1.content[:100] if msg1.content else 'None'}")
+    
+    # 测试2: Lapwing 人格 prompt
+    with open("prompts/lapwing_soul.md") as f:
+        soul = f.read()
+    r2 = await client.chat.completions.create(
+        model="MiniMax-M2.7",
+        messages=[
+            {"role": "system", "content": soul},
+            {"role": "user", "content": "5分钟后叫我"}
+        ],
+        tools=tools,
+    )
+    msg2 = r2.choices[0].message
+    print(f"Test 2 (soul.md): tool_calls={bool(msg2.tool_calls)}, content={msg2.content[:100] if msg2.content else 'None'}")
+
+asyncio.run(test())
+PYEOF

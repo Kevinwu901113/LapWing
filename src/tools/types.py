@@ -28,6 +28,9 @@ class ToolExecutionContext:
     adapter: str = ""
     user_id: str = ""
     auth_level: int = 2  # 2 = AuthLevel.OWNER
+    # 对话上下文（供需要写入数据库的工具使用，如 reminder 相关工具）
+    chat_id: str = ""
+    memory: Any = None  # ConversationMemory 实例
 
 
 @dataclass

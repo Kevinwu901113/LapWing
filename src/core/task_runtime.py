@@ -119,6 +119,7 @@ class TaskRuntime:
         tool_registry: ToolRegistry | None = None,
         loop_detection_config: LoopDetectionConfig | None = None,
         latency_monitor: Any | None = None,
+        memory: Any | None = None,
     ) -> None:
         self._router = router
         self._max_tool_rounds = max_tool_rounds
@@ -126,6 +127,7 @@ class TaskRuntime:
         self._pending_shell_confirmations: dict[str, PendingShellConfirmation] = {}
         self._loop_detection_config = loop_detection_config or LoopDetectionConfig()
         self._latency_monitor = latency_monitor
+        self._memory = memory
 
     def set_latency_monitor(self, latency_monitor: Any | None) -> None:
         self._latency_monitor = latency_monitor
@@ -912,6 +914,8 @@ class TaskRuntime:
             adapter=adapter,
             user_id=user_id,
             auth_level=auth_level,
+            chat_id=chat_id or "",
+            memory=self._memory,
         )
 
         policy_hook = str(tool.metadata.get("policy_hook", "")).strip()

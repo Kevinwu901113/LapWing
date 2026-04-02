@@ -1154,6 +1154,7 @@ class LLMRouter:
                 return ToolTurnResult(text="", tool_calls=[], continuation_message=None)
             message = response.choices[0].message
             tool_calls, raw_tool_calls = _extract_openai_tool_calls(message)
+            print(f'[DIAG] complete_with_tools: content={repr((message.content or "")[:200])}, tool_calls={len(tool_calls)}, finish_reason={response.choices[0].finish_reason}', flush=True)
             continuation_message = None
             if tool_calls:
                 continuation_message = {

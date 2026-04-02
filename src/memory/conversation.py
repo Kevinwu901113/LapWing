@@ -11,7 +11,7 @@ from config.settings import MAX_HISTORY_TURNS
 
 logger = logging.getLogger("lapwing.memory.conversation")
 
-_VALID_RECURRENCE_TYPES = {"once", "daily", "weekly"}
+_VALID_RECURRENCE_TYPES = {"once", "daily", "weekly", "interval"}
 _TIME_OF_DAY_PATTERN = re.compile(r"^\d{2}:\d{2}$")
 
 
@@ -137,6 +137,15 @@ class ConversationMemory:
         try:
             await self._db.execute(
                 "ALTER TABLE conversations ADD COLUMN session_id TEXT"
+            )
+            await self._db.commit()
+        except Exception:
+            pass  # Column already exists
+
+        # Migration: add interval_minutes column to reminders if missing
+        try:
+            await self._db.execute(
+                "ALTER TABLE reminders ADD COLUMN interval_minutes INTEGER"
             )
             await self._db.commit()
         except Exception:
@@ -629,6 +638,7 @@ class ConversationMemory:
         next_trigger_at: datetime | str,
         weekday: int | None = None,
         time_of_day: str | None = None,
+        interval_minutes: int | None = None,
     ) -> int:
         """新增提醒，返回数据库 ID。"""
         try:
@@ -647,9 +657,19 @@ class ConversationMemory:
                     return 0
                 normalized_weekday = None
                 normalized_time = None
+                normalized_interval = None
+            elif recurrence == "interval":
+                normalized_weekday = None
+                normalized_time = None
+                normalized_interval = int(interval_minutes) if interval_minutes else None
+                if not normalized_interval or normalized_interval <= 0:
+                    return 0
+                if next_dt <= now:
+                    next_dt = now + timedelta(minutes=normalized_interval)
             else:
                 normalized_weekday = self._normalize_weekday(weekday)
                 normalized_time = self._normalize_time_of_day(time_of_day) or next_dt.strftime("%H:%M")
+                normalized_interval = None
                 if recurrence == "weekly" and normalized_weekday is None:
                     return 0
                 if next_dt <= now:
@@ -659,8 +679,8 @@ class ConversationMemory:
             cursor = await self._db.execute(
                 """INSERT INTO reminders (
                        chat_id, content, recurrence_type, next_trigger_at,
-                       weekday, time_of_day, active, created_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, 1, ?)""",
+                       weekday, time_of_day, interval_minutes, active, created_at
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)""",
                 (
                     chat_id,
                     normalized_content,
@@ -668,6 +688,7 @@ class ConversationMemory:
                     next_dt.isoformat(),
                     normalized_weekday,
                     normalized_time,
+                    normalized_interval,
                     created_at,
                 ),
             )
@@ -683,7 +704,7 @@ class ConversationMemory:
             if include_inactive:
                 query = (
                     "SELECT id, chat_id, content, recurrence_type, next_trigger_at, "
-                    "weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at "
+                    "weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at, interval_minutes "
                     "FROM reminders WHERE chat_id = ? "
                     "ORDER BY active DESC, next_trigger_at ASC, id ASC"
                 )
@@ -691,7 +712,7 @@ class ConversationMemory:
             else:
                 query = (
                     "SELECT id, chat_id, content, recurrence_type, next_trigger_at, "
-                    "weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at "
+                    "weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at, interval_minutes "
                     "FROM reminders WHERE chat_id = ? AND active = 1 "
                     "ORDER BY next_trigger_at ASC, id ASC"
                 )
@@ -739,7 +760,7 @@ class ConversationMemory:
 
             async with self._db.execute(
                 """SELECT id, chat_id, content, recurrence_type, next_trigger_at,
-                          weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at
+                          weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at, interval_minutes
                    FROM reminders
                    WHERE chat_id = ? AND active = 1 AND next_trigger_at <= ?
                    ORDER BY next_trigger_at ASC, id ASC
@@ -769,7 +790,7 @@ class ConversationMemory:
             now_utc = self._ensure_utc_datetime(now)
             async with self._db.execute(
                 """SELECT id, chat_id, content, recurrence_type, next_trigger_at,
-                          weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at
+                          weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at, interval_minutes
                    FROM reminders
                    WHERE id = ? AND active = 1""",
                 (reminder_id,),
@@ -792,7 +813,10 @@ class ConversationMemory:
                 return cursor.rowcount > 0
 
             current_next = self._ensure_utc_datetime(reminder["next_trigger_at"])
-            next_trigger = self._advance_to_future(current_next, recurrence, now_utc)
+            next_trigger = self._advance_to_future(
+                current_next, recurrence, now_utc,
+                interval_minutes=reminder.get("interval_minutes"),
+            )
             cursor = await self._db.execute(
                 """UPDATE reminders
                    SET last_triggered_at = ?, next_trigger_at = ?
@@ -819,7 +843,10 @@ class ConversationMemory:
             return
 
         current_next = self._ensure_utc_datetime(reminder["next_trigger_at"])
-        next_trigger = self._advance_to_future(current_next, recurrence, now_utc)
+        next_trigger = self._advance_to_future(
+            current_next, recurrence, now_utc,
+            interval_minutes=reminder.get("interval_minutes"),
+        )
         await self._db.execute(
             "UPDATE reminders SET next_trigger_at = ? WHERE id = ? AND active = 1",
             (next_trigger.isoformat(), reminder_id),
@@ -831,12 +858,15 @@ class ConversationMemory:
         start: datetime,
         recurrence_type: str,
         now_utc: datetime,
+        interval_minutes: int | None = None,
     ) -> datetime:
         recurrence = str(recurrence_type).lower()
         if recurrence == "daily":
             step = timedelta(days=1)
         elif recurrence == "weekly":
             step = timedelta(days=7)
+        elif recurrence == "interval" and interval_minutes:
+            step = timedelta(minutes=interval_minutes)
         else:
             return start
 
@@ -880,7 +910,7 @@ class ConversationMemory:
         return time_text
 
     def _row_to_reminder(self, row) -> dict:
-        return {
+        result = {
             "id": row[0],
             "chat_id": row[1],
             "content": row[2],
@@ -893,3 +923,6 @@ class ConversationMemory:
             "last_triggered_at": row[9],
             "cancelled_at": row[10],
         }
+        if len(row) > 11:
+            result["interval_minutes"] = row[11]
+        return result
