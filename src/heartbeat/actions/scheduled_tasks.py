@@ -81,7 +81,7 @@ async def _run_task(task_description: str, ctx: SenseContext, brain, send_fn) ->
             chat_id=ctx.chat_id,
         )
         if response and response.strip():
-            await send_fn(ctx.chat_id, response)
+            await send_fn(response)
     except Exception as e:
         logger.error("定时任务 brain.think 失败: %s", e)
 

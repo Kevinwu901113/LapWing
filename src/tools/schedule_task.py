@@ -93,6 +93,18 @@ def _parse_schedule(raw: str) -> dict | None:
             "datetime": f"{target} {int(m.group(2)):02d}:{m.group(3)}",
         }
 
+    # N分钟后 / N分后
+    m = re.match(r"(\d+)\s*分钟?后", raw)
+    if m:
+        target = datetime.now() + timedelta(minutes=int(m.group(1)))
+        return {"type": "once", "datetime": target.strftime("%Y-%m-%d %H:%M")}
+
+    # N小时后
+    m = re.match(r"(\d+)\s*小时后", raw)
+    if m:
+        target = datetime.now() + timedelta(hours=int(m.group(1)))
+        return {"type": "once", "datetime": target.strftime("%Y-%m-%d %H:%M")}
+
     return None
 
 
@@ -116,7 +128,7 @@ async def _execute_schedule_task(
     if parsed is None:
         msg = (
             f"无法解析时间安排: '{schedule_raw}'。"
-            "请用以下格式：'每天HH:MM'、'每隔N小时'、'每隔N分钟'、'YYYY-MM-DD HH:MM'、'明天/后天 HH:MM'"
+            "请用以下格式：'每天HH:MM'、'每隔N小时'、'每隔N分钟'、'YYYY-MM-DD HH:MM'、'明天/后天 HH:MM'、'N分钟后'、'N小时后'"
         )
         return ToolExecutionResult(success=False, payload={"error": msg}, reason=msg)
 

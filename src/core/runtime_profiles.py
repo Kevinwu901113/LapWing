@@ -16,7 +16,7 @@ class RuntimeProfile:
 
 CHAT_SHELL_PROFILE = RuntimeProfile(
     name="chat_shell",
-    capabilities=frozenset({"shell", "web", "skill"}),
+    capabilities=frozenset({"shell", "web", "skill", "memory", "schedule", "general"}),
     include_internal=False,
     shell_policy_enabled=True,
 )

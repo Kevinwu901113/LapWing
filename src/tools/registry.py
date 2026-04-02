@@ -535,9 +535,8 @@ def build_default_tool_registry() -> ToolRegistry:
         registry.register(ToolSpec(
             name="schedule_task",
             description=(
-                "安排一个在未来执行的定时任务。"
-                "用于：定期自省、定时提醒 Kevin、自主浏览新闻、安排兴趣探索等。"
-                "schedule 用自然语言描述（如'每天晚上11点'、'每隔2小时'、'明天早上8点'）。"
+                "设置提醒或定时任务。Kevin 说「5分钟后叫我」「每天早上9点提醒我」时用这个。"
+                "schedule 用自然语言描述（如'5分钟后'、'每天晚上11点'、'每隔2小时'、'明天早上8点'）。"
             ),
             json_schema={
                 "type": "object",
