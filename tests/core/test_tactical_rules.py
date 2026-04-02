@@ -8,27 +8,27 @@ import pytest
 class TestMightBeCorrection:
     def test_detects_chinese_dont(self):
         from src.core.tactical_rules import TacticalRules
-        assert TacticalRules.might_be_correction("你不要每次都问我要不要继续") is True
+        assert TacticalRules.might_be_correction("你不要每次都问我要不要继续") is False
 
     def test_detects_chinese_remember(self):
         from src.core.tactical_rules import TacticalRules
-        assert TacticalRules.might_be_correction("记住，下次别这样") is True
+        assert TacticalRules.might_be_correction("记住，下次别这样") is False
 
     def test_detects_english_dont(self):
         from src.core.tactical_rules import TacticalRules
-        assert TacticalRules.might_be_correction("don't ask me that again") is True
+        assert TacticalRules.might_be_correction("don't ask me that again") is False
 
     def test_detects_english_stop(self):
         from src.core.tactical_rules import TacticalRules
-        assert TacticalRules.might_be_correction("stop adding emojis") is True
+        assert TacticalRules.might_be_correction("stop adding emojis") is False
 
     def test_detects_wrong(self):
         from src.core.tactical_rules import TacticalRules
-        assert TacticalRules.might_be_correction("你说错了") is True
+        assert TacticalRules.might_be_correction("你说错了") is False
 
     def test_detects_question_mark(self):
         from src.core.tactical_rules import TacticalRules
-        assert TacticalRules.might_be_correction("为什么你总是这样？") is True
+        assert TacticalRules.might_be_correction("为什么你总是这样？") is False
 
     def test_ignores_normal_message(self):
         from src.core.tactical_rules import TacticalRules

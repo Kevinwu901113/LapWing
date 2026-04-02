@@ -14,7 +14,7 @@ from src.core.heartbeat import HeartbeatAction, SenseContext
 
 logger = logging.getLogger("lapwing.heartbeat.scheduled_tasks")
 
-_CHECK_WINDOW_SECONDS = 300  # 到期时间在当前时间 ±5 分钟内视为到期
+_CHECK_WINDOW_SECONDS = 90  # daily 容差窗口
 
 
 class ScheduledTasksAction(HeartbeatAction):
@@ -101,7 +101,9 @@ def _should_run(task: dict, now: datetime) -> bool:
         except ValueError:
             return False
         target = now.replace(hour=h, minute=m, second=0, microsecond=0)
-        if abs((now - target).total_seconds()) > _CHECK_WINDOW_SECONDS:
+        diff = (now - target).total_seconds()
+        # 只在已过目标时间、且在窗口内时触发（去掉 abs）
+        if diff < 0 or diff > _CHECK_WINDOW_SECONDS:
             return False
         if last_run and last_run.date() == now.date():
             return False
@@ -119,13 +121,15 @@ def _should_run(task: dict, now: datetime) -> bool:
 
     if stype == "once":
         try:
-            target = datetime.strptime(parsed["datetime"], "%Y-%m-%d %H:%M")
+            dt_str = parsed["datetime"]
+            try:
+                target = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                target = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
         except (KeyError, ValueError):
-            return False
-        if abs((now - target).total_seconds()) > _CHECK_WINDOW_SECONDS:
             return False
         if last_run:
             return False
-        return True
+        return now >= target
 
     return False

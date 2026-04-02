@@ -119,14 +119,15 @@ class TestShouldRun:
         }
         assert _should_run(task, now) is False
 
-    def test_once_outside_window(self):
+    def test_once_past_target_fires_even_hours_later(self):
+        # once 任务没有窗口限制：只要过了目标时间且未运行，就触发（系统宕机恢复后补跑）
         from src.heartbeat.actions.scheduled_tasks import _should_run
         now = datetime(2026, 4, 1, 10, 0, 0)
         task = {
             "schedule_parsed": {"type": "once", "datetime": "2026-04-01 08:00"},
             "last_run": None,
         }
-        assert _should_run(task, now) is False
+        assert _should_run(task, now) is True
 
     def test_interval_too_short(self):
         from src.heartbeat.actions.scheduled_tasks import _should_run

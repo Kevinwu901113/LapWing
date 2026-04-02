@@ -33,9 +33,10 @@ def test_extract_execution_constraints_binds_directory_and_txt_file():
         "在 /home 下新建一个 Lapwing 文件夹，然后在文件夹里面新建一个 txt 文件"
     )
 
-    assert constraints.target_directory == "/home/Lapwing"
-    assert constraints.required_file_parent == "/home/Lapwing"
-    assert constraints.required_extension == ".txt"
+    # 意图推断由 LLM 通过工具参数完成，extract_execution_constraints 不做正则猜测
+    assert constraints.target_directory is None
+    assert constraints.required_file_parent is None
+    assert constraints.required_extension is None
 
 
 def test_analyze_command_distinguishes_diagnostic_and_write():
@@ -55,6 +56,7 @@ def test_write_to_unapproved_directory_requires_consent():
     constraints = extract_execution_constraints(
         "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件"
     )
+    constraints.target_directory = "/home/Lapwing"  # LLM 提供的目录参数
     state = ExecutionSessionState(
         constraints=constraints,
         failure_reason="mkdir: cannot create directory '/home/Lapwing': Permission denied",
@@ -74,7 +76,7 @@ def test_infer_permission_denied_alternative_maps_home_path():
     constraints = extract_execution_constraints(
         "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件"
     )
-    assert constraints.target_directory == "/home/Lapwing"
+    constraints.target_directory = "/home/Lapwing"  # LLM 提供的目录参数
 
     alt = infer_permission_denied_alternative(constraints)
 
@@ -112,6 +114,7 @@ def test_before_execute_returns_require_consent():
     constraints = extract_execution_constraints(
         "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件"
     )
+    constraints.target_directory = "/home/Lapwing"  # LLM 提供的目录参数
     state = ExecutionSessionState(
         constraints=constraints,
         failure_reason="mkdir: cannot create directory '/home/Lapwing': Permission denied",
@@ -137,6 +140,7 @@ def test_after_execute_returns_block_on_permission_denied():
     constraints = extract_execution_constraints(
         "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件"
     )
+    constraints.target_directory = "/home/Lapwing"  # LLM 提供的目录参数
     state = ExecutionSessionState(constraints=constraints)
     intent = analyze_command("mkdir -p /home/Lapwing")
     result = ShellResult(
@@ -166,6 +170,8 @@ def test_after_execute_returns_should_verify_when_needed():
     constraints = extract_execution_constraints(
         "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件"
     )
+    constraints.target_directory = "/home/Lapwing"  # LLM 提供的目录参数
+    constraints.is_write_request = True             # LLM 通过工具选择表达写入意图
     state = ExecutionSessionState(constraints=constraints)
     intent = analyze_command(
         "mkdir -p /home/Lapwing && printf 'hello\\n' > /home/Lapwing/note.txt"

@@ -623,10 +623,14 @@ class LapwingBrain:
             full_reply = strip_internal_thinking_tags(full_reply)
 
             # 如果最终回复没有通过流式发出（无工具场景 / 特殊状态消息），则现在发送
-            if not parts_sent or full_reply != parts_sent[-1]:
-                if full_reply:
-                    await send_fn(full_reply)
-                    parts_sent.append(full_reply)
+            already_sent = any(
+                full_reply.strip() == part.strip()
+                for part in parts_sent
+            ) if parts_sent else False
+
+            if not already_sent and full_reply:
+                await send_fn(full_reply)
+                parts_sent.append(full_reply)
 
             # 合并所有片段存入记忆
             memory_text = "\n\n".join(parts_sent) if parts_sent else full_reply

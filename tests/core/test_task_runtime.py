@@ -166,6 +166,8 @@ async def test_execute_shell_triggers_verifying_event_and_completion():
     constraints = extract_execution_constraints(
         "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件"
     )
+    constraints.target_directory = "/home/Lapwing"  # LLM 工具参数提供
+    constraints.is_write_request = True              # LLM 通过工具选择表达写入意图
     state = ExecutionSessionState(constraints=constraints)
     mock_execute_shell = AsyncMock(
         return_value=ShellResult(stdout="", stderr="", return_code=0, cwd="/tmp")

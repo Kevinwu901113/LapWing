@@ -481,10 +481,16 @@ class TestBrainTools:
                 }
             )
 
-            result = await brain.think(
-                "chat1",
-                "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件",
-            )
+            msg = "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件"
+            # LLM 通过工具参数指定目录，不依赖正则推断
+            with patch("src.core.brain.extract_execution_constraints") as mock_constraints:
+                from src.core.shell_policy import ExecutionConstraints
+                mock_constraints.return_value = ExecutionConstraints(
+                    original_user_message=msg,
+                    target_directory="/home/Lapwing",
+                    is_write_request=True,
+                )
+                result = await brain.think("chat1", msg)
 
             # 只执行了第一条命令，立即触发 consent
             assert mock_execute.await_count == 1
@@ -559,7 +565,17 @@ class TestBrainTools:
                 }
             )
 
-            result = await brain.think("chat1", "可以")
+            # 确认消息包含目标路径（关键词匹配已禁用，通过路径匹配触发）
+            # extract_execution_constraints 提供写入意图，模拟 LLM 工具参数
+            with patch("src.core.brain.extract_execution_constraints") as mock_constraints:
+                from src.core.shell_policy import ExecutionConstraints
+                mock_constraints.return_value = ExecutionConstraints(
+                    original_user_message="在/home下新建一个Lapwing文件夹",
+                    target_directory="/home/kevin/Lapwing",
+                    is_write_request=True,
+                    approved_directory="/home/kevin/Lapwing",
+                )
+                result = await brain.think("chat1", "/home/kevin/Lapwing 可以")
 
             mock_execute.assert_awaited_once_with(
                 "mkdir -p /home/kevin/Lapwing && "
@@ -603,8 +619,17 @@ class TestBrainTools:
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
              patch("src.core.brain.ConversationMemory"), \
-             patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
+             patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute, \
+             patch("src.core.brain.extract_execution_constraints") as mock_constraints:
             from src.core.brain import LapwingBrain
+            from src.core.shell_policy import ExecutionConstraints
+
+            _msg = "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件"
+            mock_constraints.return_value = ExecutionConstraints(
+                original_user_message=_msg,
+                target_directory="/home/Lapwing",
+                is_write_request=True,
+            )
 
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.append = AsyncMock()
@@ -691,8 +716,17 @@ class TestBrainTools:
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
              patch("src.core.brain.ConversationMemory"), \
-             patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
+             patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute, \
+             patch("src.core.brain.extract_execution_constraints") as mock_constraints:
             from src.core.brain import LapwingBrain
+            from src.core.shell_policy import ExecutionConstraints
+
+            _msg = "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件"
+            mock_constraints.return_value = ExecutionConstraints(
+                original_user_message=_msg,
+                target_directory="/home/Lapwing",
+                is_write_request=True,
+            )
 
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.append = AsyncMock()
@@ -730,7 +764,7 @@ class TestBrainTools:
 
             result = await brain.think(
                 "chat1",
-                "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件",
+                _msg,
             )
 
             # 错误原因应该是真实 stderr，不是通用"退出码 1"
@@ -945,8 +979,17 @@ class TestBrainTools:
              patch("src.core.brain.LLMRouter"), \
              patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.SHELL_ALLOW_SUDO", False), \
-             patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
+             patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute, \
+             patch("src.core.brain.extract_execution_constraints") as mock_constraints:
             from src.core.brain import LapwingBrain
+            from src.core.shell_policy import ExecutionConstraints
+
+            _msg = "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件"
+            mock_constraints.return_value = ExecutionConstraints(
+                original_user_message=_msg,
+                target_directory="/home/Lapwing",
+                is_write_request=True,
+            )
 
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.append = AsyncMock()
@@ -984,10 +1027,7 @@ class TestBrainTools:
                 return_value={"role": "tool", "tool_call_id": "call_1", "content": "{}"}
             )
 
-            result = await brain.think(
-                "chat1",
-                "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件",
-            )
+            result = await brain.think("chat1", _msg)
 
             assert "原请求还没有完成" in result
             event_calls = brain.event_bus.publish.await_args_list
@@ -1009,8 +1049,17 @@ class TestBrainTools:
     async def test_task_failed_event_emitted_when_write_objective_unfinished(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+             patch("src.core.brain.ConversationMemory"), \
+             patch("src.core.brain.extract_execution_constraints") as mock_constraints:
             from src.core.brain import LapwingBrain
+            from src.core.shell_policy import ExecutionConstraints
+
+            _msg = "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件"
+            mock_constraints.return_value = ExecutionConstraints(
+                original_user_message=_msg,
+                target_directory="/home/Lapwing",
+                is_write_request=True,
+            )
 
             brain = LapwingBrain(db_path=Path("test.db"))
             brain.memory.append = AsyncMock()
@@ -1023,10 +1072,7 @@ class TestBrainTools:
             brain.event_bus.publish = AsyncMock()
             brain.router.complete_with_tools = AsyncMock(return_value=_tool_turn(text=""))
 
-            result = await brain.think(
-                "chat1",
-                "在/home下新建一个Lapwing文件夹，然后在文件夹里面新建一个txt文件",
-            )
+            result = await brain.think("chat1", _msg)
 
             assert "原请求还没有完成" in result
             event_calls = brain.event_bus.publish.await_args_list

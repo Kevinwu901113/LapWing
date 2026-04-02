@@ -19,16 +19,8 @@ class TacticalRules:
 
     @staticmethod
     def might_be_correction(text: str) -> bool:
-        """粗粒度判断是否可能是纠正。宁可多触发，不可漏。"""
-        indicators = [
-            "不要", "别", "不用", "不需要", "停", "够了",
-            "错了", "不对", "不是", "搞错",
-            "以后", "下次", "记住",
-            "don't", "stop", "wrong", "no ",
-            "？", "?",
-        ]
-        text_lower = text.lower()
-        return any(ind in text_lower for ind in indicators)
+        """纠正由 LLM 在对话中自然处理，不做关键词预筛。"""
+        return False
 
     async def analyze_correction(
         self,

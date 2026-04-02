@@ -388,6 +388,32 @@ def create_app(
 
     # ── Log streaming (J3) ──
 
+    # 全局日志广播：只给 logger 加一个 handler，多个 SSE 连接共享
+    if not hasattr(app.state, "_log_broadcast_handler"):
+        import queue as _queue
+        import uuid as _uuid
+
+        class _BroadcastHandler(logging.Handler):
+            def emit(self, record):
+                entry = {
+                    "timestamp": self.format(record).split(" [")[0],
+                    "level": record.levelname,
+                    "logger": record.name,
+                    "message": record.getMessage(),
+                }
+                for q in list(app.state._log_broadcast_queues.values()):
+                    try:
+                        q.put_nowait(entry)
+                    except _queue.Full:
+                        pass
+
+        bh = _BroadcastHandler()
+        bh.setLevel(logging.DEBUG)
+        bh.setFormatter(logging.Formatter("%(asctime)s"))
+        logging.getLogger("lapwing").addHandler(bh)
+        app.state._log_broadcast_handler = bh
+        app.state._log_broadcast_queues = {}
+
     @app.get("/api/logs/stream")
     async def stream_logs(
         level: str = Query("INFO", pattern="^(DEBUG|INFO|WARNING|ERROR)$"),
@@ -395,40 +421,28 @@ def create_app(
     ):
         """SSE stream of log entries for the frontend log viewer."""
         import queue as _queue
+        import uuid as _uuid
 
+        conn_id = _uuid.uuid4().hex
         log_queue: _queue.Queue = _queue.Queue(maxsize=500)
-
-        class _QueueHandler(logging.Handler):
-            def emit(self, record):
-                try:
-                    entry = {
-                        "timestamp": self.format(record).split(" [")[0],
-                        "level": record.levelname,
-                        "logger": record.name,
-                        "message": record.getMessage(),
-                    }
-                    log_queue.put_nowait(entry)
-                except _queue.Full:
-                    pass
-
-        handler = _QueueHandler()
-        handler.setLevel(getattr(logging, level))
-        handler.setFormatter(logging.Formatter("%(asctime)s"))
-        lapwing_logger = logging.getLogger("lapwing")
-        lapwing_logger.addHandler(handler)
+        app.state._log_broadcast_queues[conn_id] = log_queue
+        min_level = getattr(logging, level)
 
         async def event_generator():
             try:
                 while True:
                     try:
                         entry = await asyncio.to_thread(log_queue.get, timeout=1.0)
+                        entry_level = getattr(logging, entry.get("level", "INFO"), 20)
+                        if entry_level < min_level:
+                            continue
                         if module and not entry["logger"].startswith(f"lapwing.{module}"):
                             continue
                         yield f"data: {json.dumps(entry, ensure_ascii=False)}\n\n"
                     except Exception:
                         yield ": keepalive\n\n"
             finally:
-                lapwing_logger.removeHandler(handler)
+                app.state._log_broadcast_queues.pop(conn_id, None)
 
         return StreamingResponse(event_generator(), media_type="text/event-stream")
 

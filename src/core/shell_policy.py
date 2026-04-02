@@ -104,55 +104,33 @@ def _normalize_extension(raw: str | None) -> str | None:
 
 
 def _infer_target_directory(user_message: str) -> str | None:
-    match = _TARGET_DIR_PATTERN.search(user_message)
-    if match is None:
-        return None
-
-    base = _normalize_path(match.group(1))
-    name = match.group(2).strip()
-    if not base or not name:
-        return None
-    return PurePosixPath(base, name).as_posix()
+    """LLM 在工具参数中指定目录。"""
+    return None
 
 
 def _infer_file_name(user_message: str) -> str | None:
-    match = _FILE_NAME_PATTERN.search(user_message)
-    if match is None:
-        return None
-    return match.group(1).strip()
+    """LLM 在工具参数中指定文件名。"""
+    return None
 
 
 def _infer_file_extension(user_message: str, file_name: str | None) -> str | None:
-    if file_name and "." in file_name:
-        return _normalize_extension(file_name.rsplit(".", 1)[-1])
-
-    match = _FILE_EXT_PATTERN.search(user_message)
-    if match is None:
-        return None
-    return _normalize_extension(match.group(1))
+    """LLM 在工具参数中指定扩展名。"""
+    return None
 
 
 def _looks_like_write_request(user_message: str) -> bool:
-    return bool(
-        re.search(r"(?:新建|创建|写|写入|保存|追加|覆盖|生成|建立)", user_message)
-    )
+    """LLM 通过工具选择表达写入意图，不做正则预判。"""
+    return False
 
 
 def _looks_like_confirmation(text: str) -> bool:
-    return bool(
-        re.search(
-            r"(?:^|[\s，。！？])"
-            r"(好|可以|行|同意|按你说的|就用那个|用那个|那就这样|那就改到|改到那里|改到那个位置)"
-            r"(?:$|[\s，。！？])",
-            text,
-        )
-    )
+    """LLM 在对话中自行处理确认。"""
+    return False
 
 
 def _looks_like_rejection(text: str) -> bool:
-    return bool(
-        re.search(r"(?:^|[\s，。！？])(不要|不用|不行|算了|先别|先不用)(?:$|[\s，。！？])", text)
-    )
+    """LLM 在对话中自行处理拒绝。"""
+    return False
 
 
 @dataclass
