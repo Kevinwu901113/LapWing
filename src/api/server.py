@@ -83,6 +83,7 @@ def create_app(
     event_bus,
     task_view_store=None,
     latency_monitor: LatencyMonitor | None = None,
+    channel_manager=None,
 ) -> FastAPI:
     if latency_monitor is not None and hasattr(event_bus, "set_latency_monitor"):
         event_bus.set_latency_monitor(latency_monitor)
@@ -94,6 +95,7 @@ def create_app(
     app.state.latency_monitor = latency_monitor
     app.state.started_at = datetime.now(timezone.utc).isoformat()
     app.state.auth_manager = getattr(brain, "auth_manager", None)
+    app.state.channel_manager = channel_manager
     app.state.heartbeat = None
 
     # Mount model routing API if ModelConfigManager is available
@@ -554,16 +556,11 @@ def create_app(
 
     # ── WebSocket chat (K1) ──
 
-    _active_desktop_ws: dict[str, WebSocket] = {}
-
-    def _notify_desktop_presence(b, *, connected: bool) -> None:
-        b._desktop_connected = connected
-        logger.info("Desktop presence: %s", "connected" if connected else "disconnected")
-
     @app.websocket("/ws/chat")
     async def websocket_chat(ws: WebSocket):
         """WebSocket endpoint for desktop chat."""
         from config.settings import DESKTOP_DEFAULT_OWNER, DESKTOP_WS_CHAT_ID_PREFIX
+        from src.adapters.base import ChannelType
         token = ws.query_params.get("token", "")
         if not DESKTOP_DEFAULT_OWNER and not token:
             await ws.close(code=4001, reason="Authentication required")
@@ -571,10 +568,16 @@ def create_app(
 
         await ws.accept()
         connection_id = str(id(ws))
-        _active_desktop_ws[connection_id] = ws
 
         b = app.state.brain
-        _notify_desktop_presence(b, connected=True)
+        mgr = app.state.channel_manager
+
+        # 注册到 DesktopChannelAdapter（如已接入 ChannelManager）
+        _desktop_adapter = mgr.adapters.get(ChannelType.DESKTOP) if mgr else None
+        if _desktop_adapter is not None:
+            _desktop_adapter.add_connection(connection_id, ws)
+        b._desktop_connected = True
+
         await ws.send_json({"type": "presence_ack", "status": "connected"})
 
         try:
@@ -598,6 +601,10 @@ def create_app(
                         continue
 
                     chat_id = f"{DESKTOP_WS_CHAT_ID_PREFIX}:{connection_id}"
+
+                    # 收到消息时更新最后活跃通道
+                    if mgr is not None:
+                        mgr.last_active_channel = ChannelType.DESKTOP
 
                     async def send_fn(text: str) -> None:
                         try:
@@ -632,7 +639,7 @@ def create_app(
                             adapter="desktop",
                             user_id="owner",
                         )
-                        await ws.send_json({"type": "reply", "content": reply, "final": True})
+                        await ws.send_json({"type": "reply", "content": "", "final": True})
                     except Exception as exc:
                         await ws.send_json({
                             "type": "error",
@@ -642,8 +649,11 @@ def create_app(
         except WebSocketDisconnect:
             pass
         finally:
-            _active_desktop_ws.pop(connection_id, None)
-            _notify_desktop_presence(b, connected=bool(_active_desktop_ws))
+            if _desktop_adapter is not None:
+                _desktop_adapter.remove_connection(connection_id)
+            b._desktop_connected = bool(
+                _desktop_adapter.connections if _desktop_adapter is not None else False
+            )
 
     # ── 系统资源统计 ──
 
@@ -806,6 +816,7 @@ class LocalApiServer:
         latency_monitor: LatencyMonitor | None = None,
         host: str = API_HOST,
         port: int = API_PORT,
+        channel_manager=None,
     ) -> None:
         self._brain = brain
         self._event_bus = event_bus
@@ -813,6 +824,7 @@ class LocalApiServer:
         self._latency_monitor = latency_monitor
         self._host = host
         self._port = port
+        self._channel_manager = channel_manager
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None
         self._app: FastAPI | None = None  # 保存 FastAPI 实例以便外部注入状态
@@ -826,6 +838,7 @@ class LocalApiServer:
             self._event_bus,
             self._task_view_store,
             self._latency_monitor,
+            channel_manager=self._channel_manager,
         )
         self._app = app
         config = uvicorn.Config(
@@ -834,6 +847,7 @@ class LocalApiServer:
             port=self._port,
             log_level="warning",
             access_log=False,
+            log_config=None,
         )
         self._server = uvicorn.Server(config)
         self._task = asyncio.create_task(self._server.serve())

@@ -29,6 +29,7 @@ def setup_logging() -> logging.Logger:
 
     # ── Lapwing logger (project code) ──
     lapwing_logger = logging.getLogger("lapwing")
+    lapwing_logger.handlers.clear()
     lapwing_logger.setLevel(level)
     lapwing_logger.propagate = False  # never propagate to root
 

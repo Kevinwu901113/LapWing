@@ -63,7 +63,7 @@ async def test_send_to_channel():
 
 
 @pytest.mark.asyncio
-async def test_send_to_kevin_uses_last_active():
+async def test_send_to_owner_uses_last_active():
     from src.core.channel_manager import ChannelManager
 
     mgr = ChannelManager()
@@ -79,13 +79,13 @@ async def test_send_to_kevin_uses_last_active():
     mgr.register(ChannelType.QQ, qq)
 
     mgr.last_active_channel = ChannelType.QQ
-    await mgr.send_to_kevin("hi")
+    await mgr.send_to_owner("hi")
     assert qq.sent == [("222", "hi")]
     assert tg.sent == []
 
 
 @pytest.mark.asyncio
-async def test_send_to_kevin_fallback():
+async def test_send_to_owner_fallback():
     from src.core.channel_manager import ChannelManager
 
     mgr = ChannelManager()
@@ -96,5 +96,60 @@ async def test_send_to_kevin_fallback():
     mgr.register(ChannelType.TELEGRAM, tg)
 
     # No last_active_channel set — should fallback to first connected
-    await mgr.send_to_kevin("hi")
+    await mgr.send_to_owner("hi")
     assert tg.sent == [("111", "hi")]
+
+
+@pytest.mark.asyncio
+async def test_send_to_owner_desktop_priority():
+    """Desktop 已连接时优先发 Desktop，忽略 last_active。"""
+    from src.core.channel_manager import ChannelManager
+    from src.adapters.desktop_adapter import DesktopChannelAdapter
+
+    mgr = ChannelManager()
+
+    tg = FakeAdapter()
+    tg.config = {"kevin_id": "111"}
+    mgr.register(ChannelType.TELEGRAM, tg)
+
+    qq = FakeAdapter()
+    qq.config = {"kevin_id": "222"}
+    mgr.register(ChannelType.QQ, qq)
+
+    desktop = DesktopChannelAdapter()
+    fake_ws = []
+
+    class FakeWs:
+        async def send_json(self, data):
+            fake_ws.append(data)
+
+    desktop.add_connection("c1", FakeWs())
+    mgr.register(ChannelType.DESKTOP, desktop)
+
+    mgr.last_active_channel = ChannelType.QQ  # QQ 是最后活跃，但 Desktop 已连接
+    await mgr.send_to_owner("hello desktop")
+
+    assert qq.sent == []
+    assert tg.sent == []
+    assert any(m.get("content") == "hello desktop" for m in fake_ws)
+
+
+@pytest.mark.asyncio
+async def test_send_to_owner_desktop_disconnected_falls_back():
+    """Desktop 未连接时回退到 last_active。"""
+    from src.core.channel_manager import ChannelManager
+    from src.adapters.desktop_adapter import DesktopChannelAdapter
+
+    mgr = ChannelManager()
+
+    qq = FakeAdapter()
+    qq.config = {"kevin_id": "222"}
+    mgr.register(ChannelType.QQ, qq)
+
+    desktop = DesktopChannelAdapter()  # 没有连接
+    mgr.register(ChannelType.DESKTOP, desktop)
+
+    mgr.last_active_channel = ChannelType.QQ
+    await mgr.send_to_owner("hi")
+
+    assert qq.sent == [("222", "hi")]

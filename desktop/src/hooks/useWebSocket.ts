@@ -44,17 +44,20 @@ export function useWebSocket() {
         const msg = JSON.parse(event.data as string);
 
         if (msg.type === "reply" || msg.type === "message") {
-          const chatMsg: ChatMessage = {
-            id: msg.id ?? crypto.randomUUID(),
-            role: "assistant",
-            content: msg.content ?? "",
-            timestamp: msg.timestamp ?? new Date().toISOString(),
-            toolCalls: msg.tool_calls,
-          };
-          setMessages(prev => {
-            const updated = [...prev, chatMsg];
-            return updated.length > 500 ? updated.slice(-500) : updated;
-          });
+          const isFinalSignal = msg.final === true && interimIdRef.current !== null;
+          if (!isFinalSignal) {
+            const chatMsg: ChatMessage = {
+              id: msg.id ?? crypto.randomUUID(),
+              role: "assistant",
+              content: msg.content ?? "",
+              timestamp: msg.timestamp ?? new Date().toISOString(),
+              toolCalls: msg.tool_calls,
+            };
+            setMessages(prev => {
+              const updated = [...prev, chatMsg];
+              return updated.length > 500 ? updated.slice(-500) : updated;
+            });
+          }
           setToolStatus(null); // Clear tool status when reply arrives
           interimIdRef.current = null; // Clear interim tracking
         } else if (msg.type === "interim") {

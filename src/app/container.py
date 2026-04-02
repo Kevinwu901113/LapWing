@@ -65,14 +65,20 @@ class AppContainer:
         if runtime is not None and hasattr(runtime, "set_latency_monitor"):
             runtime.set_latency_monitor(self.latency_monitor)
 
+        from src.adapters.base import ChannelType
+        from src.adapters.desktop_adapter import DesktopChannelAdapter
+        self.channel_manager = ChannelManager()
+        self._desktop_adapter = DesktopChannelAdapter()
+        self.channel_manager.register(ChannelType.DESKTOP, self._desktop_adapter)
+
         self.api_server = api_server or LocalApiServer(
             brain=self.brain,
             event_bus=self.event_bus,
             task_view_store=self.task_view_store,
             latency_monitor=self.latency_monitor,
+            channel_manager=self.channel_manager,
         )
         self.heartbeat: HeartbeatEngine | None = None
-        self.channel_manager = ChannelManager()
         self.telegram_app = None
 
         self._prepared = False

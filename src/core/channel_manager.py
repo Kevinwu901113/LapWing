@@ -39,10 +39,18 @@ class ChannelManager:
         if adapter and await adapter.is_connected():
             await adapter.send_text(chat_id, text)
 
-    async def send_to_kevin(self, text: str, prefer_channel: Optional[ChannelType] = None) -> None:
-        """Heartbeat 主动消息：优先用指定通道，其次用最后活跃通道，最后 fallback。"""
-        channel = prefer_channel or self.last_active_channel
+    async def send_to_owner(self, text: str, prefer_channel: Optional[ChannelType] = None) -> None:
+        """Heartbeat 主动消息路由：Desktop > last_active > 任意已连接通道。"""
+        # 1. Desktop 优先（用户正在看桌面端）
+        desktop = self.adapters.get(ChannelType.DESKTOP)
+        if desktop and await desktop.is_connected():
+            kevin_id = desktop.config.get("kevin_id", "")
+            if kevin_id:
+                await desktop.send_text(kevin_id, text)
+                return
 
+        # 2. prefer_channel 或最后活跃通道
+        channel = prefer_channel or self.last_active_channel
         if channel and channel in self.adapters:
             adapter = self.adapters[channel]
             if await adapter.is_connected():
@@ -51,7 +59,10 @@ class ChannelManager:
                     await adapter.send_text(kevin_id, text)
                     return
 
+        # 3. Fallback：任意已连接的非 Desktop 通道
         for ch_type, adapter in self.adapters.items():
+            if ch_type == ChannelType.DESKTOP:
+                continue
             if await adapter.is_connected():
                 kevin_id = adapter.config.get("kevin_id", "")
                 if kevin_id:

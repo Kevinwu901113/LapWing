@@ -16,7 +16,7 @@ def app_with_container():
     brain.memory = MagicMock()
     channel_manager = MagicMock()
     channel_manager.register = MagicMock()
-    channel_manager.send_to_kevin = AsyncMock()
+    channel_manager.send_to_owner = AsyncMock()
     container = SimpleNamespace(
         brain=brain,
         start=AsyncMock(),

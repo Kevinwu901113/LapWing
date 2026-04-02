@@ -63,7 +63,7 @@ class TelegramApp:
         )
         self._container.channel_manager.register(ChannelType.TELEGRAM, tg_adapter)
 
-        await self._container.start(send_fn=self._container.channel_manager.send_to_kevin)
+        await self._container.start(send_fn=self._container.channel_manager.send_to_owner)
 
     async def _post_shutdown(self, application) -> None:
         await self._container.shutdown()

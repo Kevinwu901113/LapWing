@@ -48,6 +48,7 @@ export function useLogStream(level: string, module: string) {
     };
 
     es.onerror = () => {
+      if (es !== esRef.current) return; // stale — a newer connection already owns the ref
       es.close();
       esRef.current = null;
       if (liveRef.current) {
