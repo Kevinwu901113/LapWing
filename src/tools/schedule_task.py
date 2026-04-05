@@ -138,6 +138,17 @@ async def _execute_schedule_task(
             reason="db_error",
         )
 
+    scheduler = context.services.get("reminder_scheduler")
+    if scheduler is not None:
+        scheduler.notify_new(
+            reminder_id=reminder_id,
+            chat_id=chat_id,
+            content=content,
+            next_trigger_at=next_trigger,
+            recurrence_type=recurrence_type,
+            interval_minutes=interval_minutes,
+        )
+
     time_desc = _human_readable_time(trigger_type, args, next_trigger)
     output = f"已设置提醒：{content}（{time_desc}）"
 
@@ -216,6 +227,10 @@ async def _execute_cancel_scheduled_task(
             payload={"error": f"未找到活跃提醒 #{rid}"},
             reason="not_found",
         )
+
+    scheduler = context.services.get("reminder_scheduler")
+    if scheduler is not None:
+        scheduler.notify_cancel(rid)
 
     return ToolExecutionResult(
         success=True,

@@ -218,8 +218,7 @@ function ProvidersTab({
             onChange={(e) => setForm((f) => ({ ...f, api_type: e.target.value }))}
           >
             <option value="openai">OpenAI-compatible</option>
-            <option value="minimax">MiniMax</option>
-            <option value="anthropic">Anthropic</option>
+            <option value="anthropic">Anthropic-compatible</option>
           </select>
           <textarea
             className="routing-textarea"

@@ -24,6 +24,9 @@ class FakeAdapter(BaseAdapter):
     async def send_text(self, chat_id: str, text: str):
         self.sent.append((chat_id, text))
 
+    async def send_message(self, chat_id: str, message):
+        self.sent.append((chat_id, message.plain_text))
+
     async def is_connected(self):
         return self._connected
 

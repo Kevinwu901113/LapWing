@@ -144,8 +144,6 @@ LLM_MODEL_ALLOWLIST: tuple[tuple[str | None, str], ...] = (
     or _parse_model_allowlist(_default_model_allowlist_raw)
 )
 
-MINIMAX_MAX_COMPLETION_TOKENS: int = int(os.getenv("MINIMAX_MAX_COMPLETION_TOKENS", "4096"))
-
 # OpenAI / Codex OAuth（ChatGPT 登录）
 OPENAI_CODEX_AUTH_AUTHORIZE_URL: str = os.getenv(
     "OPENAI_CODEX_AUTH_AUTHORIZE_URL",
@@ -202,10 +200,6 @@ OPENAI_CODEX_RUNTIME_TIMEOUT_SECONDS: int = int(
 HEARTBEAT_ENABLED: bool = os.getenv("HEARTBEAT_ENABLED", "true").lower() == "true"
 HEARTBEAT_FAST_INTERVAL_MINUTES: int = int(os.getenv("HEARTBEAT_FAST_INTERVAL_MINUTES", "60"))
 HEARTBEAT_SLOW_HOUR: int = int(os.getenv("HEARTBEAT_SLOW_HOUR", "3"))
-HEARTBEAT_MINUTE_ENABLED: bool = os.getenv("HEARTBEAT_MINUTE_ENABLED", "true").lower() == "true"
-HEARTBEAT_MINUTE_INTERVAL_SECONDS: int = int(os.getenv("HEARTBEAT_MINUTE_INTERVAL_SECONDS", "60"))
-REMINDER_DISPATCH_GRACE_SECONDS: int = int(os.getenv("REMINDER_DISPATCH_GRACE_SECONDS", "60"))
-REMINDER_MAX_DUE_PER_CHAT: int = int(os.getenv("REMINDER_MAX_DUE_PER_CHAT", "20"))
 
 # 自主浏览配置
 BROWSE_ENABLED: bool = os.getenv("BROWSE_ENABLED", "true").lower() == "true"

@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 
 from src.adapters.base import BaseAdapter, ChannelType
+from src.models.message import RichMessage, SegmentType
 
 logger = logging.getLogger("lapwing.adapters.desktop")
 
@@ -40,11 +41,41 @@ class DesktopChannelAdapter(BaseAdapter):
         return bool(self.connections)
 
     async def send_text(self, chat_id: str, text: str) -> None:
-        """向所有活跃桌面连接推送主动消息。"""
+        """向所有活跃桌面连接推送主动文本消息（保持旧协议格式）。"""
         dead = []
         for cid, ws in list(self.connections.items()):
             try:
                 await ws.send_json({"type": "proactive", "content": text})
+            except Exception as exc:
+                logger.warning("Desktop 推送失败 [%s]: %s", cid, exc)
+                dead.append(cid)
+        for cid in dead:
+            self.connections.pop(cid, None)
+
+    async def send_message(self, chat_id: str, message: RichMessage) -> None:
+        """向所有活跃桌面连接推送富媒体消息（WebSocket 协议 v2）。
+
+        格式：{"type": "message", "segments": [{"type": "text", "content": "..."}, ...]}
+        """
+        ws_segments = []
+        for seg in message.segments:
+            if seg.type == SegmentType.TEXT:
+                ws_segments.append({"type": "text", "content": seg.data.get("text", "")})
+            elif seg.type == SegmentType.IMAGE:
+                ws_data: dict = {"type": "image"}
+                if seg.data.get("url"):
+                    ws_data["url"] = seg.data["url"]
+                elif seg.data.get("base64"):
+                    ws_data["base64"] = seg.data["base64"]
+                elif seg.data.get("path"):
+                    ws_data["path"] = seg.data["path"]
+                ws_segments.append(ws_data)
+
+        payload = {"type": "message", "segments": ws_segments}
+        dead = []
+        for cid, ws in list(self.connections.items()):
+            try:
+                await ws.send_json(payload)
             except Exception as exc:
                 logger.warning("Desktop 推送失败 [%s]: %s", cid, exc)
                 dead.append(cid)

@@ -909,6 +909,24 @@ class ConversationMemory:
             return None
         return time_text
 
+    async def get_reminder_by_id(self, reminder_id: int) -> dict | None:
+        """按 ID 查询单个活跃提醒。"""
+        if self._db is None:
+            return None
+        try:
+            async with self._db.execute(
+                """SELECT id, chat_id, content, recurrence_type, next_trigger_at,
+                          weekday, time_of_day, active, created_at,
+                          last_triggered_at, cancelled_at, interval_minutes
+                   FROM reminders WHERE id = ? AND active = 1""",
+                (reminder_id,),
+            ) as cursor:
+                row = await cursor.fetchone()
+            return self._row_to_reminder(row) if row else None
+        except Exception as exc:
+            logger.error("get_reminder_by_id(%d) 失败: %s", reminder_id, exc)
+            return None
+
     def _row_to_reminder(self, row) -> dict:
         result = {
             "id": row[0],

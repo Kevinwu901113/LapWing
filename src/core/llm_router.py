@@ -17,7 +17,6 @@ from config.settings import (
     LLM_CHAT_MODEL,
     LLM_TOOL_BASE_URL,
     LLM_TOOL_MODEL,
-    MINIMAX_MAX_COMPLETION_TOKENS,
     NIM_BASE_URL,
     NIM_MODEL,
 )
@@ -26,9 +25,6 @@ logger = logging.getLogger("lapwing.core.llm_router")
 
 _RECOVERABLE_FAILURES = {"auth", "rate_limit", "timeout", "billing"}
 
-_MINIMAX_MAX_COMPLETION_TOKENS = MINIMAX_MAX_COMPLETION_TOKENS
-_MINIMAX_DEFAULT_TEMPERATURE = 1.0
-_MINIMAX_DEFAULT_TOP_P = 0.95
 _THINKING_RETRY_COOLDOWN_SECONDS = 30.0
 _MODEL_PURPOSES: tuple[str, ...] = ("chat", "tool", "heartbeat")
 
@@ -199,24 +195,6 @@ def _extract_json_from_text(text: str) -> dict[str, Any]:
     raise ValueError(f"_extract_json_from_text 解析失败: {text[:200]}")
 
 
-def _is_minimax_base_url(base_url: str) -> bool:
-    return "minimax" in base_url.lower()
-
-
-def _safe_int(value: Any) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _safe_float(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 def _normalize_openai_message_content(content: Any) -> str:
     if content is None:
         return ""
@@ -255,63 +233,6 @@ def _normalize_openai_message_content(content: Any) -> str:
         return json.dumps(content, ensure_ascii=False)
 
     return str(content)
-
-
-def _normalize_openai_messages_for_text_only(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    normalized_messages: list[dict[str, Any]] = []
-    for message in messages:
-        normalized_message = dict(message)
-        normalized_message["content"] = _normalize_openai_message_content(
-            message.get("content", "")
-        )
-        normalized_messages.append(normalized_message)
-    return normalized_messages
-
-
-def _merge_messages_for_minimax(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """MiniMax 不接受多个 system 消息或连续同 role 消息，在此合并。
-
-    处理顺序：
-    1. 提取所有 system 消息，内容合并为一条放在最前
-    2. 合并剩余消息中连续同 role 的相邻条目
-       — 但 tool 相关消息（role=tool、带 tool_calls 的 assistant）不参与合并，
-         且保留 tool_calls / tool_call_id / name 等字段，否则 MiniMax 会返回
-         "tool result's tool id() not found" 400 错误。
-    """
-    system_parts: list[str] = []
-    non_system: list[dict[str, Any]] = []
-
-    for msg in messages:
-        role = msg.get("role", "")
-        if role == "system":
-            content = str(msg.get("content") or "")
-            if content:
-                system_parts.append(content)
-        else:
-            # 保留完整字段（tool_calls, tool_call_id, name 等）
-            non_system.append(dict(msg))
-
-    def _is_tool_related(msg: dict[str, Any]) -> bool:
-        """判断消息是否属于工具调用链，不能被合并。"""
-        return msg.get("role") == "tool" or bool(msg.get("tool_calls"))
-
-    # 合并连续同 role 的消息，但跳过 tool 相关消息
-    merged: list[dict[str, Any]] = []
-    for msg in non_system:
-        if _is_tool_related(msg):
-            merged.append(msg)
-        elif (
-            merged
-            and merged[-1]["role"] == msg["role"]
-            and not _is_tool_related(merged[-1])
-        ):
-            merged[-1]["content"] = str(merged[-1].get("content") or "") + "\n\n" + str(msg.get("content") or "")
-        else:
-            merged.append(dict(msg))
-
-    if system_parts:
-        return [{"role": "system", "content": "\n\n".join(system_parts)}] + merged
-    return merged
 
 
 def _normalize_openai_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -713,74 +634,6 @@ class LLMRouter:
             )
         return client, model, api_type
 
-    def _is_minimax_openai(self, routing_key: str) -> bool:
-        api_type = self._api_types.get(
-            routing_key,
-            _detect_api_type(LLM_BASE_URL, self._models.get(routing_key, LLM_MODEL)),
-        )
-        base_url = self._base_urls.get(routing_key, LLM_BASE_URL)
-        return api_type == "openai" and _is_minimax_base_url(base_url)
-
-    def _normalize_minimax_openai_request(
-        self,
-        routing_key: str,
-        request_kwargs: dict[str, Any],
-    ) -> dict[str, Any]:
-        if not self._is_minimax_openai(routing_key):
-            return request_kwargs
-
-        normalized = dict(request_kwargs)
-
-        messages = normalized.get("messages")
-        if isinstance(messages, list):
-            normalized["messages"] = _merge_messages_for_minimax(
-                _normalize_openai_messages_for_text_only(
-                    [message for message in messages if isinstance(message, dict)]
-                )
-            )
-
-        max_completion_tokens = normalized.get("max_completion_tokens")
-        if max_completion_tokens is None and "max_tokens" in normalized:
-            max_completion_tokens = normalized.pop("max_tokens")
-        parsed_max_tokens = _safe_int(max_completion_tokens)
-        if parsed_max_tokens is None:
-            parsed_max_tokens = 1024
-        normalized["max_completion_tokens"] = max(
-            1,
-            min(_MINIMAX_MAX_COMPLETION_TOKENS, parsed_max_tokens),
-        )
-
-        temperature = _safe_float(normalized.get("temperature"))
-        if temperature is None or temperature <= 0 or temperature > 1:
-            normalized["temperature"] = _MINIMAX_DEFAULT_TEMPERATURE
-        else:
-            normalized["temperature"] = temperature
-
-        if "top_p" in normalized:
-            top_p = _safe_float(normalized.get("top_p"))
-            normalized["top_p"] = (
-                top_p
-                if top_p is not None and 0 < top_p <= 1
-                else _MINIMAX_DEFAULT_TOP_P
-            )
-
-        normalized["n"] = 1
-        normalized.pop("function_call", None)
-        normalized.pop("parallel_tool_calls", None)
-        normalized.pop("tool_choice", None)  # MiniMax 不支持 tool_choice 参数
-        if logger.isEnabledFor(logging.DEBUG):
-            logger.debug(
-                "[%s] MiniMax OpenAI 参数规范化: "
-                "max_completion_tokens=%s temperature=%s top_p=%s n=%s has_tools=%s",
-                routing_key,
-                normalized.get("max_completion_tokens"),
-                normalized.get("temperature"),
-                normalized.get("top_p"),
-                normalized.get("n"),
-                bool(normalized.get("tools")),
-            )
-        return normalized
-
     def _debug_log_request(self, label: str, routing_key: str, request_kwargs: dict[str, Any]) -> None:
         if not logger.isEnabledFor(logging.DEBUG):
             return
@@ -987,7 +840,6 @@ class LLMRouter:
                 "max_tokens": max_tokens,
                 "messages": messages,
             }
-            request_kwargs = self._normalize_minimax_openai_request(effective_key, request_kwargs)
             self._debug_log_request("complete", effective_key, request_kwargs)
             response = await client.chat.completions.create(**request_kwargs)
             if not response.choices:
@@ -1017,7 +869,6 @@ class LLMRouter:
                             *messages,
                         ],
                     }
-                    retry_kwargs = self._normalize_minimax_openai_request(effective_key, retry_kwargs)
                     self._debug_log_request("complete/thinking_retry", effective_key, retry_kwargs)
                     retry_response = await client.chat.completions.create(**retry_kwargs)
                     if retry_response.choices:
@@ -1147,7 +998,6 @@ class LLMRouter:
                 "tool_choice": "auto",
                 "parallel_tool_calls": False,
             }
-            request_kwargs = self._normalize_minimax_openai_request(effective_key, request_kwargs)
             self._debug_log_request("complete_with_tools", effective_key, request_kwargs)
             response = await client.chat.completions.create(**request_kwargs)
             if not response.choices:
@@ -1282,29 +1132,17 @@ class LLMRouter:
                     raise ValueError("Codex 未返回 tool call")
                 return turn.tool_calls[0].arguments
 
-            # OpenAI-compatible (MiniMax, GLM, etc.)
-
-            # MiniMax 会 pop tool_choice，模型可能不走 tool call。
-            # 注入指令抑制 <think> 输出、强制 JSON 格式。
-            structured_messages = list(messages)  # 浅拷贝
-            if self._is_minimax_openai(effective_key):
-                anti_think = (
-                    "重要：不要使用 <think> 标签。不要输出任何思考过程。"
-                    "如果无法调用工具，直接输出纯 JSON，不要有任何其他文字。"
-                )
-                structured_messages.insert(0, {"role": "system", "content": anti_think})
-
+            # OpenAI-compatible (GLM, etc.)
             request_kwargs = {
                 "model": model,
                 "max_tokens": max_tokens,
-                "messages": structured_messages,
+                "messages": messages,
                 "tools": _normalize_openai_tools([tool_def]),
                 "tool_choice": {
                     "type": "function",
                     "function": {"name": tool_name},
                 },
             }
-            request_kwargs = self._normalize_minimax_openai_request(effective_key, request_kwargs)
             self._debug_log_request("complete_structured", effective_key, request_kwargs)
             response = await client.chat.completions.create(**request_kwargs)
 
@@ -1316,7 +1154,7 @@ class LLMRouter:
             if tool_calls:
                 return tool_calls[0].arguments
 
-            # Fallback：MiniMax 等不支持 forced tool_choice 的模型
+            # Fallback：部分 OpenAI-compatible 模型不支持 forced tool_choice
             text = _normalize_openai_message_content(message.content)
             if not text:
                 raise ValueError("模型未返回 tool call 且无文本输出")

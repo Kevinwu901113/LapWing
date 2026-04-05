@@ -86,6 +86,8 @@ class LapwingBrain:
         self.evolution_engine: EvolutionEngine | None = None
         self.session_manager = None  # Set externally (SessionManager | None)
         self.auto_memory_extractor = None  # Set externally (AutoMemoryExtractor | None)
+        self.reminder_scheduler = None  # Set externally (ReminderScheduler | None)
+        self.channel_manager = None  # Set externally (ChannelManager | None)
 
     async def init_db(self) -> None:
         """初始化数据库连接和表结构。"""
@@ -193,6 +195,10 @@ class LapwingBrain:
         services = {}
         if include_skill_activation_tool and self.skill_manager is not None:
             services["skill_manager"] = self.skill_manager
+        if self.reminder_scheduler is not None:
+            services["reminder_scheduler"] = self.reminder_scheduler
+        if self.channel_manager is not None:
+            services["channel_manager"] = self.channel_manager
 
         deps = RuntimeDeps(
             execute_shell=execute_shell,

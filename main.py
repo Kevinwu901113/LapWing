@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import argparse
+import fcntl
 import json
 import logging
+import os
 from logging.handlers import RotatingFileHandler
 from typing import Any
 
@@ -17,6 +19,8 @@ from config.settings import (
     TELEGRAM_TOKEN,
 )
 from src.auth.service import AuthManager
+
+_PID_FILE = None  # 模块级引用，防止 GC 释放文件描述符
 
 
 def setup_logging() -> logging.Logger:
@@ -196,6 +200,18 @@ def handle_auth_command(args: argparse.Namespace) -> int:
 
 
 def run_telegram_bot(logger: logging.Logger) -> int:
+    global _PID_FILE
+    pid_path = DATA_DIR / "lapwing.pid"
+    pid_path.parent.mkdir(parents=True, exist_ok=True)
+    _PID_FILE = open(pid_path, "w")
+    try:
+        fcntl.flock(_PID_FILE, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        _PID_FILE.write(str(os.getpid()))
+        _PID_FILE.flush()
+    except BlockingIOError:
+        logger.error("另一个 Lapwing 进程正在运行（PID 文件锁定）。请先停止旧进程。")
+        return 1
+
     from src.app.container import AppContainer
     from src.app.telegram_app import TelegramApp
     from config.settings import TELEGRAM_KEVIN_ID

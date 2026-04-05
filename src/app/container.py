@@ -23,12 +23,13 @@ from src.app.task_view import TaskViewStore
 from src.core.brain import LapwingBrain
 from src.core.channel_manager import ChannelManager
 from src.core.heartbeat import HeartbeatEngine
+from src.core.reminder_scheduler import ReminderScheduler
 from src.core.latency_monitor import LatencyMonitor
 from src.heartbeat.actions.autonomous_browsing import AutonomousBrowsingAction
 from src.heartbeat.actions.compaction_check import CompactionCheckAction
 from src.heartbeat.actions.consolidation import MemoryConsolidationAction
 from src.heartbeat.actions.interest_proactive import InterestProactiveAction
-from src.heartbeat.actions.proactive import ProactiveMessageAction, ReminderDispatchAction
+from src.heartbeat.actions.proactive import ProactiveMessageAction
 from src.heartbeat.actions.prompt_evolution import PromptEvolutionAction
 from src.heartbeat.actions.self_reflection import SelfReflectionAction
 
@@ -70,6 +71,7 @@ class AppContainer:
         self.channel_manager = ChannelManager()
         self._desktop_adapter = DesktopChannelAdapter()
         self.channel_manager.register(ChannelType.DESKTOP, self._desktop_adapter)
+        self.brain.channel_manager = self.channel_manager
 
         self.api_server = api_server or LocalApiServer(
             brain=self.brain,
@@ -79,6 +81,7 @@ class AppContainer:
             channel_manager=self.channel_manager,
         )
         self.heartbeat: HeartbeatEngine | None = None
+        self.reminder_scheduler: ReminderScheduler | None = None
         self.telegram_app = None
 
         self._prepared = False
@@ -102,6 +105,13 @@ class AppContainer:
         if send_fn is not None:
             self.heartbeat = self._build_heartbeat(send_fn)
             self.heartbeat.start()
+            self.reminder_scheduler = ReminderScheduler(
+                memory=self.brain.memory,
+                send_fn=send_fn,
+                event_bus=self.event_bus,
+            )
+            await self.reminder_scheduler.start()
+            self.brain.reminder_scheduler = self.reminder_scheduler
 
         await self.channel_manager.start_all()
 
@@ -115,6 +125,10 @@ class AppContainer:
         logger.info("应用容器启动完成")
 
     async def shutdown(self) -> None:
+        if self.reminder_scheduler is not None:
+            await self.reminder_scheduler.shutdown()
+            self.reminder_scheduler = None
+
         if self.heartbeat is not None:
             await self.heartbeat.shutdown()
             self.heartbeat = None
@@ -202,7 +216,6 @@ class AppContainer:
         heartbeat = HeartbeatEngine(brain=self.brain, send_fn=send_fn)
         heartbeat.registry.register(CompactionCheckAction())
         heartbeat.registry.register(ProactiveMessageAction())
-        heartbeat.registry.register(ReminderDispatchAction())
         heartbeat.registry.register(AutonomousBrowsingAction())
         heartbeat.registry.register(InterestProactiveAction())
         heartbeat.registry.register(MemoryConsolidationAction())

@@ -605,4 +605,61 @@ def build_default_tool_registry() -> ToolRegistry:
             risk_level="medium",
         ))
 
+    # ── 图片搜索 ──
+    from src.tools.image_search import IMAGE_SEARCH_EXECUTORS
+    registry.register(ToolSpec(
+        name="image_search",
+        description=(
+            "搜索图片，返回可直接用于 send_image 的图片 URL 列表。"
+            "当你想发图片给用户但没有现成的图片 URL 时，先用这个工具搜索，再用 send_image 发送。"
+        ),
+        json_schema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "搜索关键词，建议用英文以获得更多结果",
+                },
+                "max_results": {
+                    "type": "integer",
+                    "description": "返回的最大结果数，默认 5",
+                },
+            },
+            "required": ["query"],
+        },
+        executor=IMAGE_SEARCH_EXECUTORS["image_search"],
+        capability="web",
+        risk_level="low",
+    ))
+
+    # ── 图片发送 ──
+    from src.tools.send_image import SEND_IMAGE_EXECUTORS
+    registry.register(ToolSpec(
+        name="send_image",
+        description=(
+            "向用户发送一张图片。必须提供 url 或 path 中的至少一个。"
+            "如果要搜索图片，请先使用 image_search 工具获取图片 URL，再用本工具发送。"
+        ),
+        json_schema={
+            "type": "object",
+            "properties": {
+                "url": {
+                    "type": "string",
+                    "description": "图片的 URL 地址（http/https）",
+                },
+                "path": {
+                    "type": "string",
+                    "description": "服务器上图片的绝对路径",
+                },
+                "caption": {
+                    "type": "string",
+                    "description": "图片的说明文字（可选）",
+                },
+            },
+        },
+        executor=SEND_IMAGE_EXECUTORS["send_image"],
+        capability="general",
+        risk_level="low",
+    ))
+
     return registry

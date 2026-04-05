@@ -4,7 +4,7 @@ from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 from src.core.heartbeat import SenseContext
-from src.heartbeat.actions.proactive import ProactiveMessageAction, ReminderDispatchAction
+from src.heartbeat.actions.proactive import ProactiveMessageAction
 
 
 @pytest.fixture
@@ -22,8 +22,6 @@ def mock_brain():
     b = MagicMock()
     b.memory = MagicMock()
     b.memory.get_unshared_discoveries = AsyncMock(return_value=[])
-    b.memory.get_due_reminders = AsyncMock(return_value=[])
-    b.memory.complete_or_reschedule_reminder = AsyncMock(return_value=True)
     b.memory.append = AsyncMock()
     b.memory.mark_discovery_shared = AsyncMock()
     b.router = MagicMock()
@@ -92,103 +90,3 @@ class TestProactiveMessageAction:
             },
         )
 
-
-@pytest.fixture
-def minute_ctx():
-    return SenseContext(
-        beat_type="minute",
-        now=datetime.now(timezone.utc),
-        last_interaction=None,
-        silence_hours=2.0,
-        user_facts_summary="- 作息：晚饭后会休息",
-        recent_memory_summary="",
-        chat_id="c1",
-    )
-
-
-@pytest.mark.asyncio
-class TestReminderDispatchAction:
-    async def test_contract(self):
-        action = ReminderDispatchAction()
-        assert action.beat_types == ["minute"]
-        assert action.selection_mode == "always"
-
-    async def test_skips_when_no_due_reminder(self, minute_ctx, mock_brain, mock_send_fn):
-        mock_brain.memory.get_due_reminders = AsyncMock(return_value=[])
-        await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_send_fn)
-        mock_send_fn.assert_not_called()
-        mock_brain.memory.complete_or_reschedule_reminder.assert_not_called()
-
-    async def test_dispatches_due_reminder_and_updates_state(self, minute_ctx, mock_brain, mock_send_fn):
-        mock_brain.memory.get_due_reminders = AsyncMock(return_value=[
-            {
-                "id": 12,
-                "chat_id": "c1",
-                "content": "起身活动一下",
-                "recurrence_type": "once",
-                "next_trigger_at": minute_ctx.now.isoformat(),
-                "weekday": None,
-                "time_of_day": None,
-                "active": True,
-                "created_at": minute_ctx.now.isoformat(),
-                "last_triggered_at": None,
-                "cancelled_at": None,
-            }
-        ])
-        mock_brain.router.complete = AsyncMock(return_value="提醒你：起身活动一下")
-        mock_brain.event_bus = MagicMock()
-        mock_brain.event_bus.publish = AsyncMock()
-
-        await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_send_fn)
-
-        mock_send_fn.assert_awaited_once_with("提醒你：起身活动一下")
-        mock_brain.memory.complete_or_reschedule_reminder.assert_awaited_once_with(12, now=minute_ctx.now)
-        mock_brain.event_bus.publish.assert_awaited_once_with(
-            "reminder_message",
-            {"chat_id": "c1", "text": "提醒你：起身活动一下"},
-        )
-
-    async def test_falls_back_when_llm_returns_empty(self, minute_ctx, mock_brain, mock_send_fn):
-        mock_brain.memory.get_due_reminders = AsyncMock(return_value=[
-            {
-                "id": 99,
-                "chat_id": "c1",
-                "content": "喝水",
-                "recurrence_type": "daily",
-                "next_trigger_at": minute_ctx.now.isoformat(),
-                "weekday": None,
-                "time_of_day": "10:00",
-                "active": True,
-                "created_at": minute_ctx.now.isoformat(),
-                "last_triggered_at": None,
-                "cancelled_at": None,
-            }
-        ])
-        mock_brain.router.complete = AsyncMock(return_value="")
-
-        await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_send_fn)
-
-        mock_send_fn.assert_awaited_once_with("提醒你：喝水")
-
-    async def test_reminder_forwards_clean_router_output(self, minute_ctx, mock_brain, mock_send_fn):
-        # Router strips thinking tags internally; action just forwards clean content.
-        mock_brain.memory.get_due_reminders = AsyncMock(return_value=[
-            {
-                "id": 101,
-                "chat_id": "c1",
-                "content": "出门散步",
-                "recurrence_type": "once",
-                "next_trigger_at": minute_ctx.now.isoformat(),
-                "weekday": None,
-                "time_of_day": None,
-                "active": True,
-                "created_at": minute_ctx.now.isoformat(),
-                "last_triggered_at": None,
-                "cancelled_at": None,
-            }
-        ])
-        mock_brain.router.complete = AsyncMock(return_value="提醒你去散步")
-
-        await ReminderDispatchAction().execute(minute_ctx, mock_brain, mock_send_fn)
-
-        mock_send_fn.assert_awaited_once_with("提醒你去散步")

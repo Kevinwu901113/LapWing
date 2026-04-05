@@ -16,6 +16,7 @@ from src.adapters.base import BaseAdapter, ChannelType
 from src.adapters.qq_group_context import GroupContext, GroupMessage
 from src.adapters.qq_group_filter import GroupEngagementDecider
 from src.core.prompt_loader import load_prompt
+from src.models.message import RichMessage, SegmentType
 
 logger = logging.getLogger("lapwing.adapters.qq_adapter")
 
@@ -109,11 +110,15 @@ class QQAdapter(BaseAdapter):
     async def send_text(self, chat_id: str, text: str) -> None:
         text = self._markdown_to_plain(text)
         if len(text) <= MAX_QQ_MSG_LENGTH:
-            await self._send_private_msg(chat_id, text)
+            result = await self._send_private_msg(chat_id, text)
+            if result.get("status") != "ok":
+                raise RuntimeError(f"QQ 消息发送失败: retcode={result.get('retcode')}")
         else:
             chunks = self._split_text(text, MAX_QQ_MSG_LENGTH)
             for chunk in chunks:
-                await self._send_private_msg(chat_id, chunk)
+                result = await self._send_private_msg(chat_id, chunk)
+                if result.get("status") != "ok":
+                    raise RuntimeError(f"QQ 消息发送失败: retcode={result.get('retcode')}")
                 await asyncio.sleep(0.5)
 
     # ── WebSocket 连接管理 ──────────────────────────────
@@ -423,12 +428,33 @@ class QQAdapter(BaseAdapter):
             "message": segments,
         })
 
+    async def send_message(self, chat_id: str, message: RichMessage) -> None:
+        """发送富媒体消息到 QQ 私聊，翻译为 OneBot v11 segment 格式。"""
+        segments: list[dict] = []
+        for seg in message.segments:
+            if seg.type == SegmentType.TEXT:
+                text = self._markdown_to_plain(seg.data.get("text", ""))
+                segments.extend(self._build_message_segments(text))
+            elif seg.type == SegmentType.IMAGE:
+                if seg.data.get("url"):
+                    segments.append({"type": "image", "data": {"file": seg.data["url"]}})
+                elif seg.data.get("base64"):
+                    segments.append({"type": "image", "data": {"file": f"base64://{seg.data['base64']}"}})
+                elif seg.data.get("path"):
+                    segments.append({"type": "image", "data": {"file": f"file://{seg.data['path']}"}})
+        if segments:
+            result = await self._send_private_msg_segments(chat_id, segments)
+            if result.get("status") != "ok":
+                raise RuntimeError(f"QQ 消息发送失败: retcode={result.get('retcode')}")
+
     async def send_reply(self, chat_id: str, text: str, reply_to_message_id: str) -> None:
         """发送带引用的回复消息。"""
         text_plain = self._markdown_to_plain(text)
         segments: list[dict] = [{"type": "reply", "data": {"id": reply_to_message_id}}]
         segments.extend(self._build_message_segments(text_plain))
-        await self._send_private_msg_segments(chat_id, segments)
+        result = await self._send_private_msg_segments(chat_id, segments)
+        if result.get("status") != "ok":
+            raise RuntimeError(f"QQ 消息发送失败: retcode={result.get('retcode')}")
 
     async def poke(self, user_id: str) -> None:
         """好友戳一戳 (friend poke)。"""

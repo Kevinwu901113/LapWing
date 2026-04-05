@@ -16,6 +16,7 @@ from config.settings import (
 )
 from src.adapters.base import BaseAdapter, ChannelType
 from src.app.telegram_delivery import send_telegram_reply_text, send_telegram_text_to_chat
+from src.models.message import RichMessage, SegmentType
 from src.core.reasoning_tags import strip_internal_thinking_tags
 
 logger = logging.getLogger("lapwing.app.telegram_app")
@@ -633,6 +634,54 @@ class TelegramChannelAdapter(BaseAdapter):
         except ValueError:
             numeric_id = chat_id
         await send_telegram_text_to_chat(bot=bot, chat_id=numeric_id, text=text)
+
+    async def send_message(self, chat_id: str, message: RichMessage) -> None:
+        bot = self._telegram_app._bot
+        if bot is None:
+            return
+        try:
+            numeric_id = int(chat_id)
+        except ValueError:
+            numeric_id = chat_id  # type: ignore[assignment]
+        succeeded: list[int] = []
+        failed: list[tuple[int, str]] = []
+        for i, seg in enumerate(message.segments):
+            try:
+                if seg.type == SegmentType.TEXT:
+                    text = seg.data.get("text", "")
+                    if text:
+                        await send_telegram_text_to_chat(bot=bot, chat_id=numeric_id, text=text)
+                elif seg.type == SegmentType.IMAGE:
+                    await self._send_telegram_image(bot, numeric_id, seg)
+                succeeded.append(i)
+            except Exception as exc:
+                logger.error("Telegram segment %d (%s) 发送失败: %s", i, seg.type, exc)
+                failed.append((i, str(exc)))
+        if failed and not succeeded:
+            raise RuntimeError(f"所有消息段发送失败: {failed}")
+        elif failed:
+            logger.warning("部分消息段发送失败: %s，成功: %s", failed, succeeded)
+
+    @staticmethod
+    async def _send_telegram_image(bot, chat_id, seg) -> None:
+        """处理各种图片来源格式，调用 Telegram send_photo。"""
+        import base64 as b64_mod
+        from io import BytesIO
+        from pathlib import Path
+        if seg.data.get("url"):
+            await bot.send_photo(chat_id=chat_id, photo=seg.data["url"])
+        elif seg.data.get("base64"):
+            raw = b64_mod.b64decode(seg.data["base64"])
+            buf = BytesIO(raw)
+            buf.name = "image.png"
+            await bot.send_photo(chat_id=chat_id, photo=buf)
+        elif seg.data.get("path"):
+            content = await asyncio.to_thread(Path(seg.data["path"]).read_bytes)
+            buf = BytesIO(content)
+            buf.name = "image.png"
+            await bot.send_photo(chat_id=chat_id, photo=buf)
+        else:
+            raise ValueError("图片消息缺少 url/base64/path")
 
     async def is_connected(self) -> bool:
         return self._telegram_app._bot is not None

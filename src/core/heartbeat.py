@@ -248,8 +248,6 @@ class HeartbeatEngine:
         from config.settings import (
             HEARTBEAT_ENABLED,
             HEARTBEAT_FAST_INTERVAL_MINUTES,
-            HEARTBEAT_MINUTE_ENABLED,
-            HEARTBEAT_MINUTE_INTERVAL_SECONDS,
             HEARTBEAT_SLOW_HOUR,
         )
 
@@ -271,20 +269,10 @@ class HeartbeatEngine:
             id="heartbeat_slow",
         )
 
-        if HEARTBEAT_MINUTE_ENABLED:
-            interval_seconds = max(int(HEARTBEAT_MINUTE_INTERVAL_SECONDS), 1)
-            self._scheduler.add_job(
-                self._run_tick,
-                IntervalTrigger(seconds=interval_seconds),
-                args=["minute"],
-                id="heartbeat_minute",
-            )
-
         self._scheduler.start()
         logger.info(
             f"心跳已启动：快心跳每 {HEARTBEAT_FAST_INTERVAL_MINUTES} 分钟，"
-            f"慢心跳每天 {HEARTBEAT_SLOW_HOUR:02d}:00，"
-            f"分钟心跳={'开启' if HEARTBEAT_MINUTE_ENABLED else '关闭'}"
+            f"慢心跳每天 {HEARTBEAT_SLOW_HOUR:02d}:00"
         )
 
     async def shutdown(self) -> None:

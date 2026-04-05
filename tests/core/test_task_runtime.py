@@ -73,7 +73,7 @@ async def test_chat_tools_from_registry():
 
     _memory_crud = {"memory_list", "memory_read", "memory_edit", "memory_delete", "memory_search"}
     _schedule = {"schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"}
-    assert names == {"execute_shell", "read_file", "write_file", "web_search", "web_fetch", "memory_note", "get_weather"} | _memory_crud | _schedule
+    assert names == {"execute_shell", "read_file", "write_file", "web_search", "web_fetch", "memory_note", "get_weather", "send_image"} | _memory_crud | _schedule
 
 
 @pytest.mark.asyncio
@@ -85,7 +85,7 @@ async def test_chat_tools_excludes_web_when_disabled():
 
     _memory_crud = {"memory_list", "memory_read", "memory_edit", "memory_delete", "memory_search"}
     _schedule = {"schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"}
-    assert names == {"execute_shell", "read_file", "write_file", "memory_note", "get_weather"} | _memory_crud | _schedule
+    assert names == {"execute_shell", "read_file", "write_file", "memory_note", "get_weather", "send_image"} | _memory_crud | _schedule
 
 
 @pytest.mark.asyncio

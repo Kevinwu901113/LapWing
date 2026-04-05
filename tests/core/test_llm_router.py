@@ -385,98 +385,6 @@ class TestLLMRouterTools:
                 "disable_parallel_tool_use": True,
             }
 
-    async def test_complete_with_tools_applies_minimax_openai_compat(self):
-        with patch.dict("os.environ", {
-            "LLM_API_KEY": "generic-key",
-            "LLM_BASE_URL": "https://api.minimaxi.com/v1",
-            "LLM_MODEL": "MiniMax-M2.7",
-        }, clear=True):
-            from src.core.llm_router import LLMRouter
-
-            router = LLMRouter()
-
-            message = MagicMock()
-            message.content = "ok"
-            message.tool_calls = []
-
-            mock_response = MagicMock()
-            mock_response.choices[0].message = message
-
-            mock_client = MagicMock()
-            mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
-            router._clients["chat"] = mock_client
-            router._api_types["chat"] = "openai"
-            router._base_urls["chat"] = "https://api.minimaxi.com/v1"
-
-            tools = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "execute_shell",
-                        "description": "执行命令",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"command": {"type": "string"}},
-                            "required": ["command"],
-                        },
-                    },
-                }
-            ]
-
-            await router.complete_with_tools(
-                [
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": "你好"},
-                            {"type": "image_url", "image_url": {"url": "https://x"}},
-                        ],
-                    }
-                ],
-                tools=tools,
-                purpose="chat",
-            )
-
-            call_kwargs = mock_client.chat.completions.create.call_args.kwargs
-            assert "max_tokens" not in call_kwargs
-            assert call_kwargs["max_completion_tokens"] == 1024
-            assert call_kwargs["temperature"] == 1.0
-            assert call_kwargs["n"] == 1
-            assert "parallel_tool_calls" not in call_kwargs
-            assert call_kwargs["messages"] == [{"role": "user", "content": "你好"}]
-
-    def test_normalize_minimax_openai_request_clamps_invalid_values(self):
-        with patch.dict("os.environ", {
-            "LLM_API_KEY": "generic-key",
-            "LLM_BASE_URL": "https://api.minimaxi.com/v1",
-            "LLM_MODEL": "MiniMax-M2.7",
-        }, clear=True):
-            from src.core.llm_router import LLMRouter
-
-            router = LLMRouter()
-
-            normalized = router._normalize_minimax_openai_request(
-                "chat",
-                {
-                    "model": "MiniMax-M2.7",
-                    "messages": [{"role": "user", "content": "ping"}],
-                    "max_tokens": 99999,
-                    "temperature": 0,
-                    "top_p": 0,
-                    "n": 3,
-                    "function_call": "auto",
-                    "parallel_tool_calls": False,
-                },
-            )
-
-            assert normalized["max_completion_tokens"] == 4096
-            assert normalized["temperature"] == 1.0
-            assert normalized["top_p"] == 0.95
-            assert normalized["n"] == 1
-            assert "max_tokens" not in normalized
-            assert "function_call" not in normalized
-            assert "parallel_tool_calls" not in normalized
-
     def test_build_tool_result_message_for_openai(self):
         with patch.dict("os.environ", {
             "LLM_API_KEY": "generic-key",
@@ -486,6 +394,7 @@ class TestLLMRouterTools:
             from src.core.llm_router import LLMRouter, ToolCallRequest
 
             router = LLMRouter()
+            router._api_types["chat"] = "openai"
             result = router.build_tool_result_message(
                 purpose="chat",
                 tool_results=[
@@ -516,6 +425,7 @@ class TestLLMRouterTools:
             from src.core.llm_router import LLMRouter, ToolCallRequest
 
             router = LLMRouter()
+            router._api_types["chat"] = "openai"
             result = router.build_tool_result_message(
                 purpose="chat",
                 tool_results=[
@@ -968,6 +878,8 @@ class TestLLMRouterModelSwitch:
             mock_client = MagicMock()
             mock_client.chat.completions.create = AsyncMock(return_value=mock_response)
             router._clients["chat"] = mock_client
+            router._api_types["chat"] = "openai"
+            router._base_urls["chat"] = "https://generic.api.com/v1"
 
             router.switch_session_model(session_key="chat:1", selector="2")
             assert router.model_for("chat", session_key="chat:1") == "openai/gpt-4.1"
