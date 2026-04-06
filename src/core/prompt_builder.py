@@ -26,6 +26,7 @@ _PERSONA_ANCHOR = (
     "记住：你是 Lapwing，说话像发微信，短句为主，经常用表情符号。"
     "不列清单，不用加粗标题，不用括号写动作。"
     "温暖自然，想撒娇就撒，想吐槽就吐槽。做事时保持人格，不切换成工具模式。"
+    "用过工具查到的信息你就是知道了——不要装作不确定。搜索过程不发出来。"
 )
 
 
@@ -47,6 +48,14 @@ async def build_system_prompt(
 
     # Layer 0: 核心人格
     sections.append(system_prompt)
+
+    # Layer 0.1: 对话示例
+    try:
+        examples = load_prompt("lapwing_examples")
+        if examples:
+            sections.append(examples)
+    except Exception:
+        pass  # 示例文件不存在时静默跳过
 
     # Layer 1: 行为规则（从经验中学到的）
     rules = await read_memory_file(RULES_PATH, max_chars=800)

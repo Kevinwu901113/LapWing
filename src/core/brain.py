@@ -55,6 +55,42 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("lapwing.core.brain")
 
+# ── 中间文字过滤：屏蔽搜索过程的内部独白 ─────────────────────────────
+
+_INTERNAL_MONOLOGUE_PATTERNS = [
+    "等我重新搜",
+    "奇怪",
+    "不对我再",
+    "我再看看",
+    "搜到的好像",
+    "让我确认",
+    "我再查",
+    "等等，",
+    "我试试",
+    "有些还没更新",
+    "我再仔细",
+    "可能每个数据源",
+    "等我搜",
+    "我搜一下",
+    "我查一下",
+    "让我看看",
+    "我翻一下",
+    "我找一下",
+    "啊等等",
+    "不对不对",
+    "嗯让我",
+]
+
+
+def _is_internal_monologue(text: str) -> bool:
+    """判断文字是否属于搜索过程中的内部独白，不应发给用户。"""
+    stripped = text.strip()
+    if not stripped:
+        return True
+    for pattern in _INTERNAL_MONOLOGUE_PATTERNS:
+        if pattern in stripped:
+            return True
+    return False
 
 
 @dataclasses.dataclass
@@ -638,7 +674,7 @@ class LapwingBrain:
 
         async def on_interim_text(text: str) -> None:
             stripped = strip_internal_thinking_tags(text)
-            if stripped:
+            if stripped and not _is_internal_monologue(stripped):
                 await _send_with_split(stripped)
 
         async def on_typing() -> None:

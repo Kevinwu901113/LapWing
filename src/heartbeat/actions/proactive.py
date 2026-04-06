@@ -5,6 +5,7 @@ from datetime import datetime
 
 from src.core.heartbeat import HeartbeatAction, SenseContext
 from src.core.prompt_loader import load_prompt
+from src.heartbeat.proactive_filter import filter_proactive_message
 
 logger = logging.getLogger("lapwing.heartbeat.proactive")
 
@@ -25,7 +26,7 @@ class ProactiveMessageAction(HeartbeatAction):
 
     async def execute(self, ctx: SenseContext, brain, send_fn) -> None:
         try:
-            discoveries = await brain.memory.get_unshared_discoveries(ctx.chat_id, limit=3)
+            discoveries = await brain.memory.get_unshared_discoveries(ctx.chat_id, limit=1)
             discoveries_summary = self._format_discoveries(discoveries)
 
             prompt = self._prompt.format(
@@ -44,6 +45,15 @@ class ProactiveMessageAction(HeartbeatAction):
             )
 
             if not reply:
+                return
+
+            # 质量门控
+            passed, reason = await filter_proactive_message(brain.router, reply)
+            if not passed:
+                logger.info(
+                    "[%s] 主动消息未通过质量检查，丢弃: %s — %s",
+                    ctx.chat_id, reply[:50], reason,
+                )
                 return
 
             await send_fn(reply)
@@ -69,10 +79,5 @@ class ProactiveMessageAction(HeartbeatAction):
     def _format_discoveries(self, discoveries: list[dict]) -> str:
         if not discoveries:
             return ""
-        lines = []
-        for d in discoveries:
-            line = f"- {d['title']}: {d['summary']}"
-            if d.get("url"):
-                line += f" ({d['url']})"
-            lines.append(line)
-        return "\n".join(lines)
+        d = discoveries[0]
+        return f"你最近看到的一个东西：{d['title']}"

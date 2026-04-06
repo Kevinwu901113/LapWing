@@ -28,8 +28,9 @@ _EVAL_PROMPT = """\
 - naturalness: 是否自然，不像机器人或客服？
 - emotional_fit: 情感是否恰当（恋人间的语气）？
 - brevity: 长度是否合适（不过度冗长）？
+- information_confidence: 如果涉及查资料，是否表现得像一个查过就知道的人？有没有不必要的"我不确定""好像是"？
 
-如果任何维度低于 3，返回 {{"flag": true, "reason": "简述问题", "scores": {{"persona_consistency": N, "naturalness": N, "emotional_fit": N, "brevity": N}}}}
+如果任何维度低于 3，返回 {{"flag": true, "reason": "简述问题", "dimension": "最差的维度名", "scores": {{"persona_consistency": N, "naturalness": N, "emotional_fit": N, "brevity": N, "information_confidence": N}}}}
 否则返回 {{"flag": false}}
 
 只返回 JSON，不返回任何其他内容。

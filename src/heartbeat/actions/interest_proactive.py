@@ -1,10 +1,12 @@
 """InterestProactiveAction - 基于兴趣主动分享内容。"""
 
 import logging
+import random
 
 from src.core.heartbeat import HeartbeatAction, SenseContext
 from src.core.prompt_loader import load_prompt
-from src.tools import web_search
+from src.heartbeat.proactive_filter import filter_proactive_message
+from src.tools import web_fetcher, web_search
 
 logger = logging.getLogger("lapwing.heartbeat.interest_proactive")
 
@@ -26,9 +28,13 @@ class InterestProactiveAction(HeartbeatAction):
         return self._prompt_template
 
     async def execute(self, ctx: SenseContext, brain, send_fn) -> None:
-        if ctx.silence_hours < 2.0:
+        # 提高门槛：至少沉默 3 小时（原来 2 小时）
+        if ctx.silence_hours < 3.0:
             return
-        if ctx.now.hour >= 23 or ctx.now.hour < 7:
+        if ctx.now.hour >= 23 or ctx.now.hour < 8:  # 原来 < 7
+            return
+        # 随机跳过 40%，避免每次心跳都触发
+        if random.random() < 0.4:
             return
 
         try:
@@ -41,13 +47,23 @@ class InterestProactiveAction(HeartbeatAction):
             if not results:
                 return
 
+            # 先读一篇全文，确保真的理解了再说
+            best_result = results[0]
+            comprehension_context = ""
+            try:
+                fetched = await web_fetcher.fetch(best_result.get("url", ""))
+                if fetched.success and fetched.text:
+                    comprehension_context = f"\n\n全文摘要：\n{fetched.text[:1500]}"
+            except Exception:
+                pass  # 抓不到全文就用 snippet
+
             search_results = "\n\n".join(
                 f"[{result['title']}]({result['url']})\n{result['snippet']}"
                 for result in results
             )
             prompt = self._prompt.format(
                 topic=topic,
-                search_results=search_results,
+                search_results=search_results + comprehension_context,
                 user_facts_summary=ctx.user_facts_summary,
             )
 
@@ -59,6 +75,15 @@ class InterestProactiveAction(HeartbeatAction):
                 origin="heartbeat.interest_proactive",
             )
             if not message:
+                return
+
+            # 质量门控：检查消息是否自然
+            passed, reason = await filter_proactive_message(brain.router, message)
+            if not passed:
+                logger.info(
+                    "[%s] 兴趣主动消息未通过质量检查，丢弃: %s — %s",
+                    ctx.chat_id, message[:50], reason,
+                )
                 return
 
             await send_fn(message)
@@ -81,7 +106,9 @@ class InterestProactiveAction(HeartbeatAction):
                 summary=message[:500],
                 url=first.get("url"),
             )
-            await brain.memory.append(ctx.chat_id, "assistant", message)
+            # 写入记忆时附加来源标注，帮助后续对话保持一致性
+            source_tag = f"\n[source: 基于搜索「{topic}」的结果主动分享，已确认内容]"
+            await brain.memory.append(ctx.chat_id, "assistant", message + source_tag)
             await brain.memory.decay_interests(ctx.chat_id, factor=0.9)
             if hasattr(brain, "knowledge_manager") and brain.knowledge_manager is not None:
                 brain.knowledge_manager.save_note(

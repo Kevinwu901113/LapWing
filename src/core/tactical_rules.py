@@ -19,8 +19,17 @@ class TacticalRules:
 
     @staticmethod
     def might_be_correction(text: str) -> bool:
-        """纠正由 LLM 在对话中自然处理，不做关键词预筛。"""
-        return False
+        """粗筛是否可能是纠正性反馈。"""
+        if len(text) < 3:
+            return False
+        correction_signals = [
+            "不用", "不要", "别这", "别说", "不是这样",
+            "不对", "错了", "你说错", "不准确", "我说的是",
+            "又", "怎么又", "你每次", "说过了",
+            "太长", "太正式", "像机器人", "像客服", "像AI",
+            "不要列", "别列", "不要用", "别用",
+        ]
+        return any(signal in text for signal in correction_signals)
 
     async def analyze_correction(
         self,

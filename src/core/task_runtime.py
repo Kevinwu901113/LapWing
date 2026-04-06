@@ -52,6 +52,33 @@ from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExec
 
 logger = logging.getLogger("lapwing.core.task_runtime")
 
+
+def _refresh_voice_reminder(messages: list[dict]) -> None:
+    """在 tool loop 轮次之间重新注入 voice reminder。
+
+    移除旧的 [System Note]，然后重新调用 inject_voice_reminder，
+    确保 persona 提醒始终在离生成位置最近的地方。
+    """
+    try:
+        from src.core.prompt_builder import inject_voice_reminder
+        # 移除之前注入的 [System Note] 消息
+        i = 0
+        while i < len(messages):
+            msg = messages[i]
+            if (
+                msg.get("role") == "user"
+                and isinstance(msg.get("content"), str)
+                and "[System Note]" in msg["content"]
+            ):
+                messages.pop(i)
+            else:
+                i += 1
+        # 重新注入到正确深度
+        inject_voice_reminder(messages)
+    except Exception:
+        pass  # voice reminder 注入失败不影响主流程
+
+
 _MAX_TOOL_ROUNDS = TASK_MAX_TOOL_ROUNDS
 
 # VitalGuard 对命令类型的分类（模块级常量，避免每次 execute_tool() 重建）
@@ -635,6 +662,9 @@ class TaskRuntime:
                 )
 
             _record_round_latency()
+            # 重新注入 voice reminder（tool call 循环会让消息越来越长，
+            # 导致 voice reminder 离生成位置越来越远）
+            _refresh_voice_reminder(messages)
             return TaskLoopStep(payload=last_payload)
 
         loop_result = await self.run_task_loop(
