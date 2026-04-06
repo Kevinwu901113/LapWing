@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from src.core.prompt_loader import load_prompt
 from config.settings import (
@@ -38,6 +38,7 @@ async def build_system_prompt(
     vector_store: "VectorStore | None",
     knowledge_manager: "KnowledgeManager | None",
     skill_manager: "SkillManager | None",
+    memory_index: "Any | None" = None,
 ) -> str:
     """Assemble layered system prompt from all context sources."""
     from src.memory.file_memory import read_memory_file, read_recent_summaries
@@ -85,6 +86,19 @@ async def build_system_prompt(
             sections.append(
                 "## 补充信息（自动提取）\n\n"
                 f"{facts_text}"
+            )
+
+    # Layer 2.7: 索引化记忆（按重要性排序）
+    if memory_index is not None:
+        top_entries = memory_index.ranked_entries(limit=20)
+        if top_entries:
+            memory_lines = []
+            for entry in top_entries:
+                memory_index.update_referenced(entry["id"])
+                memory_lines.append(f"- [{entry['category']}] {entry['content_preview']}")
+            sections.append(
+                "## 记忆索引（按重要性排序）\n\n"
+                + "\n".join(memory_lines)
             )
 
     # Layer 3: 文件化对话摘要

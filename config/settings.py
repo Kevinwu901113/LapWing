@@ -54,6 +54,8 @@ MEMORY_DIR = DATA_DIR / "memory"
 EVOLUTION_DIR = DATA_DIR / "evolution"
 JOURNAL_DIR = MEMORY_DIR / "journal"
 CONVERSATION_SUMMARIES_DIR = MEMORY_DIR / "conversations" / "summaries"
+DIAGNOSTICS_DIR = DATA_DIR / "diagnostics"
+DIAGNOSTICS_SAMPLES_DIR = DIAGNOSTICS_DIR / "samples"
 CONSTITUTION_PATH = IDENTITY_DIR / "constitution.md"
 SOUL_PATH = IDENTITY_DIR / "soul.md"
 SELF_NOTES_PATH = MEMORY_DIR / "SELF.md"
@@ -225,6 +227,11 @@ INTEREST_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("INTEREST_EXTRACT_TURN_THRE
 MEMORY_CRUD_ENABLED: bool = os.getenv("MEMORY_CRUD_ENABLED", "true").lower() in ("true", "1", "yes")
 AUTO_MEMORY_EXTRACT_ENABLED: bool = os.getenv("AUTO_MEMORY_EXTRACT_ENABLED", "true").lower() in ("true", "1", "yes")
 SELF_SCHEDULE_ENABLED: bool = os.getenv("SELF_SCHEDULE_ENABLED", "true").lower() in ("true", "1", "yes")
+QUALITY_CHECK_ENABLED: bool = os.getenv("LAPWING_FLAG_QUALITY_CHECK", "false").lower() in ("true", "1", "yes")
+MESSAGE_SPLIT_ENABLED: bool = os.getenv("MESSAGE_SPLIT_ENABLED", "true").lower() in ("true", "1", "yes")
+MESSAGE_SPLIT_DELAY_BASE: float = float(os.getenv("MESSAGE_SPLIT_DELAY_BASE", "0.8"))
+MESSAGE_SPLIT_DELAY_PER_CHAR: float = float(os.getenv("MESSAGE_SPLIT_DELAY_PER_CHAR", "0.008"))
+MESSAGE_SPLIT_DELAY_MAX: float = float(os.getenv("MESSAGE_SPLIT_DELAY_MAX", "2.5"))
 
 # ── Session 管理 ──
 SESSION_ENABLED: bool = os.getenv("SESSION_ENABLED", "false").lower() in ("true", "1")

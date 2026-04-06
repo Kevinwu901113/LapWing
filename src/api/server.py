@@ -298,6 +298,45 @@ def create_app(
         success = await brain.memory.delete_user_fact(payload.chat_id, payload.fact_key)
         return {"success": success}
 
+    @app.get("/api/memory/health")
+    async def get_memory_health():
+        memory_index = getattr(brain, "memory_index", None)
+        if memory_index is None:
+            return {"score": 0, "total": 0, "dimensions": {}}
+        return memory_index.health_score()
+
+    @app.get("/api/task-flows")
+    async def list_task_flows(chat_id: str | None = None):
+        flow_manager = getattr(brain, "task_flow_manager", None)
+        if flow_manager is None:
+            return {"flows": []}
+        flows = flow_manager.list_active(chat_id)
+        return {"flows": [f.to_dict() for f in flows]}
+
+    @app.post("/api/task-flows/{flow_id}/cancel")
+    async def cancel_task_flow(flow_id: str):
+        flow_manager = getattr(brain, "task_flow_manager", None)
+        if flow_manager is None:
+            raise HTTPException(status_code=404, detail="task flow manager not available")
+        if not flow_manager.cancel_flow(flow_id):
+            raise HTTPException(status_code=404, detail=f"flow {flow_id} not found or already finished")
+        return {"status": "cancel_intent_set"}
+
+    @app.get("/api/reminders")
+    async def list_reminders_endpoint(chat_id: str = Query(...)):
+        reminders = await brain.memory.list_reminders(chat_id)
+        return {"reminders": reminders}
+
+    @app.delete("/api/reminders/{reminder_id}")
+    async def cancel_reminder(reminder_id: int, chat_id: str = Query(...)):
+        success = await brain.memory.cancel_reminder(chat_id, reminder_id)
+        if not success:
+            raise HTTPException(status_code=404, detail=f"reminder {reminder_id} not found")
+        scheduler = getattr(brain, "reminder_scheduler", None)
+        if scheduler is not None and hasattr(scheduler, "notify_cancel"):
+            scheduler.notify_cancel(reminder_id)
+        return {"status": "cancelled"}
+
     @app.get("/api/learnings")
     async def get_learnings():
         items = await asyncio.to_thread(_read_learning_entries, JOURNAL_DIR)

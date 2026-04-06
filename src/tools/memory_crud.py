@@ -148,7 +148,6 @@ async def _execute_memory_delete(
     request: ToolExecutionRequest,
     context: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    del context
     path_str = str(request.arguments.get("path", "")).strip()
     text_to_remove = request.arguments.get("text_to_remove")
 
@@ -179,6 +178,15 @@ async def _execute_memory_delete(
     success, output = await asyncio.to_thread(_delete)
     if not success:
         return ToolExecutionResult(success=False, payload={"error": output}, reason=output)
+
+    # 同步索引：删除文件时移除对应的索引条目
+    if context.memory_index is not None:
+        rel_path = path_str
+        try:
+            context.memory_index.remove_by_source_file(rel_path)
+        except Exception as e:
+            logger.warning("同步删除索引条目失败 %s: %s", rel_path, e)
+
     return ToolExecutionResult(success=True, payload={"output": output})
 
 

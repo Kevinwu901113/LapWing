@@ -128,9 +128,13 @@ class TaskRuntime:
         self._loop_detection_config = loop_detection_config or LoopDetectionConfig()
         self._latency_monitor = latency_monitor
         self._memory = memory
+        self._memory_index: Any | None = None
 
     def set_latency_monitor(self, latency_monitor: Any | None) -> None:
         self._latency_monitor = latency_monitor
+
+    def set_memory_index(self, memory_index: Any | None) -> None:
+        self._memory_index = memory_index
 
     def clear_chat_state(self, chat_id: str) -> None:
         self._pending_shell_confirmations.pop(chat_id, None)
@@ -916,6 +920,7 @@ class TaskRuntime:
             auth_level=auth_level,
             chat_id=chat_id or "",
             memory=self._memory,
+            memory_index=self._memory_index,
         )
 
         policy_hook = str(tool.metadata.get("policy_hook", "")).strip()

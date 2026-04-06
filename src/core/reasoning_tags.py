@@ -1,9 +1,11 @@
-"""清洗回复中的内部思考标签（code-aware）。"""
+"""清洗回复中的内部思考标签（code-aware）及消息分隔符处理。"""
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+
+_SPLIT_MARKER_RE = re.compile(r"\[SPLIT\]", re.IGNORECASE)
 
 _THINK_TAG_QUICK_RE = re.compile(
     r"<\s*/?\s*(?:think(?:ing)?|thought|antthinking)\b",
@@ -81,3 +83,19 @@ def strip_internal_thinking_tags(text: str) -> str:
         parts.append(text[last_index:])
 
     return "".join(parts)
+
+
+def split_on_markers(text: str) -> list[str]:
+    """按 [SPLIT] 分隔符拆分文本，返回非空片段列表。无分隔符时返回单元素列表。"""
+    if not _SPLIT_MARKER_RE.search(text):
+        return [text]
+    segments = [seg.strip() for seg in _SPLIT_MARKER_RE.split(text)]
+    return [seg for seg in segments if seg]
+
+
+def strip_split_markers(text: str) -> str:
+    """移除文本中所有 [SPLIT] 分隔符（及周边多余空白），用于记忆存储和重复发送检测。"""
+    if not _SPLIT_MARKER_RE.search(text):
+        return text
+    cleaned = _SPLIT_MARKER_RE.sub(" ", text)
+    return " ".join(cleaned.split())

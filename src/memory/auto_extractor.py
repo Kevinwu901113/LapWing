@@ -33,6 +33,7 @@ _EXTRACTION_PROMPT = """\
 - knowledge: Lapwing 学到的知识（技术概念、世界事实）
 - interest: Kevin 或 Lapwing 表现出兴趣的话题
 - correction: Kevin 纠正 Lapwing 的地方（说话方式、事实错误）
+- procedural: Kevin 的工作习惯、偏好流程（例如"Kevin 喜欢蓝图式文档"）
 
 ## 输出格式
 
@@ -53,18 +54,20 @@ _EXTRACTION_PROMPT = """\
 {conversation}
 """
 
-_VALID_CATEGORIES = {"kevin_fact", "decision", "knowledge", "interest", "correction"}
+_VALID_CATEGORIES = {"kevin_fact", "decision", "knowledge", "interest", "correction", "procedural"}
 
 
 class AutoMemoryExtractor:
     """从对话消息列表中自动提取并存储记忆。"""
 
-    def __init__(self, router) -> None:
+    def __init__(self, router, memory_index=None) -> None:
         """
         Args:
             router: LLMRouter 实例，用于调用 query_lightweight。
+            memory_index: 可选的 MemoryIndex 实例，用于同步索引。
         """
         self._router = router
+        self._memory_index = memory_index
 
     async def extract_from_messages(self, messages: list[dict]) -> list[dict]:
         """从消息列表中提取记忆，写入文件，返回成功存储的条目。
@@ -188,4 +191,14 @@ class AutoMemoryExtractor:
                 f.write(f"- [{timestamp}] {content}\n")
             return True
 
-        return await asyncio.to_thread(_write)
+        wrote = await asyncio.to_thread(_write)
+        if wrote and self._memory_index is not None:
+            existing = self._memory_index.find_by_content(content)
+            if existing is None:
+                self._memory_index.add_entry(
+                    category=category,
+                    source_file=str(file_path.relative_to(MEMORY_DIR)),
+                    content_preview=content,
+                    importance=item.get("importance", 3),
+                )
+        return wrote

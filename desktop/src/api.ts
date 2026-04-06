@@ -598,3 +598,74 @@ export function createDesktopToken(bootstrapToken: string): Promise<{ token: str
     body: JSON.stringify({ bootstrap_token: bootstrapToken }),
   });
 }
+
+// ── 记忆健康 ──────────────────────────────────────────────────────────────────
+
+export type MemoryHealth = {
+  score: number;
+  total: number;
+  dimensions: {
+    freshness?: number;
+    coverage?: number;
+    coherence?: number;
+    efficiency?: number;
+  };
+};
+
+export function getMemoryHealth(): Promise<MemoryHealth> {
+  return fetchJson<MemoryHealth>("/api/memory/health");
+}
+
+// ── 任务流 ────────────────────────────────────────────────────────────────────
+
+export type TaskFlowStep = {
+  step_id: string;
+  description: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  result?: string;
+  started_at?: string;
+  completed_at?: string;
+};
+
+export type TaskFlowItem = {
+  flow_id: string;
+  title: string;
+  chat_id: string;
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
+  progress_pct: number;
+  steps: TaskFlowStep[];
+  created_at: string;
+  updated_at: string;
+};
+
+export function getTaskFlows(chatId?: string): Promise<{ flows: TaskFlowItem[] }> {
+  const params = chatId ? `?chat_id=${encodeURIComponent(chatId)}` : "";
+  return fetchJson<{ flows: TaskFlowItem[] }>(`/api/task-flows${params}`);
+}
+
+export function cancelTaskFlow(flowId: string): Promise<{ status: string }> {
+  return fetchJson<{ status: string }>(`/api/task-flows/${encodeURIComponent(flowId)}/cancel`, {
+    method: "POST",
+  });
+}
+
+// ── 定时提醒 ──────────────────────────────────────────────────────────────────
+
+export type ReminderItem = {
+  id: number;
+  message: string;
+  remind_at: string;
+  recurrence?: string;
+  status: string;
+};
+
+export function getReminders(chatId: string): Promise<{ reminders: ReminderItem[] }> {
+  return fetchJson<{ reminders: ReminderItem[] }>(`/api/reminders?chat_id=${encodeURIComponent(chatId)}`);
+}
+
+export function cancelReminder(reminderId: number, chatId: string): Promise<{ status: string }> {
+  return fetchJson<{ status: string }>(
+    `/api/reminders/${reminderId}?chat_id=${encodeURIComponent(chatId)}`,
+    { method: "DELETE" }
+  );
+}

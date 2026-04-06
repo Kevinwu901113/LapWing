@@ -204,12 +204,35 @@ class AppContainer:
             self.brain.session_manager = sm
             logger.info("Session 系统已就绪")
 
+        # 记忆索引（始终启用）
+        from src.memory.memory_index import MemoryIndex
+        self.brain.memory_index = MemoryIndex()
+        self.brain.task_runtime.set_memory_index(self.brain.memory_index)
+        logger.info("记忆索引已就绪（%d 条目）", len(self.brain.memory_index.all_entries()))
+
         # 自动记忆提取（Wave 1）
         from config.settings import AUTO_MEMORY_EXTRACT_ENABLED
         if AUTO_MEMORY_EXTRACT_ENABLED:
             from src.memory.auto_extractor import AutoMemoryExtractor
-            self.brain.auto_memory_extractor = AutoMemoryExtractor(router=self.brain.router)
+            self.brain.auto_memory_extractor = AutoMemoryExtractor(
+                router=self.brain.router,
+                memory_index=self.brain.memory_index,
+            )
             logger.info("自动记忆提取已就绪")
+
+        # 任务流编排
+        from src.core.task_flow import TaskFlowManager
+        self.brain.task_flow_manager = TaskFlowManager()
+        recovered = self.brain.task_flow_manager.load_pending_flows()
+        if recovered:
+            logger.info("恢复了 %d 个未完成任务流", len(recovered))
+
+        # 回复质量检查（可选）
+        from config.settings import QUALITY_CHECK_ENABLED
+        if QUALITY_CHECK_ENABLED:
+            from src.core.quality_checker import ReplyQualityChecker
+            self.brain.quality_checker = ReplyQualityChecker(router=self.brain.router)
+            logger.info("回复质量检查已就绪")
 
     def _build_heartbeat(self, send_fn) -> HeartbeatEngine:
         from src.heartbeat.actions.session_reaper import SessionReaperAction
@@ -227,4 +250,11 @@ class AppContainer:
         if AUTO_MEMORY_EXTRACT_ENABLED:
             from src.heartbeat.actions.auto_memory import AutoMemoryAction
             heartbeat.registry.register(AutoMemoryAction())
+
+        # 记忆维护 + 任务通知
+        from src.heartbeat.actions.memory_maintenance import MemoryMaintenanceAction
+        from src.heartbeat.actions.task_notification import TaskNotificationAction
+        heartbeat.registry.register(MemoryMaintenanceAction())
+        heartbeat.registry.register(TaskNotificationAction())
+
         return heartbeat

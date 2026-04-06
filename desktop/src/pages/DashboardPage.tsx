@@ -9,11 +9,13 @@ import {
   getHeartbeatStatus,
   getPlatformConfig,
   getChats,
+  getMemoryHealth,
   type SystemStats,
   type ApiUsage,
   type HeartbeatStatus,
   type PlatformConfig,
   type ChatSummary,
+  type MemoryHealth,
 } from "../api";
 
 export default function DashboardPage() {
@@ -23,6 +25,7 @@ export default function DashboardPage() {
   const [heartbeatLoaded, setHeartbeatLoaded] = useState(false);
   const [platformConfig, setPlatformConfig] = useState<PlatformConfig | null>(null);
   const [chats, setChats] = useState<ChatSummary[]>([]);
+  const [memoryHealth, setMemoryHealth] = useState<MemoryHealth | null>(null);
   const [fetchError, setFetchError] = useState(false);
 
   // Poll all data every 30s
@@ -35,6 +38,7 @@ export default function DashboardPage() {
         getHeartbeatStatus().then(d => { if (!cancelled) { setHeartbeatStatus(d); setHeartbeatLoaded(true); } }).catch(() => { if (!cancelled) setHeartbeatLoaded(true); }),
         getPlatformConfig().then(d => { if (!cancelled) setPlatformConfig(d); }),
         getChats().then(d => { if (!cancelled) setChats(d); }),
+        getMemoryHealth().then(d => { if (!cancelled) setMemoryHealth(d); }).catch(() => {}),
       ]);
       const allFailed = results.every(r => r.status === "rejected");
       if (!cancelled) setFetchError(allFailed);
@@ -126,9 +130,34 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Row 3 */}
-      <div className="card">
-        <div className="card-header"><span className="card-title">心跳活动（过去 24 小时）</span></div>
+      {/* Row 3 — Memory Health + Heartbeat */}
+      <div className="stat-grid-2" style={{ marginBottom: 20 }}>
+        {/* Memory Health */}
+        <div className="card">
+          <div className="card-header"><span className="card-title">记忆健康</span></div>
+          {memoryHealth ? (
+            <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 12 }}>
+              <RingChart value={memoryHealth.score} max={100} label={`共 ${memoryHealth.total} 条`} unit="分" color="var(--accent)" />
+              <div style={{ width: "100%", display: "flex", flexDirection: "column", gap: 6, fontSize: 12 }}>
+                {Object.entries(memoryHealth.dimensions ?? {}).map(([key, val]) => (
+                  <div key={key} style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ color: "var(--text-muted)", width: 60, flexShrink: 0 }}>{key}</span>
+                    <div style={{ flex: 1, background: "var(--border)", borderRadius: 4, height: 6 }}>
+                      <div style={{ width: `${Math.round((val as number) * 100)}%`, height: "100%", background: "var(--accent)", borderRadius: 4 }} />
+                    </div>
+                    <span style={{ color: "var(--text-secondary)", width: 32, textAlign: "right" }}>{Math.round((val as number) * 100)}%</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <p className="empty-hint">暂无数据</p>
+          )}
+        </div>
+
+        {/* Heartbeat */}
+        <div className="card">
+          <div className="card-header"><span className="card-title">心跳活动（过去 24 小时）</span></div>
         {!heartbeatLoaded ? (
           <p className="empty-hint">加载中…</p>
         ) : heartbeatStatus && heartbeatStatus.actions.length > 0 ? (
@@ -145,6 +174,7 @@ export default function DashboardPage() {
         ) : (
           <p className="empty-hint">心跳引擎未启动</p>
         )}
+        </div>
       </div>
     </div>
   );

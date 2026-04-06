@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING, Any
 from src.auth.service import AuthManager
 from src.core.llm_router import LLMRouter
 from src.core.prompt_loader import load_prompt
-from src.core.reasoning_tags import strip_internal_thinking_tags
+from src.core.reasoning_tags import (
+    split_on_markers,
+    strip_internal_thinking_tags,
+    strip_split_markers,
+)
 from src.core.task_runtime import RuntimeDeps, TaskRuntime
 from src.core.shell_policy import (
     ExecutionSessionState,
@@ -26,6 +30,10 @@ from src.tools.types import ToolExecutionRequest
 from config.settings import (
     CHAT_WEB_TOOLS_ENABLED,
     MAX_HISTORY_TURNS,
+    MESSAGE_SPLIT_DELAY_BASE,
+    MESSAGE_SPLIT_DELAY_MAX,
+    MESSAGE_SPLIT_DELAY_PER_CHAR,
+    MESSAGE_SPLIT_ENABLED,
     SHELL_ALLOW_SUDO,
     SHELL_DEFAULT_CWD,
     SHELL_ENABLED,
@@ -88,6 +96,9 @@ class LapwingBrain:
         self.auto_memory_extractor = None  # Set externally (AutoMemoryExtractor | None)
         self.reminder_scheduler = None  # Set externally (ReminderScheduler | None)
         self.channel_manager = None  # Set externally (ChannelManager | None)
+        self.memory_index = None  # Set externally (MemoryIndex | None)
+        self.task_flow_manager = None  # Set externally (TaskFlowManager | None)
+        self.quality_checker = None  # Set externally (ReplyQualityChecker | None)
 
     async def init_db(self) -> None:
         """初始化数据库连接和表结构。"""
@@ -234,6 +245,7 @@ class LapwingBrain:
             vector_store=self.vector_store,
             knowledge_manager=self.knowledge_manager,
             skill_manager=self.skill_manager,
+            memory_index=self.memory_index,
         )
 
     def _inject_voice_reminder(self, messages: list[dict]) -> None:
@@ -560,6 +572,9 @@ class LapwingBrain:
             logger.debug(f"[{chat_id}] 回复生成成功，长度: {len(reply)}")
             duration = time.monotonic() - start_time
             self._schedule_trace_recording(user_message, reply, ctx.matched_experience_skills, duration)
+            if self.quality_checker is not None:
+                import asyncio as _asyncio
+                _asyncio.create_task(self._check_reply_quality(chat_id, ctx.messages, reply))
             return reply
 
         except Exception as e:
@@ -598,12 +613,33 @@ class LapwingBrain:
 
         # 跟踪通过流式回调已发出的文字片段
         parts_sent: list[str] = []
+        # 原始（未拆分）文本，用于 already_sent 比较
+        originals_sent: list[str] = []
+
+        async def _send_with_split(text: str) -> None:
+            """按 [SPLIT] 拆分后逐条发送，片段间模拟打字延迟。"""
+            if not (MESSAGE_SPLIT_ENABLED and "[" in text):
+                await send_fn(text)
+                parts_sent.append(text)
+                originals_sent.append(text)
+                return
+            segments = split_on_markers(text)
+            originals_sent.append(text)
+            for i, seg in enumerate(segments):
+                if i > 0:
+                    await on_typing()
+                    delay = min(
+                        MESSAGE_SPLIT_DELAY_BASE + len(seg) * MESSAGE_SPLIT_DELAY_PER_CHAR,
+                        MESSAGE_SPLIT_DELAY_MAX,
+                    )
+                    await asyncio.sleep(delay)
+                await send_fn(seg)
+                parts_sent.append(seg)
 
         async def on_interim_text(text: str) -> None:
             stripped = strip_internal_thinking_tags(text)
             if stripped:
-                await send_fn(stripped)
-                parts_sent.append(stripped)
+                await _send_with_split(stripped)
 
         async def on_typing() -> None:
             if typing_fn is not None:
@@ -629,17 +665,17 @@ class LapwingBrain:
             full_reply = strip_internal_thinking_tags(full_reply)
 
             # 如果最终回复没有通过流式发出（无工具场景 / 特殊状态消息），则现在发送
+            _reply_clean = strip_split_markers(full_reply).strip()
             already_sent = any(
-                full_reply.strip() == part.strip()
-                for part in parts_sent
-            ) if parts_sent else False
+                _reply_clean == strip_split_markers(orig).strip()
+                for orig in originals_sent
+            ) if originals_sent else False
 
             if not already_sent and full_reply:
-                await send_fn(full_reply)
-                parts_sent.append(full_reply)
+                await _send_with_split(full_reply)
 
-            # 合并所有片段存入记忆
-            memory_text = "\n\n".join(parts_sent) if parts_sent else full_reply
+            # 合并所有片段存入记忆（[SPLIT] 不写入记忆）
+            memory_text = "\n\n".join(parts_sent) if parts_sent else strip_split_markers(full_reply)
             if ctx.session_id is not None:
                 await self.memory.append_to_session(chat_id, ctx.session_id, "assistant", memory_text)
             else:
@@ -647,6 +683,9 @@ class LapwingBrain:
             logger.debug(f"[{chat_id}] 流式回复完成，片段数: {len(parts_sent)}")
             duration = time.monotonic() - start_time
             self._schedule_trace_recording(user_message, memory_text, ctx.matched_experience_skills, duration)
+            if self.quality_checker is not None:
+                import asyncio as _asyncio
+                _asyncio.create_task(self._check_reply_quality(chat_id, ctx.messages, memory_text))
             return memory_text
 
         except Exception as e:
@@ -710,3 +749,10 @@ class LapwingBrain:
                 logger.warning("轨迹记录失败: %s", exc)
 
         asyncio.create_task(_record())
+
+    async def _check_reply_quality(self, chat_id: str, messages: list[dict], reply: str) -> None:
+        """异步回复质量检查（不阻塞主回复路径）。"""
+        try:
+            await self.quality_checker.check(messages, reply)
+        except Exception as e:
+            logger.debug("[%s] 质量检查异常: %s", chat_id, e)
