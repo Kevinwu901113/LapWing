@@ -65,8 +65,13 @@ async def _execute_schedule_task(
             )
         try:
             h, m = map(int, time_str.split(":"))
-            target_today = now.replace(hour=h, minute=m, second=0, microsecond=0)
-            next_trigger = target_today if target_today > now else target_today + timedelta(days=1)
+            # time_of_day 是台北时间，需转换为 UTC 存储
+            taipei_tz = timezone(timedelta(hours=8))
+            now_taipei = now.astimezone(taipei_tz)
+            target_taipei = now_taipei.replace(hour=h, minute=m, second=0, microsecond=0)
+            if target_taipei <= now_taipei:
+                target_taipei = target_taipei + timedelta(days=1)
+            next_trigger = target_taipei.astimezone(timezone.utc)
         except (ValueError, TypeError):
             return ToolExecutionResult(
                 success=False,
@@ -88,7 +93,9 @@ async def _execute_schedule_task(
             )
         try:
             target = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
-            next_trigger = target.replace(tzinfo=timezone.utc)
+            # 模型给的时间是台北时间，转换为 UTC
+            taipei_tz = timezone(timedelta(hours=8))
+            next_trigger = target.replace(tzinfo=taipei_tz).astimezone(timezone.utc)
         except ValueError:
             return ToolExecutionResult(
                 success=False,

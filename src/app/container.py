@@ -91,6 +91,9 @@ class AppContainer:
         if self._prepared:
             return
 
+        from src.core.vitals import init as init_vitals
+        init_vitals(self._data_dir)
+
         await self.brain.init_db()
         await self._configure_brain_dependencies()
         self._prepared = True
@@ -185,15 +188,20 @@ class AppContainer:
         # 经验技能系统（Lapwing 自身积累的工作经验）
         if EXPERIENCE_SKILLS_ENABLED:
             from src.core.experience_skills import ExperienceSkillManager
+            # 将当前注册的工具名传给 ESM，用于条件激活过滤（Pattern 2）
+            available_tools = {
+                tool.name for tool in self.brain.tool_registry.list_tools(include_internal=True)
+            }
             esm = ExperienceSkillManager(
                 skills_dir=EXPERIENCE_SKILLS_DIR,
                 traces_dir=SKILL_TRACES_DIR,
                 router=self.brain.router,
+                available_tools=available_tools,
             )
             esm.ensure_directories()
             esm.load_index()
             self.brain.experience_skill_manager = esm
-            logger.info("经验技能系统已就绪")
+            logger.info("经验技能系统已就绪（可用工具 %d 个）", len(available_tools))
 
         # Session 管理系统
         from config.settings import SESSION_ENABLED
@@ -256,5 +264,9 @@ class AppContainer:
         from src.heartbeat.actions.task_notification import TaskNotificationAction
         heartbeat.registry.register(MemoryMaintenanceAction())
         heartbeat.registry.register(TaskNotificationAction())
+
+        # 系统健康监控
+        from src.heartbeat.actions.system_health import SystemHealthAction
+        heartbeat.registry.register(SystemHealthAction())
 
         return heartbeat

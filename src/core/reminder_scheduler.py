@@ -134,6 +134,29 @@ class ReminderScheduler:
 
             if delay > 0:
                 await asyncio.sleep(delay)
+            elif recurrence == "once":
+                # 重启后可能有已过期的 once 提醒，按过期时长决定行为
+                overdue_seconds = (datetime.now(timezone.utc) - next_dt).total_seconds()
+                if overdue_seconds > 1800:  # 超过 30 分钟，静默跳过
+                    logger.info("[#%d] once 提醒已过期 %.0f 秒，标记完成但不发送", rid, overdue_seconds)
+                    try:
+                        await self._memory.complete_or_reschedule_reminder(rid, now=datetime.now(timezone.utc))
+                    except Exception:
+                        pass
+                    return
+                elif overdue_seconds > 60:  # 1-30 分钟内过期，补发并注明
+                    message = f"⏰ {content}（刚醒来，这条是之前设的提醒）"
+                    try:
+                        await self._send_fn(message)
+                        await self._memory.append(chat_id, "assistant", message)
+                    except Exception as send_exc:
+                        logger.error("[#%d] 补发提醒失败: %s", rid, send_exc)
+                    try:
+                        await self._memory.complete_or_reschedule_reminder(rid, now=datetime.now(timezone.utc))
+                    except Exception:
+                        pass
+                    return
+                # 不到 1 分钟过期，正常发送（fall through）
 
             now = datetime.now(timezone.utc)
             message = f"⏰ {content}"

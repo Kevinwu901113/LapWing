@@ -5,7 +5,7 @@ import json
 import logging
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 logger = logging.getLogger("lapwing.core.heartbeat")
 
@@ -22,6 +22,7 @@ class SenseContext:
     recent_memory_summary: str        # 最近对话摘要（慢心跳填充，快心跳为空字符串）
     chat_id: str                      # 目标用户的 chat_id
     top_interests_summary: str = "（暂无明显兴趣）"
+    now_taipei_hour: int = 0          # 台北时间的小时数，方便 action 判断时段
 
 
 class HeartbeatAction(ABC):
@@ -105,6 +106,9 @@ class SenseLayer:
                 for m in recent
             )
 
+        taipei_tz = timezone(timedelta(hours=8))
+        now_taipei_hour = now.astimezone(taipei_tz).hour
+
         return SenseContext(
             beat_type=beat_type,
             now=now,
@@ -114,6 +118,7 @@ class SenseLayer:
             recent_memory_summary=recent_memory_summary,
             chat_id=chat_id,
             top_interests_summary=top_interests_summary,
+            now_taipei_hour=now_taipei_hour,
         )
 
     def _format_top_interests(self, interests: list[dict]) -> str:
@@ -199,7 +204,8 @@ class ProactiveRuntime:
             {"name": action.name, "description": action.description}
             for action in available_actions
         ]
-        now_str = ctx.now.strftime("%Y-%m-%d %H:%M %Z")
+        _taipei_tz = timezone(timedelta(hours=8))
+        now_str = ctx.now.astimezone(_taipei_tz).strftime("%Y-%m-%d %H:%M") + " 台北时间"
         prompt = self._decision_prompt_text.format(
             beat_type=ctx.beat_type,
             now=now_str,
@@ -284,6 +290,8 @@ class HeartbeatEngine:
 
     async def _run_tick(self, beat_type: str) -> None:
         """一次 tick：为所有已知用户触发对应主动行为。"""
+        from src.core.vitals import update_last_active
+        update_last_active()
 
         chat_ids = await self._brain.memory.get_all_chat_ids()
         for chat_id in chat_ids:

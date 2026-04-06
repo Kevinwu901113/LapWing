@@ -31,7 +31,7 @@ class InterestProactiveAction(HeartbeatAction):
         # 提高门槛：至少沉默 3 小时（原来 2 小时）
         if ctx.silence_hours < 3.0:
             return
-        if ctx.now.hour >= 23 or ctx.now.hour < 8:  # 原来 < 7
+        if ctx.now_taipei_hour >= 23 or ctx.now_taipei_hour < 8:
             return
         # 随机跳过 40%，避免每次心跳都触发
         if random.random() < 0.4:
@@ -61,11 +61,25 @@ class InterestProactiveAction(HeartbeatAction):
                 f"[{result['title']}]({result['url']})\n{result['snippet']}"
                 for result in results
             )
+            from src.core.vitals import now_taipei
+            now = now_taipei()
+            hour = now.hour
+            if 5 <= hour < 12:
+                period = "早上"
+            elif 12 <= hour < 18:
+                period = "下午"
+            elif 18 <= hour < 23:
+                period = "晚上"
+            else:
+                period = "深夜"
+            time_context = f"现在是台北时间{now.strftime('%H:%M')}（{period}）。注意：说话要符合这个时间段。"
+
             prompt = self._prompt.format(
                 topic=topic,
                 search_results=search_results + comprehension_context,
                 user_facts_summary=ctx.user_facts_summary,
             )
+            prompt = f"{time_context}\n\n{prompt}"
 
             message = await brain.router.complete(
                 [{"role": "user", "content": prompt}],

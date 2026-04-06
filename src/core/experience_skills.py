@@ -60,6 +60,8 @@ class ExperienceSkillMeta:
     agents: list[str]
     tools: list[str]
     size_tokens: int
+    # 条件激活字段（Pattern 2）
+    visibility: dict  # {"requires_tools": [...], "hidden_when_available": [...]}
 
 
 @dataclass(frozen=True)
@@ -93,6 +95,11 @@ class _IndexEntry:
     last_used: str | None
     success_rate: float
     size_tokens: int
+    visibility: dict = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.visibility is None:
+            self.visibility = {}
 
 
 # ---------------------------------------------------------------------------
@@ -108,18 +115,22 @@ class ExperienceSkillManager:
         skills_dir: Path,
         traces_dir: Path,
         router: "LLMRouter",
+        available_tools: set[str] | None = None,
     ) -> None:
         self._skills_dir = skills_dir
         self._traces_dir = traces_dir
         self._router = router
+        self._available_tools: set[str] = available_tools or set()
         self._index: list[_IndexEntry] = []
         self._index_loaded = False
 
         # 子系统：轨迹记录器和使用统计
         from src.core.trace_recorder import TraceRecorder
         from src.core.skill_registry import SkillRegistryManager
+        from src.guards.skill_guard import SkillGuard
         self.trace_recorder = TraceRecorder(traces_dir)
         self.registry_manager = SkillRegistryManager(skills_dir / "_registry.json")
+        self._guard = SkillGuard()
 
     # ------------------------------------------------------------------
     # 目录初始化
@@ -188,6 +199,7 @@ class ExperienceSkillManager:
                         last_used=skill.meta.last_used,
                         success_rate=skill.meta.success_rate,
                         size_tokens=skill.meta.size_tokens,
+                        visibility=skill.meta.visibility,
                     )
                 )
 
@@ -269,6 +281,25 @@ class ExperienceSkillManager:
         last_used_raw = fm.get("last_used")
         last_used = str(last_used_raw) if last_used_raw is not None else None
 
+        # 解析 visibility（条件激活，Pattern 2）
+        vis_raw = fm.get("visibility")
+        visibility: dict = {}
+        if isinstance(vis_raw, dict):
+            visibility = {
+                "requires_tools": _normalize_list(vis_raw.get("requires_tools")),
+                "hidden_when_available": _normalize_list(vis_raw.get("hidden_when_available")),
+            }
+
+        # SkillGuard 安全扫描（Pattern 3）
+        scan_result = self._guard.scan(body)
+        if not scan_result.passed:
+            logger.warning(
+                "技能文件 %s 未通过安全扫描，已跳过: %s",
+                path,
+                "; ".join(scan_result.threats),
+            )
+            return None
+
         meta = ExperienceSkillMeta(
             id=skill_id,
             name=name,
@@ -285,6 +316,7 @@ class ExperienceSkillManager:
             agents=_normalize_list(fm.get("agents")),
             tools=_normalize_list(fm.get("tools")),
             size_tokens=int(fm.get("size_tokens", 0)),
+            visibility=visibility,
         )
 
         return ExperienceSkill(meta=meta, body=body, file_path=path)
@@ -303,7 +335,9 @@ class ExperienceSkillManager:
             self.load_index()
 
         entries = candidates if candidates is not None else [
-            e for e in self._index if e.status in ("active", "draft")
+            e for e in self._index
+            if e.status in ("active", "draft")
+            and _check_visibility(e.visibility, self._available_tools)
         ]
         if not entries:
             return []
@@ -500,10 +534,13 @@ class ExperienceSkillManager:
             "last_used": str(e.last_used) if e.last_used is not None else None,
             "success_rate": e.success_rate,
             "size_tokens": e.size_tokens,
+            "visibility": e.visibility,
         }
 
     @staticmethod
     def _deserialize_entry(d: dict[str, Any]) -> _IndexEntry:
+        vis_raw = d.get("visibility")
+        visibility = vis_raw if isinstance(vis_raw, dict) else {}
         return _IndexEntry(
             id=d.get("id", ""),
             name=d.get("name", ""),
@@ -515,6 +552,7 @@ class ExperienceSkillManager:
             last_used=d.get("last_used"),
             success_rate=float(d.get("success_rate", 0.0)),
             size_tokens=int(d.get("size_tokens", 0)),
+            visibility=visibility,
         )
 
 
@@ -593,6 +631,33 @@ def _load_frontmatter_dict(skill_file: Path) -> dict | None:
         return fm if isinstance(fm, dict) else None
     except yaml.YAMLError:
         return None
+
+
+def _check_visibility(visibility: dict, available_tools: set[str]) -> bool:
+    """检查技能在当前可用工具集下是否应显示（Pattern 2）。
+
+    Args:
+        visibility: 技能的 visibility 字典，含 requires_tools / hidden_when_available
+        available_tools: 当前可用的工具名集合
+
+    Returns:
+        True 表示应显示，False 表示应隐藏。
+    """
+    if not visibility:
+        return True
+    requires = visibility.get("requires_tools") or []
+    if isinstance(requires, str):
+        requires = [requires]
+    for tool in requires:
+        if tool not in available_tools:
+            return False
+    hidden_when = visibility.get("hidden_when_available") or []
+    if isinstance(hidden_when, str):
+        hidden_when = [hidden_when]
+    for tool in hidden_when:
+        if tool in available_tools:
+            return False
+    return True
 
 
 def _write_frontmatter_back(skill_file: Path, fm: dict, body: str) -> None:

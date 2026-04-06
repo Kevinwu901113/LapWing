@@ -19,6 +19,7 @@ _NAME_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 _MAX_NAME_LEN = 64
 _MAX_DESCRIPTION_LEN = 1024
 _MAX_RESOURCE_FILES = 200
+_CATALOG_DESCRIPTION_MAX_LEN = 60  # Level 0 索引截断长度
 _ALLOWED_FRONTMATTER_KEYS = {
     "name",
     "description",
@@ -128,25 +129,59 @@ class SkillManager:
             return None
         return self._skills.get(normalized)
 
-    def render_catalog_for_prompt(self) -> str:
+    def render_catalog_for_prompt(
+        self,
+        available_tools: set[str] | None = None,
+    ) -> str:
+        """渲染 Level 0 精简技能索引（每条描述截断到 ≤60 字符）。
+
+        Args:
+            available_tools: 当前可用工具名集合，用于条件激活过滤。
+                None 表示不做工具可见性检查。
+        """
         skills = self.model_visible_skills()
+        if not skills:
+            return ""
+
+        if available_tools is not None:
+            skills = [s for s in skills if self._is_visible(s, available_tools)]
         if not skills:
             return ""
 
         lines = ["<available_skills>"]
         for skill in skills:
+            short_desc = _truncate_description(skill.description)
             lines.extend(
                 [
                     "  <skill>",
                     f"    <name>{html.escape(skill.name)}</name>",
-                    f"    <description>{html.escape(skill.description)}</description>",
-                    f"    <location>{html.escape(str(skill.directory))}</location>",
+                    f"    <description>{html.escape(short_desc)}</description>",
                     "  </skill>",
                 ]
             )
         lines.append("</available_skills>")
+        lines.append("（使用 skill_view 工具加载完整技能内容）")
 
         return "\n".join(lines)
+
+    def _is_visible(self, skill: "SkillDefinition", available_tools: set[str]) -> bool:
+        """根据 metadata.visibility 检查技能在当前工具集下是否应显示。"""
+        vis = skill.metadata.get("visibility") if isinstance(skill.metadata, dict) else None
+        if not isinstance(vis, dict):
+            return True
+        requires = vis.get("requires_tools") or []
+        if isinstance(requires, str):
+            requires = [requires]
+        for tool in requires:
+            if tool not in available_tools:
+                return False
+        hidden_when = vis.get("hidden_when_available") or []
+        if isinstance(hidden_when, str):
+            hidden_when = [hidden_when]
+        for tool in hidden_when:
+            if tool in available_tools:
+                return False
+        return True
 
     def activate(self, name: str, user_input: str = "") -> dict[str, Any]:
         skill = self.get(name)
@@ -454,3 +489,10 @@ def _current_os_tag() -> str:
     if sys.platform.startswith("win"):
         return "win32"
     return sys.platform
+
+
+def _truncate_description(text: str, max_len: int = _CATALOG_DESCRIPTION_MAX_LEN) -> str:
+    """截断描述到 max_len 字符，超出时末尾加 '…'。"""
+    if len(text) <= max_len:
+        return text
+    return text[: max_len - 1].rstrip() + "…"

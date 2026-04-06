@@ -25,6 +25,8 @@ from src.tools.handlers import (
     web_search_tool,
     write_file_tool,
 )
+from src.tools.skill_tools import skill_list_tool, skill_view_tool
+from src.tools.trace_mark import trace_mark_tool
 from src.tools.types import (
     ToolExecutionContext,
     ToolExecutionRequest,
@@ -239,6 +241,80 @@ def build_default_tool_registry() -> ToolRegistry:
             },
             executor=activate_skill_tool,
             capability="skill",
+            risk_level="low",
+        )
+    )
+
+    # ── Skill 三级渐进加载：Level 1 工具（Pattern 1）──────────────────
+    registry.register(
+        ToolSpec(
+            name="skill_list",
+            description=(
+                "列出所有可用技能的完整名称和描述。"
+                "当 system prompt 中的精简索引不够用、需要看完整描述时调用。"
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {},
+            },
+            executor=skill_list_tool,
+            capability="skill",
+            risk_level="low",
+        )
+    )
+
+    registry.register(
+        ToolSpec(
+            name="skill_view",
+            description=(
+                "按名称加载技能的完整内容（SKILL.md 正文 + 资源清单）。"
+                "传入 path 参数可进一步加载技能目录下的具体资源文件（references/、scripts/ 等）。"
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "技能名称（来自 system prompt 或 skill_list 的结果）",
+                    },
+                    "path": {
+                        "type": "string",
+                        "description": "可选，技能目录下资源文件的相对路径，如 references/guide.md",
+                    },
+                },
+                "required": ["name"],
+            },
+            executor=skill_view_tool,
+            capability="skill",
+            risk_level="low",
+        )
+    )
+
+    # ── 轨迹标记：供执行后反思使用（Pattern 4）──────────────────────
+    registry.register(
+        ToolSpec(
+            name="trace_mark",
+            description=(
+                "标记本次任务值得在自省时回顾，用于经验积累。"
+                "完成 3+ 次工具调用的任务、走过弯路、或 Kevin 纠正了做法时使用。"
+                "不会立即创建经验笔记——晚上自省时会优先处理这些标记。"
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": "简短说明为什么值得回顾，一句话即可",
+                    },
+                    "category": {
+                        "type": "string",
+                        "description": "经验分类：coding / research / daily / content / system（默认 general）",
+                    },
+                },
+                "required": ["reason"],
+            },
+            executor=trace_mark_tool,
+            capability="general",
             risk_level="low",
         )
     )
@@ -658,6 +734,20 @@ def build_default_tool_registry() -> ToolRegistry:
             },
         },
         executor=SEND_IMAGE_EXECUTORS["send_image"],
+        capability="general",
+        risk_level="low",
+    ))
+
+    # ── 自我状态 ──
+    from src.tools.self_status import SELF_STATUS_EXECUTORS
+    registry.register(ToolSpec(
+        name="self_status",
+        description="查看自己的运行状态：启动时间、运行时长、CPU/内存/磁盘、通道连接、记忆统计。",
+        json_schema={
+            "type": "object",
+            "properties": {},
+        },
+        executor=SELF_STATUS_EXECUTORS["self_status"],
         capability="general",
         risk_level="low",
     ))

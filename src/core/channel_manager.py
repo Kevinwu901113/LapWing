@@ -131,3 +131,15 @@ class ChannelManager:
             msg.add_text(caption)
         msg.add_image(url=url, base64=base64, path=path)
         await self.send_message_to_owner(msg, prefer_channel=prefer_channel)
+
+    async def get_all_status(self) -> dict[str, dict]:
+        """返回所有通道的连接状态。"""
+        result = {}
+        for channel_type, adapter in self.adapters.items():
+            name = channel_type.value if hasattr(channel_type, "value") else str(channel_type)
+            try:
+                connected = await adapter.is_connected()
+            except Exception:
+                connected = False
+            result[name] = {"connected": connected}
+        return result

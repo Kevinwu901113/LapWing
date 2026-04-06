@@ -246,6 +246,8 @@ class LapwingBrain:
             services["reminder_scheduler"] = self.reminder_scheduler
         if self.channel_manager is not None:
             services["channel_manager"] = self.channel_manager
+        if self.memory_index is not None:
+            services["memory_index"] = self.memory_index
 
         deps = RuntimeDeps(
             execute_shell=execute_shell,
@@ -538,7 +540,12 @@ class LapwingBrain:
         )
         system_content = await self._build_system_prompt(chat_id, effective_user_message)
 
-        # 经验技能检索与注入
+        messages = [
+            {"role": "system", "content": system_content},
+            *recent_messages,
+        ]
+
+        # 经验技能检索与注入（Pattern 5：注入为 user message 保护 prefix cache）
         matched_experience_skills = None
         if self.experience_skill_manager is not None and effective_user_message:
             try:
@@ -552,9 +559,16 @@ class LapwingBrain:
                         max_tokens=EXPERIENCE_SKILLS_MAX_INJECT_TOKENS,
                     )
                     if injection:
-                        system_content = f"{system_content}\n\n## 参考经验\n\n{injection}"
+                        # 注入为合成 user message（而非追加到 system prompt）
+                        # 这样 system prompt 保持稳定，provider 的 prefix cache 不失效
+                        skill_msg = {
+                            "role": "user",
+                            "content": f"[System Note]\n## 参考经验\n\n{injection}\n[/System Note]",
+                        }
+                        # 插入到用户实际消息之前（messages 末尾是用户消息）
+                        messages.insert(len(messages) - 1, skill_msg)
                         logger.debug(
-                            "[%s] 注入 %d 个经验技能: %s",
+                            "[%s] 注入 %d 个经验技能（user message）: %s",
                             chat_id,
                             len(matched_experience_skills),
                             [s.meta.id for s in matched_experience_skills],
@@ -562,10 +576,6 @@ class LapwingBrain:
             except Exception as exc:
                 logger.warning("[%s] 经验技能检索失败: %s", chat_id, exc)
 
-        messages = [
-            {"role": "system", "content": system_content},
-            *recent_messages,
-        ]
         self._inject_voice_reminder(messages)
 
         return _ThinkCtx(

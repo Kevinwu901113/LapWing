@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any
 
 from src.core.prompt_loader import load_prompt
@@ -27,6 +28,7 @@ _PERSONA_ANCHOR = (
     "不列清单，不用加粗标题，不用括号写动作。"
     "温暖自然，想撒娇就撒，想吐槽就吐槽。做事时保持人格，不切换成工具模式。"
     "用过工具查到的信息你就是知道了——不要装作不确定。搜索过程不发出来。"
+    "【必须】回复超过两句话时用 [SPLIT] 分条发送。不分条是违规的。"
 )
 
 
@@ -62,22 +64,44 @@ async def build_system_prompt(
     if rules and "暂无规则" not in rules:
         sections.append(f"## 你从经验中学到的规则\n\n{rules}")
 
-    # Layer 0.5: 当前时间（增强版）
-    from datetime import datetime, timezone, timedelta
-    now_utc = datetime.now(timezone.utc)
-    taipei_tz = timezone(timedelta(hours=8))
-    now_taipei = now_utc.astimezone(taipei_tz)
+    # Layer 0.5: 自我感知（轻量注入）
+    from src.core.vitals import now_taipei, now_taipei_str, uptime_human, boot_time_taipei
 
-    weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
-    weekday = weekday_names[now_taipei.weekday()]
-    yesterday = (now_taipei - timedelta(days=1)).strftime('%m月%d日')
+    now = now_taipei()
+    yesterday = (now - timedelta(days=1)).strftime('%m月%d日')
+    hour = now.hour
+
+    # 时段感知：让她天然知道现在是早上/下午/晚上
+    if 5 <= hour < 12:
+        period = "早上"
+    elif 12 <= hour < 18:
+        period = "下午"
+    elif 18 <= hour < 23:
+        period = "晚上"
+    else:
+        period = "深夜"
 
     sections.append(
         f"## 现在\n\n"
-        f"现在是 {now_taipei.strftime('%Y年%m月%d日 %H:%M')}，{weekday}。"
+        f"现在是 {now_taipei_str()}，{period}。"
         f"昨天是{yesterday}。\n"
-        f"当你提到时间时请基于这个时间判断，不要凭感觉推测。"
+        f"你已经醒了 {uptime_human()}（{boot_time_taipei().strftime('%m月%d日 %H:%M')} 启动）。\n"
+        f"当你提到时间时必须基于上面的时间判断。"
+        f"不要凭感觉推测现在几点——看上面写的时间。"
+        f"{period}就是{period}，不要说错。"
     )
+
+    # Layer 0.6: 重启感知（如果刚醒来）
+    from src.core.vitals import is_fresh_boot, get_sleep_summary
+    if is_fresh_boot():
+        sleep_duration = get_sleep_summary()
+        if sleep_duration:
+            sections.append(
+                f"## 刚醒来\n\n"
+                f"你刚刚重启，相当于睡了 {sleep_duration}。"
+                f"你可以自然地表现出刚醒来的状态——"
+                f"不用刻意说'我刚重启'，但可以像刚睡醒一样自然过渡。"
+            )
 
     # Layer 2: 对 Kevin 的了解（文件化记忆）
     kevin_notes = await read_memory_file(KEVIN_NOTES_PATH, max_chars=1000)
@@ -162,23 +186,41 @@ async def build_system_prompt(
     if user_message:
         sections.append(_tool_runtime_instruction())
 
+    # Layer 8: 执行后反思 Nudge（Pattern 4）
+    sections.append(_skill_nudge_instruction())
+
     return "\n\n".join(sections)
 
 
 def inject_voice_reminder(messages: list[dict]) -> None:
-    """深度注入 voice reminder（+ 对话较长时附加 persona anchor）。
+    """深度注入 voice reminder（+ 对话较长时附加 persona anchor + 时间锚点）。
 
-    - 对话 >= 6 条：voice + anchor 合并注入在 depth-3
-    - 对话 >= 4 条：仅 voice 注入在 depth-2
+    - 对话 >= 6 条：voice + anchor + 时间锚点 合并注入在 depth-3
+    - 对话 >= 4 条：仅 voice + 时间锚点 注入在 depth-2
     - 对话更短：追加到 system prompt
     """
     voice_reminder = load_prompt("lapwing_voice")
+
+    # 动态时间锚点，让她在长对话中也不忘时间
+    from src.core.vitals import now_taipei
+    now = now_taipei()
+    hour = now.hour
+    if 5 <= hour < 12:
+        period = "早上"
+    elif 12 <= hour < 18:
+        period = "下午"
+    elif 18 <= hour < 23:
+        period = "晚上"
+    else:
+        period = "深夜"
+    time_anchor = f"现在是{period}{now.strftime('%H:%M')}。说话要符合这个时间段。"
+
     if len(messages) >= 6:
-        content = f"[System Note]\n{voice_reminder}\n\n{_PERSONA_ANCHOR}\n[/System Note]"
+        content = f"[System Note]\n{voice_reminder}\n\n{_PERSONA_ANCHOR}\n\n{time_anchor}\n[/System Note]"
         messages.insert(len(messages) - 2, {"role": "user", "content": content})
     elif len(messages) >= 4:
-        voice_msg = {"role": "user", "content": f"[System Note]\n{voice_reminder}\n[/System Note]"}
-        messages.insert(len(messages) - 2, voice_msg)
+        content = f"[System Note]\n{voice_reminder}\n\n{time_anchor}\n[/System Note]"
+        messages.insert(len(messages) - 2, {"role": "user", "content": content})
     else:
         messages[0]["content"] = messages[0]["content"] + "\n\n" + voice_reminder
 
@@ -218,6 +260,20 @@ def _format_related_history_hits(
             lines.append(f"- {text}")
 
     return "\n".join(lines)
+
+
+def _skill_nudge_instruction() -> str:
+    """执行后反思：提示在完成复杂任务后用 trace_mark 标记值得回顾的经历。"""
+    return (
+        "## 执行后反思\n\n"
+        "完成一个需要 3 次以上工具调用的任务后，在回复前快速想一下：\n\n"
+        "1. 这次做的事以前做过类似的吗？\n"
+        "2. 中间有没有走弯路后来纠正了？\n"
+        "3. Kevin 有没有纠正我的做法？\n"
+        "4. 有没有已有的经验其实可以更新？\n\n"
+        "如果有，用 `trace_mark` 工具标记这次经历，附一句简短原因。\n"
+        "不需要当场创建经验笔记——晚上自省的时候我会回来看这些标记。"
+    )
 
 
 def _tool_runtime_instruction() -> str:

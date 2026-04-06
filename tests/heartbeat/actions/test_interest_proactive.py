@@ -18,6 +18,7 @@ def make_ctx(*, hour: int = 12, silence_hours: float = 3.0) -> SenseContext:
         user_facts_summary="- 偏好: 书卷气",
         recent_memory_summary="",
         chat_id="c1",
+        now_taipei_hour=(hour + 8) % 24,
     )
 
 

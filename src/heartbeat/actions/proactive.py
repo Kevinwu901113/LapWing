@@ -29,12 +29,26 @@ class ProactiveMessageAction(HeartbeatAction):
             discoveries = await brain.memory.get_unshared_discoveries(ctx.chat_id, limit=1)
             discoveries_summary = self._format_discoveries(discoveries)
 
+            from src.core.vitals import now_taipei
+            now = now_taipei()
+            hour = now.hour
+            if 5 <= hour < 12:
+                period = "早上"
+            elif 12 <= hour < 18:
+                period = "下午"
+            elif 18 <= hour < 23:
+                period = "晚上"
+            else:
+                period = "深夜"
+            time_context = f"现在是台北时间{now.strftime('%H:%M')}（{period}）。注意：说话要符合这个时间段，不要搞错早晚。"
+
             prompt = self._prompt.format(
-                now=ctx.now.strftime("%Y-%m-%d %H:%M %Z"),
+                now=f"{now.strftime('%Y-%m-%d %H:%M')} 台北时间（{period}）",
                 silence_hours=ctx.silence_hours,
                 user_facts_summary=ctx.user_facts_summary,
                 discoveries_summary=discoveries_summary,
             )
+            prompt = f"{time_context}\n\n{prompt}"
 
             reply = await brain.router.complete(
                 [{"role": "user", "content": prompt}],

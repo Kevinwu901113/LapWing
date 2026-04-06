@@ -79,6 +79,77 @@ class TraceRecorder:
 
         return trace_path
 
+    def mark_trace(self, reason: str, category: str = "general") -> str:
+        """在 _marks/ 子目录写入一条标记，返回 mark_id。
+
+        标记供自省时优先处理——不立即创建 Skill，只是提示今晚值得回顾。
+        """
+        import json as _json
+        marks_dir = self._traces_dir / "_marks"
+        marks_dir.mkdir(parents=True, exist_ok=True)
+
+        today = date.today().isoformat()
+        existing = list(marks_dir.glob(f"{today}_{category}_*.json"))
+        seq = len(existing) + 1
+        mark_id = f"{today}_{category}_{seq:03d}"
+
+        mark_data = {
+            "mark_id": mark_id,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "category": category,
+            "reason": reason,
+            "reviewed": False,
+        }
+
+        mark_path = marks_dir / f"{mark_id}.json"
+        try:
+            mark_path.write_text(
+                _json.dumps(mark_data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            logger.debug("轨迹标记已写入: %s — %s", mark_id, reason)
+        except Exception as exc:
+            logger.warning("写入标记失败: %s", exc)
+
+        return mark_id
+
+    def get_marked_traces(self, days: int = 7) -> list[dict[str, Any]]:
+        """读取最近 N 天未审阅的标记记录，供自省时优先处理。"""
+        marks_dir = self._traces_dir / "_marks"
+        if not marks_dir.exists():
+            return []
+
+        cutoff = _days_ago_str(days)
+        results: list[dict[str, Any]] = []
+
+        for mark_file in sorted(marks_dir.glob("*.json")):
+            parts = mark_file.stem.split("_")
+            if parts and parts[0] >= cutoff:
+                try:
+                    data = json.loads(mark_file.read_text(encoding="utf-8"))
+                    if not data.get("reviewed", False):
+                        results.append(data)
+                except Exception as exc:
+                    logger.warning("读取标记文件 %s 失败: %s", mark_file, exc)
+
+        return results
+
+    def mark_as_reviewed(self, mark_id: str) -> None:
+        """将指定标记置为已审阅。"""
+        marks_dir = self._traces_dir / "_marks"
+        mark_path = marks_dir / f"{mark_id}.json"
+        if not mark_path.exists():
+            return
+        try:
+            data = json.loads(mark_path.read_text(encoding="utf-8"))
+            data["reviewed"] = True
+            mark_path.write_text(
+                json.dumps(data, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:
+            logger.warning("标记 %s 置为已审阅失败: %s", mark_id, exc)
+
     def get_recent_traces(self, days: int = 7) -> list[dict[str, Any]]:
         """读取最近 N 天的轨迹列表（供 Phase 2 孵化使用）。"""
         if not self._traces_dir.exists():
