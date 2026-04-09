@@ -693,6 +693,22 @@ class LLMRouter:
 
                 response = await client.messages.create(**request_kwargs)
                 tool_calls = _extract_anthropic_tool_calls(response)
+                text = _extract_anthropic_text(response)
+
+                # thinking-only 保护：无 tool_calls 且无文本但有 thinking 时自动重试
+                if not tool_calls and not text and _has_anthropic_thinking(response):
+                    retry_max_tokens = max(max_tokens * 4, 2048)
+                    logger.info(
+                        "[%s] complete_with_tools: Anthropic 响应仅返回 thinking，"
+                        "自动重试 max_tokens=%d→%d",
+                        effective_key, max_tokens, retry_max_tokens,
+                    )
+                    retry_kwargs = dict(request_kwargs)
+                    retry_kwargs["max_tokens"] = retry_max_tokens
+                    response = await client.messages.create(**retry_kwargs)
+                    tool_calls = _extract_anthropic_tool_calls(response)
+                    text = _extract_anthropic_text(response)
+
                 continuation_message = None
                 if tool_calls:
                     continuation_message = {
@@ -701,7 +717,7 @@ class LLMRouter:
                     }
 
                 return ToolTurnResult(
-                    text=_extract_anthropic_text(response),
+                    text=text,
                     tool_calls=tool_calls,
                     continuation_message=continuation_message,
                 )
@@ -720,7 +736,6 @@ class LLMRouter:
                 return ToolTurnResult(text="", tool_calls=[], continuation_message=None)
             message = response.choices[0].message
             tool_calls, raw_tool_calls = _extract_openai_tool_calls(message)
-            print(f'[DIAG] complete_with_tools: content={repr((message.content or "")[:200])}, tool_calls={len(tool_calls)}, finish_reason={response.choices[0].finish_reason}', flush=True)
             continuation_message = None
             if tool_calls:
                 continuation_message = {

@@ -436,6 +436,44 @@ class TaskRuntime:
                     _record_round_latency()
                     return TaskLoopStep(completed=True, payload=last_payload)
 
+                # ── ping-pong 检测（A→B→A→B 交替模式）──────────────────────
+                ping_pong_count = self._ping_pong_count(
+                    loop_detection_state=loop_detection_state,
+                    current_signature=tool_signature,
+                )
+                if self._should_emit_ping_pong_warning(ping_pong_count):
+                    logger.warning(
+                        "[runtime] 检测到 pingPong 警告: tool=%s, count=%s, args_hash=%s",
+                        tool_call.name, ping_pong_count, tool_args_hash,
+                    )
+                if self._should_block_by_ping_pong(ping_pong_count):
+                    reason = (
+                        "检测到无进展交替循环（两个工具交替重复调用），"
+                        "已触发断路器，需用户介入（提供新策略/新指令）。"
+                    )
+                    logger.warning(
+                        "[runtime] 触发 pingPong circuit breaker: tool=%s, count=%s",
+                        tool_call.name, ping_pong_count,
+                    )
+                    state.record_failure(reason, "blocked")
+                    await self._publish_task_event(
+                        event_bus,
+                        "task.blocked",
+                        task_id=task_id,
+                        chat_id=chat_id,
+                        phase="blocked",
+                        text="检测到无进展交替循环，已停止自动执行，等待用户介入。",
+                        reason=reason,
+                        **tool_event_common,
+                    )
+                    final_reply = (
+                        "检测到无进展交替循环（两个工具交替重复调用），"
+                        "我已停止当前自动执行，需用户介入。请提供新的策略或更具体的指令后我再继续。"
+                    )
+                    await _emit_status("stage:finalizing")
+                    _record_round_latency()
+                    return TaskLoopStep(completed=True, payload=last_payload)
+
                 # 当前先走串行执行，后续可按 provider 能力升级到并行分发。
                 await self._publish_task_event(
                     event_bus,
@@ -1039,6 +1077,44 @@ class TaskRuntime:
         if not self._loop_detection_config.detector_generic_repeat:
             return False
         return repeat_count >= self._loop_detection_config.global_circuit_breaker_threshold
+
+    def _ping_pong_count(
+        self,
+        *,
+        loop_detection_state: LoopDetectionState,
+        current_signature: tuple[str, str],
+    ) -> int:
+        """检测 A→B→A→B 交替重复模式，返回交替轮次数。"""
+        history = loop_detection_state.history
+        if len(history) < 3:
+            return 0
+        prev = history[-1]
+        if prev == current_signature:
+            return 0  # 连续重复，由 genericRepeat 覆盖
+        # 从末尾往前检查 ...B→A→B→A 模式（当前即将追加 current）
+        # history 末尾应为 ...A, B, A, B，当前是 A
+        count = 1  # 当前这对 (prev, current) 算一轮
+        idx = len(history) - 1
+        while idx >= 1:
+            if history[idx] != prev or history[idx - 1] != current_signature:
+                break
+            count += 1
+            idx -= 2
+        return count
+
+    def _should_emit_ping_pong_warning(self, ping_pong_count: int) -> bool:
+        if not self._loop_detection_config.enabled:
+            return False
+        if not self._loop_detection_config.detector_ping_pong:
+            return False
+        return ping_pong_count >= self._loop_detection_config.warning_threshold
+
+    def _should_block_by_ping_pong(self, ping_pong_count: int) -> bool:
+        if not self._loop_detection_config.enabled:
+            return False
+        if not self._loop_detection_config.detector_ping_pong:
+            return False
+        return ping_pong_count >= self._loop_detection_config.global_circuit_breaker_threshold
 
     def _record_tool_loop_latency(
         self,
