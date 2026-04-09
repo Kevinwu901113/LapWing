@@ -605,6 +605,75 @@ def build_default_tool_registry() -> ToolRegistry:
             risk_level="low",
         ))
 
+    # ── 对话历史全文搜索（FTS5）──
+    from src.tools.session_search import session_search_executor
+    registry.register(ToolSpec(
+        name="session_search",
+        description="搜索历史对话记录。当需要回忆之前讨论过的具体内容时使用。比 memory_search 更适合找对话细节。",
+        json_schema={
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "搜索关键词（可以是多个词）",
+                },
+                "days_back": {
+                    "type": "integer",
+                    "description": "限定搜索最近 N 天内的对话（可选）",
+                },
+            },
+            "required": ["query"],
+        },
+        executor=session_search_executor,
+        capability="memory",
+        risk_level="low",
+    ))
+
+    # ── 子 Agent 委托 ──
+    from config.settings import DELEGATION_ENABLED
+    if DELEGATION_ENABLED:
+        from src.tools.delegation_tool import delegate_task_executor
+        registry.register(ToolSpec(
+            name="delegate_task",
+            description=(
+                "将子任务委派给专项助手并行执行。用于复杂任务的拆解。"
+                "每个子任务需要清晰的目标和充分的背景信息。最多3个并行。"
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "tasks": {
+                        "type": "array",
+                        "maxItems": 3,
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "goal": {
+                                    "type": "string",
+                                    "description": "任务目标，清晰描述要做什么",
+                                },
+                                "context": {
+                                    "type": "string",
+                                    "description": "必要的背景信息（要充分！子 agent 看不到对话上下文）",
+                                },
+                                "role": {
+                                    "type": "string",
+                                    "enum": ["researcher", "coder", "general"],
+                                    "description": "角色类型：researcher 信息搜集 / coder 写代码 / general 通用",
+                                },
+                            },
+                            "required": ["goal", "context"],
+                        },
+                        "description": "任务列表（最多3个并行）",
+                    },
+                },
+                "required": ["tasks"],
+            },
+            executor=delegate_task_executor,
+            capability="delegation",
+            risk_level="medium",
+        ))
+
     # ── 提醒 / 定时任务 ──
     if SELF_SCHEDULE_ENABLED:
         from src.tools.schedule_task import SCHEDULE_EXECUTORS

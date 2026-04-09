@@ -33,6 +33,10 @@ class Session:
     last_active_at: datetime
     condensed_at: datetime | None
     message_count: int
+    # Session Lineage（压缩后的会话谱系）
+    parent_session_id: str | None = None
+    lineage_root_id: str | None = None
+    compression_summary: str | None = None
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -56,6 +60,9 @@ def _row_to_session(row) -> Session:
         last_active_at=datetime.fromisoformat(row[7]),
         condensed_at=_parse_dt(row[8]),
         message_count=row[9],
+        parent_session_id=row[10] if len(row) > 10 else None,
+        lineage_root_id=row[11] if len(row) > 11 else None,
+        compression_summary=row[12] if len(row) > 12 else None,
     )
 
 
@@ -72,7 +79,8 @@ class SessionManager:
         try:
             async with self._db.execute(
                 "SELECT id, chat_id, status, topic_summary, topic_keywords, snapshot_path, "
-                "created_at, last_active_at, condensed_at, message_count "
+                "created_at, last_active_at, condensed_at, message_count, "
+                "parent_session_id, lineage_root_id, compression_summary "
                 "FROM sessions WHERE status IN ('active', 'dormant')"
             ) as cursor:
                 rows = await cursor.fetchall()
@@ -188,6 +196,86 @@ class SessionManager:
                 deleted_count += 1
 
         return 0, deleted_count
+
+    async def split_on_compression(self, old_session_id: str, summary: str) -> str:
+        """压缩后创建新 session，建立谱系链接。
+
+        旧 session → condensed（保留压缩摘要）。
+        新 session → active（继承 lineage_root_id）。
+
+        Returns:
+            新 session 的 id。
+        """
+        old = self._sessions_cache.get(old_session_id)
+        if not old:
+            return old_session_id
+
+        # 标记旧 session 为 condensed
+        old.status = "condensed"
+        old.condensed_at = datetime.now(timezone.utc)
+        old.compression_summary = summary
+        try:
+            await self._db.execute(
+                "UPDATE sessions SET status = 'condensed', condensed_at = ?, compression_summary = ? "
+                "WHERE id = ?",
+                (old.condensed_at.isoformat(), summary, old_session_id),
+            )
+            await self._db.commit()
+        except Exception as e:
+            logger.error("更新 condensed session 失败: %s", e)
+
+        # 创建新 session，建立谱系
+        new_session = await self.create_session(old.chat_id)
+        new_session.parent_session_id = old_session_id
+        new_session.lineage_root_id = old.lineage_root_id or old_session_id
+        try:
+            await self._db.execute(
+                "UPDATE sessions SET parent_session_id = ?, lineage_root_id = ? WHERE id = ?",
+                (new_session.parent_session_id, new_session.lineage_root_id, new_session.id),
+            )
+            await self._db.commit()
+        except Exception as e:
+            logger.error("设置 session 谱系失败: %s", e)
+
+        logger.debug(
+            "[%s] Session lineage: %s → condensed, new %s (root: %s)",
+            old.chat_id, old_session_id, new_session.id,
+            new_session.lineage_root_id,
+        )
+        return new_session.id
+
+    async def get_lineage(self, session_id: str) -> list[Session]:
+        """追溯完整谱系链（从 root 到当前）。"""
+        chain: list[Session] = []
+        current_id: str | None = session_id
+
+        # 先向上追溯到 root
+        visited: set[str] = set()
+        while current_id and current_id not in visited:
+            visited.add(current_id)
+            session = self._sessions_cache.get(current_id)
+            if session is None:
+                # 从 DB 加载（可能是 condensed session，不在缓存中）
+                try:
+                    async with self._db.execute(
+                        "SELECT id, chat_id, status, topic_summary, topic_keywords, snapshot_path, "
+                        "created_at, last_active_at, condensed_at, message_count, "
+                        "parent_session_id, lineage_root_id, compression_summary "
+                        "FROM sessions WHERE id = ?",
+                        (current_id,),
+                    ) as cursor:
+                        row = await cursor.fetchone()
+                    if row:
+                        session = _row_to_session(row)
+                    else:
+                        break
+                except Exception:
+                    break
+            chain.append(session)
+            current_id = session.parent_session_id
+
+        chain.reverse()  # root 在前
+        return chain
 
     def list_sessions(self, chat_id: str, status: str | None = None) -> list[Session]:
         """列出指定 chat_id 的 session（从内存缓存）。"""

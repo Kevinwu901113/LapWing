@@ -20,6 +20,21 @@ from config.settings import (
     SHELL_TIMEOUT,
 )
 
+# Docker sandbox 配置（可选）
+_SHELL_BACKEND = "local"  # "local" | "docker"
+_DOCKER_IMAGE = "lapwing-sandbox:latest"
+_DOCKER_WORKSPACE = "/home/lapwing/workspace"
+
+def _load_docker_config():
+    """从环境变量加载 Docker 配置。"""
+    import os
+    global _SHELL_BACKEND, _DOCKER_IMAGE, _DOCKER_WORKSPACE
+    _SHELL_BACKEND = os.getenv("SHELL_BACKEND", "local")
+    _DOCKER_IMAGE = os.getenv("SHELL_DOCKER_IMAGE", "lapwing-sandbox:latest")
+    _DOCKER_WORKSPACE = os.getenv("SHELL_DOCKER_WORKSPACE", "/home/lapwing/workspace")
+
+_load_docker_config()
+
 logger = logging.getLogger("lapwing.tools.shell_executor")
 
 _CURRENT_USER = getpass.getuser()
@@ -179,12 +194,91 @@ async def _log_execution(command: str, result: ShellResult) -> None:
     await asyncio.to_thread(_append_log, record)
 
 
+async def _execute_docker(command: str) -> ShellResult:
+    """在 Docker 容器中执行命令（沙箱隔离）。"""
+    docker_cmd = [
+        "docker", "run", "--rm",
+        "--read-only",                                    # 只读根文件系统
+        "--cap-drop=ALL",                                 # 移除所有 capabilities
+        "--network=host",                                 # 共享主机网络（搜索需要）
+        "-v", f"{_DOCKER_WORKSPACE}:/workspace",          # 挂载工作目录
+        "-w", "/workspace",
+        "--memory=512m",                                  # 内存限制
+        "--cpus=1.0",                                     # CPU 限制
+        "--tmpfs", "/tmp:rw,size=64m",                    # 可写临时目录
+        _DOCKER_IMAGE,
+        "bash", "-c", command,
+    ]
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *docker_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+
+        try:
+            raw_stdout, raw_stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=SHELL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            proc.kill()
+            raw_stdout, raw_stderr = await proc.communicate()
+            result = ShellResult(
+                stdout="", stderr=f"Docker 命令执行超时（{SHELL_TIMEOUT}s）。",
+                return_code=-1, timed_out=True,
+                reason=f"Docker 命令执行超时（{SHELL_TIMEOUT}s）。",
+                cwd="/workspace",
+            )
+            await _log_execution(f"[docker] {command}", result)
+            return result
+
+        stdout, stdout_truncated = _truncate_output(
+            raw_stdout.decode("utf-8", errors="replace")
+        )
+        stderr, stderr_truncated = _truncate_output(
+            raw_stderr.decode("utf-8", errors="replace")
+        )
+        return_code = proc.returncode if proc.returncode is not None else -1
+        result = ShellResult(
+            stdout=stdout, stderr=stderr,
+            return_code=return_code,
+            reason="" if return_code == 0 else f"Docker 命令以退出码 {return_code} 结束。",
+            cwd="/workspace",
+            stdout_truncated=stdout_truncated,
+            stderr_truncated=stderr_truncated,
+        )
+        await _log_execution(f"[docker] {command}", result)
+        return result
+
+    except FileNotFoundError:
+        result = ShellResult(
+            stdout="", stderr="docker 命令未找到。请确认 Docker 已安装。",
+            return_code=-1, reason="Docker 不可用。",
+            cwd="/workspace",
+        )
+        await _log_execution(f"[docker] {command}", result)
+        return result
+    except Exception as exc:
+        result = ShellResult(
+            stdout="", stderr=str(exc),
+            return_code=-1, reason="Docker 执行异常。",
+            cwd="/workspace",
+        )
+        await _log_execution(f"[docker] {command}", result)
+        return result
+
+
 async def execute(command: str) -> ShellResult:
     """执行 shell 命令并返回真实结果。"""
     if not SHELL_ENABLED:
         result = _build_blocked_result("本地 shell 执行已禁用。")
         await _log_execution(command, result)
         return result
+
+    # Docker 后端：跳过本地安全检查（容器就是安全边界）
+    if _SHELL_BACKEND == "docker":
+        return await _execute_docker(command)
 
     reason = _blocked_reason(command)
     if reason is not None:

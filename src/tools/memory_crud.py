@@ -118,6 +118,15 @@ async def _execute_memory_edit(
     old_text = str(request.arguments.get("old_text", ""))
     new_text = str(request.arguments.get("new_text", ""))
 
+    # MemoryGuard 安全扫描 new_text
+    from config.settings import MEMORY_GUARD_ENABLED
+    if MEMORY_GUARD_ENABLED and new_text.strip():
+        from src.guards.memory_guard import MemoryGuard
+        scan = MemoryGuard().scan(new_text)
+        if not scan.passed:
+            reason = f"编辑内容被安全检查拦截: {'; '.join(scan.threats)}"
+            return ToolExecutionResult(success=False, payload={"error": reason}, reason=reason)
+
     if not path_str:
         return ToolExecutionResult(success=False, payload={"error": "缺少 path 参数"}, reason="缺少 path 参数")
 

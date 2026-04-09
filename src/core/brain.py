@@ -117,6 +117,8 @@ class LapwingBrain:
         self.fact_extractor = FactExtractor(self.memory, self.router)
         from src.memory.compactor import ConversationCompactor
         self.compactor = ConversationCompactor(self.memory, self.router)
+        from src.core.prompt_builder import PromptSnapshotManager
+        self._prompt_snapshot = PromptSnapshotManager()
         self.interest_tracker: InterestTracker | None = None
         self.self_reflection: SelfReflection | None = None
         self.knowledge_manager: KnowledgeManager | None = None
@@ -135,6 +137,7 @@ class LapwingBrain:
         self.memory_index = None  # Set externally (MemoryIndex | None)
         self.task_flow_manager = None  # Set externally (TaskFlowManager | None)
         self.quality_checker = None  # Set externally (ReplyQualityChecker | None)
+        self.delegation_manager = None  # Set externally (DelegationManager | None)
 
     async def init_db(self) -> None:
         """初始化数据库连接和表结构。"""
@@ -248,6 +251,9 @@ class LapwingBrain:
             services["channel_manager"] = self.channel_manager
         if self.memory_index is not None:
             services["memory_index"] = self.memory_index
+        delegation_manager = getattr(self, "delegation_manager", None)
+        if delegation_manager is not None:
+            services["delegation_manager"] = delegation_manager
 
         deps = RuntimeDeps(
             execute_shell=execute_shell,
@@ -538,7 +544,14 @@ class LapwingBrain:
             user_message=effective_user_message,
             original_user_message=user_message,
         )
-        system_content = await self._build_system_prompt(chat_id, effective_user_message)
+        # System prompt 快照：同一 session 内复用冻结的 prompt（prefix cache 优化）
+        cached = self._prompt_snapshot.get(session_id) if session_id else None
+        if cached is not None:
+            system_content = cached
+        else:
+            system_content = await self._build_system_prompt(chat_id, effective_user_message)
+            if session_id:
+                self._prompt_snapshot.freeze(session_id, system_content)
 
         messages = [
             {"role": "system", "content": system_content},

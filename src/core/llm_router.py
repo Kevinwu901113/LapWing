@@ -692,6 +692,25 @@ class LLMRouter:
             )
         client_override = self._clients.get(effective_key)
 
+        # codex_oauth 由 SDK 自管理 token，不走 AuthManager candidate 解析
+        if self._api_types.get(effective_key) == "codex_oauth":
+            from src.core.codex_oauth_client import get_client, reset_client
+            model = self._models.get(effective_key, "gpt-5.3-codex")
+            if session_model_override:
+                model = session_model_override
+            client = await get_client()
+            try:
+                return await runner(None, client, model, "codex_oauth")
+            except Exception as exc:
+                if _classify_provider_exception(exc) == "auth":
+                    await reset_client()
+                    try:
+                        client = await get_client()
+                        return await runner(None, client, model, "codex_oauth")
+                    except Exception:
+                        pass
+                raise
+
         while True:
             candidates = self._auth_manager.resolve_candidates(
                 purpose=purpose,
@@ -806,6 +825,15 @@ class LLMRouter:
                 )
                 return turn.text
 
+            if api_type == "codex_oauth":
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                )
+                text = response.choices[0].message.content or ""
+                return strip_internal_thinking_tags(text).strip()
+
             if api_type == "anthropic":
                 system, anthropic_messages = _split_system_messages(messages)
                 request_kwargs: dict[str, Any] = {
@@ -814,7 +842,14 @@ class LLMRouter:
                     "messages": anthropic_messages,
                 }
                 if system is not None:
-                    request_kwargs["system"] = system
+                    # Anthropic prefix cache: 标记 system prompt 为 ephemeral 缓存
+                    request_kwargs["system"] = [
+                        {
+                            "type": "text",
+                            "text": system,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ]
 
                 response = await client.messages.create(**request_kwargs)
                 text = _extract_anthropic_text(response)
@@ -960,6 +995,30 @@ class LLMRouter:
                     continuation_message=continuation_message,
                 )
 
+            if api_type == "codex_oauth":
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    tools=_normalize_openai_tools(tools),
+                    tool_choice="auto",
+                    parallel_tool_calls=False,
+                )
+                message = response.choices[0].message
+                tool_calls, raw_tool_calls = _extract_openai_tool_calls(message)
+                continuation_message = None
+                if tool_calls:
+                    continuation_message = {
+                        "role": "assistant",
+                        "content": message.content or "",
+                        "tool_calls": raw_tool_calls,
+                    }
+                return ToolTurnResult(
+                    text=message.content or "",
+                    tool_calls=tool_calls,
+                    continuation_message=continuation_message,
+                )
+
             if api_type == "anthropic":
                 system, anthropic_messages = _split_system_messages(messages)
                 request_kwargs: dict[str, Any] = {
@@ -973,7 +1032,14 @@ class LLMRouter:
                     },
                 }
                 if system is not None:
-                    request_kwargs["system"] = system
+                    # Anthropic prefix cache: 标记 system prompt 为 ephemeral 缓存
+                    request_kwargs["system"] = [
+                        {
+                            "type": "text",
+                            "text": system,
+                            "cache_control": {"type": "ephemeral"},
+                        }
+                    ]
 
                 response = await client.messages.create(**request_kwargs)
                 tool_calls = _extract_anthropic_tool_calls(response)
@@ -1131,6 +1197,23 @@ class LLMRouter:
                 if not turn.tool_calls:
                     raise ValueError("Codex 未返回 tool call")
                 return turn.tool_calls[0].arguments
+
+            if api_type == "codex_oauth":
+                response = await client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    max_tokens=max_tokens,
+                    tools=_normalize_openai_tools([tool_def]),
+                    tool_choice={"type": "function", "function": {"name": tool_name}},
+                )
+                message = response.choices[0].message
+                tool_calls, _ = _extract_openai_tool_calls(message)
+                if tool_calls:
+                    return tool_calls[0].arguments
+                text = _normalize_openai_message_content(message.content)
+                if not text:
+                    raise ValueError("Codex OAuth 未返回 tool call 且无文本输出")
+                return _extract_json_from_text(text)
 
             # OpenAI-compatible (GLM, etc.)
             request_kwargs = {

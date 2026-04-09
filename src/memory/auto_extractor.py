@@ -167,12 +167,22 @@ class AutoMemoryExtractor:
         """把一条提取的记忆写入文件（按月组织，去重）。
 
         Returns:
-            True 表示成功写入，False 表示跳过（重复）。
+            True 表示成功写入，False 表示跳过（重复或安全拦截）。
         """
         import asyncio
 
+        from config.settings import MEMORY_GUARD_ENABLED
+
         category = item["category"]
         content = str(item["content"]).strip()
+
+        # MemoryGuard 安全扫描
+        if MEMORY_GUARD_ENABLED and content:
+            from src.guards.memory_guard import MemoryGuard
+            scan = MemoryGuard().scan(content)
+            if not scan.passed:
+                logger.warning("自动提取记忆被安全拦截: %s — %s", content[:50], scan.threats)
+                return False
 
         cat_dir = MEMORY_DIR / category
         cat_dir.mkdir(parents=True, exist_ok=True)

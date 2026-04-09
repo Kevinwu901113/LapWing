@@ -69,7 +69,7 @@ class ModelInfo:
 class ProviderInfo:
     id: str
     name: str
-    api_type: str   # "openai" | "anthropic" | "openai_codex"
+    api_type: str   # "openai" | "anthropic" | "openai_codex" | "codex_oauth"
     base_url: str
     api_key: str
     models: list[ModelInfo] = field(default_factory=list)

@@ -14,6 +14,14 @@ logger = logging.getLogger("lapwing.memory.conversation")
 _VALID_RECURRENCE_TYPES = {"once", "daily", "weekly", "interval"}
 _TIME_OF_DAY_PATTERN = re.compile(r"^\d{2}:\d{2}$")
 
+# CJK 字符范围：基本汉字 + 扩展 A + 兼容汉字
+_CJK_RE = re.compile(r"([\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff])")
+
+
+def _cjk_tokenize(text: str) -> str:
+    """在 CJK 字符之间插入空格，使 FTS5 unicode61 tokenizer 能正确分词。"""
+    return _CJK_RE.sub(r" \1 ", text).strip()
+
 
 class ConversationMemory:
     """管理对话历史的存取。
@@ -124,6 +132,20 @@ class ConversationMemory:
         """)
         await self._db.commit()
 
+        # FTS5 全文搜索索引
+        # 使用独立表 + 手动同步（非 trigger），因为 CJK 文本需要预处理分词。
+        # rowid 手动与 conversations.id 对齐。
+        await self._db.execute("""
+            CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts USING fts5(
+                content,
+                tokenize='unicode61'
+            )
+        """)
+        await self._db.commit()
+
+        # 一次性回填现有数据到 FTS 索引
+        await self._migrate_fts()
+
         # Migration: add channel column if missing
         try:
             await self._db.execute(
@@ -174,6 +196,15 @@ class ConversationMemory:
         """)
         await self._db.commit()
 
+        # Migration: session lineage 列
+        for col in ("parent_session_id TEXT", "lineage_root_id TEXT", "compression_summary TEXT"):
+            col_name = col.split()[0]
+            try:
+                await self._db.execute(f"ALTER TABLE sessions ADD COLUMN {col}")
+                await self._db.commit()
+            except Exception:
+                pass  # Column already exists
+
     async def _load_recent_history(self) -> None:
         """从数据库加载每个对话的最近历史到内存缓存。"""
         max_messages = MAX_HISTORY_TURNS * 2
@@ -200,6 +231,126 @@ class ConversationMemory:
                 self._store[chat_id] = messages
                 logger.debug(f"已从 DB 加载频道 {chat_id} 的 {len(messages)} 条历史消息")
 
+    async def _migrate_fts(self) -> None:
+        """一次性回填现有 conversations 数据到 FTS 索引（幂等）。
+
+        对 CJK 文本做字符级分词后再入索引。
+        """
+        try:
+            async with self._db.execute(
+                "SELECT count(*) FROM conversations_fts"
+            ) as cursor:
+                row = await cursor.fetchone()
+            if row and row[0] == 0:
+                async with self._db.execute(
+                    "SELECT id, content FROM conversations WHERE content IS NOT NULL"
+                ) as cursor:
+                    rows = await cursor.fetchall()
+                if rows:
+                    await self._db.executemany(
+                        "INSERT INTO conversations_fts(rowid, content) VALUES (?, ?)",
+                        [(rid, _cjk_tokenize(content)) for rid, content in rows],
+                    )
+                    await self._db.commit()
+                    logger.info("FTS5 索引回填完成，共 %d 条记录", len(rows))
+        except Exception as e:
+            logger.warning("FTS5 索引回填失败: %s", e)
+
+    async def _fts_insert(self, row_id: int, content: str) -> None:
+        """将一条消息插入 FTS 索引（CJK 预分词）。"""
+        try:
+            await self._db.execute(
+                "INSERT INTO conversations_fts(rowid, content) VALUES (?, ?)",
+                (row_id, _cjk_tokenize(content)),
+            )
+        except Exception as e:
+            logger.debug("FTS 索引写入失败: %s", e)
+
+    async def search_history(
+        self,
+        query: str,
+        *,
+        chat_id: str | None = None,
+        limit: int = 10,
+        days_back: int | None = None,
+    ) -> list[dict]:
+        """全文搜索历史对话消息（FTS5 BM25 排序）。
+
+        Args:
+            query: 搜索关键词（FTS5 MATCH 语法）
+            chat_id: 限定特定对话（可选）
+            limit: 最多返回条数
+            days_back: 限定最近 N 天（可选）
+
+        Returns:
+            匹配的消息列表，每条包含 message_id, chat_id, role, content,
+            timestamp, session_id 和 context（前后各 1 条消息）。
+        """
+        safe_query = query.strip()
+        if not safe_query:
+            return []
+
+        # 对查询做 CJK 分词，并用引号包裹以进行短语匹配
+        tokenized = _cjk_tokenize(safe_query)
+        fts_query = f'"{tokenized}"' if tokenized else safe_query
+
+        sql = """
+            SELECT c.id, c.chat_id, c.role, c.content, c.timestamp, c.session_id,
+                   rank
+            FROM conversations_fts
+            JOIN conversations c ON conversations_fts.rowid = c.id
+            WHERE conversations_fts MATCH ?
+        """
+        params: list = [fts_query]
+
+        if chat_id:
+            sql += " AND c.chat_id = ?"
+            params.append(chat_id)
+
+        if days_back:
+            sql += " AND c.timestamp >= datetime('now', ?)"
+            params.append(f"-{days_back} days")
+
+        sql += " ORDER BY rank LIMIT ?"
+        params.append(limit)
+
+        try:
+            results = []
+            async with self._db.execute(sql, params) as cursor:
+                rows = await cursor.fetchall()
+
+            for row in rows:
+                msg_id, msg_chat_id, role, content, timestamp, session_id, _rank = row
+                context = await self._get_surrounding_messages(msg_id)
+                results.append({
+                    "message_id": msg_id,
+                    "chat_id": msg_chat_id,
+                    "role": role,
+                    "content": content,
+                    "timestamp": timestamp,
+                    "session_id": session_id,
+                    "context": context,
+                })
+            return results
+        except Exception as e:
+            logger.error("FTS5 搜索失败: %s", e)
+            return []
+
+    async def _get_surrounding_messages(self, message_id: int) -> list[dict]:
+        """获取指定消息前后各 1 条消息（提供上下文）。"""
+        try:
+            async with self._db.execute(
+                """SELECT role, content, timestamp FROM conversations
+                   WHERE id IN (?, ?)""",
+                (message_id - 1, message_id + 1),
+            ) as cursor:
+                return [
+                    {"role": row[0], "content": row[1], "timestamp": row[2]}
+                    async for row in cursor
+                ]
+        except Exception:
+            return []
+
     async def get(self, channel_id: str) -> list[dict]:
         """获取指定频道的对话历史（从缓存读取）。"""
         if channel_id not in self._store:
@@ -214,11 +365,15 @@ class ConversationMemory:
 
         try:
             timestamp = datetime.now(timezone.utc).isoformat()
-            await self._db.execute(
+            cursor = await self._db.execute(
                 "INSERT INTO conversations (chat_id, role, content, timestamp, channel) VALUES (?, ?, ?, ?, ?)",
                 (channel_id, role, content, timestamp, channel),
             )
             await self._db.commit()
+            # 同步 FTS 索引
+            if cursor.lastrowid:
+                await self._fts_insert(cursor.lastrowid, content)
+                await self._db.commit()
         except Exception as e:
             logger.error(f"对话消息写入数据库失败: {e}")
 
@@ -265,12 +420,16 @@ class ConversationMemory:
 
         try:
             timestamp = datetime.now(timezone.utc).isoformat()
-            await self._db.execute(
+            cursor = await self._db.execute(
                 "INSERT INTO conversations (chat_id, role, content, timestamp, channel, session_id) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (chat_id, role, content, timestamp, channel, session_id),
             )
             await self._db.commit()
+            # 同步 FTS 索引
+            if cursor.lastrowid:
+                await self._fts_insert(cursor.lastrowid, content)
+                await self._db.commit()
         except Exception as e:
             logger.error(f"Session 消息写入数据库失败: {e}")
 

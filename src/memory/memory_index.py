@@ -69,7 +69,14 @@ class MemoryIndex:
         importance: int = 3,
         tags: list[str] | None = None,
     ) -> str:
-        """添加一条记忆条目，返回 mem_id。"""
+        """添加一条记忆条目，返回 mem_id。安全拦截时返回空字符串。"""
+        from config.settings import MEMORY_GUARD_ENABLED
+        if MEMORY_GUARD_ENABLED and content_preview:
+            from src.guards.memory_guard import MemoryGuard
+            scan = MemoryGuard().scan(content_preview)
+            if not scan.passed:
+                logger.warning("记忆索引写入被安全拦截: %s — %s", content_preview[:50], scan.threats)
+                return ""
         with self._lock:
             mem_id = f"mem_{self._data['next_id']:04d}"
             self._data["next_id"] += 1

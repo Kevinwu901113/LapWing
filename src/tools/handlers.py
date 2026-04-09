@@ -412,10 +412,20 @@ async def memory_note_tool(
     request: ToolExecutionRequest,
     context: ToolExecutionContext,
 ) -> ToolExecutionResult:
+    from config.settings import MEMORY_GUARD_ENABLED
     from src.tools.memory_note import write_note
 
     target = str(request.arguments.get("target", "")).strip()
     content = str(request.arguments.get("content", "")).strip()
+
+    # MemoryGuard 安全扫描
+    if MEMORY_GUARD_ENABLED and content:
+        from src.guards.memory_guard import MemoryGuard
+        scan = MemoryGuard().scan(content)
+        if not scan.passed:
+            reason = f"内容被安全检查拦截: {'; '.join(scan.threats)}"
+            return ToolExecutionResult(success=False, reason=reason, payload={"error": reason})
+
     result = await write_note(target, content)
 
     return ToolExecutionResult(

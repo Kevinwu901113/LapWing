@@ -183,7 +183,10 @@ class TestLLMRouterComplete:
             mock_client.messages.create.assert_called_once()
             call_kwargs = mock_client.messages.create.call_args.kwargs
             assert call_kwargs["model"] == "MiniMax-M2.7"
-            assert call_kwargs["system"] == "你是助手"
+            # system prompt 使用 Anthropic cache_control 格式
+            assert call_kwargs["system"] == [
+                {"type": "text", "text": "你是助手", "cache_control": {"type": "ephemeral"}}
+            ]
             assert call_kwargs["messages"] == [{"role": "user", "content": "你好"}]
 
     async def test_complete_retries_anthropic_when_first_response_has_only_thinking(self):
@@ -368,7 +371,9 @@ class TestLLMRouterTools:
             }
 
             call_kwargs = mock_client.messages.create.call_args.kwargs
-            assert call_kwargs["system"] == "你是助手"
+            assert call_kwargs["system"] == [
+                {"type": "text", "text": "你是助手", "cache_control": {"type": "ephemeral"}}
+            ]
             assert call_kwargs["tools"] == [
                 {
                     "name": "execute_shell",

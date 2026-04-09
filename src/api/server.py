@@ -233,6 +233,26 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         return session
 
+    @app.get("/api/auth/codex-oauth/status")
+    async def get_codex_oauth_status():
+        """检查 Codex OAuth 认证状态（oauth-codex SDK）。"""
+        from src.core.codex_oauth_client import is_available
+        if not is_available():
+            return {"status": "not_installed", "message": "oauth-codex 未安装"}
+        try:
+            from src.core.codex_oauth_client import get_client
+            await get_client()
+            return {"status": "authenticated", "message": "Token 有效"}
+        except Exception as exc:
+            return {"status": "expired", "message": str(exc)}
+
+    @app.post("/api/auth/codex-oauth/reset")
+    async def post_codex_oauth_reset():
+        """重置 Codex OAuth 客户端（强制下次调用重新认证）。"""
+        from src.core.codex_oauth_client import reset_client
+        await reset_client()
+        return {"status": "reset"}
+
     @app.get("/api/auth/oauth/sessions/{login_id}")
     async def get_oauth_login_session(login_id: str):
         auth_manager = app.state.auth_manager

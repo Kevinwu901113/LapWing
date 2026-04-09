@@ -210,6 +210,8 @@ class AppContainer:
             sm = SessionManager(memory=self.brain.memory, db=self.brain.memory._db)
             await sm.init()
             self.brain.session_manager = sm
+            # 注入到 Compactor 以支持 Session Lineage
+            self.brain.compactor._session_manager = sm
             logger.info("Session 系统已就绪")
 
         # 记忆索引（始终启用）
@@ -227,6 +229,8 @@ class AppContainer:
                 memory_index=self.brain.memory_index,
             )
             logger.info("自动记忆提取已就绪")
+            # 注入到 Compactor 以支持压缩前记忆冲刷
+            self.brain.compactor._auto_memory_extractor = self.brain.auto_memory_extractor
 
         # 任务流编排
         from src.core.task_flow import TaskFlowManager
@@ -234,6 +238,17 @@ class AppContainer:
         recovered = self.brain.task_flow_manager.load_pending_flows()
         if recovered:
             logger.info("恢复了 %d 个未完成任务流", len(recovered))
+
+        # 子 Agent 委托系统（可选）
+        from config.settings import DELEGATION_ENABLED
+        if DELEGATION_ENABLED:
+            from src.core.delegation import DelegationManager
+            self.brain.delegation_manager = DelegationManager(
+                router=self.brain.router,
+                tool_registry=self.brain.tool_registry,
+                event_bus=self.event_bus,
+            )
+            logger.info("子 Agent 委托系统已就绪")
 
         # 回复质量检查（可选）
         from config.settings import QUALITY_CHECK_ENABLED

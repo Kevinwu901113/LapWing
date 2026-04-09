@@ -122,6 +122,22 @@ class FactExtractor:
 
             # 解析并存储提取结果
             facts = self._parse_result(response)
+
+            # MemoryGuard 安全扫描
+            from config.settings import MEMORY_GUARD_ENABLED
+            if MEMORY_GUARD_ENABLED:
+                from src.guards.memory_guard import MemoryGuard
+                guard = MemoryGuard()
+                safe_facts = []
+                for fact in facts:
+                    scan = guard.scan(str(fact.get("fact_value", "")))
+                    if scan.passed:
+                        safe_facts.append(fact)
+                    else:
+                        logger.warning("用户画像提取被安全拦截: %s — %s",
+                                       fact.get("fact_key", ""), scan.threats)
+                facts = safe_facts
+
             for fact in facts:
                 await self._memory.set_user_fact(chat_id, fact["fact_key"], fact["fact_value"])
 

@@ -18,9 +18,11 @@ logger = logging.getLogger("lapwing.memory.compactor")
 class ConversationCompactor:
     """监控对话窗口，在接近上限时触发压缩。"""
 
-    def __init__(self, memory, router):
+    def __init__(self, memory, router, *, auto_memory_extractor=None, session_manager=None):
         self._memory = memory
         self._router = router
+        self._auto_memory_extractor = auto_memory_extractor
+        self._session_manager = session_manager
         self._compacting: set[str] = set()
         CONVERSATION_SUMMARIES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -60,6 +62,17 @@ class ConversationCompactor:
 
         to_compact = history[:compact_count]
         to_keep = history[compact_count:]
+
+        # 压缩前记忆冲刷：让 AutoMemoryExtractor 从即将被压缩的消息中提取记忆
+        if self._auto_memory_extractor is not None:
+            try:
+                await self._auto_memory_extractor.extract_from_messages(to_compact)
+                logger.debug(
+                    "[%s] Pre-compression memory flush completed for %d messages",
+                    actual_chat_id, len(to_compact),
+                )
+            except Exception as e:
+                logger.warning("[%s] Pre-compression memory flush failed: %s", actual_chat_id, e)
 
         # 生成摘要
         conversation_text = "\n".join(
@@ -105,6 +118,17 @@ class ConversationCompactor:
         # 替换内存缓存（不删除数据库中的旧记录，只更新缓存）
         if is_session:
             self._memory.replace_session_history(key, new_history)
+            # Session Lineage: 压缩后创建新 session，建立父子关系
+            if self._session_manager is not None:
+                try:
+                    new_session_id = await self._session_manager.split_on_compression(
+                        key, summary,
+                    )
+                    # 将新历史迁移到新 session
+                    self._memory.replace_session_history(new_session_id, new_history)
+                    self._memory.replace_session_history(key, [])
+                except Exception as e:
+                    logger.warning("[%s] Session lineage split failed: %s", actual_chat_id, e)
         else:
             self._memory.replace_history(key, new_history)
 
