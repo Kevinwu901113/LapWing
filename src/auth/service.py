@@ -9,7 +9,7 @@ from pathlib import Path
 import secrets
 import threading
 import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from urllib.parse import parse_qs, urlparse
 import webbrowser
 
@@ -40,9 +40,6 @@ from config.settings import (
 from src.auth.models import FailureKind, PurposeConfig, ResolvedAuthCandidate
 from src.auth.resolver import resolve_secret_ref
 from src.auth.storage import AuthStore
-
-if TYPE_CHECKING:
-    from src.auth.openai_codex import OpenAICodexAuthProvider
 
 logger = logging.getLogger("lapwing.auth.service")
 
@@ -530,51 +527,6 @@ class AuthManager:
     def unbind_profile(self, *, purpose: str) -> bool:
         return self.store.clear_binding(purpose)
 
-    def login_openai_codex(self, *, profile_id: str | None = None, no_browser: bool = False) -> tuple[str, dict[str, Any]]:
-        provider = self._provider("openai")
-        session = self.oauth_logins.start_openai_login(profile_id=profile_id)
-        print("OpenAI/Codex 登录即将开始。")
-        print(f"打开以下地址完成授权：\n\n{session['authorizeUrl']}\n")
-        print(
-            "如果你在远端/无头环境，请在本机执行: "
-            f"ssh -L {provider.redirect_port}:localhost:{provider.redirect_port} user@remote"
-        )
-        if not no_browser:
-            webbrowser.open(str(session["authorizeUrl"]))
-        result = self.oauth_logins.wait_for_completion(str(session["loginId"]), timeout=300)
-        if result["status"] == "completed":
-            return self._profile_from_oauth_result(result)
-
-        raw = input("请粘贴 redirect URL 或授权 code：\n").strip()
-        code = provider.parse_callback_input(
-            raw,
-            expected_state=self.oauth_logins.session_state(str(session["loginId"])),
-        )
-        result = self.oauth_logins.complete_login_code(str(session["loginId"]), code)
-        if result["status"] != "completed":
-            raise ValueError(result.get("error") or "OpenAI 登录未完成。")
-        return self._profile_from_oauth_result(result)
-
-    def login_oauth(
-        self,
-        *,
-        provider: str,
-        method: str = "pkce",
-        profile_id: str | None = None,
-        no_browser: bool = False,
-    ) -> tuple[str, dict[str, Any]]:
-        if provider != "openai":
-            raise ValueError(f"暂不支持的 OAuth provider: {provider}")
-        if method != "pkce":
-            raise ValueError(f"暂不支持的 OAuth method: {method}")
-        return self.login_openai_codex(profile_id=profile_id, no_browser=no_browser)
-
-    def import_codex_auth_json(self, *, path: str | Path, profile_id: str | None = None) -> tuple[str, dict[str, Any]]:
-        provider = self._provider("openai")
-        resolved_profile_id, profile = provider.import_auth_json(path=path, profile_id=profile_id)
-        self.store.upsert_profile(resolved_profile_id, profile)
-        return resolved_profile_id, profile
-
     def get_token(self, *, provider: str, profile_id: str) -> str:
         profile = self.store.get_profile(profile_id)
         if not profile:
@@ -915,12 +867,6 @@ class AuthManager:
         provider = self.providers.get(provider_name)
         if provider is not None:
             return provider
-        if provider_name == "openai":
-            from src.auth.openai_codex import OpenAICodexAuthProvider
-
-            provider = OpenAICodexAuthProvider()
-            self.providers[provider_name] = provider
-            return provider
         raise ValueError(f"未实现 OAuth provider: {provider_name}")
 
     def _candidate_metadata(
@@ -952,10 +898,6 @@ class AuthManager:
 
 
 def _infer_provider_from_route(base_url: str, model: str) -> str:
-    model_text = str(model or "").strip().lower()
-    if model_text.startswith("openai-codex/"):
-        return "openai"
-
     host = urlparse(str(base_url or "")).netloc.lower()
     if not host:
         return ""

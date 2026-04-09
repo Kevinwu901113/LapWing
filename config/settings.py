@@ -146,57 +146,8 @@ LLM_MODEL_ALLOWLIST: tuple[tuple[str | None, str], ...] = (
     or _parse_model_allowlist(_default_model_allowlist_raw)
 )
 
-# OpenAI / Codex OAuth（ChatGPT 登录）
-OPENAI_CODEX_AUTH_AUTHORIZE_URL: str = os.getenv(
-    "OPENAI_CODEX_AUTH_AUTHORIZE_URL",
-    "https://auth.openai.com/oauth/authorize",
-)
-OPENAI_CODEX_AUTH_TOKEN_URL: str = os.getenv(
-    "OPENAI_CODEX_AUTH_TOKEN_URL",
-    "https://auth.openai.com/oauth/token",
-)
-OPENAI_CODEX_AUTH_PROXY_URL: str = (
-    os.getenv("OPENAI_CODEX_AUTH_PROXY_URL", "")
-    or SEARCH_PROXY_URL
-    or TELEGRAM_PROXY_URL
-)
-OPENAI_CODEX_AUTH_ORIGINATOR: str = os.getenv(
-    "OPENAI_CODEX_AUTH_ORIGINATOR",
-    "codex_cli_rs",
-)
-OPENAI_CODEX_AUTH_CLIENT_ID: str = os.getenv(
-    "OPENAI_CODEX_AUTH_CLIENT_ID",
-    "app_EMoamEEZ73f0CkXaXp7hrann",
-)
-OPENAI_CODEX_AUTH_REDIRECT_HOST: str = os.getenv(
-    "OPENAI_CODEX_AUTH_REDIRECT_HOST",
-    "localhost",
-)
-OPENAI_CODEX_AUTH_REDIRECT_PORT: int = int(
-    os.getenv("OPENAI_CODEX_AUTH_REDIRECT_PORT", "1455")
-)
-OPENAI_CODEX_AUTH_REDIRECT_PATH: str = os.getenv(
-    "OPENAI_CODEX_AUTH_REDIRECT_PATH",
-    "/auth/callback",
-)
+# OAuth 刷新提前量
 AUTH_REFRESH_SKEW_SECONDS: int = int(os.getenv("AUTH_REFRESH_SKEW_SECONDS", "300"))
-OPENAI_CODEX_RUNTIME_BASE_URL: str = os.getenv(
-    "OPENAI_CODEX_RUNTIME_BASE_URL",
-    "https://chatgpt.com/backend-api/codex",
-)
-OPENAI_CODEX_RUNTIME_PROXY_URL: str = (
-    os.getenv("OPENAI_CODEX_RUNTIME_PROXY_URL", "")
-    or OPENAI_CODEX_AUTH_PROXY_URL
-    or SEARCH_PROXY_URL
-    or TELEGRAM_PROXY_URL
-)
-OPENAI_CODEX_RUNTIME_CLIENT_VERSION: str = os.getenv(
-    "OPENAI_CODEX_RUNTIME_CLIENT_VERSION",
-    "",
-)
-OPENAI_CODEX_RUNTIME_TIMEOUT_SECONDS: int = int(
-    os.getenv("OPENAI_CODEX_RUNTIME_TIMEOUT_SECONDS", "60")
-)
 
 # 心跳配置
 HEARTBEAT_ENABLED: bool = os.getenv("HEARTBEAT_ENABLED", "true").lower() == "true"
@@ -312,8 +263,6 @@ LOOP_DETECTION_DETECTOR_KNOWN_POLL_NO_PROGRESS: bool = (
 
 if TASK_MAX_TOOL_ROUNDS <= 0:
     raise ValueError("TASK_MAX_TOOL_ROUNDS 必须是正整数。")
-if OPENAI_CODEX_RUNTIME_TIMEOUT_SECONDS <= 0:
-    raise ValueError("OPENAI_CODEX_RUNTIME_TIMEOUT_SECONDS 必须是正整数。")
 if TOOL_LOOP_SLO_SHELL_P95_MS <= 0:
     raise ValueError("TOOL_LOOP_SLO_SHELL_P95_MS 必须是正整数。")
 if TOOL_LOOP_SLO_WEB_P95_MS <= 0:

@@ -43,16 +43,6 @@ class ApiSessionRequest(BaseModel):
     bootstrap_token: str | None = None
 
 
-class CodexCacheImportRequest(BaseModel):
-    path: str | None = None
-    profile_id: str | None = None
-
-
-class OAuthStartRequest(BaseModel):
-    return_to: str | None = None
-    profile_id: str | None = None
-
-
 def _visible_user_facts(facts: list[dict]) -> list[dict]:
     return [
         fact for fact in facts
@@ -198,41 +188,6 @@ def create_app(
         token_path.write_text(json.dumps(tokens, indent=2, ensure_ascii=False), encoding="utf-8")
         return {"token": token}
 
-    @app.post("/api/auth/import/codex-cache")
-    async def post_import_codex_cache(payload: CodexCacheImportRequest):
-        auth_manager = app.state.auth_manager
-        if auth_manager is None:
-            raise HTTPException(status_code=503, detail="Auth manager not available")
-        path = payload.path or str(Path.home() / ".codex" / "auth.json")
-        try:
-            profile_id, profile = auth_manager.import_codex_auth_json(
-                path=path,
-                profile_id=payload.profile_id,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return {
-            "success": True,
-            "profile_id": profile_id,
-            "profile": profile,
-        }
-
-    @app.post("/api/auth/oauth/openai-codex/start")
-    async def post_openai_codex_oauth_start(payload: OAuthStartRequest):
-        auth_manager = app.state.auth_manager
-        if auth_manager is None:
-            raise HTTPException(status_code=503, detail="Auth manager not available")
-        try:
-            session = auth_manager.start_oauth_login(
-                provider="openai",
-                method="pkce",
-                profile_id=payload.profile_id,
-                return_to=payload.return_to,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return session
-
     @app.get("/api/auth/codex-oauth/status")
     async def get_codex_oauth_status():
         """检查 Codex OAuth 认证状态（oauth-codex SDK）。"""
@@ -252,16 +207,6 @@ def create_app(
         from src.core.codex_oauth_client import reset_client
         await reset_client()
         return {"status": "reset"}
-
-    @app.get("/api/auth/oauth/sessions/{login_id}")
-    async def get_oauth_login_session(login_id: str):
-        auth_manager = app.state.auth_manager
-        if auth_manager is None:
-            raise HTTPException(status_code=503, detail="Auth manager not available")
-        try:
-            return auth_manager.get_oauth_login_session(login_id)
-        except KeyError as exc:
-            raise HTTPException(status_code=404, detail="OAuth login session not found") from exc
 
     @app.get("/api/chats")
     async def get_chats():

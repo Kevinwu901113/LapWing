@@ -9,11 +9,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 def reset_module_cache():
     """每个测试前后清除 llm_router 和 settings 的模块缓存，确保测试隔离。"""
     for mod in list(sys.modules.keys()):
-        if "llm_router" in mod or "settings" in mod or "openai_codex_runtime" in mod:
+        if "llm_router" in mod or "settings" in mod:
             del sys.modules[mod]
     yield
     for mod in list(sys.modules.keys()):
-        if "llm_router" in mod or "settings" in mod or "openai_codex_runtime" in mod:
+        if "llm_router" in mod or "settings" in mod:
             del sys.modules[mod]
 
 
@@ -666,171 +666,6 @@ class _FakeAuthManagerByPurpose(_FakeAuthManager):
 
 
 @pytest.mark.asyncio
-class TestLLMRouterOpenAICodex:
-    async def test_openai_codex_model_routes_to_runtime_complete(self):
-        with patch.dict("os.environ", {
-            "LLM_API_KEY": "generic-key",
-            "LLM_BASE_URL": "https://generic.api.com/v1",
-            "LLM_MODEL": "glm-4-flash",
-            "LLM_CHAT_MODEL": "openai-codex/gpt-5.4",
-            "LLM_CHAT_BASE_URL": "https://whatever.invalid/v1",
-        }, clear=True):
-            from src.auth.models import ResolvedAuthCandidate
-            from src.core.llm_router import LLMRouter
-            from src.core.openai_codex_runtime import CodexRuntimeTurnResult
-
-            candidate = ResolvedAuthCandidate(
-                purpose="chat",
-                base_url="https://whatever.invalid/v1",
-                model="openai-codex/gpt-5.4",
-                api_type="openai_codex",
-                auth_value="oauth-token",
-                auth_kind="oauth",
-                source="auth_profile",
-                provider="openai",
-                profile_id="openai:tester@example.com",
-                profile_type="oauth",
-                metadata={"accountId": "acct_123"},
-            )
-            fake_auth = _FakeAuthManager([candidate])
-            router = LLMRouter(auth_manager=fake_auth)
-            router._codex_runtime.complete = AsyncMock(
-                return_value=CodexRuntimeTurnResult(text="codex-ok", tool_calls=[])
-            )
-
-            result = await router.complete(
-                [{"role": "user", "content": "hello"}],
-                purpose="chat",
-            )
-
-            assert result == "codex-ok"
-            router._codex_runtime.complete.assert_awaited_once()
-            call_kwargs = router._codex_runtime.complete.await_args.kwargs
-            assert call_kwargs["model"] == "gpt-5.4"
-            assert call_kwargs["access_token"] == "oauth-token"
-            assert call_kwargs["account_id"] == "acct_123"
-            assert fake_auth.successes == [candidate]
-
-    async def test_openai_codex_complete_with_tools_keeps_openai_turn_shape(self):
-        with patch.dict("os.environ", {
-            "LLM_API_KEY": "generic-key",
-            "LLM_BASE_URL": "https://generic.api.com/v1",
-            "LLM_MODEL": "glm-4-flash",
-            "LLM_CHAT_MODEL": "openai-codex/gpt-5.4",
-            "LLM_CHAT_BASE_URL": "https://whatever.invalid/v1",
-        }, clear=True):
-            from src.auth.models import ResolvedAuthCandidate
-            from src.core.llm_router import LLMRouter
-            from src.core.openai_codex_runtime import (
-                CodexRuntimeToolCall,
-                CodexRuntimeTurnResult,
-            )
-
-            candidate = ResolvedAuthCandidate(
-                purpose="chat",
-                base_url="https://whatever.invalid/v1",
-                model="openai-codex/gpt-5.4",
-                api_type="openai_codex",
-                auth_value="oauth-token",
-                auth_kind="oauth",
-                source="auth_profile",
-                provider="openai",
-                profile_id="openai:tester@example.com",
-                profile_type="oauth",
-            )
-            fake_auth = _FakeAuthManager([candidate])
-            router = LLMRouter(auth_manager=fake_auth)
-            router._codex_runtime.complete = AsyncMock(
-                return_value=CodexRuntimeTurnResult(
-                    text="",
-                    tool_calls=[
-                        CodexRuntimeToolCall(
-                            id="call_1",
-                            name="execute_shell",
-                            arguments={"command": "pwd"},
-                            raw_arguments='{"command":"pwd"}',
-                        )
-                    ],
-                )
-            )
-
-            tools = [
-                {
-                    "type": "function",
-                    "function": {
-                        "name": "execute_shell",
-                        "description": "执行命令",
-                        "parameters": {
-                            "type": "object",
-                            "properties": {"command": {"type": "string"}},
-                            "required": ["command"],
-                        },
-                    },
-                }
-            ]
-
-            result = await router.complete_with_tools(
-                [{"role": "user", "content": "看看目录"}],
-                tools=tools,
-                purpose="chat",
-            )
-
-            assert len(result.tool_calls) == 1
-            assert result.tool_calls[0].id == "call_1"
-            assert result.tool_calls[0].name == "execute_shell"
-            assert result.tool_calls[0].arguments == {"command": "pwd"}
-            assert result.continuation_message == {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "call_1",
-                        "type": "function",
-                        "function": {
-                            "name": "execute_shell",
-                            "arguments": '{"command":"pwd"}',
-                        },
-                    }
-                ],
-            }
-
-    async def test_openai_codex_model_requires_oauth_profile(self):
-        with patch.dict("os.environ", {
-            "LLM_API_KEY": "generic-key",
-            "LLM_BASE_URL": "https://generic.api.com/v1",
-            "LLM_MODEL": "openai-codex/gpt-5.4",
-        }, clear=True):
-            from src.auth.models import ResolvedAuthCandidate
-            from src.core.llm_router import LLMRouter
-
-            candidate = ResolvedAuthCandidate(
-                purpose="chat",
-                base_url="https://generic.api.com/v1",
-                model="openai-codex/gpt-5.4",
-                api_type="openai_codex",
-                auth_value="api-key",
-                auth_kind="api_key",
-                source="auth_profile",
-                provider="openai",
-                profile_id="openai:key",
-                profile_type="api_key",
-            )
-            fake_auth = _FakeAuthManager([candidate])
-            router = LLMRouter(auth_manager=fake_auth)
-            router._codex_runtime.complete = AsyncMock()
-
-            with pytest.raises(PermissionError, match="openai-codex"):
-                await router.complete(
-                    [{"role": "user", "content": "hello"}],
-                    purpose="chat",
-                )
-
-            router._codex_runtime.complete.assert_not_awaited()
-            assert fake_auth.failures
-            assert fake_auth.failures[0][1] == "auth"
-
-
-@pytest.mark.asyncio
 class TestLLMRouterModelSwitch:
     async def test_model_list_and_selector_support_index_alias_ref(self):
         with patch.dict("os.environ", {
@@ -908,75 +743,6 @@ class TestLLMRouterModelSwitch:
             second_call = mock_client.chat.completions.create.call_args.kwargs
             assert second_call["model"] == "MiniMax-M2.7"
 
-    async def test_switch_codex_uses_compatibility_first_and_keeps_other_overrides(self):
-        with patch.dict("os.environ", {
-            "LLM_API_KEY": "generic-key",
-            "LLM_BASE_URL": "https://generic.api.com/v1",
-            "LLM_MODEL": "MiniMax-M2.7",
-            "LLM_MODEL_ALLOWLIST": "minimax=MiniMax-M2.7,codex=openai-codex/gpt-5.4",
-        }, clear=True):
-            from src.auth.models import ResolvedAuthCandidate
-            from src.core.llm_router import LLMRouter
-
-            chat_candidate = ResolvedAuthCandidate(
-                purpose="chat",
-                base_url="https://generic.api.com/v1",
-                model="MiniMax-M2.7",
-                api_type="openai",
-                auth_value="oauth-token",
-                auth_kind="oauth",
-                source="auth_profile",
-                provider="openai",
-                profile_id="openai:tester@example.com",
-                profile_type="oauth",
-            )
-            tool_candidate = ResolvedAuthCandidate(
-                purpose="tool",
-                base_url="https://generic.api.com/v1",
-                model="MiniMax-M2.7",
-                api_type="openai",
-                auth_value="test-key",
-                auth_kind="env",
-                source="env_fallback",
-                provider=None,
-                profile_id=None,
-                profile_type=None,
-            )
-            heartbeat_candidate = ResolvedAuthCandidate(
-                purpose="heartbeat",
-                base_url="https://generic.api.com/v1",
-                model="MiniMax-M2.7",
-                api_type="openai",
-                auth_value="api-key",
-                auth_kind="api_key",
-                source="auth_profile",
-                provider="openai",
-                profile_id="openai:key",
-                profile_type="api_key",
-            )
-            fake_auth = _FakeAuthManagerByPurpose(
-                {
-                    "chat": [chat_candidate],
-                    "tool": [tool_candidate],
-                    "heartbeat": [heartbeat_candidate],
-                }
-            )
-            router = LLMRouter(auth_manager=fake_auth)
-
-            router.switch_session_model(session_key="chat:42", selector="minimax")
-            result = router.switch_session_model(session_key="chat:42", selector="codex")
-
-            assert result["applied"] == {"chat": "openai-codex/gpt-5.4"}
-            assert result["skipped"] == {
-                "tool": "缺少 openai oauth profile",
-                "heartbeat": "缺少 openai oauth profile",
-            }
-
-            status = router.model_status(session_key="chat:42")
-            assert status["purposes"]["chat"]["effective"] == "openai-codex/gpt-5.4"
-            assert status["purposes"]["tool"]["effective"] == "MiniMax-M2.7"
-            assert status["purposes"]["heartbeat"]["effective"] == "MiniMax-M2.7"
-
     async def test_model_default_clears_session_overrides(self):
         with patch.dict("os.environ", {
             "LLM_API_KEY": "generic-key",
@@ -1009,37 +775,3 @@ class TestLLMRouterModelSwitch:
             assert reset_result["cleared"] == 3
             assert router.model_for("chat", session_key="chat:99") == "MiniMax-M2.7"
 
-    async def test_openai_codex_model_requires_bound_profile_not_env_fallback(self):
-        with patch.dict("os.environ", {
-            "LLM_API_KEY": "generic-key",
-            "LLM_BASE_URL": "https://generic.api.com/v1",
-            "LLM_MODEL": "openai-codex/gpt-5.4",
-        }, clear=True):
-            from src.auth.models import ResolvedAuthCandidate
-            from src.core.llm_router import LLMRouter
-
-            candidate = ResolvedAuthCandidate(
-                purpose="chat",
-                base_url="https://generic.api.com/v1",
-                model="openai-codex/gpt-5.4",
-                api_type="openai_codex",
-                auth_value="generic-key",
-                auth_kind="env",
-                source="env_fallback",
-                provider=None,
-                profile_id=None,
-                profile_type=None,
-            )
-            fake_auth = _FakeAuthManager([candidate])
-            router = LLMRouter(auth_manager=fake_auth)
-            router._codex_runtime.complete = AsyncMock()
-
-            with pytest.raises(PermissionError, match="openai-codex"):
-                await router.complete(
-                    [{"role": "user", "content": "hello"}],
-                    purpose="chat",
-                )
-
-            router._codex_runtime.complete.assert_not_awaited()
-            assert fake_auth.failures
-            assert fake_auth.failures[0][1] == "auth"

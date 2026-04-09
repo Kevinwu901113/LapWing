@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
 from src.auth.service import AuthManager
-from src.core.openai_codex_runtime import OpenAICodexRuntime
 from src.core.reasoning_tags import strip_internal_thinking_tags
 from config.settings import (
     LLM_BASE_URL,
@@ -70,21 +69,8 @@ class ModelOption:
     alias: str | None = None
 
 
-def _extract_openai_codex_model(model: str) -> str | None:
-    normalized = str(model or "").strip()
-    if not normalized:
-        return None
-    prefix = "openai-codex/"
-    if not normalized.lower().startswith(prefix):
-        return None
-    resolved = normalized[len(prefix):].strip()
-    return resolved or None
-
-
 def _detect_api_type(base_url: str, model: str | None = None) -> str:
     """根据 base_url 判断当前 provider 走哪种兼容协议。"""
-    if _extract_openai_codex_model(model or "") is not None:
-        return "openai_codex"
     return "anthropic" if "/anthropic" in base_url.lower() else "openai"
 
 
@@ -339,7 +325,6 @@ class LLMRouter:
     ) -> None:
         self._auth_manager = auth_manager or AuthManager()
         self._model_config = model_config
-        self._codex_runtime = OpenAICodexRuntime()
         self._clients: dict[str, Any] = {}
         self._models: dict[str, str] = {}
         self._api_types: dict[str, str] = {}
@@ -489,33 +474,6 @@ class LLMRouter:
 
         raise ValueError("模型不在 allowlist 中，请先执行 /model list 查看可选项。")
 
-    def _codex_compatibility_error(
-        self,
-        *,
-        purpose: str,
-        session_key: str | None,
-    ) -> str | None:
-        try:
-            candidates = self._auth_manager.resolve_candidates(
-                purpose=purpose,
-                session_key=session_key,
-                allow_failover=False,
-                origin="model.switch.compatibility",
-            )
-        except Exception:
-            return "缺少 openai oauth profile"
-
-        if not candidates:
-            return "缺少 openai oauth profile"
-
-        candidate = candidates[0]
-        provider = str(getattr(candidate, "provider", "") or "")
-        profile_type = str(getattr(candidate, "profile_type", "") or "")
-        access_token = str(getattr(candidate, "auth_value", "") or "").strip()
-        if provider == "openai" and profile_type == "oauth" and access_token:
-            return None
-        return "缺少 openai oauth profile"
-
     def switch_session_model(
         self,
         *,
@@ -526,26 +484,14 @@ class LLMRouter:
             raise ValueError("session_key 不能为空。")
         option = self._resolve_model_option(selector)
         applied: dict[str, str] = {}
-        skipped: dict[str, str] = {}
 
         for purpose in _MODEL_PURPOSES:
-            compatibility_error: str | None = None
-            if _extract_openai_codex_model(option.ref) is not None:
-                compatibility_error = self._codex_compatibility_error(
-                    purpose=purpose,
-                    session_key=session_key,
-                )
-            if compatibility_error is not None:
-                skipped[purpose] = compatibility_error
-                continue
-
             self._session_model_overrides[(session_key, purpose)] = option.ref
             applied[purpose] = option.ref
 
         return {
             "selected": {"index": option.index, "alias": option.alias, "ref": option.ref},
             "applied": applied,
-            "skipped": skipped,
             "status": self.model_status(session_key=session_key),
         }
 
@@ -640,9 +586,6 @@ class LLMRouter:
         if not auth_value:
             raise ValueError(f"[{routing_key}] 当前请求没有可用 credential。")
 
-        if api_type == "openai_codex":
-            raise RuntimeError("openai-codex 模型不应走 OpenAI SDK client 分支。")
-
         if api_type == "anthropic":
             client = self._build_anthropic_client(
                 api_key=auth_value,
@@ -672,22 +615,6 @@ class LLMRouter:
     def model_for(self, purpose: str, *, session_key: str | None = None) -> str:
         """返回指定 purpose 实际使用的模型名。"""
         return self._effective_model_for_purpose(purpose, session_key=session_key)
-
-    def _ensure_openai_codex_candidate(self, candidate: Any, *, purpose: str) -> str | None:
-        provider = str(getattr(candidate, "provider", "") or "")
-        profile_type = str(getattr(candidate, "profile_type", "") or "")
-        access_token = str(getattr(candidate, "auth_value", "") or "").strip()
-        metadata = dict(getattr(candidate, "metadata", {}) or {})
-        account_id = str(metadata.get("accountId") or "").strip() or None
-
-        if provider != "openai" or profile_type != "oauth" or not access_token:
-            raise PermissionError(
-                (
-                    f"[{purpose}] unauthorized: `openai-codex/*` 仅支持已绑定的 "
-                    "OpenAI OAuth profile（provider=openai, type=oauth）。"
-                )
-            )
-        return account_id
 
     async def _with_routing_retry(
         self,
@@ -762,17 +689,11 @@ class LLMRouter:
                             model_for_attempt = self._models.get(effective_key, LLM_MODEL)
                             use_model_override = False
 
-                        resolved_codex_model = _extract_openai_codex_model(model_for_attempt)
-                        if resolved_codex_model is not None:
-                            client = None
-                            model = resolved_codex_model
-                            api_type = "openai_codex"
-                        else:
-                            client, model, api_type = self._resolve_client(
-                                effective_key,
-                                auth_value=current_candidate.auth_value,
-                                model_override=model_for_attempt if use_model_override else None,
-                            )
+                        client, model, api_type = self._resolve_client(
+                            effective_key,
+                            auth_value=current_candidate.auth_value,
+                            model_override=model_for_attempt if use_model_override else None,
+                        )
                         result = await runner(current_candidate, client, model, api_type)
                         self._auth_manager.mark_success(current_candidate)
                         return result
@@ -835,17 +756,6 @@ class LLMRouter:
         auth_purpose = _SLOT_TO_PURPOSE.get(effective_key, effective_key)
 
         async def _runner(candidate, client, model, api_type):
-            if api_type == "openai_codex":
-                account_id = self._ensure_openai_codex_candidate(candidate, purpose=effective_key)
-                turn = await self._codex_runtime.complete(
-                    model=model,
-                    messages=messages,
-                    tools=[],
-                    access_token=candidate.auth_value,
-                    account_id=account_id,
-                )
-                return turn.text
-
             if api_type == "codex_oauth":
                 response = await client.chat.completions.create(
                     model=model,
@@ -981,46 +891,6 @@ class LLMRouter:
         auth_purpose = _SLOT_TO_PURPOSE.get(effective_key, effective_key)
 
         async def _runner(candidate, client, model, api_type):
-            if api_type == "openai_codex":
-                account_id = self._ensure_openai_codex_candidate(candidate, purpose=effective_key)
-                turn = await self._codex_runtime.complete(
-                    model=model,
-                    messages=messages,
-                    tools=tools,
-                    access_token=candidate.auth_value,
-                    account_id=account_id,
-                )
-                tool_calls = [
-                    ToolCallRequest(
-                        id=item.id,
-                        name=item.name,
-                        arguments=item.arguments,
-                    )
-                    for item in turn.tool_calls
-                ]
-                continuation_message = None
-                if tool_calls:
-                    continuation_message = {
-                        "role": "assistant",
-                        "content": turn.text,
-                        "tool_calls": [
-                            {
-                                "id": item.id,
-                                "type": "function",
-                                "function": {
-                                    "name": item.name,
-                                    "arguments": item.raw_arguments,
-                                },
-                            }
-                            for item in turn.tool_calls
-                        ],
-                    }
-                return ToolTurnResult(
-                    text=turn.text,
-                    tool_calls=tool_calls,
-                    continuation_message=continuation_message,
-                )
-
             if api_type == "codex_oauth":
                 response = await client.chat.completions.create(
                     model=model,
@@ -1215,19 +1085,6 @@ class LLMRouter:
                 if not tool_calls:
                     raise ValueError("Anthropic 未返回 tool call")
                 return tool_calls[0].arguments
-
-            if api_type == "openai_codex":
-                account_id = self._ensure_openai_codex_candidate(candidate, purpose=effective_key)
-                turn = await self._codex_runtime.complete(
-                    model=model,
-                    messages=messages,
-                    tools=[tool_def],
-                    access_token=candidate.auth_value,
-                    account_id=account_id,
-                )
-                if not turn.tool_calls:
-                    raise ValueError("Codex 未返回 tool call")
-                return turn.tool_calls[0].arguments
 
             if api_type == "codex_oauth":
                 response = await client.chat.completions.create(

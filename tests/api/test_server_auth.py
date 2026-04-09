@@ -19,19 +19,6 @@ class StubAuthManager:
         self.api_sessions = _StubApiSessions()
         self._bootstrap_token = "bootstrap-token"
         self._valid_sessions: set[str] = set()
-        self._oauth_session = {
-            "loginId": "login-1",
-            "provider": "openai",
-            "status": "pending",
-            "authorizeUrl": "https://auth.openai.com/oauth/authorize?mock=1",
-            "profileIdHint": None,
-            "resolvedProfileId": None,
-            "error": None,
-            "createdAt": "2026-03-27T10:00:00+00:00",
-            "updatedAt": "2026-03-27T10:00:00+00:00",
-            "completionMessage": None,
-            "profile": None,
-        }
 
     def validate_api_session(self, token: str | None) -> bool:
         return bool(token and token in self._valid_sessions)
@@ -57,30 +44,6 @@ class StubAuthManager:
             },
         }
 
-    def import_codex_auth_json(self, *, path: str, profile_id: str | None = None):
-        return profile_id or "openai:default", {
-            "provider": "openai",
-            "type": "oauth",
-            "expiresAt": "2026-03-28T00:00:00Z",
-        }
-
-    def start_oauth_login(
-        self,
-        *,
-        provider: str,
-        method: str,
-        profile_id: str | None = None,
-        return_to: str | None = None,
-    ):
-        self._oauth_session["profileIdHint"] = profile_id
-        if return_to:
-            self._oauth_session["completionMessage"] = f"return_to={return_to}"
-        return dict(self._oauth_session)
-
-    def get_oauth_login_session(self, login_id: str):
-        if login_id != self._oauth_session["loginId"]:
-            raise KeyError(login_id)
-        return dict(self._oauth_session)
 
 
 @pytest.fixture
@@ -141,26 +104,6 @@ class TestLocalApiAuth:
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             await client.post("/api/auth/session", json={"bootstrap_token": "bootstrap-token"})
             status_response = await client.get("/api/auth/status")
-            import_response = await client.post("/api/auth/import/codex-cache", json={})
 
         assert status_response.status_code == 200
         assert status_response.json()["serviceAuth"]["protected"] is True
-        assert import_response.status_code == 200
-        assert import_response.json()["profile_id"] == "openai:default"
-
-    async def test_oauth_panel_endpoints_start_and_query_login_session(self, protected_brain):
-        app = create_app(protected_brain, DesktopEventBus())
-        transport = httpx.ASGITransport(app=app)
-
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            await client.post("/api/auth/session", json={"bootstrap_token": "bootstrap-token"})
-            start_response = await client.post(
-                "/api/auth/oauth/openai-codex/start",
-                json={"return_to": "http://127.0.0.1:1420/"},
-            )
-            session_response = await client.get("/api/auth/oauth/sessions/login-1")
-
-        assert start_response.status_code == 200
-        assert start_response.json()["authorizeUrl"].startswith("https://auth.openai.com/")
-        assert session_response.status_code == 200
-        assert session_response.json()["status"] == "pending"
