@@ -914,7 +914,8 @@ class TaskRuntime:
         vg_command = str(request.arguments.get("command", "")).strip()
 
         if request.name in _SHELL_TOOLS and vg_command:
-            guard = check_compound(vg_command)
+            from config.settings import SHELL_BACKEND
+            guard = check_compound(vg_command, relaxed=(SHELL_BACKEND == "docker"))
             if guard.verdict == Verdict.BLOCK:
                 reason = f"[VitalGuard] {guard.reason}"
                 if state is not None:

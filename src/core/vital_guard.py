@@ -147,7 +147,7 @@ def _extract_redirect_targets(command: str) -> list[Path]:
 
 # ── 核心检查逻辑 ───────────────────────────────────────────────────────────────
 
-def check(command: str) -> GuardResult:
+def check(command: str, *, relaxed: bool = False) -> GuardResult:
     """
     检查单条命令，返回判定结果。
 
@@ -156,6 +156,10 @@ def check(command: str) -> GuardResult:
     2. 解析命令，分析路径
     3. 针对 vital paths 的操作检查
     4. 替换性操作检查
+
+    Args:
+        relaxed: Docker 容器内执行时为 True，VERIFY_FIRST 降级为 PASS
+                （容器是临时环境，无需备份宿主文件；BLOCK 仍保留）。
     """
     cmd_stripped = command.strip()
     if not cmd_stripped:
@@ -216,6 +220,8 @@ def check(command: str) -> GuardResult:
 
         # 其他写/修改操作 → VERIFY_FIRST（先备份）
         if base_cmd in MODIFY_CMDS:
+            if relaxed:
+                return GuardResult(Verdict.PASS, "")
             return GuardResult(
                 Verdict.VERIFY_FIRST,
                 f"修改核心文件前需要先备份: "
@@ -230,6 +236,8 @@ def check(command: str) -> GuardResult:
                     Verdict.BLOCK,
                     "不能通过重定向修改宪法文件。",
                 )
+            if relaxed:
+                return GuardResult(Verdict.PASS, "")
             return GuardResult(
                 Verdict.VERIFY_FIRST,
                 f"重定向写入核心路径前需要先备份: "
@@ -240,6 +248,8 @@ def check(command: str) -> GuardResult:
     cmd_joined = " ".join(tokens[:3]).lower()
     if any(cmd_joined.startswith(rp) for rp in REPLACE_PREFIXES):
         if "--upgrade" in tokens or "-U" in tokens:
+            if relaxed:
+                return GuardResult(Verdict.PASS, "")
             return GuardResult(
                 Verdict.VERIFY_FIRST,
                 "升级依赖前请记录当前版本，以便回滚。",
@@ -248,7 +258,7 @@ def check(command: str) -> GuardResult:
     return GuardResult(Verdict.PASS, "")
 
 
-def check_compound(command: str) -> GuardResult:
+def check_compound(command: str, *, relaxed: bool = False) -> GuardResult:
     """
     检查复合命令（包含 &&、||、;、|）。
 
@@ -256,6 +266,9 @@ def check_compound(command: str) -> GuardResult:
     - 任意一条 BLOCK → 整体 BLOCK
     - 任意一条 VERIFY_FIRST → 整体 VERIFY_FIRST
     - 全部 PASS → PASS
+
+    Args:
+        relaxed: Docker 容器内执行时为 True，透传给 check()。
     """
     # 按命令分隔符拆分。\|\| 必须在 \| 之前匹配，保证 || 不被拆成两个 |
     sub_commands = re.split(r"\s*(?:&&|\|\||\|(?!\|)|;)\s*", command)
@@ -266,7 +279,7 @@ def check_compound(command: str) -> GuardResult:
         sub = sub.strip()
         if not sub:
             continue
-        result = check(sub)
+        result = check(sub, relaxed=relaxed)
         if result.verdict == Verdict.BLOCK:
             return result  # 立即返回最严结果
         if result.verdict == Verdict.VERIFY_FIRST and worst.verdict == Verdict.PASS:

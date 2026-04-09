@@ -88,6 +88,27 @@ def _detect_api_type(base_url: str, model: str | None = None) -> str:
     return "anthropic" if "/anthropic" in base_url.lower() else "openai"
 
 
+def _is_native_anthropic(base_url: str) -> bool:
+    """仅原生 Anthropic API（非 MiniMax 等代理 provider）。"""
+    return "api.anthropic.com" in base_url.lower()
+
+
+def _mark_last_user_message_cache(messages: list[dict]) -> None:
+    """对最后一条 user 消息添加 cache_control（用于 Anthropic prefix cache）。"""
+    for msg in reversed(messages):
+        if msg.get("role") == "user":
+            content = msg.get("content")
+            if isinstance(content, str):
+                msg["content"] = [{
+                    "type": "text",
+                    "text": content,
+                    "cache_control": {"type": "ephemeral"},
+                }]
+            elif isinstance(content, list) and content and isinstance(content[-1], dict):
+                content[-1]["cache_control"] = {"type": "ephemeral"}
+            break
+
+
 def _normalize_anthropic_base_url(base_url: str) -> str:
     """Anthropic SDK 期望的 base_url 不包含 /v1。"""
     normalized = base_url.rstrip("/")
@@ -851,6 +872,11 @@ class LLMRouter:
                         }
                     ]
 
+                # 对最后一条 user 消息添加 cache marker（仅原生 Anthropic）
+                base_url = self._base_urls.get(effective_key, "")
+                if _is_native_anthropic(base_url):
+                    _mark_last_user_message_cache(anthropic_messages)
+
                 response = await client.messages.create(**request_kwargs)
                 text = _extract_anthropic_text(response)
                 if text:
@@ -1040,6 +1066,11 @@ class LLMRouter:
                             "cache_control": {"type": "ephemeral"},
                         }
                     ]
+
+                # 对最后一条 user 消息添加 cache marker（仅原生 Anthropic）
+                base_url = self._base_urls.get(effective_key, "")
+                if _is_native_anthropic(base_url):
+                    _mark_last_user_message_cache(anthropic_messages)
 
                 response = await client.messages.create(**request_kwargs)
                 tool_calls = _extract_anthropic_tool_calls(response)

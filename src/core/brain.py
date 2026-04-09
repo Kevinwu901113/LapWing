@@ -195,6 +195,7 @@ class LapwingBrain:
             self._system_prompt = reload_prompt("lapwing_soul")
         reload_prompt("lapwing_voice")
         reload_prompt("lapwing_capabilities")
+        self._prompt_snapshot.invalidate()
         logger.info("已重新加载所有 prompt 缓存")
 
     def reload_skills(self) -> None:
@@ -212,12 +213,14 @@ class LapwingBrain:
         return self.router.model_status(session_key=self._chat_session_key(chat_id))
 
     def switch_model(self, chat_id: str, selector: str) -> dict[str, Any]:
+        self._prompt_snapshot.invalidate()
         return self.router.switch_session_model(
             session_key=self._chat_session_key(chat_id),
             selector=selector,
         )
 
     def reset_model(self, chat_id: str) -> dict[str, Any]:
+        self._prompt_snapshot.invalidate()
         return self.router.clear_session_model(session_key=self._chat_session_key(chat_id))
 
     async def _complete_chat(
@@ -254,6 +257,7 @@ class LapwingBrain:
         delegation_manager = getattr(self, "delegation_manager", None)
         if delegation_manager is not None:
             services["delegation_manager"] = delegation_manager
+        services["router"] = self.router
 
         deps = RuntimeDeps(
             execute_shell=execute_shell,

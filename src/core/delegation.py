@@ -128,17 +128,28 @@ class DelegationManager:
                 ],
             })
 
-        # 并行执行
+        # 并行执行（注册到 _active_tasks 以支持 cancel_all）
         semaphore = asyncio.Semaphore(self.MAX_CONCURRENT)
 
         async def run_one(index: int, task: DelegationTask) -> DelegationResult:
             async with semaphore:
                 return await self._execute_child(index, task, chat_id)
 
-        raw_results = await asyncio.gather(
-            *[run_one(i, t) for i, t in enumerate(tasks)],
-            return_exceptions=True,
-        )
+        task_keys: list[str] = []
+        for i, t in enumerate(tasks):
+            key = f"{chat_id}:{i}"
+            at = asyncio.create_task(run_one(i, t), name=f"delegation:{key}")
+            self._active_tasks[key] = at
+            task_keys.append(key)
+
+        try:
+            raw_results = await asyncio.gather(
+                *[self._active_tasks[k] for k in task_keys],
+                return_exceptions=True,
+            )
+        finally:
+            for key in task_keys:
+                self._active_tasks.pop(key, None)
 
         # 处理异常
         final_results: list[DelegationResult] = []
@@ -250,7 +261,7 @@ class DelegationManager:
                 if tc.name not in allowed_names:
                     tool_result = f"工具 {tc.name} 不允许在此上下文中使用。"
                 else:
-                    tool_result = await self._execute_child_tool(tc)
+                    tool_result = await self._execute_child_tool(tc, chat_id=chat_id)
 
                 # 构建工具结果消息
                 result_msg = self._router.build_tool_result_message(
@@ -274,7 +285,7 @@ class DelegationManager:
             tool_calls_count=tool_calls_count,
         )
 
-    async def _execute_child_tool(self, tc) -> str:
+    async def _execute_child_tool(self, tc, *, chat_id: str = "") -> str:
         """执行子 agent 的工具调用。"""
         from src.tools.types import ToolExecutionContext, ToolExecutionRequest
 
@@ -284,14 +295,16 @@ class DelegationManager:
 
         request = ToolExecutionRequest(name=tc.name, arguments=tc.arguments)
 
-        # 构建最小化的执行上下文（不含 memory 写入权限）
+        # 构建执行上下文（不含 memory 写入权限，安全由 ROLE_TOOLSETS 控制）
         from src.tools.shell_executor import execute as shell_execute
-        from config.settings import SHELL_DEFAULT_CWD
+        from config.settings import SHELL_DEFAULT_CWD, ROOT_DIR
 
         context = ToolExecutionContext(
             execute_shell=shell_execute,
             shell_default_cwd=str(SHELL_DEFAULT_CWD),
-            auth_level=0,  # 最低权限
+            workspace_root=str(ROOT_DIR),
+            auth_level=2,  # 内部调用（同 task_runtime 的 agent 逻辑）
+            chat_id=chat_id,
         )
 
         try:

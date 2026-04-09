@@ -73,4 +73,29 @@ async def session_search_executor(
         lines.append("")
 
     output = "\n".join(lines)
+
+    # 结果过多时用 LLM 生成摘要，提升信息密度
+    _SUMMARIZE_THRESHOLD = 5
+    router = context.services.get("router")
+    if len(results) >= _SUMMARIZE_THRESHOLD and router is not None:
+        try:
+            summary = await router.complete(
+                messages=[
+                    {"role": "system", "content": "你是搜索结果摘要助手。用 3-5 句简洁中文概括以下搜索结果的核心内容。"},
+                    {"role": "user", "content": output},
+                ],
+                slot="lightweight_judgment",
+                max_tokens=300,
+                session_key=f"session_search:{context.chat_id}",
+                origin="tools.session_search.summarize",
+            )
+            if summary and summary.strip():
+                output = (
+                    f"搜索 '{query}' 共 {len(results)} 条记录。\n\n"
+                    f"摘要：{summary.strip()}\n\n"
+                    f"--- 原始结果 ---\n{output}"
+                )
+        except Exception as e:
+            logger.warning("session_search LLM 摘要失败，回退到原始结果: %s", e)
+
     return ToolExecutionResult(success=True, payload={"output": output})

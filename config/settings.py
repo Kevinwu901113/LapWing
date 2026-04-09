@@ -257,6 +257,7 @@ SHELL_ALLOW_SUDO: bool = os.getenv("SHELL_ALLOW_SUDO", "false").lower() == "true
 SHELL_TIMEOUT: int = int(os.getenv("SHELL_TIMEOUT", "30"))
 SHELL_DEFAULT_CWD: str = os.getenv("SHELL_DEFAULT_CWD", str(ROOT_DIR))
 SHELL_MAX_OUTPUT_CHARS: int = int(os.getenv("SHELL_MAX_OUTPUT_CHARS", "4000"))
+SHELL_BACKEND: str = os.getenv("SHELL_BACKEND", "local")
 TASK_MAX_TOOL_ROUNDS: int = int(os.getenv("TASK_MAX_TOOL_ROUNDS", "32"))
 
 # Skills（AgentSkills / OpenClaw-compatible）
