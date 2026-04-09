@@ -38,6 +38,11 @@ class ConversationMemory:
         self._store: dict[str, list[dict]] = {}
         self._session_store: dict[str, list[dict]] = {}  # key = session_id
         self._db: aiosqlite.Connection | None = None
+        # Domain repositories (initialized in init_db)
+        self._facts: "UserFactsRepository | None" = None
+        self._discoveries: "DiscoveryRepository | None" = None
+        self._todos: "TodoRepository | None" = None
+        self._reminders_repo: "ReminderRepository | None" = None
 
     async def init_db(self) -> None:
         """初始化数据库：创建目录、建表、加载历史。"""
@@ -46,6 +51,15 @@ class ConversationMemory:
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._create_tables()
         await self._load_recent_history()
+        # Initialize domain repositories
+        from src.memory.user_facts import UserFactsRepository
+        from src.memory.discoveries import DiscoveryRepository
+        from src.memory.todos import TodoRepository
+        from src.memory.reminders import ReminderRepository
+        self._facts = UserFactsRepository(self._db)
+        self._discoveries = DiscoveryRepository(self._db)
+        self._todos = TodoRepository(self._db)
+        self._reminders_repo = ReminderRepository(self._db)
         logger.info(f"对话记忆已初始化（SQLite 模式），数据库: {self._db_path}")
 
     async def _create_tables(self) -> None:
@@ -528,578 +542,71 @@ class ConversationMemory:
             self._db = None
             logger.info("数据库连接已关闭")
 
-    # ===== user_facts 相关方法（为 Task 3 预留）=====
+    # ===== Facade delegation to domain repositories =====
 
     async def get_user_facts(self, chat_id: str) -> list[dict]:
-        """获取指定用户的所有画像信息。"""
-        try:
-            async with self._db.execute(
-                "SELECT fact_key, fact_value, updated_at FROM user_facts "
-                "WHERE chat_id = ? ORDER BY updated_at DESC",
-                (chat_id,),
-            ) as cursor:
-                return [
-                    {"fact_key": row[0], "fact_value": row[1], "updated_at": row[2]}
-                    async for row in cursor
-                ]
-        except Exception as e:
-            logger.error(f"读取用户画像失败: {e}")
-            return []
+        return await self._facts.get_user_facts(chat_id)
 
     async def set_user_fact(self, chat_id: str, fact_key: str, fact_value: str) -> None:
-        """写入或更新一条用户画像信息。"""
-        try:
-            updated_at = datetime.now(timezone.utc).isoformat()
-            await self._db.execute(
-                """INSERT INTO user_facts (chat_id, fact_key, fact_value, updated_at)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(chat_id, fact_key) DO UPDATE SET
-                       fact_value = excluded.fact_value,
-                       updated_at = excluded.updated_at""",
-                (chat_id, fact_key, fact_value, updated_at),
-            )
-            await self._db.commit()
-        except Exception as e:
-            logger.error(f"写入用户画像失败: {e}")
+        return await self._facts.set_user_fact(chat_id, fact_key, fact_value)
 
     async def delete_user_fact(self, chat_id: str, fact_key: str) -> bool:
-        """删除指定用户画像条目。"""
-        try:
-            cursor = await self._db.execute(
-                "DELETE FROM user_facts WHERE chat_id = ? AND fact_key = ?",
-                (chat_id, fact_key),
-            )
-            await self._db.commit()
-            return cursor.rowcount > 0
-        except Exception as e:
-            logger.error(f"删除用户画像失败: {e}")
-            return False
+        return await self._facts.delete_user_fact(chat_id, fact_key)
 
     async def get_all_chat_ids(self) -> list[str]:
-        """返回所有有过对话记录的 chat_id 列表。"""
-        try:
-            async with self._db.execute(
-                "SELECT DISTINCT chat_id FROM conversations"
-            ) as cursor:
-                return [row[0] async for row in cursor]
-        except Exception as e:
-            logger.error(f"获取 chat_id 列表失败: {e}")
-            return []
+        return await self._facts.get_all_chat_ids()
 
     async def get_last_interaction(self, chat_id: str) -> datetime | None:
-        """返回指定 chat_id 最后一条消息的时间戳，无记录时返回 None。"""
-        try:
-            async with self._db.execute(
-                "SELECT timestamp FROM conversations WHERE chat_id = ? ORDER BY id DESC LIMIT 1",
-                (chat_id,),
-            ) as cursor:
-                row = await cursor.fetchone()
-                if row is None:
-                    return None
-                return datetime.fromisoformat(row[0])
-        except Exception as e:
-            logger.error(f"获取最后交互时间失败: {e}")
-            return None
+        return await self._facts.get_last_interaction(chat_id)
 
-    async def add_discovery(
-        self,
-        chat_id: str,
-        source: str,
-        title: str,
-        summary: str,
-        url: str | None,
-    ) -> None:
-        """写入一条新发现。"""
-        try:
-            discovered_at = datetime.now(timezone.utc).isoformat()
-            await self._db.execute(
-                """INSERT INTO discoveries (chat_id, source, title, summary, url, discovered_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (chat_id, source, title, summary, url, discovered_at),
-            )
-            await self._db.commit()
-        except Exception as e:
-            logger.error(f"写入 discovery 失败: {e}")
+
+    async def add_discovery(self, chat_id: str, source: str, title: str, summary: str, url: str | None = None) -> None:
+        return await self._discoveries.add_discovery(chat_id, source, title, summary, url)
 
     async def get_unshared_discoveries(self, chat_id: str, limit: int = 5) -> list[dict]:
-        """获取未分享的发现，按发现时间升序（最早的优先分享）。"""
-        try:
-            async with self._db.execute(
-                """SELECT id, source, title, summary, url, discovered_at, shared_at
-                   FROM discoveries
-                   WHERE chat_id = ? AND shared_at IS NULL
-                   ORDER BY discovered_at ASC
-                   LIMIT ?""",
-                (chat_id, limit),
-            ) as cursor:
-                return [
-                    {
-                        "id": row[0], "source": row[1], "title": row[2],
-                        "summary": row[3], "url": row[4],
-                        "discovered_at": row[5], "shared_at": row[6],
-                    }
-                    async for row in cursor
-                ]
-        except Exception as e:
-            logger.error(f"获取未分享 discovery 失败: {e}")
-            return []
+        return await self._discoveries.get_unshared_discoveries(chat_id, limit)
 
     async def mark_discovery_shared(self, discovery_id: int) -> None:
-        """将指定 discovery 标记为已分享。"""
-        try:
-            shared_at = datetime.now(timezone.utc).isoformat()
-            await self._db.execute(
-                "UPDATE discoveries SET shared_at = ? WHERE id = ?",
-                (shared_at, discovery_id),
-            )
-            await self._db.commit()
-        except Exception as e:
-            logger.error(f"标记 discovery 已分享失败: {e}")
+        return await self._discoveries.mark_discovery_shared(discovery_id)
 
     async def bump_interest(self, chat_id: str, topic: str, increment: float = 1.0) -> None:
-        """增加话题权重（UPSERT：首次插入，已有则累加）。"""
-        try:
-            last_seen = datetime.now(timezone.utc).isoformat()
-            await self._db.execute(
-                """INSERT INTO interest_topics (chat_id, topic, weight, last_seen)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(chat_id, topic) DO UPDATE SET
-                       weight = interest_topics.weight + excluded.weight,
-                       last_seen = excluded.last_seen""",
-                (chat_id, topic, increment, last_seen),
-            )
-            await self._db.commit()
-        except Exception as e:
-            logger.error(f"增加兴趣话题失败: {e}")
+        return await self._discoveries.bump_interest(chat_id, topic, increment)
 
     async def get_top_interests(self, chat_id: str, limit: int = 10) -> list[dict]:
-        """按权重降序返回兴趣话题。"""
-        try:
-            async with self._db.execute(
-                """SELECT topic, weight, last_seen
-                   FROM interest_topics
-                   WHERE chat_id = ?
-                   ORDER BY weight DESC, last_seen DESC
-                   LIMIT ?""",
-                (chat_id, limit),
-            ) as cursor:
-                return [
-                    {"topic": row[0], "weight": row[1], "last_seen": row[2]}
-                    async for row in cursor
-                ]
-        except Exception as e:
-            logger.error(f"读取兴趣话题失败: {e}")
-            return []
+        return await self._discoveries.get_top_interests(chat_id, limit)
 
     async def get_conversations_for_date(self, chat_id: str, date_str: str) -> list[dict]:
-        """获取指定日期（YYYY-MM-DD）的所有对话记录（从 DB 查询）。"""
-        try:
-            async with self._db.execute(
-                "SELECT role, content, timestamp FROM conversations "
-                "WHERE chat_id = ? AND timestamp LIKE ? ORDER BY id ASC",
-                (chat_id, f"{date_str}%"),
-            ) as cursor:
-                return [
-                    {"role": row[0], "content": row[1], "timestamp": row[2]}
-                    async for row in cursor
-                ]
-        except Exception as e:
-            logger.error(f"获取 {date_str} 对话记录失败: {e}")
-            return []
+        return await self._discoveries.get_conversations_for_date(chat_id, date_str)
 
     async def decay_interests(self, chat_id: str, factor: float = 0.95) -> None:
-        """对所有话题权重乘以 factor（衰减），保持兴趣的时效性。"""
-        try:
-            await self._db.execute(
-                "UPDATE interest_topics SET weight = weight * ? WHERE chat_id = ?",
-                (factor, chat_id),
-            )
-            await self._db.commit()
-        except Exception as e:
-            logger.error(f"衰减兴趣话题失败: {e}")
+        return await self._discoveries.decay_interests(chat_id, factor)
 
     async def add_todo(self, chat_id: str, content: str, due_date: str | None = None) -> int:
-        """新增一条待办，返回数据库 ID。"""
-        try:
-            created_at = datetime.now(timezone.utc).isoformat()
-            cursor = await self._db.execute(
-                """INSERT INTO todos (chat_id, content, due_date, created_at)
-                   VALUES (?, ?, ?, ?)""",
-                (chat_id, content, due_date, created_at),
-            )
-            await self._db.commit()
-            return int(cursor.lastrowid or 0)
-        except Exception as e:
-            logger.error(f"新增待办失败: {e}")
-            return 0
+        return await self._todos.add_todo(chat_id, content, due_date)
 
     async def list_todos(self, chat_id: str) -> list[dict]:
-        """列出指定用户的待办，未完成优先，再按截止日和创建时间排序。"""
-        try:
-            async with self._db.execute(
-                """SELECT id, content, due_date, done, created_at
-                   FROM todos
-                   WHERE chat_id = ?
-                   ORDER BY
-                       done ASC,
-                       CASE WHEN due_date IS NULL THEN 1 ELSE 0 END ASC,
-                       due_date ASC,
-                       created_at ASC""",
-                (chat_id,),
-            ) as cursor:
-                return [
-                    {
-                        "id": row[0],
-                        "content": row[1],
-                        "due_date": row[2],
-                        "done": bool(row[3]),
-                        "created_at": row[4],
-                    }
-                    async for row in cursor
-                ]
-        except Exception as e:
-            logger.error(f"列出待办失败: {e}")
-            return []
+        return await self._todos.list_todos(chat_id)
 
     async def mark_todo_done(self, chat_id: str, todo_id: int) -> bool:
-        """将指定待办标记为完成。"""
-        try:
-            cursor = await self._db.execute(
-                "UPDATE todos SET done = 1 WHERE chat_id = ? AND id = ?",
-                (chat_id, todo_id),
-            )
-            await self._db.commit()
-            return cursor.rowcount > 0
-        except Exception as e:
-            logger.error(f"标记待办完成失败: {e}")
-            return False
+        return await self._todos.mark_todo_done(chat_id, todo_id)
 
     async def delete_todo(self, chat_id: str, todo_id: int) -> bool:
-        """删除指定待办。"""
-        try:
-            cursor = await self._db.execute(
-                "DELETE FROM todos WHERE chat_id = ? AND id = ?",
-                (chat_id, todo_id),
-            )
-            await self._db.commit()
-            return cursor.rowcount > 0
-        except Exception as e:
-            logger.error(f"删除待办失败: {e}")
-            return False
+        return await self._todos.delete_todo(chat_id, todo_id)
 
-    # ===== reminders 相关方法 =====
-
-    async def add_reminder(
-        self,
-        chat_id: str,
-        content: str,
-        recurrence_type: str,
-        next_trigger_at: datetime | str,
-        weekday: int | None = None,
-        time_of_day: str | None = None,
-        interval_minutes: int | None = None,
-    ) -> int:
-        """新增提醒，返回数据库 ID。"""
-        try:
-            normalized_content = str(content).strip()
-            if not normalized_content:
-                return 0
-
-            recurrence = str(recurrence_type).strip().lower()
-            if recurrence not in _VALID_RECURRENCE_TYPES:
-                return 0
-
-            next_dt = self._ensure_utc_datetime(next_trigger_at)
-            now = datetime.now(timezone.utc)
-            if recurrence == "once":
-                if next_dt <= now:
-                    return 0
-                normalized_weekday = None
-                normalized_time = None
-                normalized_interval = None
-            elif recurrence == "interval":
-                normalized_weekday = None
-                normalized_time = None
-                normalized_interval = int(interval_minutes) if interval_minutes else None
-                if not normalized_interval or normalized_interval <= 0:
-                    return 0
-                if next_dt <= now:
-                    next_dt = now + timedelta(minutes=normalized_interval)
-            else:
-                normalized_weekday = self._normalize_weekday(weekday)
-                normalized_time = self._normalize_time_of_day(time_of_day) or next_dt.strftime("%H:%M")
-                normalized_interval = None
-                if recurrence == "weekly" and normalized_weekday is None:
-                    return 0
-                if next_dt <= now:
-                    next_dt = self._advance_to_future(next_dt, recurrence, now)
-
-            created_at = now.isoformat()
-            cursor = await self._db.execute(
-                """INSERT INTO reminders (
-                       chat_id, content, recurrence_type, next_trigger_at,
-                       weekday, time_of_day, interval_minutes, active, created_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)""",
-                (
-                    chat_id,
-                    normalized_content,
-                    recurrence,
-                    next_dt.isoformat(),
-                    normalized_weekday,
-                    normalized_time,
-                    normalized_interval,
-                    created_at,
-                ),
-            )
-            await self._db.commit()
-            return int(cursor.lastrowid or 0)
-        except Exception as e:
-            logger.error(f"新增提醒失败: {e}")
-            return 0
+    async def add_reminder(self, chat_id: str, content: str, recurrence_type: str, next_trigger_at, weekday: int | None = None, time_of_day: str | None = None, interval_minutes: int | None = None) -> int:
+        return await self._reminders_repo.add_reminder(chat_id, content, recurrence_type, next_trigger_at, weekday, time_of_day, interval_minutes)
 
     async def list_reminders(self, chat_id: str, include_inactive: bool = False) -> list[dict]:
-        """列出指定用户的提醒。"""
-        try:
-            if include_inactive:
-                query = (
-                    "SELECT id, chat_id, content, recurrence_type, next_trigger_at, "
-                    "weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at, interval_minutes "
-                    "FROM reminders WHERE chat_id = ? "
-                    "ORDER BY active DESC, next_trigger_at ASC, id ASC"
-                )
-                params = (chat_id,)
-            else:
-                query = (
-                    "SELECT id, chat_id, content, recurrence_type, next_trigger_at, "
-                    "weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at, interval_minutes "
-                    "FROM reminders WHERE chat_id = ? AND active = 1 "
-                    "ORDER BY next_trigger_at ASC, id ASC"
-                )
-                params = (chat_id,)
-
-            async with self._db.execute(query, params) as cursor:
-                rows = [row async for row in cursor]
-            return [self._row_to_reminder(row) for row in rows]
-        except Exception as e:
-            logger.error(f"列出提醒失败: {e}")
-            return []
+        return await self._reminders_repo.list_reminders(chat_id, include_inactive)
 
     async def cancel_reminder(self, chat_id: str, reminder_id: int) -> bool:
-        """取消提醒。"""
-        try:
-            cancelled_at = datetime.now(timezone.utc).isoformat()
-            cursor = await self._db.execute(
-                """UPDATE reminders
-                   SET active = 0, cancelled_at = ?
-                   WHERE chat_id = ? AND id = ? AND active = 1""",
-                (cancelled_at, chat_id, reminder_id),
-            )
-            await self._db.commit()
-            return cursor.rowcount > 0
-        except Exception as e:
-            logger.error(f"取消提醒失败: {e}")
-            return False
+        return await self._reminders_repo.cancel_reminder(chat_id, reminder_id)
 
-    async def get_due_reminders(
-        self,
-        chat_id: str,
-        now: datetime,
-        grace_seconds: int,
-        limit: int = 20,
-    ) -> list[dict]:
-        """获取当前到期提醒（仅包含容错窗口内的任务）。"""
-        if limit <= 0:
-            return []
+    async def get_due_reminders(self, chat_id: str, now, grace_seconds: int, limit: int = 20) -> list[dict]:
+        return await self._reminders_repo.get_due_reminders(chat_id, now, grace_seconds, limit)
 
-        try:
-            now_utc = self._ensure_utc_datetime(now)
-            grace = max(int(grace_seconds), 0)
-            oldest_allowed = now_utc - timedelta(seconds=grace)
-            scan_limit = max(limit * 4, limit)
-
-            async with self._db.execute(
-                """SELECT id, chat_id, content, recurrence_type, next_trigger_at,
-                          weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at, interval_minutes
-                   FROM reminders
-                   WHERE chat_id = ? AND active = 1 AND next_trigger_at <= ?
-                   ORDER BY next_trigger_at ASC, id ASC
-                   LIMIT ?""",
-                (chat_id, now_utc.isoformat(), scan_limit),
-            ) as cursor:
-                rows = [row async for row in cursor]
-
-            due: list[dict] = []
-            for row in rows:
-                reminder = self._row_to_reminder(row)
-                next_dt = self._ensure_utc_datetime(reminder["next_trigger_at"])
-                if next_dt < oldest_allowed:
-                    await self._drop_or_roll_forward_stale(reminder, now_utc)
-                    continue
-                due.append(reminder)
-                if len(due) >= limit:
-                    break
-            return due
-        except Exception as e:
-            logger.error(f"获取到期提醒失败: {e}")
-            return []
-
-    async def complete_or_reschedule_reminder(self, reminder_id: int, now: datetime) -> bool:
-        """标记提醒完成或重算下一次触发时间。"""
-        try:
-            now_utc = self._ensure_utc_datetime(now)
-            async with self._db.execute(
-                """SELECT id, chat_id, content, recurrence_type, next_trigger_at,
-                          weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at, interval_minutes
-                   FROM reminders
-                   WHERE id = ? AND active = 1""",
-                (reminder_id,),
-            ) as cursor:
-                row = await cursor.fetchone()
-
-            if row is None:
-                return False
-
-            reminder = self._row_to_reminder(row)
-            recurrence = reminder["recurrence_type"]
-            if recurrence == "once":
-                cursor = await self._db.execute(
-                    """UPDATE reminders
-                       SET active = 0, last_triggered_at = ?
-                       WHERE id = ? AND active = 1""",
-                    (now_utc.isoformat(), reminder_id),
-                )
-                await self._db.commit()
-                return cursor.rowcount > 0
-
-            current_next = self._ensure_utc_datetime(reminder["next_trigger_at"])
-            next_trigger = self._advance_to_future(
-                current_next, recurrence, now_utc,
-                interval_minutes=reminder.get("interval_minutes"),
-            )
-            cursor = await self._db.execute(
-                """UPDATE reminders
-                   SET last_triggered_at = ?, next_trigger_at = ?
-                   WHERE id = ? AND active = 1""",
-                (now_utc.isoformat(), next_trigger.isoformat(), reminder_id),
-            )
-            await self._db.commit()
-            return cursor.rowcount > 0
-        except Exception as e:
-            logger.error(f"完成/重排提醒失败: {e}")
-            return False
-
-    async def _drop_or_roll_forward_stale(self, reminder: dict, now_utc: datetime) -> None:
-        recurrence = str(reminder.get("recurrence_type", "once"))
-        reminder_id = int(reminder["id"])
-        if recurrence == "once":
-            await self._db.execute(
-                """UPDATE reminders
-                   SET active = 0, cancelled_at = ?
-                   WHERE id = ? AND active = 1""",
-                (now_utc.isoformat(), reminder_id),
-            )
-            await self._db.commit()
-            return
-
-        current_next = self._ensure_utc_datetime(reminder["next_trigger_at"])
-        next_trigger = self._advance_to_future(
-            current_next, recurrence, now_utc,
-            interval_minutes=reminder.get("interval_minutes"),
-        )
-        await self._db.execute(
-            "UPDATE reminders SET next_trigger_at = ? WHERE id = ? AND active = 1",
-            (next_trigger.isoformat(), reminder_id),
-        )
-        await self._db.commit()
-
-    def _advance_to_future(
-        self,
-        start: datetime,
-        recurrence_type: str,
-        now_utc: datetime,
-        interval_minutes: int | None = None,
-    ) -> datetime:
-        recurrence = str(recurrence_type).lower()
-        if recurrence == "daily":
-            step = timedelta(days=1)
-        elif recurrence == "weekly":
-            step = timedelta(days=7)
-        elif recurrence == "interval" and interval_minutes:
-            step = timedelta(minutes=interval_minutes)
-        else:
-            return start
-
-        next_dt = start
-        for _ in range(0, 4096):
-            if next_dt > now_utc:
-                return next_dt
-            next_dt = next_dt + step
-        return next_dt
-
-    def _ensure_utc_datetime(self, value: datetime | str) -> datetime:
-        if isinstance(value, str):
-            text = value.strip()
-            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
-        else:
-            parsed = value
-
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        return parsed.astimezone(timezone.utc)
-
-    def _normalize_weekday(self, raw_value) -> int | None:
-        if raw_value in (None, "", "null"):
-            return None
-        try:
-            weekday = int(raw_value)
-        except (TypeError, ValueError):
-            return None
-        return weekday if 0 <= weekday <= 6 else None
-
-    def _normalize_time_of_day(self, raw_value) -> str | None:
-        if raw_value in (None, "", "null"):
-            return None
-        time_text = str(raw_value).strip()
-        if not _TIME_OF_DAY_PATTERN.match(time_text):
-            return None
-        try:
-            datetime.strptime(time_text, "%H:%M")
-        except ValueError:
-            return None
-        return time_text
+    async def complete_or_reschedule_reminder(self, reminder_id: int, now) -> bool:
+        return await self._reminders_repo.complete_or_reschedule_reminder(reminder_id, now)
 
     async def get_reminder_by_id(self, reminder_id: int) -> dict | None:
-        """按 ID 查询单个活跃提醒。"""
-        if self._db is None:
-            return None
-        try:
-            async with self._db.execute(
-                """SELECT id, chat_id, content, recurrence_type, next_trigger_at,
-                          weekday, time_of_day, active, created_at,
-                          last_triggered_at, cancelled_at, interval_minutes
-                   FROM reminders WHERE id = ? AND active = 1""",
-                (reminder_id,),
-            ) as cursor:
-                row = await cursor.fetchone()
-            return self._row_to_reminder(row) if row else None
-        except Exception as exc:
-            logger.error("get_reminder_by_id(%d) 失败: %s", reminder_id, exc)
-            return None
-
-    def _row_to_reminder(self, row) -> dict:
-        result = {
-            "id": row[0],
-            "chat_id": row[1],
-            "content": row[2],
-            "recurrence_type": row[3],
-            "next_trigger_at": row[4],
-            "weekday": row[5],
-            "time_of_day": row[6],
-            "active": bool(row[7]),
-            "created_at": row[8],
-            "last_triggered_at": row[9],
-            "cancelled_at": row[10],
-        }
-        if len(row) > 11:
-            result["interval_minutes"] = row[11]
-        return result
+        return await self._reminders_repo.get_reminder_by_id(reminder_id)
