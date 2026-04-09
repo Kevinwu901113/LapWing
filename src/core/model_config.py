@@ -56,6 +56,11 @@ SLOT_DEFINITIONS: dict[str, dict[str, str]] = {
         "description": "主动消息、兴趣分享、自主浏览等 heartbeat 行为",
         "requires_tools": "false",
     },
+    "browser_vision": {
+        "name": "浏览器视觉",
+        "description": "浏览器页面截图的视觉理解，需要视觉能力的模型",
+        "requires_tools": "false",
+    },
 }
 
 

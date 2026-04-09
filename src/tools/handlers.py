@@ -6,13 +6,13 @@ import shlex
 from pathlib import Path
 from typing import Any
 
-from config.settings import ROOT_DIR, SEARCH_MAX_RESULTS
+from config.settings import ROOT_DIR, SEARCH_MAX_RESULTS, WEB_FETCH_MAX_CHARS
 from src.core import verifier
 from src.tools import code_runner, file_editor, web_fetcher, web_search
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult
 
 _WEB_SEARCH_MAX_RESULTS_CAP = 10
-_WEB_FETCH_MAX_CHARS_CAP = 8000
+_WEB_FETCH_MAX_CHARS_CAP = WEB_FETCH_MAX_CHARS
 
 
 # ---------------------------------------------------------------------------
@@ -164,17 +164,23 @@ async def web_search_tool(
             success=False, payload=payload, reason=f"web_search 执行失败: {exc}"
         )
 
+    result_items = []
+    for item in results:
+        entry: dict[str, Any] = {
+            "title": str(item.get("title", "")),
+            "url": str(item.get("url", "")),
+            "snippet": str(item.get("snippet", "")),
+        }
+        if item.get("published_date"):
+            entry["published_date"] = item["published_date"]
+        if item.get("relevance_score") is not None:
+            entry["relevance_score"] = item["relevance_score"]
+        result_items.append(entry)
+
     payload = {
         "query": query,
         "count": len(results),
-        "results": [
-            {
-                "title": str(item.get("title", "")),
-                "url": str(item.get("url", "")),
-                "snippet": str(item.get("snippet", "")),
-            }
-            for item in results
-        ],
+        "results": result_items,
     }
     payload["_system_hint"] = (
         "以上是搜索摘要。如果这些摘要不包含回答用户问题所需的具体数据"
@@ -206,13 +212,17 @@ async def web_fetch_tool(
 
     max_chars = _clamp_web_fetch_max_chars(request.arguments.get("max_chars"))
     text = fetched.text[:max_chars]
-    payload = {
+    payload: dict[str, Any] = {
         "url": fetched.url,
         "title": fetched.title,
         "text": text,
         "success": fetched.success,
         "error": fetched.error,
     }
+    if fetched.published_date:
+        payload["published_date"] = fetched.published_date
+    if fetched.fetched_at:
+        payload["fetched_at"] = fetched.fetched_at
     return ToolExecutionResult(success=fetched.success, payload=payload, reason=fetched.error)
 
 

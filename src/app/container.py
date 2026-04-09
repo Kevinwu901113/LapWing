@@ -6,6 +6,7 @@ import logging
 from pathlib import Path
 
 from config.settings import (
+    BROWSER_ENABLED,
     DATA_DIR,
     DB_PATH,
     EXPERIENCE_SKILLS_DIR,
@@ -84,6 +85,11 @@ class AppContainer:
         self.reminder_scheduler: ReminderScheduler | None = None
         self.telegram_app = None
 
+        # 浏览器子系统（可选）
+        self._browser_manager = None
+        self._credential_vault = None
+        self._browser_guard = None
+
         self._prepared = False
         self._started = False
 
@@ -95,6 +101,11 @@ class AppContainer:
         init_vitals(self._data_dir)
 
         await self.brain.init_db()
+
+        # 浏览器子系统初始化（在依赖装配前启动，因为工具注册需要 browser_manager）
+        if BROWSER_ENABLED:
+            await self._init_browser()
+
         await self._configure_brain_dependencies()
         self._prepared = True
         logger.info("应用容器依赖装配完成")
@@ -137,6 +148,14 @@ class AppContainer:
             self.heartbeat = None
 
         await self.channel_manager.stop_all()
+
+        # 浏览器子系统关闭
+        if self._browser_manager is not None:
+            try:
+                await self._browser_manager.stop()
+                logger.info("浏览器子系统已关闭")
+            except Exception:
+                logger.warning("浏览器关闭异常", exc_info=True)
 
         await self.api_server.shutdown()
 
@@ -256,6 +275,38 @@ class AppContainer:
             from src.core.quality_checker import ReplyQualityChecker
             self.brain.quality_checker = ReplyQualityChecker(router=self.brain.router)
             logger.info("回复质量检查已就绪")
+
+    async def _init_browser(self) -> None:
+        """初始化浏览器子系统组件。"""
+        from src.core.browser_manager import BrowserManager
+        from src.guards.browser_guard import BrowserGuard
+
+        self._browser_guard = BrowserGuard()
+        self._browser_manager = BrowserManager()
+        await self._browser_manager.start()
+
+        # CredentialVault 需要 CREDENTIAL_VAULT_KEY 环境变量，缺失时跳过
+        try:
+            from src.core.credential_vault import CredentialVault
+            from config.settings import CREDENTIAL_VAULT_PATH
+            self._credential_vault = CredentialVault(vault_path=CREDENTIAL_VAULT_PATH)
+        except ValueError:
+            logger.warning("CREDENTIAL_VAULT_KEY 未设置，browser_login 不可用")
+            self._credential_vault = None
+
+        # 注册浏览器工具到 brain 的 tool_registry
+        from src.tools.browser_tools import register_browser_tools
+        register_browser_tools(
+            registry=self.brain.tool_registry,
+            browser_manager=self._browser_manager,
+            credential_vault=self._credential_vault,
+            browser_guard=self._browser_guard,
+            event_bus=self.event_bus,
+        )
+        self.brain.browser_manager = self._browser_manager
+        self._browser_manager.set_router(self.brain.router)
+        self._browser_manager.set_event_bus(self.event_bus)
+        logger.info("浏览器子系统已就绪")
 
     def _build_heartbeat(self, send_fn) -> HeartbeatEngine:
         from src.heartbeat.actions.session_reaper import SessionReaperAction

@@ -101,3 +101,33 @@ class TestFetch:
 
         assert result.success is False
         assert "连接失败" in result.error
+
+    async def test_fetch_extracts_published_date(self):
+        """从 meta 标签提取 published_date。"""
+        response = _make_response(
+            '<html><head><title>News</title>'
+            '<meta property="article:published_time" content="2026-03-15T10:00:00Z">'
+            '</head><body><p>Article body</p></body></html>'
+        )
+        cm, _ = _mock_async_client(response=response)
+
+        with patch("src.tools.web_fetcher.httpx.AsyncClient", return_value=cm):
+            result = await fetch("https://example.com/news")
+
+        assert result.success is True
+        assert result.published_date == "2026-03-15T10:00:00Z"
+        assert result.fetched_at  # 非空 ISO 字符串
+
+    async def test_fetch_no_date_meta(self):
+        """没有日期 meta 标签时 published_date 为空。"""
+        response = _make_response(
+            "<html><head><title>No Date</title></head><body><p>text</p></body></html>"
+        )
+        cm, _ = _mock_async_client(response=response)
+
+        with patch("src.tools.web_fetcher.httpx.AsyncClient", return_value=cm):
+            result = await fetch("https://example.com")
+
+        assert result.success is True
+        assert result.published_date == ""
+        assert result.fetched_at  # 仍有抓取时间

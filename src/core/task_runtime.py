@@ -84,6 +84,9 @@ class TaskRuntime:
         self._memory = memory
         self._memory_index: Any | None = None
 
+    def set_browser_guard(self, browser_guard: Any | None) -> None:
+        self._browser_guard = browser_guard
+
     def set_latency_monitor(self, latency_monitor: Any | None) -> None:
         self._latency_monitor = latency_monitor
 
@@ -627,6 +630,8 @@ class TaskRuntime:
                 )
 
             _record_round_latency()
+            # 压缩旧的浏览器 PageState（保留最新完整，旧的只留摘要）
+            self._compress_browser_history(messages)
             # 重新注入 voice reminder（tool call 循环会让消息越来越长，
             # 导致 voice reminder 离生成位置越来越远）
             _refresh_voice_reminder(messages)
@@ -906,6 +911,26 @@ class TaskRuntime:
                 if file_guard.verdict == Verdict.VERIFY_FIRST:
                     await auto_backup([target])
 
+        # ── BrowserGuard：浏览器操作安全检查 ────────────────────────────────
+        elif tool.capability == "browser" and request.name.startswith("browser_"):
+            bg = getattr(self, "_browser_guard", None)
+            if bg is not None:
+                bg_result = None
+                if request.name == "browser_open":
+                    url = str(request.arguments.get("url", "")).strip()
+                    if url:
+                        bg_result = bg.check_url(url)
+                elif request.name == "browser_js":
+                    expr = str(request.arguments.get("expression", "")).strip()
+                    if expr:
+                        bg_result = bg.check_js(expr)
+                if bg_result is not None and bg_result.action == "block":
+                    reason = f"[BrowserGuard] {bg_result.reason}"
+                    if state is not None:
+                        state.record_failure(reason, "blocked")
+                    payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command="")
+                    return ToolExecutionResult(success=False, payload=payload, reason=reason)
+
         context = ToolExecutionContext(
             execute_shell=shell_executor,
             shell_default_cwd=shell_default_cwd,
@@ -1171,6 +1196,40 @@ class TaskRuntime:
         except (TypeError, ValueError):
             return False
         return return_code != 0
+
+    def _compress_browser_history(self, messages: list[dict[str, Any]]) -> None:
+        """压缩旧的浏览器 PageState，保留最新完整，旧的替换为摘要。
+
+        浏览器操作是多轮 tool call，每轮 PageState ~2000-3000 token。
+        压缩策略：找到所有包含 "[页面]" 标记的 tool result，
+        保留最后一个完整，之前的替换为 "[已浏览] title" 摘要。
+        仅在浏览器 tool result 累计超过 3 条时触发。
+        """
+        # 收集含 PageState 的 tool result 消息的索引
+        page_state_indices: list[int] = []
+        for i, msg in enumerate(messages):
+            content = ""
+            if isinstance(msg, dict):
+                content = str(msg.get("content", ""))
+            if "[页面]" in content and "URL:" in content:
+                page_state_indices.append(i)
+
+        if len(page_state_indices) <= 3:
+            return
+
+        # 保留最后一个完整，压缩之前的
+        for idx in page_state_indices[:-1]:
+            msg = messages[idx]
+            if not isinstance(msg, dict):
+                continue
+            old_content = str(msg.get("content", ""))
+            # 提取标题行
+            title = ""
+            for line in old_content.split("\n"):
+                if line.startswith("[页面]"):
+                    title = line.replace("[页面]", "").strip()
+                    break
+            msg["content"] = f"[已浏览] {title}" if title else "[已浏览]"
 
     def _blocked_payload(
         self,

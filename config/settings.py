@@ -182,14 +182,14 @@ DELEGATION_ENABLED: bool = os.getenv("DELEGATION_ENABLED", "false").lower() in (
 DELEGATION_MAX_CONCURRENT: int = int(os.getenv("DELEGATION_MAX_CONCURRENT", "3"))
 DELEGATION_MAX_ITERATIONS: int = int(os.getenv("DELEGATION_MAX_ITERATIONS", "20"))
 SELF_SCHEDULE_ENABLED: bool = os.getenv("SELF_SCHEDULE_ENABLED", "true").lower() in ("true", "1", "yes")
-QUALITY_CHECK_ENABLED: bool = os.getenv("LAPWING_FLAG_QUALITY_CHECK", "false").lower() in ("true", "1", "yes")
+QUALITY_CHECK_ENABLED: bool = os.getenv("LAPWING_FLAG_QUALITY_CHECK", "true").lower() in ("true", "1", "yes")
 MESSAGE_SPLIT_ENABLED: bool = os.getenv("MESSAGE_SPLIT_ENABLED", "true").lower() in ("true", "1", "yes")
 MESSAGE_SPLIT_DELAY_BASE: float = float(os.getenv("MESSAGE_SPLIT_DELAY_BASE", "0.8"))
 MESSAGE_SPLIT_DELAY_PER_CHAR: float = float(os.getenv("MESSAGE_SPLIT_DELAY_PER_CHAR", "0.008"))
 MESSAGE_SPLIT_DELAY_MAX: float = float(os.getenv("MESSAGE_SPLIT_DELAY_MAX", "2.5"))
 
 # ── Session 管理 ──
-SESSION_ENABLED: bool = os.getenv("SESSION_ENABLED", "false").lower() in ("true", "1")
+SESSION_ENABLED: bool = os.getenv("SESSION_ENABLED", "true").lower() in ("true", "1")
 SESSION_TIMEOUT_MINUTES: int = int(os.getenv("SESSION_TIMEOUT_MINUTES", "30"))
 SESSION_DORMANT_TTL_HOURS: float = float(os.getenv("SESSION_DORMANT_TTL_HOURS", "3"))
 SESSION_MIN_MESSAGES_TO_KEEP: int = int(os.getenv("SESSION_MIN_MESSAGES_TO_KEEP", "4"))
@@ -261,6 +261,53 @@ LOOP_DETECTION_DETECTOR_KNOWN_POLL_NO_PROGRESS: bool = (
     os.getenv("LOOP_DETECTION_DETECTOR_KNOWN_POLL_NO_PROGRESS", "true").lower() == "true"
 )
 
+# ── 浏览器子系统 ──
+BROWSER_ENABLED: bool = os.getenv("BROWSER_ENABLED", "false").lower() in ("true", "1", "yes")
+BROWSER_HEADLESS: bool = os.getenv("BROWSER_HEADLESS", "true").lower() in ("true", "1", "yes")
+BROWSER_USER_DATA_DIR: str = os.getenv("BROWSER_USER_DATA_DIR", str(DATA_DIR / "browser" / "profile"))
+BROWSER_MAX_TABS: int = int(os.getenv("BROWSER_MAX_TABS", "8"))
+BROWSER_PAGE_TEXT_MAX_CHARS: int = int(os.getenv("BROWSER_PAGE_TEXT_MAX_CHARS", "4000"))
+BROWSER_NAVIGATION_TIMEOUT_MS: int = int(os.getenv("BROWSER_NAVIGATION_TIMEOUT_MS", "30000"))
+BROWSER_ACTION_TIMEOUT_MS: int = int(os.getenv("BROWSER_ACTION_TIMEOUT_MS", "10000"))
+BROWSER_SCREENSHOT_DIR: str = os.getenv("BROWSER_SCREENSHOT_DIR", str(DATA_DIR / "browser" / "screenshots"))
+BROWSER_SCREENSHOT_RETAIN_DAYS: int = int(os.getenv("BROWSER_SCREENSHOT_RETAIN_DAYS", "7"))
+BROWSER_VIEWPORT_WIDTH: int = int(os.getenv("BROWSER_VIEWPORT_WIDTH", "1280"))
+BROWSER_VIEWPORT_HEIGHT: int = int(os.getenv("BROWSER_VIEWPORT_HEIGHT", "720"))
+BROWSER_LOCALE: str = os.getenv("BROWSER_LOCALE", "zh-CN")
+BROWSER_TIMEZONE: str = os.getenv("BROWSER_TIMEZONE", "Asia/Taipei")
+BROWSER_MAX_ELEMENT_COUNT: int = int(os.getenv("BROWSER_MAX_ELEMENT_COUNT", "50"))
+BROWSER_WAIT_AFTER_ACTION_MS: int = int(os.getenv("BROWSER_WAIT_AFTER_ACTION_MS", "1000"))
+BROWSER_URL_BLACKLIST: list[str] = [
+    item.strip()
+    for item in os.getenv("BROWSER_URL_BLACKLIST", "").split(",")
+    if item.strip()
+]
+BROWSER_URL_WHITELIST: list[str] = [
+    item.strip()
+    for item in os.getenv("BROWSER_URL_WHITELIST", "").split(",")
+    if item.strip()
+]
+BROWSER_BLOCK_INTERNAL_NETWORK: bool = os.getenv("BROWSER_BLOCK_INTERNAL_NETWORK", "true").lower() in ("true", "1", "yes")
+BROWSER_SENSITIVE_ACTION_WORDS: list[str] = [
+    item.strip()
+    for item in os.getenv(
+        "BROWSER_SENSITIVE_ACTION_WORDS",
+        "delete,remove,pay,purchase,buy,submit order,删除,移除,支付,购买,确认订单,提交订单",
+    ).split(",")
+    if item.strip()
+]
+# 浏览器视觉理解
+BROWSER_VISION_ENABLED: bool = os.getenv("BROWSER_VISION_ENABLED", "true").lower() in ("true", "1", "yes")
+BROWSER_VISION_SLOT: str = os.getenv("BROWSER_VISION_SLOT", "browser_vision")
+BROWSER_VISION_MAX_DESCRIPTION_CHARS: int = int(os.getenv("BROWSER_VISION_MAX_DESCRIPTION_CHARS", "500"))
+BROWSER_VISION_CACHE_TTL_SECONDS: int = int(os.getenv("BROWSER_VISION_CACHE_TTL_SECONDS", "30"))
+BROWSER_VISION_SCREENSHOT_WIDTH: int = int(os.getenv("BROWSER_VISION_SCREENSHOT_WIDTH", "1280"))
+BROWSER_VISION_SCREENSHOT_HEIGHT: int = int(os.getenv("BROWSER_VISION_SCREENSHOT_HEIGHT", "720"))
+BROWSER_VISION_IMG_THRESHOLD: int = int(os.getenv("BROWSER_VISION_IMG_THRESHOLD", "5"))
+BROWSER_VISION_ALT_RATIO_THRESHOLD: float = float(os.getenv("BROWSER_VISION_ALT_RATIO_THRESHOLD", "0.3"))
+# 凭据保险柜
+CREDENTIAL_VAULT_PATH: str = os.getenv("CREDENTIAL_VAULT_PATH", str(DATA_DIR / "credentials" / "vault.enc"))
+
 if TASK_MAX_TOOL_ROUNDS <= 0:
     raise ValueError("TASK_MAX_TOOL_ROUNDS 必须是正整数。")
 if TOOL_LOOP_SLO_SHELL_P95_MS <= 0:
@@ -316,6 +363,11 @@ SELF_REFLECTION_HOUR: int = int(os.getenv("SELF_REFLECTION_HOUR", "2"))  # 每�
 # 搜索配置
 SEARCH_MAX_RESULTS: int = int(os.getenv("SEARCH_MAX_RESULTS", "5"))
 CHAT_WEB_TOOLS_ENABLED: bool = os.getenv("CHAT_WEB_TOOLS_ENABLED", "true").lower() == "true"
+TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
+SEARCH_PROVIDER: str = os.getenv("SEARCH_PROVIDER", "auto").strip().lower()  # "auto" | "tavily" | "ddg"
+TAVILY_SEARCH_DEPTH: str = os.getenv("TAVILY_SEARCH_DEPTH", "basic").strip().lower()  # "basic" | "advanced"
+WEB_FETCH_MAX_CHARS: int = int(os.getenv("WEB_FETCH_MAX_CHARS", "8000"))
+SEARCH_CACHE_TTL_SECONDS: int = int(os.getenv("SEARCH_CACHE_TTL_SECONDS", "300"))
 
 # 本地 API Auth
 API_HOST: str = os.getenv("API_HOST", "127.0.0.1")

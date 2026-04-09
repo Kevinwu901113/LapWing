@@ -67,6 +67,13 @@ def create_app(
     app.include_router(_system_routes.router)
     app.include_router(_chat_ws_routes.router)
 
+    # 浏览器子系统路由（可选，仅在 BROWSER_ENABLED 时挂载）
+    _browser_manager = getattr(brain, "browser_manager", None)
+    if _browser_manager is not None:
+        from src.api.routes import browser as _browser_routes
+        _browser_routes.init(_browser_manager)
+        app.include_router(_browser_routes.router)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=API_ALLOWED_ORIGINS,

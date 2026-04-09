@@ -79,6 +79,20 @@ OPERATION_AUTH: dict[str, AuthLevel] = {
     "schedule_task": AuthLevel.OWNER,
     "list_scheduled_tasks": AuthLevel.OWNER,
     "cancel_scheduled_task": AuthLevel.OWNER,
+    # 浏览器操作（全部 OWNER only）
+    "browser_open": AuthLevel.OWNER,
+    "browser_click": AuthLevel.OWNER,
+    "browser_type": AuthLevel.OWNER,
+    "browser_select": AuthLevel.OWNER,
+    "browser_scroll": AuthLevel.OWNER,
+    "browser_screenshot": AuthLevel.OWNER,
+    "browser_get_text": AuthLevel.OWNER,
+    "browser_back": AuthLevel.OWNER,
+    "browser_tabs": AuthLevel.OWNER,
+    "browser_switch_tab": AuthLevel.OWNER,
+    "browser_close_tab": AuthLevel.OWNER,
+    "browser_wait": AuthLevel.OWNER,
+    "browser_login": AuthLevel.OWNER,
 }
 
 # 未注册工具的默认权限（保守策略）

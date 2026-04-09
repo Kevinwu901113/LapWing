@@ -214,7 +214,7 @@ def build_default_tool_registry() -> ToolRegistry:
                 "type": "object",
                 "properties": {
                     "url": {"type": "string", "description": "需要抓取的网页 URL（http/https）"},
-                    "max_chars": {"type": "integer", "description": "可选，正文最大字符数（默认 4000）"},
+                    "max_chars": {"type": "integer", "description": "可选，正文最大字符数（默认 8000）"},
                 },
                 "required": ["url"],
             },

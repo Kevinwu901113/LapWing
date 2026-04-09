@@ -143,6 +143,22 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("default", "chat", "tool", "heartbeat"),
     )
 
+    # ── credential 子命令 ─────────────────────────────────────────────────────
+    cred_parser = subparsers.add_parser("credential", help="管理加密凭据保险库")
+    cred_subparsers = cred_parser.add_subparsers(dest="cred_command", required=True)
+
+    cred_subparsers.add_parser("list", help="列出已存储的服务名称")
+
+    cred_set_parser = cred_subparsers.add_parser("set", help="设置服务凭据")
+    cred_set_parser.add_argument("service", help="服务名称，如 github")
+    cred_set_parser.add_argument("--username", required=True, help="用户名或邮箱")
+    cred_set_parser.add_argument("--login-url", required=True, help="登录页 URL")
+
+    cred_del_parser = cred_subparsers.add_parser("delete", help="删除服务凭据")
+    cred_del_parser.add_argument("service", help="服务名称")
+
+    cred_subparsers.add_parser("generate-key", help="生成新的 Fernet 加密密钥")
+
     return parser
 
 
@@ -197,6 +213,43 @@ def handle_auth_command(args: argparse.Namespace) -> int:
         return 0
 
     raise ValueError("未知 auth 子命令")
+
+
+def handle_credential_command(args: argparse.Namespace) -> int:
+    if args.cred_command == "generate-key":
+        from src.core.credential_vault import CredentialVault
+        print(CredentialVault.generate_key())
+        return 0
+
+    # list / set / delete 都需要实例化 vault
+    from src.core.credential_vault import CredentialVault
+    vault = CredentialVault()
+
+    if args.cred_command == "list":
+        services = vault.list_services()
+        _print_json(services)
+        return 0
+
+    if args.cred_command == "set":
+        import getpass
+        from src.core.credential_vault import Credential
+        password = getpass.getpass("Password: ")
+        cred = Credential(
+            service=args.service,
+            username=args.username,
+            password=password,
+            login_url=args.login_url,
+        )
+        vault.set(args.service, cred)
+        _print_json({"success": True, "service": args.service})
+        return 0
+
+    if args.cred_command == "delete":
+        deleted = vault.delete(args.service)
+        _print_json({"success": deleted, "service": args.service})
+        return 0
+
+    raise ValueError("未知 credential 子命令")
 
 
 def run_telegram_bot(logger: logging.Logger) -> int:
@@ -306,6 +359,8 @@ def main() -> None:
     try:
         if args.top_command == "auth":
             raise SystemExit(handle_auth_command(args))
+        if args.top_command == "credential":
+            raise SystemExit(handle_credential_command(args))
         raise SystemExit(run_telegram_bot(logger))
     except KeyboardInterrupt:
         logger.info("Lapwing 已取消")
