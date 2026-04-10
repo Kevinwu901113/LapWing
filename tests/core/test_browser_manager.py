@@ -714,6 +714,27 @@ class TestExecuteJs:
         assert "width" in result
         assert "height" in result
 
+    async def test_execute_js_guard_blocks_eval(self, browser_mgr, base_url):
+        """BrowserGuard 应拦截危险 JS 表达式。"""
+        from src.guards.browser_guard import BrowserGuard
+        from src.core.browser_manager import BrowserError
+
+        browser_mgr.set_browser_guard(BrowserGuard())
+        await browser_mgr.navigate(f"{base_url}/")
+
+        with pytest.raises(BrowserError, match="BrowserGuard"):
+            await browser_mgr.execute_js('eval("alert(1)")')
+
+    async def test_execute_js_guard_allows_safe(self, browser_mgr, base_url):
+        """BrowserGuard 应放行安全 JS 表达式。"""
+        from src.guards.browser_guard import BrowserGuard
+
+        browser_mgr.set_browser_guard(BrowserGuard())
+        await browser_mgr.navigate(f"{base_url}/")
+
+        result = await browser_mgr.execute_js("document.title")
+        assert result == "首页"
+
 
 # ── 页面文本提取测试 ─────────────────────────────────────────────────────────
 

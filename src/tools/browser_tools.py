@@ -71,11 +71,11 @@ def register_browser_tools(
     工具执行器作为闭包定义，通过闭包捕获 browser_manager 等依赖。
     """
 
-    def _publish(event: str, data: dict[str, Any]) -> None:
+    async def _publish(event: str, data: dict[str, Any]) -> None:
         """可选地向 EventBus 发送事件。"""
         if event_bus is not None:
             try:
-                event_bus.publish(event, data)
+                await event_bus.publish(event, data)
             except Exception:
                 pass
 
@@ -105,7 +105,7 @@ def register_browser_tools(
 
         try:
             page_state = await browser_manager.navigate(url)
-            _publish("browser.navigate", {"url": url})
+            await _publish("browser.navigate", {"url": url})
             return _page_state_result(page_state)
         except BrowserError as exc:
             return _browser_error_result(exc)
@@ -189,7 +189,7 @@ def register_browser_tools(
 
         try:
             page_state = await browser_manager.click(element, tab_id)
-            _publish("browser.click", {"element": element})
+            await _publish("browser.click", {"element": element})
             return _page_state_result(page_state)
         except BrowserError as exc:
             return _browser_error_result(exc)
@@ -241,7 +241,7 @@ def register_browser_tools(
             page_state = await browser_manager.type_text(
                 element, text, press_enter=press_enter, tab_id=tab_id
             )
-            _publish("browser.type", {"element": element})
+            await _publish("browser.type", {"element": element})
             return _page_state_result(page_state)
         except BrowserError as exc:
             return _browser_error_result(exc)
@@ -298,7 +298,7 @@ def register_browser_tools(
 
         try:
             page_state = await browser_manager.select_option(element, value, tab_id)
-            _publish("browser.select", {"element": element, "value": value})
+            await _publish("browser.select", {"element": element, "value": value})
             return _page_state_result(page_state)
         except BrowserError as exc:
             return _browser_error_result(exc)
@@ -342,7 +342,7 @@ def register_browser_tools(
 
         try:
             page_state = await browser_manager.scroll(direction, amount, tab_id)
-            _publish("browser.scroll", {"direction": direction, "amount": amount})
+            await _publish("browser.scroll", {"direction": direction, "amount": amount})
             return _page_state_result(page_state)
         except BrowserError as exc:
             return _browser_error_result(exc)
@@ -384,7 +384,7 @@ def register_browser_tools(
 
         try:
             screenshot_path = await browser_manager.screenshot(tab_id, full_page)
-            _publish("browser.screenshot", {"path": screenshot_path})
+            await _publish("browser.screenshot", {"path": screenshot_path})
             return ToolExecutionResult(
                 success=True,
                 payload={"path": screenshot_path, "message": "截图已保存"},
@@ -467,7 +467,7 @@ def register_browser_tools(
 
         try:
             page_state = await browser_manager.go_back(tab_id)
-            _publish("browser.back", {})
+            await _publish("browser.back", {})
             return _page_state_result(page_state)
         except BrowserError as exc:
             return _browser_error_result(exc)
@@ -539,7 +539,7 @@ def register_browser_tools(
 
         try:
             page_state = await browser_manager.switch_tab(tab_id)
-            _publish("browser.switch_tab", {"tab_id": tab_id})
+            await _publish("browser.switch_tab", {"tab_id": tab_id})
             return _page_state_result(page_state)
         except BrowserError as exc:
             return _browser_error_result(exc)
@@ -579,7 +579,7 @@ def register_browser_tools(
 
         try:
             await browser_manager.close_tab(tab_id)
-            _publish("browser.close_tab", {"tab_id": tab_id})
+            await _publish("browser.close_tab", {"tab_id": tab_id})
             return ToolExecutionResult(
                 success=True,
                 payload={"output": f"标签页 {tab_id} 已关闭"},
@@ -760,7 +760,7 @@ def register_browser_tools(
                         has_2fa_input = True
                         break
 
-            _publish("browser.login", {"service": service})
+            await _publish("browser.login", {"service": service})
 
             if has_2fa_input:
                 return ToolExecutionResult(

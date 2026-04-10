@@ -193,3 +193,43 @@ def _format_sleep_duration(prev: dict) -> str | None:
 def is_fresh_boot() -> bool:
     """是否在启动后 2 分钟内（用于重启感知行为）。"""
     return uptime_seconds() < 120
+
+
+# ── 桌面端环境感知 ──────────────────────────────────────────────────────
+
+_desktop_sensing: dict[str, dict] = {}  # owner_id -> sensing data
+
+
+def update_desktop_sensing(
+    owner_id: str,
+    summary: str,
+    state: str,
+    current_app: str | None = None,
+) -> None:
+    """存储桌面端推送的环境感知摘要（按 owner 隔离）。"""
+    _desktop_sensing[owner_id] = {
+        "summary": summary,
+        "state": state,
+        "current_app": current_app,
+        "updated_at": datetime.now(timezone.utc),
+    }
+
+
+def get_desktop_sensing(owner_id: str | None = None) -> dict | None:
+    """获取桌面端环境感知（10 分钟内有效）。
+
+    如果 owner_id 为 None，返回最近更新的任一条目（单 owner 兼容）。
+    """
+    if owner_id is not None:
+        entry = _desktop_sensing.get(owner_id)
+    elif _desktop_sensing:
+        entry = max(_desktop_sensing.values(), key=lambda e: e["updated_at"])
+    else:
+        entry = None
+
+    if entry is None:
+        return None
+    age = (datetime.now(timezone.utc) - entry["updated_at"]).total_seconds()
+    if age > 600:
+        return None
+    return entry

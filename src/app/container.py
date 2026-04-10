@@ -304,8 +304,10 @@ class AppContainer:
             event_bus=self.event_bus,
         )
         self.brain.browser_manager = self._browser_manager
+        self.brain.task_runtime.set_browser_guard(self._browser_guard)
         self._browser_manager.set_router(self.brain.router)
         self._browser_manager.set_event_bus(self.event_bus)
+        self._browser_manager.set_browser_guard(self._browser_guard)
         logger.info("浏览器子系统已就绪")
 
     def _build_heartbeat(self, send_fn) -> HeartbeatEngine:

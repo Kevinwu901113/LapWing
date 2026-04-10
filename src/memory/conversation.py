@@ -371,6 +371,47 @@ class ConversationMemory:
             self._store[channel_id] = []
         return self._store[channel_id]
 
+    async def get_messages(
+        self,
+        chat_id: str,
+        limit: int = 50,
+        before: str | None = None,
+    ) -> list[dict]:
+        """获取分页对话历史（从数据库读取，按时间倒序）。"""
+        limit = max(1, min(limit, 500))
+        try:
+            if before:
+                async with self._db.execute(
+                    "SELECT id, chat_id, role, content, timestamp, session_id "
+                    "FROM conversations WHERE chat_id = ? AND timestamp < ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (chat_id, before, limit),
+                ) as cursor:
+                    rows = await cursor.fetchall()
+            else:
+                async with self._db.execute(
+                    "SELECT id, chat_id, role, content, timestamp, session_id "
+                    "FROM conversations WHERE chat_id = ? "
+                    "ORDER BY id DESC LIMIT ?",
+                    (chat_id, limit),
+                ) as cursor:
+                    rows = await cursor.fetchall()
+
+            return [
+                {
+                    "id": str(row[0]),
+                    "chat_id": row[1],
+                    "role": row[2],
+                    "content": row[3],
+                    "timestamp": row[4],
+                    "session_id": row[5],
+                }
+                for row in reversed(rows)  # 返回时按时间正序
+            ]
+        except Exception as e:
+            logger.error(f"获取对话消息失败: {e}")
+            return []
+
     async def append(self, channel_id: str, role: str, content: str, *, channel: str = "telegram") -> None:
         """追加一条消息到对话历史（先写缓存，再持久化）。"""
         if channel_id not in self._store:

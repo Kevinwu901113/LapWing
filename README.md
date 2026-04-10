@@ -16,13 +16,16 @@
    - [HeartbeatEngine（心跳引擎）](#heartbeatengine心跳引擎)
    - [Memory（记忆系统）](#memory记忆系统)
    - [Tool System（工具系统）](#tool-system工具系统)
+   - [BrowserManager（浏览器子系统）](#browsermanager浏览器子系统)
+   - [Vitals（生命体征）](#vitals生命体征)
    - [Channel / Adapter（消息通道）](#channel--adapter消息通道)
    - [Skills（技能系统）](#skills技能系统)
    - [权限与存活保护](#权限与存活保护)
-4. [关键数据结构](#关键数据结构)
-5. [配置与环境变量](#配置与环境变量)
-6. [数据目录结构](#数据目录结构)
-7. [扩展指南](#扩展指南)
+4. [桌面端 (Desktop v2)](#桌面端-desktop-v2)
+5. [关键数据结构](#关键数据结构)
+6. [配置与环境变量](#配置与环境变量)
+7. [数据目录结构](#数据目录结构)
+8. [扩展指南](#扩展指南)
 
 ---
 
@@ -112,6 +115,7 @@ await container.shutdown()  # 逆序清理所有资源
 | `auto_memory_extractor` | `AutoMemoryExtractor` | 自动记忆提取 |
 | `task_flow_manager` | `TaskFlowManager` | 任务流编排 |
 | `quality_checker` | `ReplyQualityChecker` | 回复质量检查 |
+| `browser_manager` | `BrowserManager` | Playwright 浏览器子系统 |
 
 所有这些都是可选依赖（`brain.xxx` 默认为 `None`），由 feature flag 控制是否启用。
 
@@ -307,6 +311,48 @@ class ToolExecutionContext:
 
 **新增工具**：在 `src/tools/handlers.py` 实现执行函数，在 `src/tools/registry.py` 的 `build_default_tool_registry()` 注册 `ToolSpec`。
 
+**RuntimeProfile**（`src/core/runtime_profiles.py`）按执行上下文过滤可用工具集：
+
+| Profile | 用途 | 包含的 capability |
+|---|---|---|
+| `chat_shell` | 主对话 | shell, web, skill, memory, schedule, general, browser |
+| `coder_snippet` | 代码片段执行 | code, verify |
+| `coder_workspace` | 工作区级代码操作 | code, file, verify |
+| `file_ops` | 文件读写 | file |
+
+---
+
+### BrowserManager（浏览器子系统）
+
+`BrowserManager`（`src/core/browser_manager.py`）基于 Playwright 持久化上下文控制 Chromium：
+
+- **持久化上下文**：用户数据目录 `data/browser/profile/`，保留 Cookie / LocalStorage
+- **Tab 管理**：最多 `BROWSER_MAX_TABS`（默认 8）个标签页
+- **DOM 提取**：结构化元素状态输出，供 LLM 消费（`BROWSER_MAX_ELEMENT_COUNT` 控制数量上限）
+- **截图**：保存到 `data/browser/screenshots/`，按 `BROWSER_SCREENSHOT_RETAIN_DAYS` 自动清理
+- **视觉理解**：当页面图片占比高（超过 `BROWSER_VISION_IMG_THRESHOLD`），截图发送到独立 LLM slot（`BROWSER_VISION_SLOT`）生成视觉描述，带 TTL 缓存
+
+**安全层：`BrowserGuard`**（`src/guards/browser_guard.py`）
+
+- URL 黑白名单（`BROWSER_URL_BLACKLIST` / `BROWSER_URL_WHITELIST`）
+- 内网访问阻断（`BROWSER_BLOCK_INTERNAL_NETWORK`）
+- 敏感操作检测（删除、支付、购买等，`BROWSER_SENSITIVE_ACTION_WORDS`）
+
+启用：`BROWSER_ENABLED=true`。25+ 个 `BROWSER_*` 环境变量在 `config/settings.py` 中定义。
+
+**自主浏览**（`src/heartbeat/actions/autonomous_browsing.py`）：心跳驱动的后台浏览行为，发现的知识写入 `src/memory/discoveries.py`。由 `BROWSE_ENABLED` 控制。
+
+---
+
+### Vitals（生命体征）
+
+`src/core/vitals.py` — 轻量级生命周期追踪模块：
+
+- **启动/运行时间**：`boot_time()`、`uptime_seconds()`、`uptime_human()`
+- **重启感知**：持久化到 `data/vitals.json`（boot_time + last_active + pid）。重启后能知道"睡了多久"
+- **系统快照**：`system_snapshot()` 采集 CPU/内存/磁盘（依赖 psutil）
+- **桌面环境感知**：`update_desktop_sensing()` 接收桌面端推送的用户状态（当前应用、活动状态），10 分钟 TTL
+
 ---
 
 ### Channel / Adapter（消息通道）
@@ -376,6 +422,27 @@ Desktop 本地连接默认 OWNER（`DESKTOP_DEFAULT_OWNER=true`）。
 
 ---
 
+## 桌面端 (Desktop v2)
+
+`desktop-v2/` 是活跃开发的桌面端前端，替代旧版 `desktop/`（Tauri v1 + React 18）。
+
+**技术栈**：Tauri v2, React 19, TypeScript, Zustand（状态管理）, Tailwind CSS 4, shadcn/ui, CodeMirror（Markdown 编辑）, Recharts（仪表盘图表）, react-router-dom, Lucide 图标。
+
+**页面**：ChatPage, DashboardPage, MemoryPage, ModelRoutingPage, PersonaPage, SensingPage, SettingsPage, TaskCenterPage。
+
+**状态管理**：Zustand stores 在 `desktop-v2/src/stores/`（chat.ts, server.ts）。类型定义在 `desktop-v2/src/types/`。
+
+**组件**：按领域组织在 `desktop-v2/src/components/` 下（chat, dashboard, layout, memory, model-routing, persona, sensing, shared, tasks, ui）。
+
+```bash
+cd desktop-v2 && npm install
+cd desktop-v2 && npm run dev         # Vite dev server (localhost:1420)
+cd desktop-v2 && npm run tauri dev   # 完整 Tauri v2 应用
+cd desktop-v2 && npm run build       # 生产构建
+```
+
+---
+
 ## 关键数据结构
 
 ```
@@ -417,6 +484,12 @@ SESSION_ENABLED               — 会话分段
 EXPERIENCE_SKILLS_ENABLED     — 经验技能系统
 QUALITY_CHECK_ENABLED         — 回复质量检查
 QQ_ENABLED                    — QQ 通道
+BROWSER_ENABLED               — 浏览器子系统
+BROWSE_ENABLED                — 自主浏览（心跳动作）
+LOOP_DETECTION_ENABLED        — 工具循环检测
+SHELL_ENABLED                 — Shell 执行
+DELEGATION_ENABLED            — 任务委派
+MESSAGE_SPLIT_ENABLED         — 消息分段
 ```
 
 ---
@@ -439,8 +512,16 @@ data/
     rules.md            ← 从纠错中积累的行为规则
     interests.md        ← 兴趣图谱
     changelog.md        ← 人格变化日志（diff 格式）
+  browser/
+    profile/            ← Playwright 持久化上下文（Cookie / LocalStorage）
+    screenshots/        ← 页面截图（自动按天清理）
+  credentials/
+    vault.enc           ← 加密凭据存储
+  config/
+    model_routing.json  ← 运行时模型路由配置
   lapwing.pid           ← 进程锁文件
   lapwing.db            ← SQLite（conversations + user_facts + reminders）
+  vitals.json           ← 启动/关闭状态（重启感知）
   chroma/               ← ChromaDB 向量存储
 ```
 

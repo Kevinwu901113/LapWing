@@ -27,6 +27,29 @@ class LatencyTelemetryRequest(BaseModel):
     client_timestamp: str | None = None
 
 
+class ModelTestBody(BaseModel):
+    message: str
+    slot: str | None = None
+    provider_id: str | None = None
+    model: str | None = None
+
+
+class SkillToggleBody(BaseModel):
+    enabled: bool
+
+
+_SENSING_VALID_STATES = {"normal", "gaming", "locked"}
+
+
+class SensingContextBody(BaseModel):
+    summary: str
+    state: str = "normal"  # "normal" | "gaming" | "locked"
+    timestamp: str | None = None
+    current_app: str | None = None
+    current_title: str | None = None
+    detail: str | None = None
+
+
 def init(brain, event_bus, app) -> None:
     global _brain, _event_bus, _app
     _brain = brain
@@ -439,3 +462,116 @@ async def delete_knowledge_note(topic: str):
         raise HTTPException(status_code=404, detail="笔记不存在")
     note_path.unlink()
     return {"success": True}
+
+
+# ── 桌面端环境感知 ──────────────────────────────────────────────────
+
+@router.post("/api/sensing/context")
+async def receive_sensing_context(body: SensingContextBody):
+    """接收桌面端推送的环境感知摘要。"""
+    from config.settings import OWNER_IDS
+    from src.core import vitals
+
+    # 输入校验
+    if body.state not in _SENSING_VALID_STATES:
+        raise HTTPException(status_code=422, detail=f"state 必须是 {_SENSING_VALID_STATES} 之一")
+    if len(body.summary) > 2000:
+        raise HTTPException(status_code=422, detail="summary 超过长度限制")
+
+    owner_id = next(iter(OWNER_IDS)) if OWNER_IDS else "default"
+
+    vitals.update_desktop_sensing(
+        owner_id=owner_id,
+        summary=body.summary,
+        state=body.state,
+        current_app=body.current_app,
+    )
+
+    # 游戏结束时通过 ChannelManager 发送主动消息
+    if (
+        body.state == "normal"
+        and body.detail
+        and body.detail.startswith("game_end:")
+    ):
+        parts = body.detail.split(":", 2)
+        game = parts[1] if len(parts) > 1 else "unknown"
+        duration = parts[2] if len(parts) > 2 else "?"
+
+        channel_mgr = getattr(_app.state, "channel_manager", None) if _app else None
+        if owner_id != "default" and _brain is not None and channel_mgr is not None:
+            async def _send_game_end():
+                try:
+                    async def send_fn(text: str) -> None:
+                        await channel_mgr.send_to_owner(text)
+
+                    await _brain.think_conversational(
+                        chat_id=owner_id,
+                        user_message=f"[系统通知] Kevin 刚打完 {game}，玩了 {duration}。自然地回应他。",
+                        send_fn=send_fn,
+                        adapter="desktop",
+                        user_id="owner",
+                    )
+                except Exception as exc:
+                    logger.warning(f"游戏结束主动消息触发失败: {exc}")
+
+            asyncio.ensure_future(_send_game_end())
+
+    return {"ok": True}
+
+
+# ── 模型测试 (M-SERVER-3) ──────────────────────────────────────────────
+
+@router.post("/api/model-routing/test")
+async def test_model(body: ModelTestBody):
+    """发送测试消息到指定模型/slot。"""
+    import time as _time
+    start = _time.time()
+    try:
+        reply = await _brain.router.chat_turn(
+            messages=[{"role": "user", "content": body.message}],
+            purpose=body.slot or "lightweight_judgment",
+        )
+        elapsed = _time.time() - start
+        return {
+            "reply": reply,
+            "elapsed_ms": int(elapsed * 1000),
+            "model": body.model or body.slot or "default",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── 技能管理 (M-SERVER-4) ──────────────────────────────────────────────
+
+@router.get("/api/skills")
+async def get_skills():
+    """返回所有技能（插件 + 经验）。"""
+    plugin_skills = []
+    experience_skills = []
+
+    sm = getattr(_brain, "skill_manager", None)
+    if sm is not None and hasattr(sm, "list_skills"):
+        plugin_skills = sm.list_skills()
+
+    esm = getattr(_brain, "experience_skill_manager", None)
+    if esm is not None and hasattr(esm, "list_skills"):
+        experience_skills = esm.list_skills()
+
+    return {"plugin_skills": plugin_skills, "experience_skills": experience_skills}
+
+
+@router.post("/api/skills/{skill_id}/toggle")
+async def toggle_skill(skill_id: str, body: SkillToggleBody):
+    """启用/禁用技能。"""
+    sm = getattr(_brain, "skill_manager", None)
+    esm = getattr(_brain, "experience_skill_manager", None)
+
+    toggled = False
+    if sm is not None and hasattr(sm, "toggle_skill"):
+        toggled = sm.toggle_skill(skill_id, body.enabled)
+    if not toggled and esm is not None and hasattr(esm, "toggle_skill"):
+        toggled = esm.toggle_skill(skill_id, body.enabled)
+
+    if not toggled:
+        raise HTTPException(status_code=404, detail=f"技能 {skill_id} 不存在")
+    return {"ok": True}

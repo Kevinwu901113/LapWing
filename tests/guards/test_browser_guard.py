@@ -20,6 +20,9 @@ def _ensure_settings_identity():
         sys.modules["config.settings"] = _fresh
     current = sys.modules["config.settings"]
     _bg_module._settings = current
+    # 确保白名单默认为空（不启用白名单模式），防止测试间污染
+    if not hasattr(current, "BROWSER_URL_WHITELIST"):
+        current.BROWSER_URL_WHITELIST = []
 
 
 class TestCheckUrlBlocksInternalNetwork:
@@ -55,6 +58,7 @@ class TestCheckUrlAllowsPublic:
     def test_allow_public_url(self, monkeypatch):
         monkeypatch.setattr(config.settings, "BROWSER_BLOCK_INTERNAL_NETWORK", True)
         monkeypatch.setattr(config.settings, "BROWSER_URL_BLACKLIST", [])
+        monkeypatch.setattr(config.settings, "BROWSER_URL_WHITELIST", [])
 
         public_urls = [
             "https://github.com",
@@ -105,6 +109,46 @@ class TestCheckUrlBlocksBlacklist:
         # 子域名也应匹配
         result = self.guard.check_url("https://sub.evil.com/page")
         assert result.action == "block"
+
+
+class TestCheckUrlWhitelist:
+    """白名单模式（fail-closed）测试。"""
+
+    def setup_method(self):
+        _ensure_settings_identity()
+        self.guard = BrowserGuard()
+
+    def test_whitelist_blocks_unlisted_domain(self, monkeypatch):
+        """白名单非空时，不在列表中的域名应被拦截。"""
+        monkeypatch.setattr(config.settings, "BROWSER_BLOCK_INTERNAL_NETWORK", False)
+        monkeypatch.setattr(config.settings, "BROWSER_URL_BLACKLIST", [])
+        monkeypatch.setattr(config.settings, "BROWSER_URL_WHITELIST", ["github.com", "google.com"])
+
+        result = self.guard.check_url("https://evil.com/page")
+        assert result.action == "block"
+        assert "白名单" in (result.reason or "")
+
+    def test_whitelist_allows_listed_domain(self, monkeypatch):
+        """白名单中的域名应放行。"""
+        monkeypatch.setattr(config.settings, "BROWSER_BLOCK_INTERNAL_NETWORK", False)
+        monkeypatch.setattr(config.settings, "BROWSER_URL_BLACKLIST", [])
+        monkeypatch.setattr(config.settings, "BROWSER_URL_WHITELIST", ["github.com"])
+
+        result = self.guard.check_url("https://github.com/repo")
+        assert result.action == "pass"
+
+        # 子域名也应匹配
+        result = self.guard.check_url("https://api.github.com/v3")
+        assert result.action == "pass"
+
+    def test_empty_whitelist_allows_all(self, monkeypatch):
+        """白名单为空时不启用白名单模式，所有域名放行。"""
+        monkeypatch.setattr(config.settings, "BROWSER_BLOCK_INTERNAL_NETWORK", False)
+        monkeypatch.setattr(config.settings, "BROWSER_URL_BLACKLIST", [])
+        monkeypatch.setattr(config.settings, "BROWSER_URL_WHITELIST", [])
+
+        result = self.guard.check_url("https://anything.com")
+        assert result.action == "pass"
 
 
 class TestCheckActionSensitiveWords:

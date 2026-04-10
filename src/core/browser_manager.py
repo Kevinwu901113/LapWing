@@ -9,12 +9,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import os
 import re
 import time
 import uuid
-from dataclasses import asdict, dataclass, field
-from datetime import datetime, timedelta, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -431,6 +430,7 @@ class BrowserManager:
         # 可选依赖（通过 container 注入）
         self._router: Any = None  # LLMRouter（视觉理解用）
         self._event_bus: Any = None  # DesktopEventBus
+        self._browser_guard: Any = None  # BrowserGuard（JS 安全检查）
         # 视觉描述缓存：{tab_id: (timestamp, description)}
         self._vision_cache: dict[str, tuple[float, str]] = {}
 
@@ -439,6 +439,9 @@ class BrowserManager:
 
     def set_event_bus(self, event_bus: Any) -> None:
         self._event_bus = event_bus
+
+    def set_browser_guard(self, guard: Any) -> None:
+        self._browser_guard = guard
 
     # ── 属性 ──
 
@@ -783,7 +786,16 @@ class BrowserManager:
         expression: str,
         tab_id: str | None = None,
     ) -> str:
-        """执行 JavaScript 并返回序列化结果。"""
+        """执行 JavaScript 并返回序列化结果。
+
+        安全：在执行前强制通过 BrowserGuard.check_js() 检查。
+        """
+        # BrowserGuard JS 安全检查（底层强制，无法绕过）
+        if self._browser_guard is not None:
+            result = self._browser_guard.check_js(expression)
+            if result.action == "block":
+                raise BrowserError(f"[BrowserGuard] {result.reason}")
+
         async with self._lock:
             self._ensure_started()
             tab_id = tab_id or self._active_tab_id

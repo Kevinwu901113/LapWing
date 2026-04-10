@@ -53,6 +53,17 @@ def _read_learning_entries(directory: Path) -> list[dict]:
     return items
 
 
+@router.get("/api/chat/history")
+async def get_chat_history(
+    chat_id: str = Query(...),
+    limit: int = Query(50, ge=1, le=500),
+    before: str | None = Query(None),
+):
+    """获取统一对话历史（跨通道，支持游标分页）。"""
+    messages = await _brain.memory.get_messages(chat_id, limit=limit, before=before)
+    return {"messages": messages, "has_more": len(messages) == limit}
+
+
 @router.get("/api/chats")
 async def get_chats():
     chat_ids = await _brain.memory.get_all_chat_ids()
@@ -144,3 +155,50 @@ async def cancel_reminder(reminder_id: int, chat_id: str = Query(...)):
 async def get_learnings():
     items = await asyncio.to_thread(_read_learning_entries, _journal_dir)
     return {"items": items}
+
+
+# ── 记忆编辑 / 知识笔记编辑 (M-SERVER-5) ───────────────────────────────
+
+
+class MemoryEditRequest(BaseModel):
+    path: str
+    content: str
+
+
+class KnowledgeEditRequest(BaseModel):
+    content: str
+
+
+@router.post("/api/memory/edit")
+async def edit_memory(body: MemoryEditRequest):
+    """编辑记忆文件内容（相对于 data/memory/ 或 data/evolution/）。"""
+    from config.settings import MEMORY_DIR, EVOLUTION_DIR
+
+    # 拒绝绝对路径和显式遍历
+    if body.path.startswith("/") or ".." in body.path.split("/"):
+        raise HTTPException(status_code=400, detail="路径不合法")
+
+    memory_root = MEMORY_DIR.resolve()
+    evolution_root = EVOLUTION_DIR.resolve()
+
+    for root in [memory_root, evolution_root]:
+        candidate = (root / body.path).resolve()
+        # 严格校验：解析后必须仍在允许的根目录内
+        if not candidate.is_relative_to(root):
+            continue
+        if candidate.exists() and candidate.is_file():
+            candidate.write_text(body.content, encoding="utf-8")
+            return {"ok": True, "path": str(candidate)}
+
+    raise HTTPException(status_code=404, detail="文件不存在")
+
+
+@router.put("/api/knowledge/notes/{topic}")
+async def edit_knowledge_note(topic: str, body: KnowledgeEditRequest):
+    """编辑知识笔记内容。"""
+    from config.settings import DATA_DIR
+    knowledge_dir = DATA_DIR / "knowledge"
+    knowledge_dir.mkdir(parents=True, exist_ok=True)
+    path = knowledge_dir / f"{topic}.md"
+    path.write_text(body.content, encoding="utf-8")
+    return {"ok": True}

@@ -23,7 +23,7 @@ def init(brain, channel_manager) -> None:
 @router.websocket("/ws/chat")
 async def websocket_chat(ws: WebSocket):
     """WebSocket endpoint for desktop chat."""
-    from config.settings import DESKTOP_DEFAULT_OWNER, DESKTOP_WS_CHAT_ID_PREFIX
+    from config.settings import DESKTOP_DEFAULT_OWNER, DESKTOP_WS_CHAT_ID_PREFIX, OWNER_IDS
     from src.adapters.base import ChannelType
     token = ws.query_params.get("token", "")
     if not DESKTOP_DEFAULT_OWNER and not token:
@@ -62,7 +62,11 @@ async def websocket_chat(ws: WebSocket):
                 if not content:
                     continue
 
-                chat_id = f"{DESKTOP_WS_CHAT_ID_PREFIX}:{connection_id}"
+                # 桌面端使用 OWNER 的 ID 作为 chat_id，与 QQ 私聊共享对话流
+                if DESKTOP_DEFAULT_OWNER and OWNER_IDS:
+                    chat_id = next(iter(OWNER_IDS))
+                else:
+                    chat_id = f"{DESKTOP_WS_CHAT_ID_PREFIX}:{connection_id}"
 
                 if mgr is not None:
                     mgr.last_active_channel = ChannelType.DESKTOP

@@ -1,3 +1,4 @@
+# Python
 venv/
 __pycache__/
 *.pyc
@@ -7,12 +8,25 @@ __pycache__/
 *.egg-info/
 dist/
 build/
+
+# Desktop (v1 legacy)
 desktop/node_modules/
 desktop/src-tauri/target/
+
+# Desktop (v2)
+desktop-v2/node_modules/
+desktop-v2/src-tauri/target/
+
+# Config & runtime data
 config/.env
 data/
 logs/
 skill_traces/
+
+# Testing
 .pytest_cache/
 .coverage
+
+# Tools
 .worktrees/
+.claude/

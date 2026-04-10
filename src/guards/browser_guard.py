@@ -90,15 +90,12 @@ class BrowserGuard:
 
         拦截规则（按优先级）：
         1. BLOCK: javascript: / data: 协议
-        2. BLOCK: 内网地址（当 _settings.BROWSER_BLOCK_INTERNAL_NETWORK 开启时）
+        2. BLOCK: 内网地址（当 BROWSER_BLOCK_INTERNAL_NETWORK 开启时）
         3. BLOCK: 黑名单域名
-        4. PASS: 其他所有 URL
+        4. BLOCK: 白名单模式下不在白名单中的域名（fail-closed）
+        5. PASS: 其他所有 URL
 
-        Args:
-            url: 待检查的完整 URL
-
-        Returns:
-            GuardResult
+        白名单模式：当 BROWSER_URL_WHITELIST 非空时启用，只允许列出的域名。
         """
         url_lower = url.strip().lower()
 
@@ -120,7 +117,6 @@ class BrowserGuard:
             return GuardResult(action="block", reason="URL 解析失败，拒绝访问")
 
         if not hostname:
-            # 非 http/https 等标准协议，或空主机名
             return GuardResult(action="pass")
 
         # 2. 内网地址检查
@@ -138,7 +134,16 @@ class BrowserGuard:
                 reason=f"域名 {hostname} 在黑名单中",
             )
 
-        # 4. 通过
+        # 4. 白名单模式（fail-closed：非空白名单时只允许列出的域名）
+        whitelist = _settings.BROWSER_URL_WHITELIST
+        if whitelist and not self._is_whitelisted(hostname, whitelist):
+            logger.warning("白名单模式拦截: %s 不在允许列表中", hostname)
+            return GuardResult(
+                action="block",
+                reason=f"域名 {hostname} 不在白名单中（白名单模式已启用）",
+            )
+
+        # 5. 通过
         return GuardResult(action="pass")
 
     def _check_internal_network(self, hostname: str) -> str | None:
@@ -170,6 +175,15 @@ class BrowserGuard:
         for blocked in _settings.BROWSER_URL_BLACKLIST:
             blocked_lower = blocked.lower()
             if hostname == blocked_lower or hostname.endswith("." + blocked_lower):
+                return True
+        return False
+
+    @staticmethod
+    def _is_whitelisted(hostname: str, whitelist: list[str]) -> bool:
+        """检查域名是否在白名单中。支持子域名匹配。"""
+        for allowed in whitelist:
+            allowed_lower = allowed.lower()
+            if hostname == allowed_lower or hostname.endswith("." + allowed_lower):
                 return True
         return False
 

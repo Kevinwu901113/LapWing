@@ -120,6 +120,12 @@ async def build_system_prompt(
         f"{period}就是{period}，不要说错。"
     )
 
+    # Layer 0.55: 桌面端环境感知（按 owner_id 隔离）
+    from src.core.vitals import get_desktop_sensing
+    desktop_sensing = get_desktop_sensing(owner_id=chat_id)
+    if desktop_sensing:
+        sections.append(f"## Kevin 的电脑状态\n\n{desktop_sensing['summary']}")
+
     # Layer 0.6: 重启感知（如果刚醒来）
     from src.core.vitals import is_fresh_boot, get_sleep_summary
     if is_fresh_boot():

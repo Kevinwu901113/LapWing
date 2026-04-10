@@ -911,25 +911,19 @@ class TaskRuntime:
                 if file_guard.verdict == Verdict.VERIFY_FIRST:
                     await auto_backup([target])
 
-        # ── BrowserGuard：浏览器操作安全检查 ────────────────────────────────
-        elif tool.capability == "browser" and request.name.startswith("browser_"):
+        # ── BrowserGuard：浏览器 URL 安全检查（工具层做操作级检查） ──────────
+        elif tool.capability == "browser" and request.name == "browser_open":
             bg = getattr(self, "_browser_guard", None)
             if bg is not None:
-                bg_result = None
-                if request.name == "browser_open":
-                    url = str(request.arguments.get("url", "")).strip()
-                    if url:
-                        bg_result = bg.check_url(url)
-                elif request.name == "browser_js":
-                    expr = str(request.arguments.get("expression", "")).strip()
-                    if expr:
-                        bg_result = bg.check_js(expr)
-                if bg_result is not None and bg_result.action == "block":
-                    reason = f"[BrowserGuard] {bg_result.reason}"
-                    if state is not None:
-                        state.record_failure(reason, "blocked")
-                    payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command="")
-                    return ToolExecutionResult(success=False, payload=payload, reason=reason)
+                url = str(request.arguments.get("url", "")).strip()
+                if url:
+                    bg_result = bg.check_url(url)
+                    if bg_result.action == "block":
+                        reason = f"[BrowserGuard] {bg_result.reason}"
+                        if state is not None:
+                            state.record_failure(reason, "blocked")
+                        payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command="")
+                        return ToolExecutionResult(success=False, payload=payload, reason=reason)
 
         context = ToolExecutionContext(
             execute_shell=shell_executor,
