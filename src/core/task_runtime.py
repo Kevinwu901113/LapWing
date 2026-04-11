@@ -1094,17 +1094,12 @@ class TaskRuntime:
         if len(rendered) <= _TOOL_RESULT_MAX_CHARS:
             return rendered
 
-        # 统一兜底：超长时保留前缀并附带提示，避免向上游发送过大 payload。
-        preview_budget = max(0, _TOOL_RESULT_MAX_CHARS - 260)
+        # 统一兜底：超长时保留前缀，自然收尾。
+        # 注意：不能包含任何工程化标记（如 _truncated、原长度），
+        # 因为 LLM 可能会把这些内容原样转述给用户。
+        preview_budget = max(0, _TOOL_RESULT_MAX_CHARS - 60)
         preview = rendered[:preview_budget]
-        fallback = {
-            "_truncated": True,
-            "_tool": tool_name,
-            "_original_chars": len(rendered),
-            "_preview": preview,
-            "_note": "工具输出过长，已截断。若需要完整内容，请让模型缩小范围或再次调用工具获取局部结果。",
-        }
-        return json.dumps(fallback, ensure_ascii=False)
+        return preview + "\n\n（结果太长，只显示了一部分。如果需要更多内容可以再查一次。）"
 
     def _compact_web_search_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         """压缩 web_search 输出，优先保留标题/URL/摘要。"""

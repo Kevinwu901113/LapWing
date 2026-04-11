@@ -207,10 +207,11 @@ def test_format_tool_result_for_llm_truncates_oversized_payload():
         tool_name="custom_tool",
         payload={"blob": "x" * 20000},
     )
-    parsed = json.loads(text)
-    assert parsed["_truncated"] is True
-    assert parsed["_tool"] == "custom_tool"
-    assert parsed["_original_chars"] > 12000
+    # 截断后应该是自然语言收尾，不包含工程化标记
+    assert len(text) <= 12100  # _TOOL_RESULT_MAX_CHARS + 余量
+    assert "只显示了一部分" in text
+    assert "_truncated" not in text
+    assert "_original_chars" not in text
 
 
 @pytest.mark.asyncio

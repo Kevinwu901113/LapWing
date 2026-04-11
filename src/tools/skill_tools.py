@@ -135,7 +135,7 @@ async def skill_view_tool(
 
     content = f"# {name} / {resource_path}\n\n{file_content}"
     if truncated:
-        content += f"\n\n（已截断，仅显示前 {_MAX_CHARS} 字符）"
+        content += "\n\n（内容太长，只显示了一部分。）"
 
     payload = {
         "success": True,
