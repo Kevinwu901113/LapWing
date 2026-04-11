@@ -10,36 +10,6 @@ except ModuleNotFoundError:
         return False
 
 
-def _parse_model_allowlist(raw: str) -> tuple[tuple[str | None, str], ...]:
-    entries: list[tuple[str | None, str]] = []
-    seen_refs: set[str] = set()
-    seen_aliases: set[str] = set()
-    for item in str(raw or "").split(","):
-        chunk = item.strip()
-        if not chunk:
-            continue
-
-        alias: str | None = None
-        ref = chunk
-        if "=" in chunk:
-            alias_text, ref_text = chunk.split("=", 1)
-            alias_text = alias_text.strip()
-            ref = ref_text.strip()
-            if not alias_text:
-                continue
-            alias_key = alias_text.lower()
-            alias = alias_text if alias_key not in seen_aliases else None
-            if alias is not None:
-                seen_aliases.add(alias_key)
-        else:
-            ref = chunk.strip()
-
-        if not ref or ref in seen_refs:
-            continue
-        seen_refs.add(ref)
-        entries.append((alias, ref))
-    return tuple(entries)
-
 # 项目根目录
 ROOT_DIR = Path(__file__).parent.parent
 CONFIG_DIR = ROOT_DIR / "config"
@@ -133,26 +103,30 @@ LLM_HEARTBEAT_PROVIDER: str = (
     os.getenv("LLM_HEARTBEAT_PROVIDER", "").strip().lower()
     or NIM_PROVIDER
 )
-LLM_MODEL_ALLOWLIST_RAW: str = os.getenv("LLM_MODEL_ALLOWLIST", "")
-_default_model_allowlist_raw = ",".join(
-    [
-        LLM_CHAT_MODEL or LLM_MODEL,
-        LLM_TOOL_MODEL or LLM_MODEL,
-        NIM_MODEL or LLM_MODEL,
-    ]
-)
-LLM_MODEL_ALLOWLIST: tuple[tuple[str | None, str], ...] = (
-    _parse_model_allowlist(LLM_MODEL_ALLOWLIST_RAW)
-    or _parse_model_allowlist(_default_model_allowlist_raw)
-)
-
 # OAuth 刷新提前量
 AUTH_REFRESH_SKEW_SECONDS: int = int(os.getenv("AUTH_REFRESH_SKEW_SECONDS", "300"))
+
+# OpenAI Codex OAuth PKCE
+OPENAI_CODEX_AUTH_AUTHORIZE_URL: str = os.getenv("OPENAI_CODEX_AUTH_AUTHORIZE_URL", "https://auth.openai.com/oauth/authorize")
+OPENAI_CODEX_AUTH_TOKEN_URL: str = os.getenv("OPENAI_CODEX_AUTH_TOKEN_URL", "https://auth.openai.com/oauth/token")
+OPENAI_CODEX_AUTH_CLIENT_ID: str = os.getenv("OPENAI_CODEX_AUTH_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann")
+OPENAI_CODEX_AUTH_REDIRECT_HOST: str = os.getenv("OPENAI_CODEX_AUTH_REDIRECT_HOST", "localhost")
+OPENAI_CODEX_AUTH_REDIRECT_PORT: int = int(os.getenv("OPENAI_CODEX_AUTH_REDIRECT_PORT", "1455"))
+OPENAI_CODEX_AUTH_REDIRECT_PATH: str = os.getenv("OPENAI_CODEX_AUTH_REDIRECT_PATH", "/auth/callback")
+OPENAI_CODEX_AUTH_PROXY_URL: str = os.getenv("OPENAI_CODEX_AUTH_PROXY_URL", "")
 
 # 心跳配置
 HEARTBEAT_ENABLED: bool = os.getenv("HEARTBEAT_ENABLED", "true").lower() == "true"
 HEARTBEAT_FAST_INTERVAL_MINUTES: int = int(os.getenv("HEARTBEAT_FAST_INTERVAL_MINUTES", "60"))
 HEARTBEAT_SLOW_HOUR: int = int(os.getenv("HEARTBEAT_SLOW_HOUR", "3"))
+
+# 意识循环配置
+CONSCIOUSNESS_ENABLED: bool = os.getenv("CONSCIOUSNESS_ENABLED", "true").lower() == "true"
+CONSCIOUSNESS_DEFAULT_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_DEFAULT_INTERVAL", "600"))
+CONSCIOUSNESS_MIN_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_MIN_INTERVAL", "120"))
+CONSCIOUSNESS_MAX_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_MAX_INTERVAL", "1800"))
+CONSCIOUSNESS_AFTER_CHAT_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_AFTER_CHAT_INTERVAL", "120"))
+CONSCIOUSNESS_CONVERSATION_END_DELAY: int = int(os.getenv("CONSCIOUSNESS_CONVERSATION_END_DELAY", "300"))
 
 # 自主浏览配置
 BROWSE_ENABLED: bool = os.getenv("BROWSE_ENABLED", "true").lower() == "true"
@@ -184,9 +158,11 @@ DELEGATION_MAX_ITERATIONS: int = int(os.getenv("DELEGATION_MAX_ITERATIONS", "20"
 SELF_SCHEDULE_ENABLED: bool = os.getenv("SELF_SCHEDULE_ENABLED", "true").lower() in ("true", "1", "yes")
 QUALITY_CHECK_ENABLED: bool = os.getenv("LAPWING_FLAG_QUALITY_CHECK", "true").lower() in ("true", "1", "yes")
 MESSAGE_SPLIT_ENABLED: bool = os.getenv("MESSAGE_SPLIT_ENABLED", "true").lower() in ("true", "1", "yes")
+MESSAGE_SPLIT_FALLBACK_NEWLINE: bool = os.getenv("MESSAGE_SPLIT_FALLBACK_NEWLINE", "true").lower() in ("true", "1", "yes")
 MESSAGE_SPLIT_DELAY_BASE: float = float(os.getenv("MESSAGE_SPLIT_DELAY_BASE", "0.8"))
 MESSAGE_SPLIT_DELAY_PER_CHAR: float = float(os.getenv("MESSAGE_SPLIT_DELAY_PER_CHAR", "0.008"))
 MESSAGE_SPLIT_DELAY_MAX: float = float(os.getenv("MESSAGE_SPLIT_DELAY_MAX", "2.5"))
+MESSAGE_SPLIT_SINGLE_NL_MIN_LEN: int = int(os.getenv("MESSAGE_SPLIT_SINGLE_NL_MIN_LEN", "80"))
 
 # ── Session 管理 ──
 SESSION_ENABLED: bool = os.getenv("SESSION_ENABLED", "true").lower() in ("true", "1")
