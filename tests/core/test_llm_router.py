@@ -665,6 +665,42 @@ class _FakeAuthManagerByPurpose(_FakeAuthManager):
         ]
 
 
+def _make_mock_model_config(providers_data):
+    """构建 mock model_config，providers_data: [(id, name, api_type, base_url, api_key, [(model_id, model_name)])]"""
+    from dataclasses import dataclass, field
+
+    @dataclass
+    class _ModelInfo:
+        id: str
+        name: str
+
+    @dataclass
+    class _ProviderInfo:
+        id: str
+        name: str
+        api_type: str
+        base_url: str
+        api_key: str
+        models: list = field(default_factory=list)
+
+    @dataclass
+    class _Config:
+        providers: list = field(default_factory=list)
+        slots: dict = field(default_factory=dict)
+
+    providers = []
+    for pid, pname, api_type, base_url, api_key, models in providers_data:
+        p = _ProviderInfo(id=pid, name=pname, api_type=api_type, base_url=base_url, api_key=api_key)
+        p.models = [_ModelInfo(id=mid, name=mname) for mid, mname in models]
+        providers.append(p)
+
+    config = _Config(providers=providers)
+    mock_cfg = MagicMock()
+    mock_cfg.get_full_config.return_value = config
+    mock_cfg.resolve_slot.return_value = None
+    return mock_cfg
+
+
 @pytest.mark.asyncio
 class TestLLMRouterModelSwitch:
     async def test_model_list_and_selector_support_index_alias_ref(self):
@@ -672,19 +708,26 @@ class TestLLMRouterModelSwitch:
             "LLM_API_KEY": "generic-key",
             "LLM_BASE_URL": "https://generic.api.com/v1",
             "LLM_MODEL": "MiniMax-M2.7",
-            "LLM_MODEL_ALLOWLIST": "codex=openai-codex/gpt-5.4,minimax=MiniMax-M2.7",
         }, clear=True):
             from src.core.llm_router import LLMRouter
 
-            router = LLMRouter()
+            mock_cfg = _make_mock_model_config([
+                ("codex", "Codex", "codex_oauth", "", "", [
+                    ("openai-codex/gpt-5.4", "Codex GPT-5.4"),
+                ]),
+                ("minimax", "MiniMax", "anthropic", "https://api.minimaxi.com/anthropic", "sk-test", [
+                    ("MiniMax-M2.7", "MiniMax-M2.7"),
+                ]),
+            ])
+            router = LLMRouter(model_config=mock_cfg)
             options = router.list_model_options()
             assert options == [
-                {"index": 1, "alias": "codex", "ref": "openai-codex/gpt-5.4"},
-                {"index": 2, "alias": "minimax", "ref": "MiniMax-M2.7"},
+                {"index": 1, "alias": "Codex GPT-5.4", "ref": "openai-codex/gpt-5.4"},
+                {"index": 2, "alias": None, "ref": "MiniMax-M2.7"},
             ]
 
             assert router._resolve_model_option("1").ref == "openai-codex/gpt-5.4"
-            assert router._resolve_model_option("codex").ref == "openai-codex/gpt-5.4"
+            assert router._resolve_model_option("codex gpt-5.4").ref == "openai-codex/gpt-5.4"
             assert router._resolve_model_option("MiniMax-M2.7").ref == "MiniMax-M2.7"
 
     async def test_session_override_only_applies_to_matching_session_key(self):
@@ -693,7 +736,6 @@ class TestLLMRouterModelSwitch:
             "LLM_BASE_URL": "https://generic.api.com/v1",
             "LLM_MODEL": "MiniMax-M2.7",
             "LLM_CHAT_MODEL": "MiniMax-M2.7",
-            "LLM_MODEL_ALLOWLIST": "MiniMax-M2.7,openai/gpt-4.1",
         }, clear=True):
             from src.auth.models import ResolvedAuthCandidate
             from src.core.llm_router import LLMRouter
@@ -710,8 +752,16 @@ class TestLLMRouterModelSwitch:
                 profile_id=None,
                 profile_type=None,
             )
+            mock_cfg = _make_mock_model_config([
+                ("minimax", "MiniMax", "anthropic", "https://api.minimaxi.com/anthropic", "sk-test", [
+                    ("MiniMax-M2.7", "MiniMax-M2.7"),
+                ]),
+                ("openai", "OpenAI", "openai", "https://api.openai.com/v1", "sk-test", [
+                    ("openai/gpt-4.1", "GPT-4.1"),
+                ]),
+            ])
             fake_auth = _FakeAuthManager([candidate])
-            router = LLMRouter(auth_manager=fake_auth)
+            router = LLMRouter(auth_manager=fake_auth, model_config=mock_cfg)
 
             mock_response = MagicMock()
             mock_response.choices[0].message.content = "ok"
@@ -748,7 +798,6 @@ class TestLLMRouterModelSwitch:
             "LLM_API_KEY": "generic-key",
             "LLM_BASE_URL": "https://generic.api.com/v1",
             "LLM_MODEL": "MiniMax-M2.7",
-            "LLM_MODEL_ALLOWLIST": "MiniMax-M2.7,openai/gpt-4.1",
         }, clear=True):
             from src.auth.models import ResolvedAuthCandidate
             from src.core.llm_router import LLMRouter
@@ -765,8 +814,16 @@ class TestLLMRouterModelSwitch:
                 profile_id=None,
                 profile_type=None,
             )
+            mock_cfg = _make_mock_model_config([
+                ("minimax", "MiniMax", "anthropic", "https://api.minimaxi.com/anthropic", "sk-test", [
+                    ("MiniMax-M2.7", "MiniMax-M2.7"),
+                ]),
+                ("openai", "OpenAI", "openai", "https://api.openai.com/v1", "sk-test", [
+                    ("openai/gpt-4.1", "GPT-4.1"),
+                ]),
+            ])
             fake_auth = _FakeAuthManager([candidate])
-            router = LLMRouter(auth_manager=fake_auth)
+            router = LLMRouter(auth_manager=fake_auth, model_config=mock_cfg)
 
             router.switch_session_model(session_key="chat:99", selector="2")
             assert router.model_for("chat", session_key="chat:99") == "openai/gpt-4.1"
@@ -774,4 +831,146 @@ class TestLLMRouterModelSwitch:
             reset_result = router.clear_session_model(session_key="chat:99")
             assert reset_result["cleared"] == 3
             assert router.model_for("chat", session_key="chat:99") == "MiniMax-M2.7"
+
+
+class TestCodexResponsesAPI:
+    """Codex Responses API 协议适配测试。"""
+
+    def test_convert_messages_adds_type_message(self):
+        """user/assistant 消息转换后应包含 type: 'message'。"""
+        from src.core.llm_protocols import _convert_messages_to_responses_api
+
+        messages = [
+            {"role": "system", "content": "You are helpful."},
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi there"},
+        ]
+        instructions, items = _convert_messages_to_responses_api(messages)
+        assert instructions == "You are helpful."
+        assert len(items) == 2
+        assert items[0] == {"type": "message", "role": "user", "content": "Hello"}
+        assert items[1] == {"type": "message", "role": "assistant", "content": "Hi there"}
+
+    def test_convert_messages_preserves_phase(self):
+        """assistant 消息的 phase 字段应被保留。"""
+        from src.core.llm_protocols import _convert_messages_to_responses_api
+
+        messages = [
+            {"role": "user", "content": "Fix the bug"},
+            {"role": "assistant", "content": "Looking at it...", "phase": "commentary"},
+        ]
+        _, items = _convert_messages_to_responses_api(messages)
+        assert items[1]["phase"] == "commentary"
+
+    def test_convert_messages_no_phase_when_absent(self):
+        """没有 phase 字段时不应出现在转换结果中。"""
+        from src.core.llm_protocols import _convert_messages_to_responses_api
+
+        messages = [
+            {"role": "assistant", "content": "Done."},
+        ]
+        _, items = _convert_messages_to_responses_api(messages)
+        assert "phase" not in items[0]
+
+    def test_convert_messages_tool_to_function_call_output(self):
+        """tool 角色消息应转为 function_call_output 格式。"""
+        from src.core.llm_protocols import _convert_messages_to_responses_api
+
+        messages = [
+            {"role": "tool", "tool_call_id": "call_abc", "content": "result data"},
+        ]
+        _, items = _convert_messages_to_responses_api(messages)
+        assert items[0] == {
+            "type": "function_call_output",
+            "call_id": "call_abc",
+            "output": "result data",
+        }
+
+    def test_codex_function_calls_wrapper_expansion(self):
+        """_codex_function_calls wrapper 应正确展开，包含 assistant message 和 function_call。"""
+        from src.core.llm_protocols import _convert_messages_to_responses_api
+
+        messages = [
+            {"role": "user", "content": "Do something"},
+            {
+                "_codex_function_calls": [
+                    {"type": "message", "role": "assistant", "content": "I'll search.", "phase": "commentary"},
+                    {"type": "function_call", "name": "web_search", "arguments": '{"q":"test"}', "call_id": "fc_1"},
+                ],
+            },
+            {"type": "function_call_output", "call_id": "fc_1", "output": "results"},
+        ]
+        instructions, items = _convert_messages_to_responses_api(messages)
+        assert instructions is None
+        assert len(items) == 4
+        # user message
+        assert items[0]["role"] == "user"
+        assert items[0]["type"] == "message"
+        # assistant message from wrapper (re-normalized with phase)
+        assert items[1]["role"] == "assistant"
+        assert items[1]["type"] == "message"
+        assert items[1]["phase"] == "commentary"
+        # function_call passthrough
+        assert items[2]["type"] == "function_call"
+        assert items[2]["name"] == "web_search"
+        # function_call_output passthrough
+        assert items[3]["type"] == "function_call_output"
+
+    def test_normalize_responses_api_tools_flattens(self):
+        """Chat Completions 格式的 tools 应被扁平化为 Responses API 格式。"""
+        from src.core.llm_protocols import _normalize_responses_api_tools
+
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search the web",
+                    "parameters": {"type": "object", "properties": {"q": {"type": "string"}}},
+                },
+            }
+        ]
+        result = _normalize_responses_api_tools(tools)
+        assert len(result) == 1
+        assert result[0]["type"] == "function"
+        assert result[0]["name"] == "web_search"
+        assert result[0]["description"] == "Search the web"
+        assert "function" not in result[0]
+
+    def test_extract_responses_api_tool_calls_basic(self):
+        """应从 output items 中正确提取 function_call。"""
+        from src.core.llm_protocols import _extract_responses_api_tool_calls
+
+        output_items = [
+            {"type": "message", "role": "assistant", "content": "Let me search."},
+            {"type": "function_call", "call_id": "fc_1", "name": "web_search",
+             "arguments": '{"q": "test"}'},
+        ]
+        tool_calls, raw = _extract_responses_api_tool_calls(output_items)
+        assert len(tool_calls) == 1
+        assert tool_calls[0].name == "web_search"
+        assert tool_calls[0].id == "fc_1"
+        assert tool_calls[0].arguments == {"q": "test"}
+
+    def test_extract_responses_api_tool_calls_preserves_phase(self):
+        """function_call 上的 phase 应保留到 raw_tool_calls 中。"""
+        from src.core.llm_protocols import _extract_responses_api_tool_calls
+
+        output_items = [
+            {"type": "function_call", "call_id": "fc_1", "name": "search",
+             "arguments": '{}', "phase": "commentary"},
+        ]
+        _, raw = _extract_responses_api_tool_calls(output_items)
+        assert raw[0]["phase"] == "commentary"
+
+    def test_extract_responses_api_tool_calls_no_phase(self):
+        """无 phase 时 raw_tool_calls 中不应有 phase 字段。"""
+        from src.core.llm_protocols import _extract_responses_api_tool_calls
+
+        output_items = [
+            {"type": "function_call", "call_id": "fc_1", "name": "search",
+             "arguments": '{}'},
+        ]
+        _, raw = _extract_responses_api_tool_calls(output_items)
+        assert "phase" not in raw[0]
 

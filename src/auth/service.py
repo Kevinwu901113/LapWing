@@ -38,6 +38,7 @@ from config.settings import (
     NIM_MODEL,
 )
 from src.auth.models import FailureKind, PurposeConfig, ResolvedAuthCandidate
+from src.auth.openai_codex import OpenAICodexAuthProvider, _decode_jwt_payload
 from src.auth.resolver import resolve_secret_ref
 from src.auth.storage import AuthStore
 
@@ -434,7 +435,7 @@ class AuthManager:
     def __init__(self, store: AuthStore | None = None) -> None:
         self.store = store or AuthStore()
         self.store.ensure_exists()
-        self.providers: dict[str, Any] = {}
+        self.providers: dict[str, Any] = {"openai": OpenAICodexAuthProvider()}
         self.api_sessions = ApiSessionManager()
         # Eagerly materialize the bootstrap token so remote/browser access has a stable file to read.
         self.api_sessions.bootstrap_token()
@@ -551,6 +552,92 @@ class AuthManager:
 
     def get_oauth_login_session(self, login_id: str) -> dict[str, Any]:
         return self.oauth_logins.get_session(login_id)
+
+    def login_oauth(
+        self,
+        provider: str = "openai",
+        method: str = "pkce",
+        profile_id: str | None = None,
+        no_browser: bool = False,
+    ) -> tuple[str, dict[str, Any]]:
+        """CLI 同步 OAuth 登录：启动回调服务器 → 打开浏览器 → 等待完成。"""
+        if provider != "openai":
+            raise ValueError(f"暂不支持的 OAuth provider: {provider}")
+        if method != "pkce":
+            raise ValueError(f"暂不支持的 OAuth method: {method}")
+
+        session = self.oauth_logins.start_openai_login(profile_id=profile_id)
+        authorize_url = session.get("authorizeUrl", "")
+
+        print(f"\n请在浏览器中完成登录:\n  {authorize_url}\n")
+        if not no_browser:
+            webbrowser.open(authorize_url)
+
+        print("等待浏览器回调...")
+        completed = self.oauth_logins.wait_for_completion(session["loginId"], timeout=300)
+
+        if completed.get("status") == "completed":
+            return self._profile_from_oauth_result(completed)
+
+        error = completed.get("error") or "OAuth 登录失败或超时"
+        raise RuntimeError(error)
+
+    def import_codex_auth_json(
+        self,
+        path: str = "~/.codex/auth.json",
+        profile_id: str | None = None,
+    ) -> tuple[str, dict[str, Any]]:
+        """从 Codex CLI 的 auth.json 导入 OAuth token。"""
+        import json as _json
+
+        file_path = Path(path).expanduser().resolve()
+        data = _json.loads(file_path.read_text(encoding="utf-8"))
+
+        tokens = data.get("tokens")
+        if not isinstance(tokens, dict):
+            raise ValueError(f"auth.json 格式无法识别: 缺少 tokens 字段")
+
+        access_token = tokens.get("access_token", "")
+        if not access_token:
+            raise ValueError("auth.json 中未找到 access_token")
+
+        refresh_token = tokens.get("refresh_token", "")
+        account_id = tokens.get("account_id", "")
+
+        # 从 JWT 中提取用户信息和过期时间
+        claims = _decode_jwt_payload(access_token)
+        auth_claim = claims.get("https://api.openai.com/auth", {})
+        profile_claim = claims.get("https://api.openai.com/profile", {})
+
+        email = str(profile_claim.get("email") or claims.get("email") or "")
+        chatgpt_account_id = str(auth_claim.get("chatgpt_account_id") or account_id or "")
+        plan_type = str(auth_claim.get("chatgpt_plan_type") or "")
+
+        exp = claims.get("exp")
+        if exp:
+            expires_at = datetime.fromtimestamp(int(exp), tz=timezone.utc).isoformat()
+        else:
+            expires_at = ""
+
+        if not profile_id:
+            identity = email or chatgpt_account_id
+            if not identity:
+                raise ValueError("auth.json 中无法提取 email 或 accountId，请手动指定 --profile-id")
+            resolved_id = f"openai:{identity}"
+        else:
+            resolved_id = profile_id
+        profile = {
+            "provider": "openai",
+            "type": "oauth",
+            "accessToken": access_token,
+            "refreshToken": refresh_token,
+            "expiresAt": expires_at,
+            "email": email,
+            "accountId": chatgpt_account_id,
+            "planType": plan_type,
+        }
+        self.store.upsert_profile(resolved_id, profile)
+        return resolved_id, profile
 
     def auth_status(self) -> dict[str, Any]:
         return {

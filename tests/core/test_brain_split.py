@@ -184,3 +184,58 @@ class TestBrainSplit:
         # Should not have sent the messages twice
         assert send_calls.count("hello") == 1
         assert send_calls.count("world") == 1
+
+    async def test_fallback_newline_splits_paragraphs(self):
+        """When model uses \\n\\n instead of [SPLIT], fallback splits by paragraph."""
+        brain = _make_brain()
+        ctx, fake_complete = _make_ctx("第一段\n\n第二段\n\n第三段")
+        send_calls: list[str] = []
+
+        async def send_fn(text: str) -> None:
+            send_calls.append(text)
+
+        with patch("src.core.brain.MESSAGE_SPLIT_ENABLED", True), \
+             patch("src.core.brain.MESSAGE_SPLIT_FALLBACK_NEWLINE", True), \
+             patch.object(brain, "_prepare_think", AsyncMock(return_value=ctx)), \
+             patch.object(brain, "_complete_chat", fake_complete), \
+             patch("src.core.brain.asyncio.sleep", new_callable=AsyncMock):
+            await brain.think_conversational("chat1", "hi", send_fn=send_fn)
+
+        assert send_calls == ["第一段", "第二段", "第三段"]
+
+    async def test_fallback_newline_disabled_sends_raw(self):
+        """When fallback is disabled, \\n\\n text is sent as one message."""
+        brain = _make_brain()
+        ctx, fake_complete = _make_ctx("第一段\n\n第二段")
+        send_calls: list[str] = []
+
+        async def send_fn(text: str) -> None:
+            send_calls.append(text)
+
+        with patch("src.core.brain.MESSAGE_SPLIT_ENABLED", True), \
+             patch("src.core.brain.MESSAGE_SPLIT_FALLBACK_NEWLINE", False), \
+             patch.object(brain, "_prepare_think", AsyncMock(return_value=ctx)), \
+             patch.object(brain, "_complete_chat", fake_complete), \
+             patch("src.core.brain.asyncio.sleep", new_callable=AsyncMock):
+            await brain.think_conversational("chat1", "hi", send_fn=send_fn)
+
+        assert send_calls == ["第一段\n\n第二段"]
+
+    async def test_split_marker_takes_priority_over_newline(self):
+        """[SPLIT] markers are used even when \\n\\n is also present."""
+        brain = _make_brain()
+        ctx, fake_complete = _make_ctx("hello [SPLIT] world\n\nextra")
+        send_calls: list[str] = []
+
+        async def send_fn(text: str) -> None:
+            send_calls.append(text)
+
+        with patch("src.core.brain.MESSAGE_SPLIT_ENABLED", True), \
+             patch("src.core.brain.MESSAGE_SPLIT_FALLBACK_NEWLINE", True), \
+             patch.object(brain, "_prepare_think", AsyncMock(return_value=ctx)), \
+             patch.object(brain, "_complete_chat", fake_complete), \
+             patch("src.core.brain.asyncio.sleep", new_callable=AsyncMock):
+            await brain.think_conversational("chat1", "hi", send_fn=send_fn)
+
+        # [SPLIT] produces 2 segments; \n\n fallback not triggered
+        assert send_calls == ["hello", "world\n\nextra"]

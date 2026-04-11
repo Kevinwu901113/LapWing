@@ -1,8 +1,8 @@
-"""Unit tests for split_on_markers and strip_split_markers."""
+"""Unit tests for split_on_markers, split_on_paragraphs, and strip_split_markers."""
 
 import pytest
 
-from src.core.reasoning_tags import split_on_markers, strip_split_markers
+from src.core.reasoning_tags import split_on_markers, split_on_paragraphs, strip_split_markers
 
 
 class TestSplitOnMarkers:
@@ -44,6 +44,38 @@ class TestSplitOnMarkers:
     def test_preserves_content_with_newlines(self):
         result = split_on_markers("line1\nline2 [SPLIT] line3")
         assert result == ["line1\nline2", "line3"]
+
+
+class TestSplitOnParagraphs:
+    def test_no_double_newline_returns_single(self):
+        assert split_on_paragraphs("hello world") == ["hello world"]
+
+    def test_single_newline_not_split(self):
+        assert split_on_paragraphs("hello\nworld") == ["hello\nworld"]
+
+    def test_double_newline_splits(self):
+        result = split_on_paragraphs("hello\n\nworld")
+        assert result == ["hello", "world"]
+
+    def test_multiple_paragraphs(self):
+        result = split_on_paragraphs("a\n\nb\n\nc")
+        assert result == ["a", "b", "c"]
+
+    def test_strips_whitespace(self):
+        result = split_on_paragraphs("  hello  \n\n  world  ")
+        assert result == ["hello", "world"]
+
+    def test_empty_paragraphs_dropped(self):
+        result = split_on_paragraphs("hello\n\n\n\nworld")
+        assert result == ["hello", "world"]
+
+    def test_min_segments_respected(self):
+        # 只有 1 段，不满足 min_segments=2
+        assert split_on_paragraphs("hello") == ["hello"]
+
+    def test_blank_lines_with_spaces(self):
+        result = split_on_paragraphs("hello\n   \nworld")
+        assert result == ["hello", "world"]
 
 
 class TestStripSplitMarkers:

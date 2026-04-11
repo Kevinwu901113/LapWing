@@ -89,10 +89,10 @@ async def create_desktop_token(request: Request):
 
 @router.get("/api/auth/codex-oauth/status")
 async def get_codex_oauth_status():
-    """检查 Codex OAuth 认证状态（oauth-codex SDK）。"""
+    """检查 Codex OAuth 认证状态（~/.codex/auth.json）。"""
     from src.core.codex_oauth_client import is_available
     if not is_available():
-        return {"status": "not_installed", "message": "oauth-codex 未安装"}
+        return {"status": "not_configured", "message": "~/.codex/auth.json 不存在或无 access_token"}
     try:
         from src.core.codex_oauth_client import get_client
         await get_client()

@@ -95,7 +95,11 @@ def _safe_parse_json(raw: str | None) -> dict[str, Any]:
         return {}
     try:
         data = json.loads(raw)
-    except (json.JSONDecodeError, TypeError, ValueError):
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        logger.warning(
+            "_safe_parse_json: 参数解析失败 (len=%d): %s",
+            len(raw), exc,
+        )
         return {}
     return data if isinstance(data, dict) else {}
 
@@ -242,11 +246,128 @@ def _extract_anthropic_tool_calls(response: Any) -> list[ToolCallRequest]:
         if getattr(block, "type", None) != "tool_use":
             continue
 
+        raw_input = getattr(block, "input", None)
+        if raw_input is None:
+            logger.warning(
+                "_extract_anthropic_tool_calls: tool_use block '%s' input 为空",
+                getattr(block, "name", "?"),
+            )
         tool_calls.append(
             ToolCallRequest(
                 id=getattr(block, "id", None) or f"toolu_{index}",
                 name=getattr(block, "name", "") or "",
-                arguments=dict(getattr(block, "input", None) or {}),
+                arguments=dict(raw_input or {}),
             )
         )
     return tool_calls
+
+
+# ── Codex Responses API 适配 ─────────────────────────────────────────────────
+
+
+def _convert_messages_to_responses_api(
+    messages: list[dict[str, Any]],
+) -> tuple[str | None, list[dict[str, Any]]]:
+    """将 OpenAI 风格消息转为 Responses API 的 instructions + input。
+
+    - system 消息 → instructions 字符串
+    - user/assistant 消息 → input 项
+    - tool 消息 → function_call_output 项
+    - 已有 type 但无 role 的项（function_call/function_call_output）→ 直接透传
+    """
+    system_parts: list[str] = []
+    input_items: list[dict[str, Any]] = []
+
+    for msg in messages:
+        # 展开 codex 多 function_call 的 wrapper
+        if "_codex_function_calls" in msg:
+            input_items.extend(msg["_codex_function_calls"])
+            continue
+
+        # 透传已经是 Responses API 格式的项（如 continuation 中的 function_call）
+        if "type" in msg and "role" not in msg:
+            input_items.append(msg)
+            continue
+
+        role = msg.get("role", "user")
+        content = msg.get("content")
+
+        if role == "system":
+            if content:
+                system_parts.append(str(content))
+            continue
+
+        if role in ("user", "assistant"):
+            item: dict[str, Any] = {
+                "type": "message",
+                "role": role,
+                "content": _normalize_openai_message_content(content),
+            }
+            # 保留 phase（gpt-5.3-codex continuation 需要）
+            if "phase" in msg:
+                item["phase"] = msg["phase"]
+            input_items.append(item)
+        elif role == "tool":
+            input_items.append({
+                "type": "function_call_output",
+                "call_id": msg.get("tool_call_id", ""),
+                "output": _normalize_openai_message_content(content),
+            })
+
+    instructions = "\n\n".join(system_parts).strip() or None
+    return instructions, input_items
+
+
+def _normalize_responses_api_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """将 Chat Completions 格式的 tools 转为 Responses API 扁平格式。
+
+    Input:  {"type": "function", "function": {"name": ..., "description": ..., "parameters": ...}}
+    Output: {"type": "function", "name": ..., "description": ..., "parameters": ...}
+    """
+    normalized: list[dict[str, Any]] = []
+    for tool in tools:
+        if tool.get("type") != "function":
+            continue
+        function = tool.get("function") or {}
+        normalized.append({
+            "type": "function",
+            "name": function.get("name", ""),
+            "description": function.get("description", ""),
+            "parameters": function.get("parameters") or {"type": "object", "properties": {}},
+        })
+    return normalized
+
+
+def _extract_responses_api_tool_calls(
+    output_items: list[dict[str, Any]],
+) -> tuple[list[ToolCallRequest], list[dict[str, Any]]]:
+    """从 Responses API 的 output items 中提取 function_call。
+
+    返回格式与 _extract_openai_tool_calls 一致：(parsed_calls, raw_calls)。
+    """
+    tool_calls: list[ToolCallRequest] = []
+    raw_tool_calls: list[dict[str, Any]] = []
+
+    for item in output_items:
+        if item.get("type") != "function_call":
+            continue
+        name = item.get("name", "")
+        arguments_raw = item.get("arguments", "") or ""
+        call_id = item.get("call_id") or item.get("id") or f"call_{len(tool_calls)}"
+
+        tool_calls.append(
+            ToolCallRequest(
+                id=call_id,
+                name=name,
+                arguments=_safe_parse_json(arguments_raw),
+            )
+        )
+        raw_tool_calls.append({
+            "type": "function_call",
+            "name": name,
+            "arguments": arguments_raw,
+            "call_id": call_id,
+            **({"phase": item["phase"]} if "phase" in item else {}),
+        })
+
+    return tool_calls, raw_tool_calls

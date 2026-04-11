@@ -78,6 +78,8 @@ class ProviderInfo:
     base_url: str
     api_key: str
     models: list[ModelInfo] = field(default_factory=list)
+    reasoning_effort: str | None = None   # codex: "low" | "medium" | "high" | "xhigh"
+    context_compaction: bool = False       # codex: server-side context compaction
 
 
 @dataclass
@@ -103,6 +105,8 @@ def _serialize(config: ModelRoutingConfig) -> dict[str, Any]:
                 "base_url": p.base_url,
                 "api_key": p.api_key,
                 "models": [{"id": m.id, "name": m.name} for m in p.models],
+                **({"reasoning_effort": p.reasoning_effort} if p.reasoning_effort else {}),
+                **({"context_compaction": True} if p.context_compaction else {}),
             }
             for p in config.providers
         ],
@@ -126,6 +130,8 @@ def _deserialize(data: dict[str, Any]) -> ModelRoutingConfig:
             base_url=p["base_url"],
             api_key=p.get("api_key", ""),
             models=models,
+            reasoning_effort=p.get("reasoning_effort"),
+            context_compaction=bool(p.get("context_compaction", False)),
         ))
 
     slots = {}

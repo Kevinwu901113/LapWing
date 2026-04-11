@@ -27,6 +27,10 @@ skill_traces/
 .pytest_cache/
 .coverage
 
+# QQ export
+qq_export/
+qq_export.zip
+
 # Tools
 .worktrees/
 .claude/

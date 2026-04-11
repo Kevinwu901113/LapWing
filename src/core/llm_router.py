@@ -25,11 +25,13 @@ from src.core.llm_protocols import (  # noqa: F401
     _normalize_anthropic_tools,
     _extract_openai_tool_calls,
     _extract_anthropic_tool_calls,
+    _convert_messages_to_responses_api,
+    _normalize_responses_api_tools,
+    _extract_responses_api_tool_calls,
 )
 from config.settings import (
     LLM_BASE_URL,
     LLM_MODEL,
-    LLM_MODEL_ALLOWLIST,
     LLM_CHAT_BASE_URL,
     LLM_CHAT_MODEL,
     LLM_TOOL_BASE_URL,
@@ -64,6 +66,35 @@ _SLOT_TO_PURPOSE: dict[str, str] = {
 
 
 
+async def _collect_codex_stream(client, payload: dict) -> tuple[str, list[dict], dict[str, Any]]:
+    """从 Codex Responses API SSE 流中收集文本和 output items。
+
+    返回 (text, output_items, response_meta)。
+    response_meta 包含 assistant message 的 phase 等元数据。
+    """
+    text_parts: list[str] = []
+    output_items: list[dict] = []
+    response_meta: dict[str, Any] = {}
+
+    async for event in client.post_stream(payload):
+        event_type = event.get("type", "")
+        if event_type == "response.output_text.delta":
+            delta = event.get("delta", "")
+            if delta:
+                text_parts.append(delta)
+        elif event_type == "response.output_text.done":
+            # done 事件包含完整文本，优先使用
+            text_parts = [event.get("text", "")]
+        elif event_type == "response.output_item.done":
+            item = event.get("item") or {}
+            output_items.append(item)
+            # 捕获 assistant message 的 phase（gpt-5.3-codex）
+            if item.get("type") == "message" and "phase" in item:
+                response_meta["phase"] = item["phase"]
+
+    return "".join(text_parts), output_items, response_meta
+
+
 class LLMRouter:
     """按 purpose 路由到对应 LLM client。"""
 
@@ -78,11 +109,14 @@ class LLMRouter:
         self._models: dict[str, str] = {}
         self._api_types: dict[str, str] = {}
         self._base_urls: dict[str, str] = {}
+        self._reasoning_effort: dict[str, str | None] = {}
+        self._context_compaction: dict[str, bool] = {}
         self._session_model_overrides: dict[tuple[str, str], str] = {}
         self._model_options: list[ModelOption] = []
         self._model_options_by_ref: dict[str, ModelOption] = {}
         self._model_options_by_alias: dict[str, ModelOption] = {}
         self._last_error_ts: dict[str, float] = {}
+        self._model_provider_map: dict[str, Any] = {}  # model_id → ProviderInfo
         self._setup_routing()
         self._setup_model_options()
 
@@ -120,6 +154,22 @@ class LLMRouter:
                 api_key=api_key,
             )
 
+        # Build model_id → ProviderInfo reverse map for cross-provider session overrides
+        self._model_provider_map.clear()
+        for provider in self._model_config.get_full_config().providers:
+            for m in provider.models:
+                self._model_provider_map[m.id] = provider
+
+        # Populate per-slot codex params from provider config
+        self._reasoning_effort.clear()
+        self._context_compaction.clear()
+        for slot_id in SLOT_DEFINITIONS:
+            model = self._models.get(slot_id)
+            if model and model in self._model_provider_map:
+                prov = self._model_provider_map[model]
+                self._reasoning_effort[slot_id] = getattr(prov, "reasoning_effort", None)
+                self._context_compaction[slot_id] = getattr(prov, "context_compaction", False)
+
         # Register legacy purpose keys for backward compatibility
         for purpose, default_slot in _PURPOSE_TO_DEFAULT_SLOT.items():
             if purpose not in self._models and default_slot in self._models:
@@ -134,7 +184,11 @@ class LLMRouter:
         self._models.clear()
         self._api_types.clear()
         self._base_urls.clear()
+        self._model_provider_map.clear()
+        self._reasoning_effort.clear()
+        self._context_compaction.clear()
         self._setup_routing()
+        self._setup_model_options()
         logger.info("Model routing reloaded")
 
     def _setup_clients_legacy(self) -> None:
@@ -167,21 +221,25 @@ class LLMRouter:
         options_by_ref: dict[str, ModelOption] = {}
         options_by_alias: dict[str, ModelOption] = {}
 
-        for alias, ref in LLM_MODEL_ALLOWLIST:
-            normalized_ref = str(ref or "").strip()
-            if not normalized_ref or normalized_ref in options_by_ref:
-                continue
+        def _add(ref: str, alias: str | None) -> None:
+            if not ref or ref in options_by_ref:
+                return
+            opt = ModelOption(index=len(options) + 1, ref=ref, alias=alias)
+            options.append(opt)
+            options_by_ref[ref] = opt
+            if alias:
+                options_by_alias.setdefault(alias.lower(), opt)
 
-            normalized_alias = str(alias or "").strip() or None
-            option = ModelOption(
-                index=len(options) + 1,
-                ref=normalized_ref,
-                alias=normalized_alias,
-            )
-            options.append(option)
-            options_by_ref[normalized_ref] = option
-            if normalized_alias:
-                options_by_alias.setdefault(normalized_alias.lower(), option)
+        if self._model_config is not None:
+            # 从 model_routing.json 的所有 provider 生成
+            for provider in self._model_config.get_full_config().providers:
+                for m in provider.models:
+                    alias = m.name if m.name != m.id else None
+                    _add(m.id, alias)
+        else:
+            # 无 ModelConfigManager 时从已注册的 slot 模型中生成
+            for model_id in dict.fromkeys(self._models.values()):
+                _add(model_id, None)
 
         self._model_options = options
         self._model_options_by_ref = options_by_ref
@@ -205,7 +263,7 @@ class LLMRouter:
         if not normalized:
             raise ValueError("模型选择不能为空。")
         if not self._model_options:
-            raise ValueError("当前没有可用模型，请先配置 LLM_MODEL_ALLOWLIST。")
+            raise ValueError("当前没有可用模型，请检查 model_routing.json 配置。")
 
         if normalized.isdigit():
             index = int(normalized)
@@ -272,7 +330,12 @@ class LLMRouter:
             )
             effective_model = override or default_model
             base_url = self._base_urls.get(purpose, LLM_BASE_URL)
-            api_type = _detect_api_type(base_url, effective_model)
+            # 优先从 provider map 获取 api_type（解决跨 provider override 问题）
+            if override and self._model_provider_map:
+                override_provider = self._model_provider_map.get(override)
+                api_type = override_provider.api_type if override_provider else _detect_api_type(base_url, effective_model)
+            else:
+                api_type = self._api_types.get(purpose, _detect_api_type(base_url, effective_model))
             if override:
                 overrides[purpose] = override
             purposes[purpose] = {
@@ -361,6 +424,14 @@ class LLMRouter:
             bool(request_kwargs.get("response_format")),
         )
 
+    def _inject_codex_params(self, payload: dict[str, Any], effective_key: str) -> None:
+        """向 codex_oauth payload 注入 reasoning.effort 和 context_management。"""
+        effort = self._reasoning_effort.get(effective_key)
+        if effort:
+            payload["reasoning"] = {"effort": effort}
+        if self._context_compaction.get(effective_key, False):
+            payload["context_management"] = [{"type": "compaction"}]
+
     def model_for(self, purpose: str, *, session_key: str | None = None) -> str:
         """返回指定 purpose 实际使用的模型名。"""
         return self._effective_model_for_purpose(purpose, session_key=session_key)
@@ -389,8 +460,20 @@ class LLMRouter:
             )
         client_override = self._clients.get(effective_key)
 
+        # 检查 session override 是否指向不同 provider（如 MiniMax slot → gpt-5.4）
+        override_api_type = None
+        if session_model_override and self._model_provider_map:
+            override_provider = self._model_provider_map.get(session_model_override)
+            if override_provider:
+                override_api_type = override_provider.api_type
+
         # codex_oauth 由 SDK 自管理 token，不走 AuthManager candidate 解析
-        if self._api_types.get(effective_key) == "codex_oauth":
+        slot_api_type = self._api_types.get(effective_key)
+        codex_from_override = (
+            override_api_type == "codex_oauth"
+            and slot_api_type != "codex_oauth"
+        )
+        if override_api_type == "codex_oauth" or slot_api_type == "codex_oauth":
             from src.core.codex_oauth_client import get_client, reset_client
             model = self._models.get(effective_key, "gpt-5.3-codex")
             if session_model_override:
@@ -406,7 +489,22 @@ class LLMRouter:
                         return await runner(None, client, model, "codex_oauth")
                     except Exception:
                         pass
-                raise
+                status_code = getattr(exc, "status_code", None)
+                if status_code is None:
+                    response = getattr(exc, "response", None)
+                    status_code = getattr(response, "status_code", None)
+                if codex_from_override and status_code == 400:
+                    # 会话 override 到 codex 时，工具闭环偶发 400。
+                    # 对这种场景降级回 slot 默认 provider，避免整轮对话失败。
+                    logger.warning(
+                        "[%s] codex_oauth override 请求返回 400，回退到 slot `%s` 默认路由重试。",
+                        purpose,
+                        effective_key,
+                    )
+                    session_model_override = None
+                    override_api_type = None
+                else:
+                    raise
 
         while True:
             candidates = self._auth_manager.resolve_candidates(
@@ -506,12 +604,18 @@ class LLMRouter:
 
         async def _runner(candidate, client, model, api_type):
             if api_type == "codex_oauth":
-                response = await client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                )
-                text = response.choices[0].message.content or ""
+                instructions, input_items = _convert_messages_to_responses_api(messages)
+                payload: dict[str, Any] = {
+                    "model": model,
+                    "input": input_items,
+                    "max_output_tokens": max_tokens,
+                    "store": False,
+                    "stream": True,
+                }
+                if instructions:
+                    payload["instructions"] = instructions
+                self._inject_codex_params(payload, effective_key)
+                text, _, _ = await _collect_codex_stream(client, payload)
                 return strip_internal_thinking_tags(text).strip()
 
             if api_type == "anthropic":
@@ -641,25 +745,33 @@ class LLMRouter:
 
         async def _runner(candidate, client, model, api_type):
             if api_type == "codex_oauth":
-                response = await client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    tools=_normalize_openai_tools(tools),
-                    tool_choice="auto",
-                    parallel_tool_calls=False,
-                )
-                message = response.choices[0].message
-                tool_calls, raw_tool_calls = _extract_openai_tool_calls(message)
+                instructions, input_items = _convert_messages_to_responses_api(messages)
+                payload: dict[str, Any] = {
+                    "model": model,
+                    "input": input_items,
+                    "tools": _normalize_responses_api_tools(tools),
+                    "max_output_tokens": max_tokens,
+                    "store": False,
+                    "stream": True,
+                }
+                if instructions:
+                    payload["instructions"] = instructions
+                self._inject_codex_params(payload, effective_key)
+                text, output_items, _response_meta = await _collect_codex_stream(client, payload)
+                tool_calls, raw_tool_calls = _extract_responses_api_tool_calls(output_items)
                 continuation_message = None
                 if tool_calls:
+                    # Responses API 格式：assistant message + function_call 项都要进入下轮 input
+                    # assistant message 携带 phase（gpt-5.3-codex 需要）
+                    assistant_items: list[dict[str, Any]] = [
+                        item for item in output_items
+                        if item.get("type") == "message" and item.get("role") == "assistant"
+                    ]
                     continuation_message = {
-                        "role": "assistant",
-                        "content": message.content or "",
-                        "tool_calls": raw_tool_calls,
+                        "_codex_function_calls": assistant_items + raw_tool_calls,
                     }
                 return ToolTurnResult(
-                    text=message.content or "",
+                    text=text,
                     tool_calls=tool_calls,
                     continuation_message=continuation_message,
                 )
@@ -709,6 +821,14 @@ class LLMRouter:
                     tool_calls = _extract_anthropic_tool_calls(response)
                     text = _extract_anthropic_text(response)
 
+                if not tool_calls and getattr(response, "stop_reason", None) == "tool_use":
+                    logger.warning(
+                        "[%s] complete_with_tools: stop_reason=tool_use 但未提取到 tool calls, "
+                        "content types: %s",
+                        effective_key,
+                        [getattr(b, "type", "?") for b in getattr(response, "content", []) or []],
+                    )
+
                 continuation_message = None
                 if tool_calls:
                     continuation_message = {
@@ -736,6 +856,12 @@ class LLMRouter:
                 return ToolTurnResult(text="", tool_calls=[], continuation_message=None)
             message = response.choices[0].message
             tool_calls, raw_tool_calls = _extract_openai_tool_calls(message)
+            raw_count = len(getattr(message, "tool_calls", None) or [])
+            if raw_count > 0 and not tool_calls:
+                logger.warning(
+                    "[%s] complete_with_tools: %d 个 raw tool_calls 全部解析失败",
+                    effective_key, raw_count,
+                )
             continuation_message = None
             if tool_calls:
                 continuation_message = {
@@ -851,18 +977,23 @@ class LLMRouter:
                 return tool_calls[0].arguments
 
             if api_type == "codex_oauth":
-                response = await client.chat.completions.create(
-                    model=model,
-                    messages=messages,
-                    max_tokens=max_tokens,
-                    tools=_normalize_openai_tools([tool_def]),
-                    tool_choice={"type": "function", "function": {"name": tool_name}},
-                )
-                message = response.choices[0].message
-                tool_calls, _ = _extract_openai_tool_calls(message)
+                # Responses API 不支持 forced tool_choice，提供 tool 但不强制
+                instructions, input_items = _convert_messages_to_responses_api(messages)
+                payload: dict[str, Any] = {
+                    "model": model,
+                    "input": input_items,
+                    "tools": _normalize_responses_api_tools([tool_def]),
+                    "max_output_tokens": max_tokens,
+                    "store": False,
+                    "stream": True,
+                }
+                if instructions:
+                    payload["instructions"] = instructions
+                self._inject_codex_params(payload, effective_key)
+                text, output_items, _ = await _collect_codex_stream(client, payload)
+                tool_calls, _ = _extract_responses_api_tool_calls(output_items)
                 if tool_calls:
                     return tool_calls[0].arguments
-                text = _normalize_openai_message_content(message.content)
                 if not text:
                     raise ValueError("Codex OAuth 未返回 tool call 且无文本输出")
                 return _extract_json_from_text(text)
@@ -923,7 +1054,17 @@ class LLMRouter:
             session_key=session_key,
         )
         base_url = self._base_urls.get(effective_key, LLM_BASE_URL)
-        if session_key and self._session_model_overrides.get((session_key, effective_key)):
+        override_model = (
+            self._session_model_overrides.get((session_key, effective_key))
+            if session_key else None
+        )
+        if override_model and self._model_provider_map:
+            override_provider = self._model_provider_map.get(override_model)
+            if override_provider:
+                api_type = override_provider.api_type
+            else:
+                api_type = _detect_api_type(base_url, effective_model)
+        elif override_model:
             api_type = _detect_api_type(base_url, effective_model)
         else:
             api_type = self._api_types.get(effective_key, _detect_api_type(base_url, effective_model))
@@ -940,6 +1081,20 @@ class LLMRouter:
                     for tool_call, output in tool_results
                 ],
             }
+
+        if api_type == "codex_oauth":
+            # Responses API: function_call_output 项（无 role，直接进 input）
+            items = [
+                {
+                    "type": "function_call_output",
+                    "call_id": tool_call.id,
+                    "output": output,
+                }
+                for tool_call, output in tool_results
+            ]
+            if len(items) == 1:
+                return items[0]
+            return items
 
         messages = [
             {

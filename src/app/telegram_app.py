@@ -283,6 +283,9 @@ class TelegramApp:
                 await message.reply_text(f"已恢复默认模型（清除 {cleared} 个会话覆盖）。")
                 return
 
+            # "switch" 是可选关键词，跳过后取剩余部分作为 selector
+            if keyword == "switch":
+                args = args[1:]
             selector = " ".join(args).strip()
             result = self._container.brain.switch_model(chat_id, selector)
             await message.reply_text(self._format_model_switch_result(result))
@@ -294,7 +297,7 @@ class TelegramApp:
 
     def _format_model_list(self, options: list[dict[str, Any]], status: dict[str, Any]) -> str:
         if not options:
-            return "当前没有可用模型，请先配置 LLM_MODEL_ALLOWLIST。"
+            return "当前没有可用模型，请检查 model_routing.json 配置。"
 
         lines = ["可用模型（会话级）："]
         for option in options:

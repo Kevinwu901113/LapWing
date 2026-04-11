@@ -93,6 +93,18 @@ def split_on_markers(text: str) -> list[str]:
     return [seg for seg in segments if seg]
 
 
+def split_on_paragraphs(text: str, min_segments: int = 2) -> list[str]:
+    """按连续空行（\\n\\n+）拆分文本，用作 [SPLIT] 未出现时的 fallback。
+
+    只有拆分后段数 >= min_segments 才返回多段，否则返回单元素列表。
+    """
+    segments = [seg.strip() for seg in re.split(r"\n\s*\n", text)]
+    segments = [seg for seg in segments if seg]
+    if len(segments) >= min_segments:
+        return segments
+    return [text]
+
+
 def strip_split_markers(text: str) -> str:
     """移除文本中所有 [SPLIT] 分隔符（及周边多余空白），用于记忆存储和重复发送检测。"""
     if not _SPLIT_MARKER_RE.search(text):

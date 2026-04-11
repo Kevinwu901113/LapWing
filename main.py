@@ -311,6 +311,57 @@ def run_telegram_bot(logger: logging.Logger) -> int:
             "group_context_size": QQ_GROUP_CONTEXT_SIZE,
         }
 
+        async def _qq_cmd_model(chat_id: str, text: str, brain, send_fn) -> None:
+            """处理 QQ 的 /model 命令。"""
+            parts = text.strip().split(None, 1)
+            args = parts[1].strip() if len(parts) > 1 else ""
+            keyword = args.lower().split()[0] if args else ""
+
+            try:
+                if not args or keyword == "list":
+                    options = brain.list_model_options()
+                    status = brain.model_status(chat_id)
+                    lines = ["可用模型："]
+                    for o in options:
+                        alias = str(o.get("alias") or "").strip()
+                        ref = str(o.get("ref") or "").strip()
+                        idx = o.get("index")
+                        lines.append(f"{idx}. {alias + ' -> ' + ref if alias else ref}")
+                    purposes = dict(status.get("purposes", {}) or {})
+                    if purposes:
+                        lines.append("")
+                        for p in ("chat", "tool", "heartbeat"):
+                            d = purposes.get(p) or {}
+                            eff = str(d.get("effective") or "").strip()
+                            if eff:
+                                suffix = " (override)" if d.get("override") else ""
+                                lines.append(f"- {p}: {eff}{suffix}")
+                    await send_fn("\n".join(lines))
+                elif keyword == "status":
+                    status = brain.model_status(chat_id)
+                    purposes = dict(status.get("purposes", {}) or {})
+                    lines = ["模型状态："]
+                    for p in ("chat", "tool", "heartbeat"):
+                        d = purposes.get(p) or {}
+                        lines.append(f"- {p}: {d.get('effective', '?')}")
+                    await send_fn("\n".join(lines))
+                elif keyword == "default":
+                    result = brain.reset_model(chat_id)
+                    await send_fn(f"已恢复默认模型（清除 {result.get('cleared', 0)} 个覆盖）。")
+                else:
+                    # "switch" 是可选关键词，跳过
+                    selector = args
+                    if keyword == "switch":
+                        selector = args.split(None, 1)[1] if " " in args else ""
+                    result = brain.switch_model(chat_id, selector)
+                    selected = dict(result.get("selected", {}) or {})
+                    await send_fn(f"已切换：{selected.get('ref', args)}")
+            except ValueError as exc:
+                await send_fn(f"切换失败：{exc}")
+            except Exception as exc:
+                logger.warning("[qq/model] %s", exc)
+                await send_fn("模型切换失败，请稍后再试。")
+
         async def _qq_on_message(chat_id: str, text: str, channel, raw_event: dict) -> None:
             """QQ 消息进入 Brain 的桥接。"""
             container.channel_manager.last_active_channel = channel
@@ -318,6 +369,11 @@ def run_telegram_bot(logger: logging.Logger) -> int:
 
             async def send_fn(reply_text: str) -> None:
                 await container.channel_manager.send(ChannelType.QQ, chat_id, reply_text)
+
+            # 命令拦截
+            if text.startswith("/model") or text.startswith("/models"):
+                await _qq_cmd_model(chat_id, text, brain, send_fn)
+                return
 
             async def typing_fn() -> None:
                 pass  # QQ 无 typing indicator

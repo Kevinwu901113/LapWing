@@ -1,557 +1,709 @@
-# Lapwing — 技术文档
+# Lapwing — Architecture Reference
 
-> 面向接手者的架构与模块说明。了解"系统如何运转"，而非"它能做什么"。
-
----
-
-## 目录
-
-1. [整体架构](#整体架构)
-2. [启动与生命周期](#启动与生命周期)
-3. [核心模块详解](#核心模块详解)
-   - [Brain（大脑）](#brainbrainy)
-   - [LLMRouter（模型路由）](#llmrouter模型路由)
-   - [TaskRuntime（工具执行层）](#taskruntime工具执行层)
-   - [PromptBuilder（Prompt 组装）](#promptbuilderprompt-组装)
-   - [HeartbeatEngine（心跳引擎）](#heartbeatengine心跳引擎)
-   - [Memory（记忆系统）](#memory记忆系统)
-   - [Tool System（工具系统）](#tool-system工具系统)
-   - [BrowserManager（浏览器子系统）](#browsermanager浏览器子系统)
-   - [Vitals（生命体征）](#vitals生命体征)
-   - [Channel / Adapter（消息通道）](#channel--adapter消息通道)
-   - [Skills（技能系统）](#skills技能系统)
-   - [权限与存活保护](#权限与存活保护)
-4. [桌面端 (Desktop v2)](#桌面端-desktop-v2)
-5. [关键数据结构](#关键数据结构)
-6. [配置与环境变量](#配置与环境变量)
-7. [数据目录结构](#数据目录结构)
-8. [扩展指南](#扩展指南)
+> 本文档面向 AI 架构分析。目标：仅阅读此文件即可理解代码结构、模块职责、依赖关系和数据流，以便进行架构设计或重构建议。
 
 ---
 
-## 整体架构
+## 项目概述
+
+Lapwing 是一个 24/7 运行的自主 AI 伴侣系统——具有人格、记忆、自我进化能力的虚拟女友，不是 bot 框架。
+
+| 维度 | 详情 |
+|------|------|
+| **后端** | Python 3.12+，~25,500 行代码，121 个源文件 |
+| **前端** | Tauri v2 + React 19 + TypeScript，~3,400 行，53 个文件 |
+| **测试** | pytest + pytest-asyncio，~15,800 行，85 个测试文件 |
+| **LLM** | MiniMax M2.7（Anthropic 兼容 API）、GLM（OpenAI 兼容 API） |
+| **消息通道** | Telegram Bot API、QQ（NapCat WebSocket）、Desktop（本地 SSE/WebSocket） |
+| **存储** | SQLite（WAL）、ChromaDB 向量库、Markdown 文件 |
+| **部署** | PVE 服务器（Xeon E-2174G, 32GB），无 CI/CD |
+
+---
+
+## 全局架构
 
 ```
 main.py  ──→  AppContainer.prepare() / start()
                  │
-                 ├── LapwingBrain          ← 所有请求的唯一入口
+                 ├── LapwingBrain          ← 所有请求的唯一门面
+                 │    ├── LLMRouter        ← 多 slot 模型路由
+                 │    ├── TaskRuntime      ← 工具循环执行层
+                 │    ├── PromptBuilder    ← 8 层 system prompt 组装
+                 │    ├── ConversationMemory ← 对话存储
+                 │    └── [12 个可选依赖]   ← 由 feature flag 控制
+                 │
                  ├── HeartbeatEngine       ← 后台定时触发（fast/slow/minute）
-                 ├── ReminderScheduler     ← 分钟级 always-run 调度
-                 ├── ChannelManager        ← 多通道路由（Telegram/QQ/Desktop）
+                 ├── ReminderScheduler     ← 分钟级提醒调度
+                 ├── ChannelManager        ← 多通道路由
+                 │    ├── TelegramApp
+                 │    ├── QQAdapter
+                 │    └── DesktopChannelAdapter
                  └── LocalApiServer        ← FastAPI + SSE，供桌面端消费
 ```
 
-**消息的完整流转路径：**
+### 核心设计原则
 
-```
-用户消息 (任意通道)
-  → Brain._prepare_think()
-      ├── SessionManager.resolve_session()     # 会话分段
-      ├── ConversationMemory.append()          # 写入历史
-      ├── TacticalRules.process_correction()  # 异步纠错规则提取
-      ├── ConversationCompactor.try_compact()  # 必要时压缩历史
-      ├── PromptBuilder.build_system_prompt()  # 分层组装 system prompt
-      └── ExperienceSkillManager.retrieve()   # 检索相关经验技能注入
-  → Brain._complete_chat()
-      └── TaskRuntime.complete_chat()          # 工具循环（最多 N 轮）
-            ├── LLMRouter.tool_turn()          # 调用 LLM，获取 text + tool_calls
-            ├── [for each tool_call]
-            │     ├── VitalGuard.check()       # 核心文件保护
-            │     ├── AuthorityGate.authorize()# 权限校验
-            │     └── ToolRegistry.execute()  # 实际执行工具
-            └── 返回最终文本
-  → 写回 ConversationMemory
-  → 通过 send_fn 或 on_interim_text 回传给用户
-```
-
-**设计原则：**
-
-- **无 agent dispatch 层**。所有能力（搜索、Shell、记忆、调度）均注册为 `ToolSpec`，LLM 自行决定调用哪个工具。
-- **人格与行为分离**：`data/identity/soul.md` 定义"她是谁"，`prompts/lapwing_voice.md` 用 ✕/✓ 对比约束行为边界。
-- **文件即数据库**：身份、记忆、进化规则均存为 Markdown，可直接编辑、可 Git 追踪。
+1. **无 agent dispatch 层**：所有能力注册为 `ToolSpec`，LLM 通过 tool_calls 自行决定调用。
+2. **人格与行为分离**：`soul.md` 定义"她是谁"，`voice.md` 用 ✕/✓ 对比约束行为边界。
+3. **文件即数据库**：身份、记忆、进化规则均存为 Markdown，可直接编辑、可 Git 追踪。
+4. **Diff-based 进化**：人格变化以 diff 累积，ConstitutionGuard 保证不违反宪法。
+5. **可选依赖注入**：Brain 的所有子系统都是可选的（默认 `None`），由 feature flag 开关。
 
 ---
 
-## 启动与生命周期
+## 消息完整流转
 
-### `main.py`
-
-薄适配层。职责仅限于：
-
-1. 初始化日志（lapwing logger 与 root logger 分离）
-2. PID 文件锁（`data/lapwing.pid`），防止多实例
-3. 生成 vital manifest（供 Sentinel 哨兵使用）
-4. 构造 `AppContainer` + `TelegramApp`，按需注册 QQ 适配器
-5. 启动 `app.run_polling()`
-
-**永远不要直接跑 `nohup python main.py &`。使用 `scripts/deploy.sh`。**
-
-### `AppContainer`（`src/app/container.py`）
-
-依赖注入根。所有核心对象都在这里实例化并连接。
-
-```python
-# 生命周期接口
-await container.prepare()   # 初始化 DB、装配 Brain 的所有可选依赖
-await container.start(send_fn=...)  # 启动心跳、调度器、通道、API Server
-await container.shutdown()  # 逆序清理所有资源
 ```
-
-`prepare()` 内部调用 `_configure_brain_dependencies()`，在这里创建并注入：
-
-| 注入到 `brain.xxx` | 类型 | 说明 |
-|---|---|---|
-| `knowledge_manager` | `KnowledgeManager` | 外部知识文件读取 |
-| `vector_store` | `VectorStore` | Chroma 向量检索 |
-| `skill_manager` | `SkillManager` | Skills 注册表 |
-| `interest_tracker` | `InterestTracker` | 兴趣图谱 |
-| `self_reflection` | `SelfReflection` | 自省能力 |
-| `constitution_guard` | `ConstitutionGuard` | 宪法保护 |
-| `tactical_rules` | `TacticalRules` | 纠错规则提取 |
-| `evolution_engine` | `EvolutionEngine` | 人格进化 |
-| `experience_skill_manager` | `ExperienceSkillManager` | 经验技能检索 |
-| `session_manager` | `SessionManager` | 会话分段 |
-| `memory_index` | `MemoryIndex` | 记忆索引 |
-| `auto_memory_extractor` | `AutoMemoryExtractor` | 自动记忆提取 |
-| `task_flow_manager` | `TaskFlowManager` | 任务流编排 |
-| `quality_checker` | `ReplyQualityChecker` | 回复质量检查 |
-| `browser_manager` | `BrowserManager` | Playwright 浏览器子系统 |
-
-所有这些都是可选依赖（`brain.xxx` 默认为 `None`），由 feature flag 控制是否启用。
+用户消息 (Telegram / QQ / Desktop)
+  │
+  ▼
+Brain._prepare_think()
+  ├── SessionManager.resolve_session()         # 会话分段（可选）
+  ├── ConversationMemory.append()              # 写入 SQLite
+  ├── TacticalRules.process_correction()       # 异步纠错规则提取（可选）
+  ├── ConversationCompactor.try_compact()      # 历史超阈值时 LLM 压缩（可选）
+  ├── PromptBuilder.build_system_prompt()      # 8 层 system prompt 组装
+  │     Layer 0: soul.md（核心人格）
+  │     Layer 1: evolution/rules.md（学到的规则）
+  │     Layer 2: 当前时间（台北时区）
+  │     Layer 3: KEVIN.md + user_facts（用户记忆）
+  │     Layer 4: MemoryIndex 近期条目 + VectorStore 语义检索
+  │     Layer 5: 对话摘要
+  │     Layer 6: 技能概览
+  │     Layer 7: voice.md（行为约束，depth-0 注入）
+  └── ExperienceSkillManager.retrieve()        # 检索相关经验技能注入（可选）
+  │
+  ▼
+Brain._complete_chat()
+  └── TaskRuntime.complete_chat()              # 工具循环（最多 N 轮）
+        │
+        ├── LLMRouter.tool_turn(messages, tools, purpose)
+        │     → 返回 ToolTurnResult { text, tool_calls, continuation_message }
+        │
+        ├── [for each tool_call]
+        │     ├── LoopDetectionState.check()   # 循环检测（可选）
+        │     ├── VitalGuard.check()           # 核心文件保护
+        │     ├── AuthorityGate.authorize()    # 权限校验
+        │     └── ToolRegistry.execute()       # 实际执行
+        │
+        └── 返回最终文本
+  │
+  ▼
+写回 ConversationMemory → 通过 send_fn 回传用户
+```
 
 ---
 
-## 核心模块详解
+## 源码结构（src/，121 文件，~25,500 行）
 
-### Brain（`src/core/brain.py`）
+### src/core/（39 文件，~10,700 行）— 核心业务逻辑
 
-`LapwingBrain` 是系统的门面类。外部只需调用两个方法：
+**请求处理链：**
 
-```python
-# 等待完整回复（heartbeat / headless 场景）
-reply: str = await brain.think(chat_id, user_message)
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `brain.py` | 844 | **门面类**。`think()` / `think_conversational()` 是所有请求的唯一入口。不直接调用 LLM，只准备上下文后委托给 TaskRuntime |
+| `task_runtime.py` | 1367 | **工具循环执行层**。`complete_chat()` 是核心循环：调 LLM → 执行工具 → 追加结果 → 重复。内含循环检测和断路器 |
+| `llm_router.py` | 1141 | **模型路由**。按 purpose slot（chat/tool/heartbeat）路由到不同模型/API。自动检测 Anthropic vs OpenAI 兼容端点。支持 per-session 模型覆盖 |
+| `llm_protocols.py` | 373 | **协议适配**。Anthropic SDK 调用封装，tool_calls 解析，prefix caching 支持 |
+| `llm_types.py` | 29 | **LLM 类型定义**。`ToolCallRequest`、`ToolTurnResult` |
+| `prompt_builder.py` | 341 | **Prompt 组装**。8 层 system prompt + depth-0 voice reminder 注入 |
+| `prompt_loader.py` | 45 | **Prompt 热加载**。从 `prompts/` 目录加载 Markdown |
+| `task_types.py` | 88 | **任务类型**。`RuntimeDeps`、`LoopDetectionConfig/State`、`TaskLoopStep/Result` |
+| `runtime_profiles.py` | 66 | **工具剖面**。按执行上下文过滤可用工具集（chat_shell / coder_snippet / coder_workspace / file_ops） |
 
-# 流式回复（对话场景，中间结果通过 send_fn 推送）
-reply: str = await brain.think_conversational(
-    chat_id, user_message, send_fn, typing_fn, adapter="telegram", user_id="..."
-)
-```
+**记忆与进化：**
 
-两者共享前置逻辑 `_prepare_think()` → 返回 `_ThinkCtx`（包含组装好的 messages、session_id 等），差异仅在是否开启流式推送。
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `session_manager.py` | 354 | 长对话切分为带 topic 的 Session |
+| `evolution_engine.py` | 267 | 人格进化引擎。从纠错中学习，生成 rules.md diff |
+| `constitution_guard.py` | 111 | 宪法保护。验证人格 diff 不违反不可变条款 |
+| `experience_skills.py` | 672 | 经验技能检索。从历史对话中提炼操作经验，语义检索注入 prompt |
+| `tactical_rules.py` | 106 | 纠错规则提取。从用户修正中学习行为规则 |
+| `quality_checker.py` | 112 | 回复质量检查。异步评估回复质量 |
+| `self_reflection.py` | 74 | 自省能力 |
+| `knowledge_manager.py` | 107 | 外部知识文件读取 |
 
-**Brain 不做任何 LLM 调用**——它只负责准备上下文，实际调用委托给 `TaskRuntime.complete_chat()`。
+**心跳与调度：**
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `heartbeat.py` | 306 | 心跳引擎。三种节拍：fast（每小时）、slow（每日 3AM）、minute（每分钟） |
+| `reminder_scheduler.py` | 228 | 提醒调度。分钟级检查并触发 |
+
+**安全与权限：**
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `authority_gate.py` | 120 | 三级权限：OWNER(2) / TRUSTED(1) / GUEST(0)。按工具过滤 |
+| `vital_guard.py` | 419 | 核心文件保护。Shell/文件写入前检查目标路径，判定 PASS / VERIFY_FIRST / BLOCK |
+| `shell_policy.py` | 666 | Shell 执行策略 + ACL 白名单 |
+| `verifier.py` | 362 | Shell 约束验证 |
+| `credential_vault.py` | 144 | 加密凭据存储 |
+
+**浏览器：**
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `browser_manager.py` | 1179 | Playwright 持久化上下文。Tab 管理、DOM 提取、截图、视觉理解管线 |
+
+**其他核心：**
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `channel_manager.py` | 145 | 多通道路由。主动消息优先级：Desktop > last_active > 任意连接 |
+| `vitals.py` | 235 | 生命体征：启动时间、uptime、重启感知、系统快照（CPU/内存/磁盘） |
+| `model_config.py` | 471 | 运行时模型切换。持久化到 `data/config/model_routing.json` |
+| `skill_registry.py` | 156 | 技能注册表 |
+| `skills.py` | 498 | SkillManager。技能扫描、加载、dispatch |
+| `delegation.py` | 345 | 任务委派协议 |
+| `task_flow.py` | 234 | TaskFlow 编排 |
+| `latency_monitor.py` | 209 | 性能监控 |
+| `trace_recorder.py` | 246 | 技能执行追踪 |
+| `reasoning_tags.py` | 113 | 内部思考标签处理（`<think>` 标签剥离/保留） |
+| `codex_oauth_client.py` | 379 | Codex OAuth 客户端 |
 
 ---
 
-### LLMRouter（`src/core/llm_router.py`）
+### src/tools/（23 文件，~4,700 行）— 工具系统
 
-按 *purpose slot* 路由到不同模型 / API：
+**核心框架：**
 
-| Purpose | 对应 Slot | 环境变量 |
-|---|---|---|
-| `chat` | `main_conversation`, `persona_expression`, `self_reflection` | `LLM_CHAT_BASE_URL` / `LLM_CHAT_MODEL` |
-| `tool` | `lightweight_judgment`, `memory_processing`, `agent_execution` | `LLM_TOOL_BASE_URL` / `LLM_TOOL_MODEL` |
-| `heartbeat` | `heartbeat_proactive` | `NIM_BASE_URL` / `NIM_MODEL` |
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `types.py` | 73 | **类型定义**。`ToolSpec`、`ToolExecutionRequest`、`ToolExecutionContext`、`ToolExecutionResult` |
+| `registry.py` | 824 | **工具注册表**。`build_default_tool_registry()` 注册所有工具，`chat_tools()` 按 RuntimeProfile 过滤 |
+| `shell_executor.py` | 359 | Shell 子进程管理。`ShellResult` 封装 |
 
-若 slot 专用变量未配置，则 fallback 到通用 `LLM_BASE_URL` / `LLM_MODEL`。
+**工具处理器（每个文件 = 一个或多个工具实现）：**
 
-路由器会自动检测 base_url 是否含 `/anthropic` 来决定使用 `AsyncAnthropic` 还是 `AsyncOpenAI` 客户端。支持 per-session 覆盖模型（`brain.switch_model(chat_id, selector)`）。
+| 文件 | 行数 | 工具 | capability |
+|------|------|------|-----------|
+| `handlers.py` | 467 | `web_search`、`web_fetch`、`execute_shell`、`run_python_code`、`verify_code_result`、`apply_workspace_patch` 等 | web, shell, code |
+| `browser_tools.py` | 808 | `browser_navigate`、`browser_click`、`browser_type`、`browser_screenshot` 等 | browser |
+| `file_editor.py` | 718 | `file_read_segment`、`file_write`、`file_append`、`file_list_directory` | file |
+| `memory_crud.py` | 242 | `memory_create`、`memory_read`、`memory_update`、`memory_delete` | memory |
+| `memory_note.py` | 46 | `memory_note`（快速记忆写入） | memory |
+| `web_search.py` | 264 | Web 搜索（Tavily / DuckDuckGo 双引擎） | web |
+| `web_fetcher.py` | 141 | 网页内容抓取 | web |
+| `schedule_task.py` | 270 | `schedule_task`（定时任务） | schedule |
+| `code_runner.py` | 70 | Python 代码执行 | code |
+| `delegation_tool.py` | 94 | 任务委派 | general |
+| `self_status.py` | 80 | 自我状态查询 | general |
+| `skill_tools.py` | 148 | 技能列表/查看 | skill |
+| `session_search.py` | 101 | 会话感知记忆搜索 | memory |
+| `image_search.py` | 74 | 图片搜索 | web |
+| `send_image.py` | 64 | 发送图片 | general |
+| `weather.py` | 64 | 天气查询 | web |
+| `transcriber.py` | 58 | 语音转文字 | general |
+| `trace_mark.py` | 85 | 执行追踪标记 | general |
 
-**关键数据类型：**
+---
+
+### src/memory/（13 文件，~2,300 行）— 记忆系统
+
+四层记忆架构：
+
+```
+┌─────────────────────────────────────────────────────┐
+│ Layer 4: VectorStore (ChromaDB)                     │ ← 语义检索
+│   vector_store.py (148 行)                          │
+├─────────────────────────────────────────────────────┤
+│ Layer 3: MemoryIndex (JSON)                         │ ← 分类 + 时间衰减评分
+│   memory_index.py (257 行)                          │
+├─────────────────────────────────────────────────────┤
+│ Layer 2: FileMemory (Markdown)                      │ ← 可直接编辑的用户/自我认知
+│   file_memory.py (55 行)                            │
+├─────────────────────────────────────────────────────┤
+│ Layer 1: ConversationMemory (SQLite)                │ ← 对话历史 + 用户事实
+│   conversation.py (653 行) + user_facts.py (81 行)  │
+└─────────────────────────────────────────────────────┘
+```
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `conversation.py` | 653 | SQLite + 内存缓存。`chat_id` 分组，WAL 模式，session 感知 |
+| `memory_index.py` | 257 | JSON 索引，分类存储，时间衰减评分 |
+| `vector_store.py` | 148 | ChromaDB 封装，相似度检索 |
+| `file_memory.py` | 55 | 读取 KEVIN.md / SELF.md |
+| `user_facts.py` | 81 | SQLite user_facts 表的结构化事实 |
+| `fact_extractor.py` | 231 | LLM 驱动的事实自动提取 |
+| `auto_extractor.py` | 214 | 自动记忆提取管线 |
+| `compactor.py` | 138 | LLM 驱动的历史压缩，输出到 `conversations/summaries/` |
+| `interest_tracker.py` | 172 | 兴趣图谱追踪 |
+| `reminders.py` | 326 | 提醒管理（SQLite） |
+| `todos.py` | 84 | 待办追踪 |
+| `discoveries.py` | 132 | 浏览器发现的知识存储 |
+
+---
+
+### src/heartbeat/（14 文件，~1,500 行）— 自主行为系统
+
+三种节拍，12 个 Action：
+
+| Action 文件 | selection_mode | 节拍 | 职责 |
+|------------|----------------|------|------|
+| `proactive.py` | decide | fast | 主动消息生成 |
+| `interest_proactive.py` | decide | fast | 兴趣驱动分享 |
+| `auto_memory.py` | decide | fast | 自动记忆提取 |
+| `autonomous_browsing.py` | decide | fast | 自主浏览 |
+| `consolidation.py` | always | slow | 记忆整理 |
+| `self_reflection.py` | decide | slow | 自省 |
+| `prompt_evolution.py` | decide | slow | 人格进化 |
+| `memory_maintenance.py` | always | slow | 索引优化 |
+| `compaction_check.py` | always | slow | 压缩触发 |
+| `system_health.py` | always | minute | 系统健康检查 |
+| `session_reaper.py` | always | minute | 过期会话清理 |
+| `task_notification.py` | always | minute | 任务通知 |
+
+`SenseContext` 是心跳的环境快照：`beat_type`、当前时间、上次交互时间、沉默小时数、用户画像、对话摘要、兴趣。
+
+---
+
+### src/app/（5 文件，~1,900 行）— 应用容器与启动
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `container.py` | 340 | **DI 根**。`prepare()` → 初始化 DB、装配 Brain 依赖；`start()` → 启动心跳/通道/API；`shutdown()` → 逆序清理 |
+| `telegram_app.py` | 690 | Telegram Bot API 适配。消息处理、命令路由 |
+| `telegram_delivery.py` | 599 | Telegram 消息投递。分段发送、Markdown 渲染、媒体支持 |
+| `task_view.py` | 221 | TaskViewStore。工具执行遥测 |
+
+---
+
+### src/adapters/（6 文件，~850 行）— 消息通道适配器
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `base.py` | 43 | `BaseAdapter` 抽象接口 + `ChannelType` 枚举（TELEGRAM / QQ / DESKTOP） |
+| `desktop_adapter.py` | 83 | SSE 推送的桌面端适配器 |
+| `qq_adapter.py` | 530 | OneBot v11 WebSocket 适配（QQ） |
+| `qq_group_context.py` | 55 | QQ 群上下文管理 |
+| `qq_group_filter.py` | 133 | QQ 群消息过滤（关键词/@ 触发） |
+
+---
+
+### src/api/（7 文件，~750 行）— Desktop API 服务
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `server.py` | 215 | FastAPI 启动 + SSE 端点 + 路由挂载 |
+| `event_bus.py` | 62 | 事件发布（桌面端 SSE 推送） |
+| `model_routing.py` | 110 | 运行时模型选择 API |
+| `routes/auth.py` | - | 认证路由（桌面端 token 认证） |
+| `routes/chat_ws.py` | - | WebSocket 对话路由 |
+| `routes/browser.py` | - | 浏览器控制路由 |
+| `routes/data.py` | - | 数据查询路由（记忆、事实、会话） |
+| `routes/system.py` | - | 系统信息路由（vitals、heartbeat） |
+
+---
+
+### src/auth/（5 文件，~1,670 行）— 认证系统
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `service.py` | 1023 | AuthManager。多策略认证（API key、OAuth、桌面 token）、用户身份解析 |
+| `storage.py` | 314 | 认证配置文件持久化 |
+| `openai_codex.py` | 222 | OpenAI Codex OAuth 流程 |
+| `resolver.py` | 38 | 用户 ID 解析 |
+| `models.py` | 64 | 认证数据模型 |
+
+---
+
+### src/guards/（3 文件，~520 行）— 安全守卫
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `browser_guard.py` | 267 | URL 黑白名单、内网阻断、敏感操作检测（购买/删除/支付） |
+| `memory_guard.py` | 128 | 记忆访问策略 |
+| `skill_guard.py` | 123 | 技能执行权限 |
+
+---
+
+### src/models/（2 文件）— 共享数据模型
+
+| 文件 | 行数 | 职责 |
+|------|------|------|
+| `message.py` | 88 | `RichMessage`：跨通道富媒体消息（text + images，支持 URL/Base64/路径） |
+
+---
+
+## 关键数据类型
 
 ```python
+# --- 工具系统 (src/tools/types.py) ---
+
+@dataclass(frozen=True)
+class ToolSpec:                        # 工具描述符（不可变）
+    name: str
+    description: str                   # 展示给 LLM
+    json_schema: dict                  # OpenAI function calling 格式
+    executor: ToolExecutor             # async (req, ctx) -> result
+    capability: str                    # 主标签 (shell/web/file/memory/schedule/skill/code/verify/general/browser)
+    capabilities: tuple[str, ...]      # 附加标签
+    visibility: "model" | "internal"   # internal 不展示给 LLM
+    risk_level: "low" | "medium" | "high"
+
+@dataclass(frozen=True)
+class ToolExecutionContext:            # 工具执行环境
+    execute_shell: Callable
+    shell_default_cwd: str
+    workspace_root: str
+    services: dict[str, Any]           # 注入 skill_manager、reminder_scheduler 等
+    adapter: str                       # "telegram" / "qq" / "desktop"
+    user_id: str
+    auth_level: int                    # 0=GUEST, 1=TRUSTED, 2=OWNER
+    chat_id: str
+    memory: ConversationMemory | None
+    memory_index: MemoryIndex | None
+
+@dataclass(frozen=True)
+class ToolExecutionRequest:            # 工具执行请求
+    name: str
+    arguments: dict[str, Any]
+
 @dataclass
-class ToolCallRequest:
+class ToolExecutionResult:             # 工具执行结果
+    success: bool
+    payload: dict[str, Any]
+    reason: str
+    shell_result: ShellResult | None
+
+# --- LLM 类型 (src/core/llm_types.py) ---
+
+@dataclass
+class ToolCallRequest:                 # LLM 返回的工具调用请求
     id: str
     name: str
     arguments: dict[str, Any]
 
 @dataclass
-class ToolTurnResult:
+class ToolTurnResult:                  # 一轮 LLM 响应
     text: str
     tool_calls: list[ToolCallRequest]
-    continuation_message: dict[str, Any] | None
-```
+    continuation_message: dict | None
 
----
+# --- 任务类型 (src/core/task_types.py) ---
 
-### TaskRuntime（`src/core/task_runtime.py`）
-
-工具循环的实现主体。`complete_chat()` 是核心循环：
-
-```
-while rounds < MAX_TOOL_ROUNDS:
-    result = await router.tool_turn(messages, tools, purpose="chat")
-    if not result.tool_calls:
-        break   # 模型决定停止，返回文本
-    for call in result.tool_calls:
-        # VitalGuard 检查 → AuthorityGate 检查 → 执行工具
-        tool_result = await execute_tool(call, ...)
-        messages.append(tool_result_as_message)
-```
-
-内置循环检测（`LoopDetectionState`）：generic_repeat、ping_pong、known_poll_no_progress 三种检测器，可通过环境变量独立开关。
-
-**`RuntimeDeps`**（注入到工具执行层的底层能力）：
-
-```python
 @dataclass(frozen=True)
-class RuntimeDeps:
-    execute_shell: Callable       # Shell 执行函数
-    policy: ShellRuntimePolicy    # Shell 安全策略
+class RuntimeDeps:                     # 工具循环的底层依赖
+    execute_shell: Callable
+    policy: ShellRuntimePolicy
     shell_default_cwd: str
     shell_allow_sudo: bool
-```
 
----
-
-### PromptBuilder（`src/core/prompt_builder.py`）
-
-将所有上下文来源组装为 system prompt。分层顺序：
-
-```
-Layer 0    — soul.md（核心人格，depth-0 注入防漂移）
-Layer 1    — evolution/rules.md（从经验中学到的行为规则）
-Layer 0.5  — 当前时间（台北时区）
-Layer 2    — data/memory/KEVIN.md（对用户的了解，文件记忆）
-Layer 2.5  — SQLite user_facts（结构化事实补充）
-Layer 3    — MemoryIndex 近期条目（semantic recall）
-Layer 3.5  — VectorStore 相关记忆（向量检索）
-Layer 4    — 对话摘要（recent_summaries）
-Layer 5    — 技能概览（skill_manager.overview_text()）
-Layer 6    — voice.md 注入（✕/✓ 行为约束，depth-0）
-```
-
-**Depth-0 注入**：voice reminder 和 persona anchor 写在 `messages` 数组的最后一条 `user` 消息之前，确保不被长对话历史稀释。
-
----
-
-### HeartbeatEngine（`src/core/heartbeat.py`）
-
-自主感知与行动的定时循环。三种节拍：
-
-| 节拍 | 触发条件 | 典型用途 |
-|---|---|---|
-| `fast` | 每 N 分钟（`HEARTBEAT_FAST_INTERVAL_MINUTES`，默认 60） | 主动消息、兴趣驱动分享 |
-| `slow` | 每日一次（`HEARTBEAT_SLOW_HOUR`，默认 3 AM） | 记忆整理、自省、人格进化 |
-| `minute` | 每分钟 | `always` 模式 action（如 ReminderScheduler） |
-
-**扩展心跳 Action：**
-
-```python
-class MyAction(HeartbeatAction):
-    name = "my_action"
-    description = "描述给 LLM 看的一句话"
-    beat_types = ["fast"]          # 在哪个节拍执行
-    selection_mode = "decide"      # "decide" = LLM 选择；"always" = 无条件执行
-
-    async def execute(self, ctx: SenseContext, brain, send_fn) -> None:
-        ...
-```
-
-注册到 `AppContainer._build_heartbeat()` 中的 `heartbeat.registry.register(MyAction())`。
-
-`SenseContext` 包含：`beat_type`、当前时间、上次交互时间、沉默小时数、用户画像摘要、对话摘要、兴趣摘要。
-
----
-
-### Memory（记忆系统）
-
-记忆分四层，各司其职：
-
-| 层 | 模块 | 存储 | 特点 |
-|---|---|---|---|
-| 对话历史 | `src/memory/conversation.py` | SQLite + 内存缓存 | `chat_id` 分组，WAL 模式 |
-| 用户事实 | `ConversationMemory.user_facts` | SQLite `user_facts` 表 | 结构化 key-value |
-| 文件记忆 | `src/memory/file_memory.py` | Markdown 文件 | 可直接编辑，KEVIN.md / SELF.md |
-| 记忆索引 | `src/memory/memory_index.py` | `data/memory/_index.json` | 分类 + 时间衰减评分 |
-| 向量记忆 | `src/memory/vector_store.py` | ChromaDB | 语义检索 |
-
-**会话（Session）**：`SessionManager` 将长对话切分为带 topic 的 Session，每个 Session 有独立的消息序列，通过 `memory.get_session_messages(session_id)` 获取。
-
-**压缩（Compaction）**：`ConversationCompactor` 当历史超过阈值时，调用 LLM 生成摘要，写入 `data/memory/conversations/summaries/`，然后清空 SQLite 历史。
-
----
-
-### Tool System（工具系统）
-
-**`ToolSpec`**（`src/tools/types.py`）是工具的不可变描述符：
-
-```python
 @dataclass(frozen=True)
-class ToolSpec:
-    name: str
-    description: str           # 展示给 LLM 的描述
-    json_schema: dict          # 参数 schema（OpenAI function calling 格式）
-    executor: ToolExecutor     # 异步执行函数
-    capability: str            # 主标签（shell/web/file/memory/schedule/...）
-    capabilities: tuple[str]   # 附加标签
-    visibility: "model" | "internal"  # internal 不展示给 LLM
-    risk_level: "low" | "medium" | "high"
-```
-
-**`ToolRegistry`** 按名称和 capability 过滤工具列表，`TaskRuntime` 在每次调用前通过 `chat_tools()` 获取当前上下文适用的工具集。
-
-**`ToolExecutionContext`** 是每次工具调用时传入执行函数的上下文：
-
-```python
-@dataclass(frozen=True)
-class ToolExecutionContext:
-    execute_shell: Callable
-    shell_default_cwd: str
-    workspace_root: str
-    services: dict[str, Any]   # 注入 skill_manager、reminder_scheduler 等
-    adapter: str               # 消息来源（"telegram"/"qq"/"desktop"）
-    user_id: str
-    auth_level: int            # AuthLevel 枚举值
-    chat_id: str
-    memory: ConversationMemory | None
-    memory_index: MemoryIndex | None
-```
-
-**新增工具**：在 `src/tools/handlers.py` 实现执行函数，在 `src/tools/registry.py` 的 `build_default_tool_registry()` 注册 `ToolSpec`。
-
-**RuntimeProfile**（`src/core/runtime_profiles.py`）按执行上下文过滤可用工具集：
-
-| Profile | 用途 | 包含的 capability |
-|---|---|---|
-| `chat_shell` | 主对话 | shell, web, skill, memory, schedule, general, browser |
-| `coder_snippet` | 代码片段执行 | code, verify |
-| `coder_workspace` | 工作区级代码操作 | code, file, verify |
-| `file_ops` | 文件读写 | file |
-
----
-
-### BrowserManager（浏览器子系统）
-
-`BrowserManager`（`src/core/browser_manager.py`）基于 Playwright 持久化上下文控制 Chromium：
-
-- **持久化上下文**：用户数据目录 `data/browser/profile/`，保留 Cookie / LocalStorage
-- **Tab 管理**：最多 `BROWSER_MAX_TABS`（默认 8）个标签页
-- **DOM 提取**：结构化元素状态输出，供 LLM 消费（`BROWSER_MAX_ELEMENT_COUNT` 控制数量上限）
-- **截图**：保存到 `data/browser/screenshots/`，按 `BROWSER_SCREENSHOT_RETAIN_DAYS` 自动清理
-- **视觉理解**：当页面图片占比高（超过 `BROWSER_VISION_IMG_THRESHOLD`），截图发送到独立 LLM slot（`BROWSER_VISION_SLOT`）生成视觉描述，带 TTL 缓存
-
-**安全层：`BrowserGuard`**（`src/guards/browser_guard.py`）
-
-- URL 黑白名单（`BROWSER_URL_BLACKLIST` / `BROWSER_URL_WHITELIST`）
-- 内网访问阻断（`BROWSER_BLOCK_INTERNAL_NETWORK`）
-- 敏感操作检测（删除、支付、购买等，`BROWSER_SENSITIVE_ACTION_WORDS`）
-
-启用：`BROWSER_ENABLED=true`。25+ 个 `BROWSER_*` 环境变量在 `config/settings.py` 中定义。
-
-**自主浏览**（`src/heartbeat/actions/autonomous_browsing.py`）：心跳驱动的后台浏览行为，发现的知识写入 `src/memory/discoveries.py`。由 `BROWSE_ENABLED` 控制。
-
----
-
-### Vitals（生命体征）
-
-`src/core/vitals.py` — 轻量级生命周期追踪模块：
-
-- **启动/运行时间**：`boot_time()`、`uptime_seconds()`、`uptime_human()`
-- **重启感知**：持久化到 `data/vitals.json`（boot_time + last_active + pid）。重启后能知道"睡了多久"
-- **系统快照**：`system_snapshot()` 采集 CPU/内存/磁盘（依赖 psutil）
-- **桌面环境感知**：`update_desktop_sensing()` 接收桌面端推送的用户状态（当前应用、活动状态），10 分钟 TTL
-
----
-
-### Channel / Adapter（消息通道）
-
-`BaseAdapter`（`src/adapters/base.py`）定义通道接口：
-
-```python
-class BaseAdapter(ABC):
-    channel_type: ChannelType
-
-    async def start(self) -> None: ...
-    async def stop(self) -> None: ...
-    async def send_message(self, chat_id: str, message: RichMessage) -> None: ...
-    async def is_connected(self) -> bool: ...
-```
-
-现有实现：
-
-| 适配器 | 协议 | 文件 |
-|---|---|---|
-| `TelegramApp` | Bot API polling | `src/app/telegram_app.py` |
-| `QQAdapter` | OneBot v11 WebSocket | `src/adapters/qq_adapter.py` |
-| `DesktopChannelAdapter` | 本地内存（SSE 推送） | `src/adapters/desktop_adapter.py` |
-
-`ChannelManager`（`src/core/channel_manager.py`）管理所有已注册的 Adapter，主动消息路由优先级：Desktop > last_active > 任意已连接通道。
-
-`RichMessage`（`src/models/message.py`）是跨通道的富媒体消息容器，支持文本、图片（URL/Base64/路径）混合组合。
-
----
-
-### Skills（技能系统）
-
-Skills 是可被 LLM 工具调用（或用户 `/command` 触发）的结构化任务模板，存为 YAML/Markdown 文件。
-
-目录扫描顺序（`SkillManager`）：`skills/bundled/` → `skills/managed/` → `SKILLS_EXTRA_DIRS`。
-
-**触发方式两种：**
-
-- `command_dispatch = "dialogue"`：将技能内容注入 system prompt，走正常对话 → LLM 生成回复
-- `command_dispatch = "tool"`：直接派发到白名单工具（`SKILLS_DISPATCH_TOOL_WHITELIST`），跳过对话
-
-**经验技能**（`ExperienceSkillManager`，`src/core/experience_skills.py`）：Lapwing 自动从过往对话中提炼的操作经验，语义检索后注入 prompt 中的"参考经验"区块。
-
----
-
-### 权限与存活保护
-
-**`AuthorityGate`**（`src/core/authority_gate.py`）：
-
-```
-OWNER   — Kevin（config 中的 OWNER_IDS），可执行所有工具
-TRUSTED — 信任用户（TRUSTED_IDS），可用普通功能
-GUEST   — 其他人，仅聊天
-```
-
-Desktop 本地连接默认 OWNER（`DESKTOP_DEFAULT_OWNER=true`）。
-
-**`VitalGuard`**（`src/core/vital_guard.py`）：
-
-在 `TaskRuntime` 执行 Shell 或文件写入工具前，检查目标路径是否命中 vital manifest。核心文件（soul.md、constitution.md、lapwing.db 等）被保护，未授权修改请求直接拒绝。
-
-**`ConstitutionGuard`**（`src/core/constitution_guard.py`）：
-
-进化引擎修改人格文件时，验证 diff 不违反宪法条款。
-
-**Watchdog Sentinel**（`watchdog/`）：独立进程，对 vital files 做周期性哈希校验，异常时自动从备份恢复。
-
----
-
-## 桌面端 (Desktop v2)
-
-`desktop-v2/` 是活跃开发的桌面端前端，替代旧版 `desktop/`（Tauri v1 + React 18）。
-
-**技术栈**：Tauri v2, React 19, TypeScript, Zustand（状态管理）, Tailwind CSS 4, shadcn/ui, CodeMirror（Markdown 编辑）, Recharts（仪表盘图表）, react-router-dom, Lucide 图标。
-
-**页面**：ChatPage, DashboardPage, MemoryPage, ModelRoutingPage, PersonaPage, SensingPage, SettingsPage, TaskCenterPage。
-
-**状态管理**：Zustand stores 在 `desktop-v2/src/stores/`（chat.ts, server.ts）。类型定义在 `desktop-v2/src/types/`。
-
-**组件**：按领域组织在 `desktop-v2/src/components/` 下（chat, dashboard, layout, memory, model-routing, persona, sensing, shared, tasks, ui）。
-
-```bash
-cd desktop-v2 && npm install
-cd desktop-v2 && npm run dev         # Vite dev server (localhost:1420)
-cd desktop-v2 && npm run tauri dev   # 完整 Tauri v2 应用
-cd desktop-v2 && npm run build       # 生产构建
+class RuntimeProfile:                  # 工具剖面 (src/core/runtime_profiles.py)
+    name: str                          # chat_shell / coder_snippet / coder_workspace / file_ops
+    capabilities: frozenset[str]       # 允许的 capability 集合
+    tool_names: frozenset[str]         # 额外允许的工具名
+    include_internal: bool
+    shell_policy_enabled: bool
 ```
 
 ---
 
-## 关键数据结构
+## 模块依赖图
 
 ```
-RichMessage           — 跨通道富媒体消息（text + image list）
-ToolSpec              — 工具描述符（不可变）
-ToolExecutionRequest  — {name, arguments}
-ToolExecutionResult   — {success, payload, reason}
-ToolExecutionContext  — 工具执行时的环境（shell/auth/services）
-SenseContext          — 一次心跳的环境快照
-_ThinkCtx             — Brain._prepare_think() 的共享前置结果
-ToolCallRequest       — LLM 返回的工具调用请求
-ToolTurnResult        — 一轮 LLM 响应（text + tool_calls）
-AuthLevel             — GUEST(0) / TRUSTED(1) / OWNER(2)
+                          ┌─────────────┐
+                          │   main.py   │
+                          └──────┬──────┘
+                                 │
+                          ┌──────▼──────┐
+                          │AppContainer │ ← DI 根（src/app/container.py）
+                          └──────┬──────┘
+                    ┌────────────┼────────────────────────┐
+                    │            │                        │
+             ┌──────▼──────┐  ┌─▼──────────┐  ┌─────────▼─────────┐
+             │ LapwingBrain│  │HeartbeatEng │  │ ChannelManager    │
+             │ (门面)       │  │ (定时触发)   │  │ ├─TelegramApp     │
+             └──────┬──────┘  └─────┬──────┘  │ ├─QQAdapter       │
+                    │               │          │ └─DesktopAdapter  │
+         ┌──────────┼───────┐       │          └───────────────────┘
+         │          │       │       │
+  ┌──────▼───┐ ┌───▼────┐ ┌▼──────────────┐
+  │PromptBld │ │TaskRtm │ │ConversationMem│
+  │ (8 层)    │ │(工具循环)│ │ (SQLite)      │
+  └──────────┘ └───┬────┘ └───────────────┘
+                   │
+            ┌──────┼──────┐
+            │      │      │
+      ┌─────▼──┐ ┌▼────┐ ┌▼──────────┐
+      │LLMRoutr│ │Tools│ │ Guards    │
+      │(多 slot)│ │Regis│ │├VitalGuard│
+      └────────┘ │(824L)│ │├AuthGate  │
+                 └─────┘ │└BrowserGd │
+                         └───────────┘
 ```
+
+**依赖方向规则：**
+- `core/` 模块之间可互相引用（Brain → TaskRuntime → LLMRouter → ToolRegistry）
+- `tools/` 依赖 `core/`（通过 `ToolExecutionContext.services` 注入）
+- `memory/` 被 `core/` 和 `tools/` 引用
+- `guards/` 被 `core/task_runtime.py` 在工具执行前调用
+- `adapters/` 和 `api/` 依赖 `core/brain.py` 和 `models/`
+- `heartbeat/actions/` 依赖 `core/brain.py`（每个 action 接收 brain 实例）
+- 所有模块依赖 `config/settings.py`
 
 ---
 
-## 配置与环境变量
+## Brain 可选依赖注入表
 
-所有配置在 `config/settings.py` 中通过 `os.getenv()` 加载，文件来源 `config/.env`。
+`AppContainer._configure_brain_dependencies()` 注入到 `brain.xxx`：
 
-**模型路由（三组）：**
+| 属性 | 类型 | Feature Flag | 职责 |
+|------|------|-------------|------|
+| `knowledge_manager` | `KnowledgeManager` | 始终 | 外部知识文件 |
+| `vector_store` | `VectorStore` | 始终 | 语义检索 |
+| `skill_manager` | `SkillManager` | `SKILLS_ENABLED` | 技能系统 |
+| `interest_tracker` | `InterestTracker` | 始终 | 兴趣图谱 |
+| `self_reflection` | `SelfReflection` | 始终 | 自省 |
+| `constitution_guard` | `ConstitutionGuard` | 始终 | 宪法保护 |
+| `tactical_rules` | `TacticalRules` | 始终 | 纠错规则 |
+| `evolution_engine` | `EvolutionEngine` | 始终 | 人格进化 |
+| `experience_skill_manager` | `ExperienceSkillManager` | `EXPERIENCE_SKILLS_ENABLED` | 经验检索 |
+| `session_manager` | `SessionManager` | `SESSION_ENABLED` | 会话分段 |
+| `memory_index` | `MemoryIndex` | 始终 | 记忆索引 |
+| `auto_memory_extractor` | `AutoMemoryExtractor` | `AUTO_MEMORY_EXTRACT_ENABLED` | 自动记忆提取 |
+| `task_flow_manager` | `TaskFlowManager` | 始终 | 任务流 |
+| `quality_checker` | `ReplyQualityChecker` | `QUALITY_CHECK_ENABLED` | 回复质量检查 |
+| `browser_manager` | `BrowserManager` | `BROWSER_ENABLED` | 浏览器控制 |
+
+---
+
+## LLM 路由系统
+
+按 purpose slot 路由到不同模型：
 
 ```
-LLM_BASE_URL / LLM_MODEL         — 通用 fallback
-LLM_CHAT_BASE_URL / LLM_CHAT_MODEL  — chat purpose
-LLM_TOOL_BASE_URL / LLM_TOOL_MODEL  — tool purpose
-NIM_BASE_URL / NIM_MODEL         — heartbeat purpose
+┌─────────────┬───────────────────────────────────────┬──────────────────────┐
+│ Slot        │ Purpose 枚举值                         │ 环境变量              │
+├─────────────┼───────────────────────────────────────┼──────────────────────┤
+│ chat        │ main_conversation, persona_expression │ LLM_CHAT_BASE_URL    │
+│             │ self_reflection                       │ LLM_CHAT_MODEL       │
+├─────────────┼───────────────────────────────────────┼──────────────────────┤
+│ tool        │ lightweight_judgment, memory_processing│ LLM_TOOL_BASE_URL   │
+│             │ agent_execution                       │ LLM_TOOL_MODEL       │
+├─────────────┼───────────────────────────────────────┼──────────────────────┤
+│ heartbeat   │ heartbeat_proactive                   │ NIM_BASE_URL         │
+│             │                                       │ NIM_MODEL            │
+├─────────────┼───────────────────────────────────────┼──────────────────────┤
+│ fallback    │ 未匹配时                               │ LLM_BASE_URL         │
+│             │                                       │ LLM_MODEL            │
+└─────────────┴───────────────────────────────────────┴──────────────────────┘
 ```
 
-**Feature Flags（`FEATURE_ENABLED` 命名模式）：**
+自动检测：base_url 含 `/anthropic` → `AsyncAnthropic`，否则 → `AsyncOpenAI`。
+
+运行时模型切换通过 `ModelConfigManager` 持久化到 `data/config/model_routing.json`。
+
+---
+
+## 桌面前端（desktop-v2/，Tauri v2 + React 19，~3,400 行）
 
 ```
-SKILLS_ENABLED                — Skills 系统
+desktop-v2/src/
+├── main.tsx, App.tsx, router.tsx       # 入口与路由
+│
+├── pages/                              # 8 个页面
+│   ├── ChatPage.tsx                    # 主对话 UI
+│   ├── DashboardPage.tsx               # 仪表盘（指标、资源环、通道状态）
+│   ├── MemoryPage.tsx                  # 记忆浏览器
+│   ├── TaskCenterPage.tsx              # 任务执行视图
+│   ├── ModelRoutingPage.tsx            # 模型选择 UI
+│   ├── PersonaPage.tsx                 # 人格编辑（CodeMirror Markdown 编辑器）
+│   ├── SensingPage.tsx                 # 环境感知展示
+│   └── SettingsPage.tsx                # 配置页
+│
+├── components/
+│   ├── chat/                           # MessageBubble, MessageInput, MessageList, ToolCallIndicator
+│   ├── dashboard/                      # MetricCard, HeartbeatCard, ReminderList, ResourceRing, ChannelStatus
+│   ├── layout/                         # AppShell, Sidebar, StatusBar
+│   ├── tasks/                          # TaskFlowCard, ToolCallDetail
+│   └── ui/                             # 17 个 shadcn/ui 基础组件
+│
+├── hooks/
+│   ├── useSSE.ts                       # Server-Sent Events 连接
+│   └── useWebSocket.ts                 # WebSocket 连接
+│
+├── stores/                             # Zustand 状态管理
+│   ├── chat.ts                         # 消息历史、会话状态
+│   └── server.ts                       # 服务器配置、连接状态
+│
+├── lib/
+│   ├── api.ts                          # HTTP API 客户端
+│   └── utils.ts                        # 工具函数（cn() 等）
+│
+└── types/                              # TypeScript 类型定义
+    ├── api.ts                          # API 响应类型
+    ├── chat.ts                         # 消息与对话类型
+    ├── sensing.ts                      # 感知数据类型
+    └── tasks.ts                        # 任务与执行类型
+```
+
+**与后端通信**：SSE（`/events` 端点，实时推送）+ WebSocket（`/ws/chat`，对话）+ REST API。
+
+---
+
+## 配置系统
+
+所有配置通过 `config/settings.py` 的 `os.getenv()` 加载，源文件 `config/.env`。
+
+### Feature Flags（`FEATURE_ENABLED` 模式）
+
+```
+SKILLS_ENABLED                — 技能系统
 MEMORY_CRUD_ENABLED           — 记忆 CRUD 工具
-AUTO_MEMORY_EXTRACT_ENABLED   — 自动记忆提取（Wave 1）
+AUTO_MEMORY_EXTRACT_ENABLED   — 自动记忆提取
 SELF_SCHEDULE_ENABLED         — 自调度工具
 SESSION_ENABLED               — 会话分段
 EXPERIENCE_SKILLS_ENABLED     — 经验技能系统
 QUALITY_CHECK_ENABLED         — 回复质量检查
 QQ_ENABLED                    — QQ 通道
-BROWSER_ENABLED               — 浏览器子系统
+BROWSER_ENABLED               — 浏览器子系统（25+ BROWSER_* 子配置）
 BROWSE_ENABLED                — 自主浏览（心跳动作）
 LOOP_DETECTION_ENABLED        — 工具循环检测
 SHELL_ENABLED                 — Shell 执行
 DELEGATION_ENABLED            — 任务委派
 MESSAGE_SPLIT_ENABLED         — 消息分段
+CHAT_WEB_TOOLS_ENABLED        — 聊天中的 web 工具
 ```
 
 ---
 
-## 数据目录结构
+## 数据目录
 
 ```
 data/
-  identity/
-    soul.md             ← 核心人格（Lapwing 不可自改）
-    constitution.md     ← 进化宪法（ConstitutionGuard 保护）
-  memory/
-    KEVIN.md            ← 对 Kevin 的了解（文件记忆）
-    SELF.md             ← 自我认知
-    _index.json         ← MemoryIndex 索引
-    conversations/
-      summaries/        ← 对话压缩摘要（Markdown）
-    sessions/           ← SessionManager 的 session 元数据
-  evolution/
-    rules.md            ← 从纠错中积累的行为规则
-    interests.md        ← 兴趣图谱
-    changelog.md        ← 人格变化日志（diff 格式）
-  browser/
-    profile/            ← Playwright 持久化上下文（Cookie / LocalStorage）
-    screenshots/        ← 页面截图（自动按天清理）
-  credentials/
-    vault.enc           ← 加密凭据存储
-  config/
-    model_routing.json  ← 运行时模型路由配置
-  lapwing.pid           ← 进程锁文件
-  lapwing.db            ← SQLite（conversations + user_facts + reminders）
-  vitals.json           ← 启动/关闭状态（重启感知）
-  chroma/               ← ChromaDB 向量存储
+├── identity/
+│   ├── soul.md                 # 核心人格（VitalGuard 保护，Lapwing 不可自改）
+│   └── constitution.md         # 进化宪法（ConstitutionGuard 保护）
+├── memory/
+│   ├── KEVIN.md                # 对用户的了解（FileMemory）
+│   ├── SELF.md                 # 自我认知（FileMemory）
+│   ├── _index.json             # MemoryIndex（分类 + 时间衰减）
+│   ├── conversations/summaries/# LLM 压缩摘要（Markdown）
+│   ├── sessions/               # SessionManager 的 session 元数据
+│   └── journal/                # 结构化记忆条目
+├── evolution/
+│   ├── rules.md                # 行为规则（从纠错学习积累）
+│   ├── interests.md            # 兴趣图谱
+│   └── changelog.md            # 人格变化日志（diff 格式）
+├── browser/
+│   ├── profile/                # Playwright 持久化上下文（Cookie / LocalStorage）
+│   └── screenshots/            # 页面截图（按天自动清理）
+├── config/
+│   └── model_routing.json      # 运行时模型路由配置（ModelConfigManager）
+├── credentials/vault.enc       # 加密凭据存储
+├── chroma/                     # ChromaDB 向量索引
+├── tasks/                      # TaskFlow 检查点
+├── knowledge/                  # 外部知识文件
+├── backups/                    # soul.md / constitution.md 自动备份
+├── lapwing.db                  # SQLite 主库（conversations, user_facts, reminders, sessions）
+├── lapwing.pid                 # 进程锁文件
+└── vitals.json                 # 启动/关闭状态（重启感知）
 ```
 
 ---
 
-## 扩展指南
+## 测试结构（85 文件，~15,800 行）
 
-### 新增一个工具
+测试目录镜像 src/ 结构：
 
-1. 在 `src/tools/handlers.py` 实现 `async def my_tool(req, ctx) -> ToolExecutionResult`
-2. 在 `src/tools/registry.py` 的 `build_default_tool_registry()` 中注册：
-   ```python
-   registry.register(ToolSpec(
-       name="my_tool",
-       description="...",
-       json_schema={...},
-       executor=my_tool,
-       capability="my_cap",
-       risk_level="low",
-   ))
-   ```
-3. 若需权限限制，在 `src/core/authority_gate.py` 的工具权限表中添加条目。
+```
+tests/
+├── core/          (27 文件) — brain、task_runtime、llm_router、evolution、authority、shell_policy 等
+├── tools/         (14 文件) — registry、shell、file、web、memory、browser 等
+├── memory/        (10 文件) — conversation、fact、interest、compactor 等
+├── heartbeat/     (11 文件) — engine、registry、各 action
+├── app/           (5 文件)  — container、telegram、task_view
+├── auth/          (4 文件)  — oauth、storage、routing
+├── adapters/      (2 文件)  — telegram、qq
+├── api/           (2 文件)  — server、auth
+├── guards/        (2 文件)  — browser_guard、memory_guard
+└── 根级别         (2 文件)  — import_smoke、main_commands
+```
 
-### 新增一个心跳 Action
+**测试模式**：mock LLMRouter / ConversationMemory，定义 mock 工具结果，断言状态变更。`pytest-asyncio`（asyncio_mode=auto），无 CI。
 
-1. 在 `src/heartbeat/actions/` 创建文件，继承 `HeartbeatAction`（见上方接口说明）
-2. 在 `AppContainer._build_heartbeat()` 中 `heartbeat.registry.register(MyAction())`
+---
 
-### 新增一个消息通道
+## Prompt 模板（prompts/，18 个 Markdown 文件）
 
-1. 继承 `BaseAdapter`，实现 `start/stop/send_message/is_connected`
-2. 在 `main.py` 中构造 adapter 并调用 `container.channel_manager.register(ChannelType.XXX, adapter)`
-3. 消息进入 brain：调用 `brain.think_conversational(chat_id, text, send_fn, adapter="xxx", user_id="...")`
+```
+prompts/
+├── lapwing_soul.md              # 核心人格定义（注入 system prompt Layer 0）
+├── lapwing_voice.md             # 行为约束（✕/✓ 对比，depth-0 注入）
+├── lapwing_capabilities.md      # 能力概览
+├── lapwing_examples.md          # 使用示例
+├── self_reflection.md           # 自省 prompt
+├── constitution_check.md        # 宪法检查 prompt
+├── compaction.md                # 历史压缩指令
+├── evolution_diff.md            # Diff 应用模板
+├── heartbeat_*.md (5 个)        # 心跳 action prompt
+├── memory_extract.md            # 事实提取模板
+├── interest_extract.md          # 兴趣检测 prompt
+├── browser_vision_describe.md   # 视觉理解 prompt
+├── correction_analysis.md       # 纠错分析 prompt
+└── group_engage_decision.md     # QQ 群参与决策 prompt
+```
+
+所有 prompt 通过 `prompt_loader.py` 热加载，改 prompt 不需改代码。
+
+---
+
+## 扩展模式
+
+### 新增工具
+
+```python
+# 1. 实现处理器 (src/tools/my_tool.py 或 handlers.py)
+async def my_tool(req: ToolExecutionRequest, ctx: ToolExecutionContext) -> ToolExecutionResult:
+    return ToolExecutionResult(success=True, payload={"result": "..."})
+
+# 2. 注册到 src/tools/registry.py → build_default_tool_registry()
+registry.register(ToolSpec(
+    name="my_tool", description="...", json_schema={...},
+    executor=my_tool, capability="my_cap", risk_level="low",
+))
+
+# 3. （可选）src/core/authority_gate.py 添加权限条目
+```
+
+### 新增心跳 Action
+
+```python
+# 1. 创建 src/heartbeat/actions/my_action.py
+class MyAction(HeartbeatAction):
+    name = "my_action"
+    description = "描述给 LLM"
+    beat_types = ["fast"]
+    selection_mode = "decide"  # "decide" = LLM 选择，"always" = 无条件
+
+    async def execute(self, ctx: SenseContext, brain, send_fn) -> None: ...
+
+# 2. AppContainer._build_heartbeat() 中注册
+```
+
+### 新增消息通道
+
+```python
+# 1. 继承 BaseAdapter (src/adapters/base.py)，实现 start/stop/send_message/is_connected
+# 2. main.py 中 container.channel_manager.register(ChannelType.XXX, adapter)
+# 3. 消息进入: brain.think_conversational(chat_id, text, send_fn, adapter="xxx", user_id="...")
+```
+
+---
+
+## 开发约定
+
+- **语言**：代码注释中文，CLAUDE.md 和 commit 英文
+- **导入**：绝对导入 `from src.core.brain import ...`
+- **配置**：全部通过 `config/.env` + `config/settings.py` 的 `os.getenv()`
+- **日志**：`logging.getLogger("lapwing.module_name")`
+- **类型提取**：核心类型放独立模块（`task_types.py`、`llm_types.py`、`tools/types.py`）
+- **测试**：`pytest` + `pytest-asyncio`（asyncio_mode=auto），无 CI，测试是唯一质量门
+- **Prompt**：`prompts/` 目录 Markdown 文件，热加载，改 prompt 不需要改代码
+- **部署**：`bash scripts/deploy.sh`，不要直接 `nohup python main.py &`
