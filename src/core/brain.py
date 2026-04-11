@@ -12,6 +12,7 @@ from src.core.llm_router import LLMRouter
 from src.core.prompt_loader import load_prompt
 from src.core.reasoning_tags import (
     split_on_markers,
+    split_on_paragraphs,
     strip_internal_thinking_tags,
     strip_split_markers,
 )
@@ -34,6 +35,8 @@ from config.settings import (
     MESSAGE_SPLIT_DELAY_MAX,
     MESSAGE_SPLIT_DELAY_PER_CHAR,
     MESSAGE_SPLIT_ENABLED,
+    MESSAGE_SPLIT_FALLBACK_NEWLINE,
+    MESSAGE_SPLIT_SINGLE_NL_MIN_LEN,
     SHELL_ALLOW_SUDO,
     SHELL_DEFAULT_CWD,
     SHELL_ENABLED,
@@ -138,6 +141,8 @@ class LapwingBrain:
         self.task_flow_manager = None  # Set externally (TaskFlowManager | None)
         self.quality_checker = None  # Set externally (ReplyQualityChecker | None)
         self.delegation_manager = None  # Set externally (DelegationManager | None)
+        self.consciousness_engine = None  # Set externally (ConsciousnessEngine | None)
+        self._conversation_end_task: asyncio.Task | None = None
 
     async def init_db(self) -> None:
         """初始化数据库连接和表结构。"""
@@ -299,6 +304,22 @@ class LapwingBrain:
     def _inject_voice_reminder(self, messages: list[dict]) -> None:
         from src.core.prompt_builder import inject_voice_reminder
         inject_voice_reminder(messages)
+
+    def _schedule_conversation_end(self) -> None:
+        """延迟判定对话结束。用户最后一条消息后 N 秒无新消息算结束。"""
+        if self.consciousness_engine is None:
+            return
+        if self._conversation_end_task is not None:
+            self._conversation_end_task.cancel()
+
+        from config.settings import CONSCIOUSNESS_CONVERSATION_END_DELAY
+
+        async def _delayed_end():
+            await asyncio.sleep(CONSCIOUSNESS_CONVERSATION_END_DELAY)
+            if self.consciousness_engine is not None:
+                self.consciousness_engine.on_conversation_end()
+
+        self._conversation_end_task = asyncio.create_task(_delayed_end())
 
     def _recent_messages(
         self,
@@ -670,8 +691,13 @@ class LapwingBrain:
         Returns:
             完整回复文本（所有中间文字 + 最终文字拼接），用于记录到记忆
         """
+        # 通知意识引擎：对话开始
+        if self.consciousness_engine is not None:
+            self.consciousness_engine.on_conversation_start()
+
         ctx = await self._prepare_think(chat_id, user_message, send_fn=send_fn)
         if ctx.early_reply is not None:
+            self._schedule_conversation_end()  # ← ADD THIS
             return ctx.early_reply
 
         # 跟踪通过流式回调已发出的文字片段
@@ -680,13 +706,33 @@ class LapwingBrain:
         originals_sent: list[str] = []
 
         async def _send_with_split(text: str) -> None:
-            """按 [SPLIT] 拆分后逐条发送，片段间模拟打字延迟。"""
-            if not (MESSAGE_SPLIT_ENABLED and "[" in text):
+            """按 [SPLIT] 拆分后逐条发送，片段间模拟打字延迟。
+
+            如果模型未输出 [SPLIT] 但文本含多个段落（\\n\\n），
+            在 MESSAGE_SPLIT_FALLBACK_NEWLINE 开启时自动按段落拆分。
+            """
+            if not MESSAGE_SPLIT_ENABLED:
                 await send_fn(text)
                 parts_sent.append(text)
                 originals_sent.append(text)
                 return
-            segments = split_on_markers(text)
+
+            # 优先按 [SPLIT] 标记拆分
+            if "[" in text:
+                segments = split_on_markers(text)
+            else:
+                segments = [text]
+
+            # Fallback 1：模型没输出 [SPLIT]，按 \n\n 段落拆分
+            if len(segments) <= 1 and MESSAGE_SPLIT_FALLBACK_NEWLINE and "\n" in text:
+                segments = split_on_paragraphs(text)
+
+            # Fallback 2：仍为单段且长度超阈值，按单 \n 拆分
+            if len(segments) <= 1 and MESSAGE_SPLIT_FALLBACK_NEWLINE and "\n" in text:
+                line_segments = [s.strip() for s in text.split("\n") if s.strip()]
+                if len(line_segments) >= 2 and len(text) >= MESSAGE_SPLIT_SINGLE_NL_MIN_LEN:
+                    segments = line_segments
+
             originals_sent.append(text)
             for i, seg in enumerate(segments):
                 if i > 0:
@@ -760,6 +806,8 @@ class LapwingBrain:
             error_msg = "抱歉，我刚才走神了一下。你能再说一次吗？"
             await send_fn(error_msg)
             return error_msg
+        finally:
+            self._schedule_conversation_end()
 
     def _schedule_trace_recording(
         self,
