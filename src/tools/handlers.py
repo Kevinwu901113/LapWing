@@ -465,3 +465,23 @@ async def weather_tool(
         payload=result,
         reason=result.get("error", ""),
     )
+
+
+async def send_proactive_message(
+    req: ToolExecutionRequest,
+    ctx: ToolExecutionContext,
+) -> ToolExecutionResult:
+    """主动给用户发一条消息。"""
+    message = req.arguments.get("message", "")
+    if not message:
+        return ToolExecutionResult(success=False, payload={}, reason="消息内容为空")
+
+    channel_manager = ctx.services.get("channel_manager")
+    if channel_manager is None:
+        return ToolExecutionResult(success=False, payload={}, reason="没有可用的通道")
+
+    try:
+        await channel_manager.send_to_owner(message)
+        return ToolExecutionResult(success=True, payload={"sent": True}, reason="已发送")
+    except Exception as exc:
+        return ToolExecutionResult(success=False, payload={}, reason=f"发送失败: {exc}")

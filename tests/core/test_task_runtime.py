@@ -73,7 +73,7 @@ async def test_chat_tools_from_registry():
 
     _memory_crud = {"memory_list", "memory_read", "memory_edit", "memory_delete", "memory_search"}
     _schedule = {"schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"}
-    assert names == {"execute_shell", "read_file", "write_file", "web_search", "web_fetch", "memory_note", "get_weather", "send_image"} | _memory_crud | _schedule
+    assert names == {"execute_shell", "read_file", "write_file", "web_search", "web_fetch", "memory_note", "get_weather", "send_image", "send_proactive_message"} | _memory_crud | _schedule
 
 
 @pytest.mark.asyncio
@@ -85,7 +85,7 @@ async def test_chat_tools_excludes_web_when_disabled():
 
     _memory_crud = {"memory_list", "memory_read", "memory_edit", "memory_delete", "memory_search"}
     _schedule = {"schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"}
-    assert names == {"execute_shell", "read_file", "write_file", "memory_note", "get_weather", "send_image"} | _memory_crud | _schedule
+    assert names == {"execute_shell", "read_file", "write_file", "memory_note", "get_weather", "send_image", "send_proactive_message"} | _memory_crud | _schedule
 
 
 @pytest.mark.asyncio
@@ -158,6 +158,59 @@ async def test_execute_tool_call_read_file_payload_compatible():
     assert payload["path"] == "/tmp/a.txt"
     assert payload["return_code"] == 0
     mock_execute_shell.assert_awaited_once_with("cat /tmp/a.txt")
+
+
+@pytest.mark.asyncio
+async def test_execute_tool_call_web_search_compacts_result_text_for_llm():
+    runtime = TaskRuntime(router=MagicMock(), tool_registry=build_default_tool_registry())
+    constraints = extract_execution_constraints("搜索资料")
+    state = ExecutionSessionState(constraints=constraints)
+
+    deps = RuntimeDeps(
+        execute_shell=AsyncMock(),
+        policy=_make_policy(AsyncMock()),
+        shell_default_cwd="/tmp",
+        shell_allow_sudo=True,
+    )
+
+    long_snippet = "s" * 5000
+    with patch("src.tools.handlers.web_search.search", new_callable=AsyncMock) as mock_search:
+        mock_search.return_value = [
+            {
+                "title": "示例标题",
+                "url": "https://example.com/post",
+                "snippet": long_snippet,
+            }
+        ]
+        tool_result_text, payload, _ = await runtime._execute_tool_call(
+            tool_call=ToolCallRequest(
+                id="call_web_1",
+                name="web_search",
+                arguments={"query": "测试", "max_results": 1},
+            ),
+            state=state,
+            deps=deps,
+            task_id="task_1",
+            chat_id="chat_1",
+            event_bus=None,
+        )
+
+    rendered = json.loads(tool_result_text)
+    assert payload["results"][0]["snippet"] == long_snippet
+    assert len(rendered["results"][0]["snippet"]) < len(long_snippet)
+    assert rendered["results"][0]["snippet"].endswith("...")
+
+
+def test_format_tool_result_for_llm_truncates_oversized_payload():
+    runtime = TaskRuntime(router=MagicMock(), tool_registry=build_default_tool_registry())
+    text = runtime._format_tool_result_for_llm(
+        tool_name="custom_tool",
+        payload={"blob": "x" * 20000},
+    )
+    parsed = json.loads(text)
+    assert parsed["_truncated"] is True
+    assert parsed["_tool"] == "custom_tool"
+    assert parsed["_original_chars"] > 12000
 
 
 @pytest.mark.asyncio

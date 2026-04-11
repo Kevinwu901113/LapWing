@@ -807,6 +807,25 @@ def build_default_tool_registry() -> ToolRegistry:
         risk_level="low",
     ))
 
+    from src.tools.handlers import send_proactive_message
+    registry.register(ToolSpec(
+        name="send_proactive_message",
+        description="主动给他发一条消息。只在你真的有话想说的时候用，不要没事就打扰他。",
+        json_schema={
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "description": "你想说的话",
+                }
+            },
+            "required": ["message"],
+        },
+        executor=send_proactive_message,
+        capability="general",
+        risk_level="low",
+    ))
+
     # ── 自我状态 ──
     from src.tools.self_status import SELF_STATUS_EXECUTORS
     registry.register(ToolSpec(

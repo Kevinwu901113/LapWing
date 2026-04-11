@@ -179,7 +179,7 @@ class TaskRuntime:
         skill_activation_enabled: bool = False,
     ) -> list[dict[str, Any]]:
         """chat 场景工具集：按需暴露 shell / web / activate_skill，memory_note 始终可用。"""
-        tool_names: set[str] = {"memory_note", "get_weather", "send_image"}  # always available
+        tool_names: set[str] = {"memory_note", "get_weather", "send_image", "send_proactive_message"}  # always available
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
         if web_enabled:
