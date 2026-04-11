@@ -43,4 +43,6 @@ async def write_note(target: str, content: str) -> dict:
 
     await asyncio.to_thread(_append)
     logger.info(f"[memory_note] 写入 {target}: {content[:60]}...")
+    from src.logging.event_logger import events
+    events.log("memory", "note_created", content=f"[{target}] {content[:200]}")
     return {"success": True, "target": target, "path": str(path)}

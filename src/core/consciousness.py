@@ -23,6 +23,7 @@ from config.settings import (
     CONSCIOUSNESS_MAX_INTERVAL,
     CONSCIOUSNESS_MIN_INTERVAL,
 )
+from src.logging.event_logger import events as _events
 
 if TYPE_CHECKING:
     from src.core.brain import LapwingBrain
@@ -118,6 +119,7 @@ class ConsciousnessEngine:
                     await self._thinking_task
                 except asyncio.CancelledError:
                     logger.info("自由思考被中断（用户发消息）")
+                    _events.log("consciousness", "interrupted", reason="用户发消息")
                     await self._save_interrupted_state()
             except asyncio.CancelledError:
                 break
@@ -141,6 +143,10 @@ class ConsciousnessEngine:
             min(CONSCIOUSNESS_MAX_INTERVAL, next_interval),
         )
         await self._log_activity(response)
+        _events.log("consciousness", "tick_complete",
+            decision=response[:300] if response else "无输出",
+            next_interval=self._next_interval,
+        )
         logger.info("自由思考完成，下次间隔 %ds", self._next_interval)
 
     async def _build_consciousness_prompt(self) -> str:
@@ -254,7 +260,7 @@ class ConsciousnessEngine:
             logger.debug("每小时维护加载失败", exc_info=True)
 
     async def _run_daily_maintenance(self) -> None:
-        """每日 3AM 维护：记忆整理、索引优化、压缩检查。"""
+        """每日 3AM 维护：记忆整理、索引优化、压缩检查、事件日志清理。"""
         try:
             from src.heartbeat.actions.consolidation import MemoryConsolidationAction
             from src.heartbeat.actions.memory_maintenance import MemoryMaintenanceAction
@@ -271,6 +277,13 @@ class ConsciousnessEngine:
                     logger.warning("每日维护 %s 失败: %s", action.name, exc)
         except Exception:
             logger.debug("每日维护加载失败", exc_info=True)
+
+        # 清理过期事件日志
+        try:
+            from src.logging.event_logger import get_event_logger
+            get_event_logger().cleanup_old_events()
+        except Exception:
+            logger.debug("事件日志清理失败", exc_info=True)
 
     def _build_maintenance_context(self, beat_type: str):
         """构建最小 SenseContext 供维护 action 使用。"""

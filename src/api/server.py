@@ -56,6 +56,7 @@ def create_app(
     from src.api.routes import data as _data_routes
     from src.api.routes import system as _system_routes
     from src.api.routes import chat_ws as _chat_ws_routes
+    from src.api.routes import logs as _logs_routes
 
     _auth_routes.init(app.state.auth_manager, api_session_ttl=API_SESSION_TTL_SECONDS)
     _data_routes.init(brain, journal_dir=JOURNAL_DIR)
@@ -66,6 +67,7 @@ def create_app(
     app.include_router(_data_routes.router)
     app.include_router(_system_routes.router)
     app.include_router(_chat_ws_routes.router)
+    app.include_router(_logs_routes.router)
 
     # 浏览器子系统路由（可选，仅在 BROWSER_ENABLED 时挂载）
     _browser_manager = getattr(brain, "browser_manager", None)

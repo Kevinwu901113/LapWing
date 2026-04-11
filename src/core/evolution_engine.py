@@ -13,6 +13,7 @@ from config.settings import (
     RULES_PATH,
     SOUL_PATH,
 )
+from src.logging.event_logger import events as _events
 from src.core.prompt_loader import load_prompt
 
 logger = logging.getLogger("lapwing.core.evolution_engine")
@@ -146,6 +147,11 @@ class EvolutionEngine:
         await self._log_change(f"✅ 进化完成\n{diff_descriptions}\n  摘要: {summary}")
 
         logger.info(f"[evolution] 进化完成: {summary}")
+        _events.log("evolution", "soul_updated",
+            change_type="diff_applied",
+            diff=diff_descriptions[:500],
+            file="data/identity/soul.md",
+        )
         return {
             "success": True,
             "changes": diffs,

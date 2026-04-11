@@ -92,6 +92,12 @@ class TacticalRules:
 
         await asyncio.to_thread(_append)
         logger.info(f"[tactical_rules] 新增规则: {rule_text[:60]}")
+        from src.logging.event_logger import events
+        events.log("evolution", "correction_learned",
+            change_type="tactical_rule",
+            diff=rule_text[:300],
+            file="evolution/rules.md",
+        )
 
     async def process_correction(
         self,

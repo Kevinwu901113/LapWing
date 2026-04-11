@@ -60,8 +60,10 @@ def strip_internal_thinking_tags(text: str) -> str:
 
     code_regions = _find_code_regions(text)
     parts: list[str] = []
+    thinking_parts: list[str] = []
     last_index = 0
     in_thinking = False
+    thinking_start = 0
 
     for match in _THINK_TAG_RE.finditer(text):
         index = match.start()
@@ -73,7 +75,9 @@ def strip_internal_thinking_tags(text: str) -> str:
             parts.append(text[last_index:index])
             if not is_close:
                 in_thinking = True
+                thinking_start = match.end()
         elif is_close:
+            thinking_parts.append(text[thinking_start:index])
             in_thinking = False
 
         last_index = match.end()
@@ -81,6 +85,14 @@ def strip_internal_thinking_tags(text: str) -> str:
     # strict 防泄露：未闭合的 <think> 之后内容全部丢弃。
     if not in_thinking:
         parts.append(text[last_index:])
+
+    # 记录思考内容到事件日志
+    if thinking_parts:
+        from src.logging.event_logger import events
+        thinking_content = "\n".join(thinking_parts)
+        events.log("thinking", "internal_reasoning",
+            content=thinking_content[:1000],
+        )
 
     return "".join(parts)
 

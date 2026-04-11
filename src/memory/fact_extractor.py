@@ -143,6 +143,12 @@ class FactExtractor:
 
             if facts:
                 logger.info(f"[{chat_id}] 提取了 {len(facts)} 条用户画像信息")
+                from src.logging.event_logger import events
+                for fact in facts:
+                    events.log("memory", "fact_extracted",
+                        content=f"{fact['fact_key']}: {fact['fact_value']}",
+                        chat_id=chat_id,
+                    )
             else:
                 logger.debug(f"[{chat_id}] 本轮对话无新用户信息可提取")
 

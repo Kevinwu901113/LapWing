@@ -3,6 +3,7 @@
 import logging
 
 from config.settings import CONSTITUTION_PATH
+from src.logging.event_logger import events as _events
 from src.core.prompt_loader import load_prompt
 
 logger = logging.getLogger("lapwing.core.constitution_guard")
@@ -102,10 +103,15 @@ class ConstitutionGuard:
                 session_key="system:constitution_guard",
                 origin="core.constitution_guard",
             )
-            return {
-                "approved": bool(result.get("approved", False)),
-                "violations": list(result.get("violations", [])),
-            }
+            approved = bool(result.get("approved", False))
+            violations = list(result.get("violations", []))
+            _events.log("evolution", "constitution_check",
+                change_type="check",
+                diff=changes_text[:300],
+                result="passed" if approved else "blocked",
+                reason="; ".join(violations) if not approved else "",
+            )
+            return {"approved": approved, "violations": violations}
         except Exception as exc:
             logger.error(f"宪法校验失败: {exc}")
             return {"approved": False, "violations": [f"校验失败: {exc}"]}

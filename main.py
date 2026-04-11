@@ -38,12 +38,12 @@ def setup_logging() -> logging.Logger:
     lapwing_logger.propagate = False  # never propagate to root
 
     if not lapwing_logger.handlers:
-        # Main log: rotated, 10MB per file, keep 5 backups
+        # Main log: rotated, 5MB per file, keep 2 backups (reduced — business events now go to EventLogger)
         main_fh = RotatingFileHandler(
             LOGS_DIR / "lapwing.log",
             encoding="utf-8",
-            maxBytes=10 * 1024 * 1024,
-            backupCount=5,
+            maxBytes=5 * 1024 * 1024,
+            backupCount=2,
         )
         main_fh.setFormatter(fmt)
         main_fh.setLevel(level)
@@ -55,6 +55,25 @@ def setup_logging() -> logging.Logger:
 
         lapwing_logger.addHandler(main_fh)
         lapwing_logger.addHandler(console_sh)
+
+    # ── 业务信息已走 EventLogger，内部模块降噪到 WARNING ──
+    for module_name in (
+        "lapwing.core.brain",
+        "lapwing.core.task_runtime",
+        "lapwing.core.llm_router",
+        "lapwing.core.llm_protocols",
+        "lapwing.core.prompt_builder",
+        "lapwing.core.heartbeat",
+        "lapwing.core.consciousness",
+        "lapwing.memory",
+        "lapwing.tools",
+        "lapwing.core.channel_manager",
+    ):
+        logging.getLogger(module_name).setLevel(logging.WARNING)
+
+    # 保持 INFO 的模块（启动/关闭等关键流程）
+    logging.getLogger("lapwing.app.container").setLevel(logging.INFO)
+    logging.getLogger("lapwing.event_logger").setLevel(logging.INFO)
 
     # ── Root logger (third-party libraries) ──
     # Separate handlers — never share with lapwing logger

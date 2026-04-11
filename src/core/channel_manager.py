@@ -23,17 +23,21 @@ class ChannelManager:
         logger.info("已注册通道: %s", channel_type.value)
 
     async def start_all(self) -> None:
+        from src.logging.event_logger import events
         for ch_type, adapter in self.adapters.items():
             try:
                 await adapter.start()
                 logger.info("通道已启动: %s", ch_type.value)
+                events.log("system", "channel_connected", message=f"{ch_type.value} 已连接")
             except Exception as exc:
                 logger.error("通道启动失败: %s — %s", ch_type.value, exc)
 
     async def stop_all(self) -> None:
+        from src.logging.event_logger import events
         for ch_type, adapter in self.adapters.items():
             await adapter.stop()
             logger.info("通道已停止: %s", ch_type.value)
+            events.log("system", "channel_disconnected", message=f"{ch_type.value} 已断开")
 
     async def send(self, channel: ChannelType, chat_id: str, text: str) -> None:
         adapter = self.adapters.get(channel)

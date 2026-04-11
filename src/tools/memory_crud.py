@@ -150,6 +150,8 @@ async def _execute_memory_edit(
     success, output = await asyncio.to_thread(_edit)
     if not success:
         return ToolExecutionResult(success=False, payload={"error": output}, reason=output)
+    from src.logging.event_logger import events
+    events.log("memory", "edit", content=f"{path_str}: {new_text[:100]}")
     return ToolExecutionResult(success=True, payload={"output": output})
 
 
@@ -187,6 +189,9 @@ async def _execute_memory_delete(
     success, output = await asyncio.to_thread(_delete)
     if not success:
         return ToolExecutionResult(success=False, payload={"error": output}, reason=output)
+
+    from src.logging.event_logger import events
+    events.log("memory", "delete", content=f"{path_str}")
 
     # 同步索引：删除文件时移除对应的索引条目
     if context.memory_index is not None:

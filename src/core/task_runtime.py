@@ -47,6 +47,7 @@ from src.core.vital_guard import (
     check_file_target,
     extract_vital_shell_targets,
 )
+from src.logging.event_logger import events as _events
 from src.tools.registry import ToolRegistry, build_default_tool_registry
 from src.tools.shell_executor import ShellResult, execute as default_execute_shell
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult
@@ -307,6 +308,10 @@ class TaskRuntime:
                     if self._detect_simulated_tool_call(model_text, available_tool_names):
                         simulated_tool_retries += 1
                         logger.info("[runtime] 检测到模拟工具调用，注入提醒（retry %d）", simulated_tool_retries)
+                        _events.log("thinking", "simulated_tool_detected",
+                            content=model_text[:300],
+                            trigger="LLM 在文本中描述了工具调用但未真正调用",
+                        )
                         messages.append({
                             "role": "user",
                             "content": (
@@ -437,6 +442,10 @@ class TaskRuntime:
                         self._loop_detection_config.global_circuit_breaker_threshold,
                         tool_args_hash,
                     )
+                    _events.log("thinking", "loop_detected",
+                        content=reason,
+                        trigger=f"工具 {tool_call.name} 连续调用 {generic_repeat_count} 次",
+                    )
                     state.record_failure(reason, "blocked")
                     await self._publish_task_event(
                         event_bus,
@@ -540,6 +549,13 @@ class TaskRuntime:
                     user_id=user_id,
                 )
                 duration_ms = max(int((time.perf_counter() - tool_started_at) * 1000), 0)
+                _events.log("tool_call", "execute",
+                    tool=tool_call.name,
+                    args=tool_call.arguments,
+                    success=execution_success,
+                    reason=(tool_result_text[:200] if not execution_success else ""),
+                    duration=round(duration_ms / 1000, 2),
+                )
                 stdout_bytes = self._text_utf8_bytes(payload.get("stdout"))
                 stderr_bytes = self._text_utf8_bytes(payload.get("stderr"))
                 is_error = self._tool_execution_is_error(

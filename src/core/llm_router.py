@@ -6,6 +6,7 @@ import time
 from typing import Any, Awaitable, Callable
 
 from src.auth.service import AuthManager
+from src.logging.event_logger import events as _events
 from src.core.reasoning_tags import strip_internal_thinking_tags
 
 # Re-export types for backward compatibility
@@ -582,6 +583,11 @@ class LLMRouter:
                                 failure_kind,
                             )
                             break
+                        _events.log("system", "llm_error",
+                            message=f"LLM 调用失败: {exc}",
+                            slot=effective_key,
+                            model=self._models.get(effective_key, "?"),
+                        )
                         raise
 
             if last_exc is not None:
@@ -700,7 +706,8 @@ class LLMRouter:
                         stripped = strip_internal_thinking_tags(content).strip()
             return stripped
 
-        return await self._with_routing_retry(
+        _llm_start = time.monotonic()
+        result = await self._with_routing_retry(
             purpose=auth_purpose,
             routing_key=effective_key if effective_key != auth_purpose else None,
             session_key=session_key,
@@ -708,6 +715,14 @@ class LLMRouter:
             origin=origin,
             runner=_runner,
         )
+        _events.log("llm_call", "complete",
+            slot=effective_key,
+            model=self._models.get(effective_key, "?"),
+            duration=round(time.monotonic() - _llm_start, 2),
+            purpose=origin or "unknown",
+            has_tool_calls=False,
+        )
+        return result
 
     async def query_lightweight(self, system: str, user: str, *, slot: str | None = None) -> str:
         """用轻量模型做简单任务（分类、提取、判断）。
@@ -876,7 +891,8 @@ class LLMRouter:
                 continuation_message=continuation_message,
             )
 
-        return await self._with_routing_retry(
+        _llm_start = time.monotonic()
+        result = await self._with_routing_retry(
             purpose=auth_purpose,
             routing_key=effective_key if effective_key != auth_purpose else None,
             session_key=session_key,
@@ -884,6 +900,14 @@ class LLMRouter:
             origin=origin,
             runner=_runner,
         )
+        _events.log("llm_call", "complete_with_tools",
+            slot=effective_key,
+            model=self._models.get(effective_key, "?"),
+            duration=round(time.monotonic() - _llm_start, 2),
+            purpose=origin or "unknown",
+            has_tool_calls=bool(result.tool_calls),
+        )
+        return result
 
     async def complete_structured(
         self,

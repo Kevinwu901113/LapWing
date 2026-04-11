@@ -25,6 +25,7 @@ from src.core.shell_policy import (
 from src.core.verifier import verify_shell_constraints_status as verify_constraints
 from src.memory.conversation import ConversationMemory
 from src.memory.fact_extractor import FactExtractor
+from src.logging.event_logger import events
 from src.tools.registry import build_default_tool_registry
 from src.tools.shell_executor import execute as execute_shell
 from src.tools.types import ToolExecutionRequest
@@ -695,6 +696,13 @@ class LapwingBrain:
         if self.consciousness_engine is not None:
             self.consciousness_engine.on_conversation_start()
 
+        events.log("conversation", "incoming",
+            message=user_message[:500],
+            channel=adapter,
+            chat_id=chat_id,
+            user_id=user_id,
+        )
+
         ctx = await self._prepare_think(chat_id, user_message, send_fn=send_fn)
         if ctx.early_reply is not None:
             self._schedule_conversation_end()  # ← ADD THIS
@@ -790,6 +798,11 @@ class LapwingBrain:
             else:
                 await self.memory.append(chat_id, "assistant", memory_text)
             logger.debug(f"[{chat_id}] 流式回复完成，片段数: {len(parts_sent)}")
+            events.log("conversation", "outgoing",
+                message=memory_text[:500],
+                channel=adapter,
+                chat_id=chat_id,
+            )
             duration = time.monotonic() - start_time
             self._schedule_trace_recording(user_message, memory_text, ctx.matched_experience_skills, duration)
             if self.quality_checker is not None:

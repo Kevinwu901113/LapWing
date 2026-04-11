@@ -111,6 +111,8 @@ class AppContainer:
         await self._configure_brain_dependencies()
         self._prepared = True
         logger.info("应用容器依赖装配完成")
+        from src.logging.event_logger import events
+        events.log("system", "startup", message="Lapwing 启动完成")
 
     async def start(self, *, send_fn=None) -> None:
         if self._started:
@@ -185,6 +187,9 @@ class AppContainer:
 
         await self.brain.fact_extractor.shutdown()
         await self.brain.memory.close()
+        from src.logging.event_logger import events, get_event_logger
+        events.log("system", "shutdown", message="Lapwing 正在关闭")
+        get_event_logger().close()
         self._started = False
         logger.info("应用容器资源清理完成")
 
