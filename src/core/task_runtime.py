@@ -55,6 +55,8 @@ logger = logging.getLogger("lapwing.core.task_runtime")
 
 
 _MAX_TOOL_ROUNDS = TASK_MAX_TOOL_ROUNDS
+_TOOL_RESULT_MAX_CHARS = 12000
+_WEB_SEARCH_SNIPPET_MAX_CHARS = 280
 
 # VitalGuard 对命令类型的分类（模块级常量，避免每次 execute_tool() 重建）
 _SHELL_TOOLS: frozenset[str] = frozenset({"execute_shell", "run_python_code"})
@@ -284,9 +286,10 @@ class TaskRuntime:
         final_reply: str | None = None
         interim_parts: list[str] = []  # 收集已通过 on_interim_text 发出的中间文字
         loop_detection_state = self._new_loop_detection_state()
+        simulated_tool_retries = 0
 
         async def _step_runner(round_index: int) -> TaskLoopStep:
-            nonlocal last_payload, final_reply
+            nonlocal last_payload, final_reply, simulated_tool_retries
             round_started_at = time.perf_counter()
             turn = await self._router.complete_with_tools(
                 self._with_shell_state_context(messages, state),
@@ -297,9 +300,24 @@ class TaskRuntime:
             )
 
             if not turn.tool_calls:
+                # ── 模拟工具调用检测 ──
+                model_text = (turn.text or "").strip()
+                if simulated_tool_retries < 1 and model_text:
+                    available_tool_names = [t["function"]["name"] for t in tools]
+                    if self._detect_simulated_tool_call(model_text, available_tool_names):
+                        simulated_tool_retries += 1
+                        logger.info("[runtime] 检测到模拟工具调用，注入提醒（retry %d）", simulated_tool_retries)
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                "[系统提醒] 你刚才在文字中描述了工具调用，但没有真正调用。"
+                                "请直接使用工具，不要用文字描述。"
+                            ),
+                        })
+                        return TaskLoopStep()  # continue loop
+
                 await _emit_status("stage:finalizing")
-                # 最终文字也通过 on_interim_text 发出（若已建立流式通道）
-                final_text = (turn.text or "").strip()
+                final_text = model_text
                 if final_text and on_interim_text is not None:
                     try:
                         await on_interim_text(final_text)
@@ -1055,7 +1073,71 @@ class TaskRuntime:
             user_id=user_id,
         )
         payload = execution.payload
-        return json.dumps(payload, ensure_ascii=False), payload, execution.success
+        tool_result_text = self._format_tool_result_for_llm(
+            tool_name=tool_call.name,
+            payload=payload,
+        )
+        return tool_result_text, payload, execution.success
+
+    def _format_tool_result_for_llm(
+        self,
+        *,
+        tool_name: str,
+        payload: dict[str, Any],
+    ) -> str:
+        """将工具结果转换为传回模型的文本，并在必要时裁剪。"""
+        normalized_payload: dict[str, Any] = payload
+        if tool_name == "web_search":
+            normalized_payload = self._compact_web_search_payload(payload)
+
+        rendered = json.dumps(normalized_payload, ensure_ascii=False)
+        if len(rendered) <= _TOOL_RESULT_MAX_CHARS:
+            return rendered
+
+        # 统一兜底：超长时保留前缀并附带提示，避免向上游发送过大 payload。
+        preview_budget = max(0, _TOOL_RESULT_MAX_CHARS - 260)
+        preview = rendered[:preview_budget]
+        fallback = {
+            "_truncated": True,
+            "_tool": tool_name,
+            "_original_chars": len(rendered),
+            "_preview": preview,
+            "_note": "工具输出过长，已截断。若需要完整内容，请让模型缩小范围或再次调用工具获取局部结果。",
+        }
+        return json.dumps(fallback, ensure_ascii=False)
+
+    def _compact_web_search_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """压缩 web_search 输出，优先保留标题/URL/摘要。"""
+        results = payload.get("results")
+        if not isinstance(results, list):
+            return payload
+
+        compact_results: list[dict[str, Any]] = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            snippet = str(item.get("snippet", ""))
+            if len(snippet) > _WEB_SEARCH_SNIPPET_MAX_CHARS:
+                snippet = snippet[:_WEB_SEARCH_SNIPPET_MAX_CHARS] + "..."
+            entry: dict[str, Any] = {
+                "title": str(item.get("title", "")),
+                "url": str(item.get("url", "")),
+                "snippet": snippet,
+            }
+            if item.get("published_date"):
+                entry["published_date"] = item["published_date"]
+            if item.get("relevance_score") is not None:
+                entry["relevance_score"] = item["relevance_score"]
+            compact_results.append(entry)
+
+        compact_payload: dict[str, Any] = {
+            "query": str(payload.get("query", "")),
+            "count": len(compact_results),
+            "results": compact_results,
+        }
+        if "_system_hint" in payload:
+            compact_payload["_system_hint"] = payload["_system_hint"]
+        return compact_payload
 
     def _new_loop_detection_state(self) -> LoopDetectionState:
         return LoopDetectionState(
@@ -1224,6 +1306,29 @@ class TaskRuntime:
                     title = line.replace("[页面]", "").strip()
                     break
             msg["content"] = f"[已浏览] {title}" if title else "[已浏览]"
+
+    def _detect_simulated_tool_call(self, text: str | None, available_tools: list[str]) -> bool:
+        """检测 LLM 是否在文本中描述了工具调用而没有真正调用。"""
+        if not text or not available_tools:
+            return False
+
+        text_lower = text.lower()
+        for tool_name in available_tools:
+            if tool_name not in text_lower:
+                continue
+            for pattern in (
+                f"用 {tool_name}", f"使用 {tool_name}", f"调用 {tool_name}",
+                f"call {tool_name}", f"use {tool_name}",
+            ):
+                if pattern in text_lower:
+                    return True
+
+        if '"tool"' in text or '"function"' in text or '"name"' in text:
+            import re
+            if re.search(r'\{\s*"(tool|function|name)"\s*:', text):
+                return True
+
+        return False
 
     def _blocked_payload(
         self,
