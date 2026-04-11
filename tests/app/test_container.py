@@ -35,7 +35,9 @@ async def test_start_and_shutdown_calls_lifecycle_components():
 
     heartbeat = SimpleNamespace(start=MagicMock(), shutdown=AsyncMock())
     with patch.object(container, "_configure_brain_dependencies", new=AsyncMock()), \
-         patch.object(container, "_build_heartbeat", return_value=heartbeat):
+         patch.object(container, "_build_heartbeat", return_value=heartbeat), \
+         patch("config.settings.CONSCIOUSNESS_ENABLED", False), \
+         patch("config.settings.HEARTBEAT_ENABLED", True):
         await container.start(send_fn=AsyncMock())
         assert container.reminder_scheduler is not None
         assert brain.reminder_scheduler is container.reminder_scheduler

@@ -23,6 +23,7 @@ from src.api.server import LocalApiServer
 from src.app.task_view import TaskViewStore
 from src.core.brain import LapwingBrain
 from src.core.channel_manager import ChannelManager
+from src.core.consciousness import ConsciousnessEngine
 from src.core.heartbeat import HeartbeatEngine
 from src.core.reminder_scheduler import ReminderScheduler
 from src.core.latency_monitor import LatencyMonitor
@@ -82,6 +83,7 @@ class AppContainer:
             channel_manager=self.channel_manager,
         )
         self.heartbeat: HeartbeatEngine | None = None
+        self.consciousness: ConsciousnessEngine | None = None
         self.reminder_scheduler: ReminderScheduler | None = None
         self.telegram_app = None
 
@@ -117,15 +119,27 @@ class AppContainer:
         await self.prepare()
 
         if send_fn is not None:
-            self.heartbeat = self._build_heartbeat(send_fn)
-            self.heartbeat.start()
+            from config.settings import CONSCIOUSNESS_ENABLED, HEARTBEAT_ENABLED
+
             self.reminder_scheduler = ReminderScheduler(
                 memory=self.brain.memory,
                 send_fn=send_fn,
                 event_bus=self.event_bus,
             )
-            await self.reminder_scheduler.start()
             self.brain.reminder_scheduler = self.reminder_scheduler
+
+            if CONSCIOUSNESS_ENABLED:
+                self.consciousness = ConsciousnessEngine(
+                    brain=self.brain,
+                    send_fn=send_fn,
+                    reminder_scheduler=self.reminder_scheduler,
+                )
+                self.brain.consciousness_engine = self.consciousness
+                await self.consciousness.start()
+            elif HEARTBEAT_ENABLED:
+                self.heartbeat = self._build_heartbeat(send_fn)
+                self.heartbeat.start()
+                await self.reminder_scheduler.start()
 
         await self.channel_manager.start_all()
 
@@ -134,11 +148,18 @@ class AppContainer:
         # 将心跳引擎注入 API 状态，供 /api/heartbeat/status 使用
         if self.api_server._app is not None:
             self.api_server._app.state.heartbeat = self.heartbeat
+            self.api_server._app.state.consciousness = self.consciousness
 
         self._started = True
         logger.info("应用容器启动完成")
 
     async def shutdown(self) -> None:
+        # Consciousness engine shutdown (must come first — it owns reminder_scheduler)
+        if self.consciousness is not None:
+            await self.consciousness.stop()
+            self.consciousness = None
+            self.reminder_scheduler = None  # already shut down by consciousness.stop()
+
         if self.reminder_scheduler is not None:
             await self.reminder_scheduler.shutdown()
             self.reminder_scheduler = None
