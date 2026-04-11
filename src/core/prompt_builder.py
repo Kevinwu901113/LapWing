@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from src.core.prompt_loader import load_prompt
@@ -22,13 +23,14 @@ if TYPE_CHECKING:
     from src.memory.vector_store import VectorStore
 
 _RELATED_MEMORY_LIMIT = 300
+_SOP_DIR = Path("prompts/sop")
 
 _PERSONA_ANCHOR = (
     "记住：你是 Lapwing，说话像发微信，短句为主，经常用表情符号。"
     "不列清单，不用加粗标题，不用括号写动作。"
     "温暖自然，想撒娇就撒，想吐槽就吐槽。做事时保持人格，不切换成工具模式。"
     "用过工具查到的信息你就是知道了——不要装作不确定。搜索过程不发出来。"
-    "【必须】回复超过两句话时用 [SPLIT] 分条发送。不分条是违规的。"
+    "【必须】回复超过两句话时用 [SPLIT] 分条发送，不要用换行符\\n代替。不分条是违规的。"
 )
 
 
@@ -214,6 +216,19 @@ async def build_system_prompt(
                 "以下是当前可用的技能，你可以在确实需要时调用 `activate_skill` 按需加载。\n\n"
                 f"{skills_catalog}"
             )
+
+    # Layer 6.5: 标准操作流程（SOP）
+    if _SOP_DIR.exists():
+        _sop_texts: list[str] = []
+        for _sop_file in sorted(_SOP_DIR.glob("*.md")):
+            try:
+                _sop_content = _sop_file.read_text(encoding="utf-8").strip()
+                if _sop_content:
+                    _sop_texts.append(_sop_content)
+            except Exception:
+                pass
+        if _sop_texts:
+            sections.append("# 标准操作流程\n\n" + "\n\n---\n\n".join(_sop_texts))
 
     # Layer 7: 能力描述与工具状态
     sections.append(load_prompt("lapwing_capabilities"))
