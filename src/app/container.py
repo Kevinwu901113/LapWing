@@ -302,6 +302,21 @@ class AppContainer:
             self.brain.quality_checker = ReplyQualityChecker(router=self.brain.router)
             logger.info("回复质量检查已就绪")
 
+        # 中间进度汇报（可选）
+        from config.settings import PROGRESS_REPORT_ENABLED
+        if PROGRESS_REPORT_ENABLED:
+            self.brain.task_runtime.set_progress_enabled(True)
+            logger.info("中间进度汇报已就绪")
+
+        # 未完成任务恢复（可选）
+        from config.settings import TASK_RESUMPTION_ENABLED
+        if TASK_RESUMPTION_ENABLED:
+            from src.core.pending_task import PendingTaskStore
+            pending_store = PendingTaskStore(self._data_dir / "pending_tasks.json")
+            self.brain.pending_task_store = pending_store
+            self.brain.task_runtime.set_pending_task_store(pending_store)
+            logger.info("未完成任务恢复已就绪")
+
     async def _init_browser(self) -> None:
         """初始化浏览器子系统组件。"""
         from src.core.browser_manager import BrowserManager
@@ -362,5 +377,11 @@ class AppContainer:
         # 系统健康监控
         from src.heartbeat.actions.system_health import SystemHealthAction
         heartbeat.registry.register(SystemHealthAction())
+
+        # 未完成任务恢复
+        from config.settings import TASK_RESUMPTION_ENABLED
+        if TASK_RESUMPTION_ENABLED:
+            from src.heartbeat.actions.task_resumption import TaskResumptionAction
+            heartbeat.registry.register(TaskResumptionAction())
 
         return heartbeat

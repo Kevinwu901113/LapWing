@@ -974,3 +974,57 @@ class TestCodexResponsesAPI:
         _, raw = _extract_responses_api_tool_calls(output_items)
         assert "phase" not in raw[0]
 
+
+class TestSanitizeCodexPayload:
+    """测试 _sanitize_codex_payload 过滤不支持的参数。"""
+
+    def test_removes_unsupported_params(self):
+        from src.core.llm_router import _sanitize_codex_payload
+        payload = {
+            "model": "gpt-5.4",
+            "input": [{"role": "user", "content": "hi"}],
+            "instructions": "test",
+            "max_output_tokens": 4096,
+            "store": False,
+            "stream": True,
+            "context_management": [{"type": "compaction"}],
+        }
+        result = _sanitize_codex_payload(payload)
+        assert "max_output_tokens" not in result
+        assert "context_management" not in result
+        assert result["model"] == "gpt-5.4"
+        assert result["instructions"] == "test"
+        assert result["stream"] is True
+        assert result["store"] is False
+
+    def test_keeps_all_allowed_keys(self):
+        from src.core.llm_router import _sanitize_codex_payload
+        payload = {
+            "model": "gpt-5.4",
+            "input": [],
+            "instructions": "test",
+            "tools": [],
+            "reasoning": {"effort": "medium"},
+            "stream": True,
+            "store": False,
+            "tool_choice": "auto",
+            "previous_response_id": "resp_123",
+            "truncation": "auto",
+            "include": [],
+        }
+        result = _sanitize_codex_payload(payload)
+        assert result == payload
+
+    def test_empty_payload(self):
+        from src.core.llm_router import _sanitize_codex_payload
+        assert _sanitize_codex_payload({}) == {}
+
+    def test_all_unsupported(self):
+        from src.core.llm_router import _sanitize_codex_payload
+        payload = {
+            "max_output_tokens": 4096,
+            "temperature": 0.7,
+            "context_management": [{"type": "compaction"}],
+        }
+        assert _sanitize_codex_payload(payload) == {}
+

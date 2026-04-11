@@ -67,6 +67,34 @@ _SLOT_TO_PURPOSE: dict[str, str] = {
 
 
 
+# ChatGPT Codex 代理端点只接受这些参数
+_CODEX_ALLOWED_KEYS = {
+    "model",
+    "input",
+    "instructions",
+    "stream",
+    "store",
+    "include",
+    "tools",
+    "tool_choice",
+    "reasoning",
+    "previous_response_id",
+    "truncation",
+}
+
+_CODEX_DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
+
+
+def _sanitize_codex_payload(payload: dict) -> dict:
+    """移除 ChatGPT Codex 代理端点不支持的参数。
+
+    Codex 端点 (chatgpt.com/backend-api/codex/responses) 不是标准 OpenAI
+    Responses API，只接受有限的参数集。不支持的参数（如 max_output_tokens、
+    context_management 等）会导致 400 错误。
+    """
+    return {k: v for k, v in payload.items() if k in _CODEX_ALLOWED_KEYS}
+
+
 async def _collect_codex_stream(client, payload: dict) -> tuple[str, list[dict], dict[str, Any]]:
     """从 Codex Responses API SSE 流中收集文本和 output items。
 
@@ -614,13 +642,12 @@ class LLMRouter:
                 payload: dict[str, Any] = {
                     "model": model,
                     "input": input_items,
-                    "max_output_tokens": max_tokens,
+                    "instructions": instructions or _CODEX_DEFAULT_INSTRUCTIONS,
                     "store": False,
                     "stream": True,
                 }
-                if instructions:
-                    payload["instructions"] = instructions
                 self._inject_codex_params(payload, effective_key)
+                payload = _sanitize_codex_payload(payload)
                 text, _, _ = await _collect_codex_stream(client, payload)
                 return strip_internal_thinking_tags(text).strip()
 
@@ -765,13 +792,12 @@ class LLMRouter:
                     "model": model,
                     "input": input_items,
                     "tools": _normalize_responses_api_tools(tools),
-                    "max_output_tokens": max_tokens,
+                    "instructions": instructions or _CODEX_DEFAULT_INSTRUCTIONS,
                     "store": False,
                     "stream": True,
                 }
-                if instructions:
-                    payload["instructions"] = instructions
                 self._inject_codex_params(payload, effective_key)
+                payload = _sanitize_codex_payload(payload)
                 text, output_items, _response_meta = await _collect_codex_stream(client, payload)
                 tool_calls, raw_tool_calls = _extract_responses_api_tool_calls(output_items)
                 continuation_message = None
@@ -1007,13 +1033,12 @@ class LLMRouter:
                     "model": model,
                     "input": input_items,
                     "tools": _normalize_responses_api_tools([tool_def]),
-                    "max_output_tokens": max_tokens,
+                    "instructions": instructions or _CODEX_DEFAULT_INSTRUCTIONS,
                     "store": False,
                     "stream": True,
                 }
-                if instructions:
-                    payload["instructions"] = instructions
                 self._inject_codex_params(payload, effective_key)
+                payload = _sanitize_codex_payload(payload)
                 text, output_items, _ = await _collect_codex_stream(client, payload)
                 tool_calls, _ = _extract_responses_api_tool_calls(output_items)
                 if tool_calls:

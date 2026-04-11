@@ -7,12 +7,14 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+import re
 import time
 import uuid
 from typing import Any, Awaitable, Callable
 
 from config.settings import (
     MEMORY_CRUD_ENABLED,
+    PROGRESS_REPORT_ENABLED,
     ROOT_DIR,
     SELF_SCHEDULE_ENABLED,
     SHELL_DEFAULT_CWD,
@@ -65,6 +67,24 @@ _FILE_WRITE_TOOLS: frozenset[str] = frozenset({
     "write_file", "file_write", "file_append", "apply_workspace_patch",
 })
 
+# 中间轮次文本过滤：只有 <user_visible> 标签内的文字才发给用户
+_USER_VISIBLE_RE = re.compile(
+    r"<user_visible>(.*?)</user_visible>",
+    re.DOTALL,
+)
+
+
+def _extract_user_visible(text: str) -> str:
+    """从 LLM 中间轮次文本中提取 <user_visible> 标签内的内容。
+
+    只有被 <user_visible>...</user_visible> 包裹的文本才会返回；
+    多个标签的内容用换行拼接；没有标签则返回空字符串。
+    """
+    matches = _USER_VISIBLE_RE.findall(text)
+    if not matches:
+        return ""
+    return "\n".join(m.strip() for m in matches if m.strip())
+
 
 class TaskRuntime:
     """负责执行工具轮次、统一工具执行和任务级事件发布。"""
@@ -86,6 +106,8 @@ class TaskRuntime:
         self._latency_monitor = latency_monitor
         self._memory = memory
         self._memory_index: Any | None = None
+        self._progress_enabled: bool = False
+        self._pending_task_store: Any | None = None
 
     def set_browser_guard(self, browser_guard: Any | None) -> None:
         self._browser_guard = browser_guard
@@ -95,6 +117,12 @@ class TaskRuntime:
 
     def set_memory_index(self, memory_index: Any | None) -> None:
         self._memory_index = memory_index
+
+    def set_pending_task_store(self, store: Any | None) -> None:
+        self._pending_task_store = store
+
+    def set_progress_enabled(self, enabled: bool) -> None:
+        self._progress_enabled = enabled
 
     def clear_chat_state(self, chat_id: str) -> None:
         self._pending_shell_confirmations.pop(chat_id, None)
@@ -242,6 +270,7 @@ class TaskRuntime:
         on_typing: Callable[[], "Awaitable[None]"] | None = None,
         adapter: str = "",
         user_id: str = "",
+        resumption_context: dict | None = None,
     ) -> str:
         async def _emit_status(text: str) -> None:
             if status_callback is None:
@@ -288,6 +317,14 @@ class TaskRuntime:
         interim_parts: list[str] = []  # 收集已通过 on_interim_text 发出的中间文字
         loop_detection_state = self._new_loop_detection_state()
         simulated_tool_retries = 0
+
+        # 进度汇报状态
+        progress_state: Any | None = None
+        if self._progress_enabled and PROGRESS_REPORT_ENABLED:
+            from src.core.progress_reporter import ProgressState
+            progress_state = ProgressState(
+                user_request=self._extract_user_request(messages),
+            )
 
         async def _step_runner(round_index: int) -> TaskLoopStep:
             nonlocal last_payload, final_reply, simulated_tool_retries
@@ -340,14 +377,22 @@ class TaskRuntime:
                 )
                 return TaskLoopStep(completed=True, payload=last_payload)
 
-            # LLM 返回了 tool_call，文字部分是中间回复（"等一下，我看看"）
+            # LLM 返回了 tool_call，文字部分是中间回复
+            # 默认静默：只发送 <user_visible> 标签内的内容，防止工具 JSON / 源码泄露
             interim_text = (turn.text or "").strip()
-            if interim_text and on_interim_text is not None:
-                try:
-                    await on_interim_text(interim_text)
-                    interim_parts.append(interim_text)
-                except Exception:
-                    pass
+            if interim_text:
+                visible_text = _extract_user_visible(interim_text)
+                if visible_text and on_interim_text is not None:
+                    try:
+                        await on_interim_text(visible_text)
+                        interim_parts.append(visible_text)
+                    except Exception:
+                        pass
+                logger.debug(
+                    "Interim text (filtered): visible=%d chars, total=%d chars",
+                    len(visible_text) if visible_text else 0,
+                    len(interim_text),
+                )
 
             tool_names = [tool_call.name for tool_call in turn.tool_calls]
             executed_tool_names: list[str] = []
@@ -595,6 +640,14 @@ class TaskRuntime:
                     signature=tool_signature,
                 )
                 last_payload = payload
+
+                # 记录进度步骤
+                if progress_state is not None:
+                    progress_state.record_step(
+                        tool_name=tool_call.name,
+                        arguments=tool_call.arguments,
+                        result_summary=tool_result_text[:300] if tool_result_text else "",
+                    )
                 last_tool_name = tool_call.name
                 logger.info(
                     "[runtime] 第 %s 轮完成 tool call %s/%s: %s",
@@ -664,6 +717,17 @@ class TaskRuntime:
                 )
 
             _record_round_latency()
+
+            # ── 进度汇报判断点 ──
+            if progress_state is not None:
+                from src.core.progress_reporter import check_and_report
+                await check_and_report(
+                    state=progress_state,
+                    llm_router=self._router,
+                    on_interim_text=on_interim_text,
+                    messages=messages,
+                )
+
             # 压缩旧的浏览器 PageState（保留最新完整，旧的只留摘要）
             self._compress_browser_history(messages)
             # 重新注入 voice reminder（tool call 循环会让消息越来越长，
@@ -676,7 +740,27 @@ class TaskRuntime:
             step_runner=_step_runner,
         )
 
+        # ── 收集已完成步骤（用于完成度检查）──
+        _completed_steps = progress_state.completed_steps if progress_state else []
+        _user_request = progress_state.user_request if progress_state else constraints.original_user_message
+
         if final_reply is not None:
+            # 清理最终回复中可能残留的 <user_visible> 标签
+            final_reply = re.sub(r"</?user_visible>", "", final_reply).strip()
+            # 循环内提前结束（可能是 circuit breaker），检查是否完成
+            if _completed_steps and loop_result.reason in (
+                "max_rounds_exceeded", "",
+            ):
+                self._fire_completion_check(
+                    user_request=_user_request,
+                    completed_steps=_completed_steps,
+                    final_response=final_reply,
+                    termination_reason=loop_result.reason or "loop_stopped",
+                    chat_id=chat_id,
+                    user_id=user_id,
+                    adapter=adapter,
+                    resumption_context=resumption_context,
+                )
             return final_reply
 
         logger.warning("[runtime] tool call 循环超过上限，返回兜底说明")
@@ -709,6 +793,9 @@ class TaskRuntime:
             await _emit_status("stage:finalizing")
             return state.success_message()
 
+        # ── max_rounds_exceeded 路径：触发完成度检查 ──
+        _termination = state.failure_reason or loop_result.reason or "max_rounds_exceeded"
+
         if state.constraints.is_write_request and state.constraints.objective != "generic":
             await self._publish_task_event(
                 event_bus,
@@ -717,22 +804,36 @@ class TaskRuntime:
                 chat_id=chat_id,
                 phase="failed",
                 text="任务未完成。",
-                reason=state.failure_reason or loop_result.reason or "tool 循环超过上限",
+                reason=_termination,
             )
             await _emit_status("stage:finalizing")
-            return state.failure_message()
+            _reply = state.failure_message()
+        else:
+            await self._publish_task_event(
+                event_bus,
+                "task.failed",
+                task_id=task_id,
+                chat_id=chat_id,
+                phase="failed",
+                text="任务未在轮次上限内完成，返回兜底结果。",
+                reason="tool 循环超过上限",
+            )
+            await _emit_status("stage:finalizing")
+            _reply = self.tool_fallback_reply(loop_result.last_payload)
 
-        await self._publish_task_event(
-            event_bus,
-            "task.failed",
-            task_id=task_id,
-            chat_id=chat_id,
-            phase="failed",
-            text="任务未在轮次上限内完成，返回兜底结果。",
-            reason="tool 循环超过上限",
-        )
-        await _emit_status("stage:finalizing")
-        return self.tool_fallback_reply(loop_result.last_payload)
+        if _completed_steps:
+            self._fire_completion_check(
+                user_request=_user_request,
+                completed_steps=_completed_steps,
+                final_response=_reply,
+                termination_reason=_termination,
+                chat_id=chat_id,
+                user_id=user_id,
+                adapter=adapter,
+                resumption_context=resumption_context,
+            )
+
+        return _reply
 
     async def _finalize_without_tool_calls(
         self,
@@ -1318,6 +1419,19 @@ class TaskRuntime:
                     break
             msg["content"] = f"[已浏览] {title}" if title else "[已浏览]"
 
+    @staticmethod
+    def _extract_user_request(messages: list[dict]) -> str:
+        """从 messages 中提取用户的原始请求（最后一条 user 消息）。"""
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", "")
+                if isinstance(content, str):
+                    return content[:500]
+                if isinstance(content, list):
+                    text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
+                    return " ".join(text_parts)[:500]
+        return ""
+
     def _detect_simulated_tool_call(self, text: str | None, available_tools: list[str]) -> bool:
         """检测 LLM 是否在文本中描述了工具调用而没有真正调用。"""
         if not text or not available_tools:
@@ -1415,3 +1529,139 @@ class TaskRuntime:
             await event_bus.publish(event_type, payload)
         except Exception as exc:
             logger.warning("[runtime] 发布任务事件失败: %s", exc)
+
+    # ── 未完成任务检测 ──
+
+    def _fire_completion_check(
+        self,
+        *,
+        user_request: str,
+        completed_steps: list[dict],
+        final_response: str,
+        termination_reason: str,
+        chat_id: str,
+        user_id: str,
+        adapter: str,
+        resumption_context: dict | None = None,
+    ) -> None:
+        """异步触发任务完成度检查（非阻塞）。"""
+        import asyncio
+        asyncio.create_task(
+            self._check_task_completion(
+                user_request=user_request,
+                completed_steps=completed_steps,
+                final_response=final_response,
+                termination_reason=termination_reason,
+                chat_id=chat_id,
+                user_id=user_id,
+                adapter=adapter,
+                resumption_context=resumption_context,
+            )
+        )
+
+    async def _check_task_completion(
+        self,
+        *,
+        user_request: str,
+        completed_steps: list[dict],
+        final_response: str,
+        termination_reason: str,
+        chat_id: str,
+        user_id: str,
+        adapter: str,
+        resumption_context: dict | None = None,
+    ) -> None:
+        """LLM 判断任务完成度，未完成则创建 PendingTask。"""
+        if self._pending_task_store is None:
+            return
+
+        # 快速跳过：没有工具调用步骤
+        if not completed_steps:
+            return
+        # 快速跳过：只有 1 步且正常结束
+        if len(completed_steps) <= 1 and termination_reason == "normal":
+            return
+
+        try:
+            from src.core.prompt_builder import build_completion_check_prompt
+
+            steps_text = ""
+            for i, step in enumerate(completed_steps[-8:], 1):
+                tool = step.get("tool", "?")
+                args = step.get("args_brief", "")
+                result = step.get("result_brief", "")[:200]
+                steps_text += f"第{i}步：调用 {tool}（{args}）\n  结果：{result}\n\n"
+
+            context = {
+                "user_request": user_request,
+                "completed_steps": steps_text,
+                "final_response": final_response[:500],
+                "termination_reason": termination_reason,
+            }
+            system_text, user_text = build_completion_check_prompt(context)
+            raw = await self._router.query_lightweight(
+                system=system_text,
+                user=user_text,
+                slot="lightweight_judgment",
+            )
+            result = self._parse_completion_result(raw)
+
+            if result["completed"] or not result["worth_retrying"]:
+                return
+
+            # 跨代际追踪
+            from src.core.pending_task import MAX_TOTAL_RESUMPTIONS
+            if resumption_context:
+                original_id = resumption_context.get("original_task_id", "")
+                total_count = resumption_context.get("total_resumption_count", 0) + 1
+                if total_count >= MAX_TOTAL_RESUMPTIONS:
+                    logger.info(
+                        "Task has been resumed %d times (max %d), giving up",
+                        total_count, MAX_TOTAL_RESUMPTIONS,
+                    )
+                    return
+            else:
+                original_id = ""
+                total_count = 0
+
+            from src.core.pending_task import PendingTask
+            task_id = f"pt-{int(time.time() * 1000)}"
+            task = PendingTask(
+                task_id=task_id,
+                chat_id=chat_id,
+                user_id=user_id,
+                adapter=adapter,
+                user_request=user_request,
+                completed_steps=completed_steps[-5:],
+                partial_result=final_response[:500],
+                remaining_description=result.get("remaining", ""),
+                termination_reason=termination_reason,
+                original_task_id=original_id or task_id,
+                total_resumption_count=total_count,
+            )
+            self._pending_task_store.save(task)
+            logger.info(
+                "Created PendingTask %s for chat %s: %s",
+                task_id, chat_id, user_request[:60],
+            )
+
+        except Exception as exc:
+            logger.warning("Task completion check failed (non-fatal): %s", exc)
+
+    @staticmethod
+    def _parse_completion_result(raw: str) -> dict:
+        """解析 LLM 返回的完成度判断 JSON。"""
+        import re as _re
+        # 尝试从 markdown code block 中提取 JSON
+        match = _re.search(r"```(?:json)?\s*(.*?)\s*```", raw, _re.DOTALL)
+        text = match.group(1) if match else raw.strip()
+        try:
+            result = json.loads(text)
+            return {
+                "completed": bool(result.get("completed", True)),
+                "worth_retrying": bool(result.get("worth_retrying", False)),
+                "remaining": str(result.get("remaining", "")),
+            }
+        except (json.JSONDecodeError, AttributeError):
+            logger.warning("无法解析完成度判断结果: %s", raw[:200])
+            return {"completed": True, "worth_retrying": False, "remaining": ""}

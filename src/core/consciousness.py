@@ -112,6 +112,7 @@ class ConsciousnessEngine:
                     await self._conversation_event.wait()
                     continue
                 await self._run_maintenance_if_due()
+                await self._run_task_resumption()
                 self._thinking_task = asyncio.create_task(
                     self._think_freely(), name="free-thinking"
                 )
@@ -226,6 +227,19 @@ class ConsciousnessEngine:
                 f.write(note)
         except Exception:
             pass
+
+    async def _run_task_resumption(self) -> None:
+        """每次 tick 检查是否有未完成任务需要恢复。"""
+        try:
+            from config.settings import TASK_RESUMPTION_ENABLED
+            if not TASK_RESUMPTION_ENABLED:
+                return
+            from src.heartbeat.actions.task_resumption import TaskResumptionAction
+            action = TaskResumptionAction()
+            ctx = self._build_maintenance_context("minute")
+            await action.execute(ctx, self._brain, self._send_fn)
+        except Exception as exc:
+            logger.debug("任务恢复检查失败: %s", exc)
 
     # ── 定时维护 ──
 

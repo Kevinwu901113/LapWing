@@ -1,6 +1,7 @@
 """安全的本地 Shell 执行器。"""
 
 import asyncio
+import time
 import getpass
 import json
 import logging
@@ -97,6 +98,7 @@ class ShellResult:
     cwd: str = _DEFAULT_CWD
     stdout_truncated: bool = False
     stderr_truncated: bool = False
+    duration: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -109,6 +111,7 @@ class ShellResult:
             "cwd": self.cwd,
             "stdout_truncated": self.stdout_truncated,
             "stderr_truncated": self.stderr_truncated,
+            "duration": self.duration,
         }
 
 
@@ -271,6 +274,7 @@ async def _execute_docker(command: str) -> ShellResult:
 
 async def execute(command: str) -> ShellResult:
     """执行 shell 命令并返回真实结果。"""
+    start = time.perf_counter()
     if not SHELL_ENABLED:
         result = _build_blocked_result("本地 shell 执行已禁用。")
         await _log_execution(command, result)

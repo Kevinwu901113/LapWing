@@ -148,6 +148,7 @@ def _payload_summary(payload: dict[str, Any]) -> dict[str, Any]:
         "tools": tools_count,
         "function_call_output_items": function_call_output_count,
         "payload_chars": payload_chars,
+        "keys": sorted(payload.keys()),
     }
 
 

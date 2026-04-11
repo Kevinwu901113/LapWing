@@ -312,6 +312,96 @@ def _format_related_history_hits(
     return "\n".join(lines)
 
 
+def build_progress_prompt(context: dict) -> tuple[str, str]:
+    """构建进度判断的完整 prompt。
+
+    复用 soul + voice + examples 确保进度汇报口吻与正常对话一致。
+
+    Args:
+        context: 来自 progress_reporter.build_progress_context() 的变量
+
+    Returns:
+        (system_text, user_text) 元组
+    """
+    soul = load_prompt("lapwing_soul")
+    voice = load_prompt("lapwing_voice")
+
+    try:
+        examples = load_prompt("lapwing_examples")
+    except Exception:
+        examples = ""
+
+    progress_template = load_prompt("progress_check")
+    user_text = progress_template.format(**context)
+
+    parts = [soul]
+    if examples:
+        parts.append(examples)
+    parts.append(voice)
+    system_text = "\n\n".join(parts)
+
+    return system_text, user_text
+
+
+def build_completion_check_prompt(context: dict) -> tuple[str, str]:
+    """构建任务完成度判断的 prompt。
+
+    Args:
+        context: {
+            "user_request": str,
+            "completed_steps": str,
+            "final_response": str,
+            "termination_reason": str,
+        }
+
+    Returns:
+        (system_text, user_text) 元组
+    """
+    system_text = "你是一个任务完成度判断助手。请根据提供的信息判断任务是否完成。"
+    template = load_prompt("completion_check")
+    user_text = template.format(**context)
+    return system_text, user_text
+
+
+def build_resumption_prompt(context: dict) -> tuple[str, str]:
+    """构建任务恢复的完整 prompt。
+
+    使用完整人格注入（soul + voice + examples），
+    因为恢复消息是 Lapwing 直接说给用户的话。
+
+    Args:
+        context: {
+            "user_request": str,
+            "completed_steps_summary": str,
+            "partial_result": str,
+            "remaining_description": str,
+            "recent_messages": str,
+            "skip_notice": str,
+        }
+
+    Returns:
+        (system_text, instruction_text) 元组
+    """
+    soul = load_prompt("lapwing_soul")
+    voice = load_prompt("lapwing_voice")
+
+    try:
+        examples = load_prompt("lapwing_examples")
+    except Exception:
+        examples = ""
+
+    resumption_template = load_prompt("task_resumption")
+    instruction = resumption_template.format(**context)
+
+    parts = [soul]
+    if examples:
+        parts.append(examples)
+    parts.append(voice)
+    system_text = "\n\n".join(parts)
+
+    return system_text, instruction
+
+
 def _skill_nudge_instruction() -> str:
     """执行后反思：提示在完成复杂任务后用 trace_mark 标记值得回顾的经历。"""
     return (
