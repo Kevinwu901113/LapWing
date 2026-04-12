@@ -142,6 +142,8 @@ class LapwingBrain:
         self.task_flow_manager = None  # Set externally (TaskFlowManager | None)
         self.quality_checker = None  # Set externally (ReplyQualityChecker | None)
         self.delegation_manager = None  # Set externally (DelegationManager | None)
+        self.agent_registry = None  # Set externally (AgentRegistry | None)
+        self.agent_dispatcher = None  # Set externally (AgentDispatcher | None)
         self.consciousness_engine = None  # Set externally (ConsciousnessEngine | None)
         self.pending_task_store = None  # Set externally (PendingTaskStore | None)
         self._conversation_end_task: asyncio.Task | None = None
@@ -265,7 +267,13 @@ class LapwingBrain:
         delegation_manager = getattr(self, "delegation_manager", None)
         if delegation_manager is not None:
             services["delegation_manager"] = delegation_manager
+        agent_dispatcher = getattr(self, "agent_dispatcher", None)
+        if agent_dispatcher is not None:
+            services["agent_dispatcher"] = agent_dispatcher
         services["router"] = self.router
+        incident_manager = getattr(self, "incident_manager", None)
+        if incident_manager is not None:
+            services["incident_manager"] = incident_manager
 
         deps = RuntimeDeps(
             execute_shell=execute_shell,
@@ -714,16 +722,24 @@ class LapwingBrain:
                 status_callback=status_callback,
             )
             reply = strip_internal_thinking_tags(reply)
-            if ctx.session_id is not None:
-                await self.memory.append_to_session(chat_id, ctx.session_id, "assistant", reply)
-            else:
-                await self.memory.append(chat_id, "assistant", reply)
-            logger.debug(f"[{chat_id}] 回复生成成功，长度: {len(reply)}")
-            duration = time.monotonic() - start_time
-            self._schedule_trace_recording(user_message, reply, ctx.matched_experience_skills, duration)
-            if self.quality_checker is not None:
-                import asyncio as _asyncio
-                _asyncio.create_task(self._check_reply_quality(chat_id, ctx.messages, reply))
+
+            # ── 后处理：reply 已生成，失败不应返回"走神了" ──
+            try:
+                if ctx.session_id is not None:
+                    await self.memory.append_to_session(chat_id, ctx.session_id, "assistant", reply)
+                else:
+                    await self.memory.append(chat_id, "assistant", reply)
+                logger.debug(f"[{chat_id}] 回复生成成功，长度: {len(reply)}")
+                duration = time.monotonic() - start_time
+                self._schedule_trace_recording(user_message, reply, ctx.matched_experience_skills, duration)
+                if self.quality_checker is not None:
+                    import asyncio as _asyncio
+                    _asyncio.create_task(self._check_reply_quality(chat_id, ctx.messages, reply))
+            except Exception as post_exc:
+                logger.warning(
+                    "[brain] 后处理失败（回复已生成，不影响调用方）: %s",
+                    post_exc, exc_info=True,
+                )
             return reply
 
         except Exception as e:
@@ -869,23 +885,30 @@ class LapwingBrain:
             if not already_sent and full_reply:
                 await _send_with_split(full_reply)
 
-            # 合并所有片段存入记忆（[SPLIT] 不写入记忆）
-            memory_text = "\n\n".join(parts_sent) if parts_sent else strip_split_markers(full_reply)
-            if ctx.session_id is not None:
-                await self.memory.append_to_session(chat_id, ctx.session_id, "assistant", memory_text)
-            else:
-                await self.memory.append(chat_id, "assistant", memory_text)
-            logger.debug(f"[{chat_id}] 流式回复完成，片段数: {len(parts_sent)}")
-            events.log("conversation", "outgoing",
-                message=memory_text[:500],
-                channel=adapter,
-                chat_id=chat_id,
-            )
-            duration = time.monotonic() - start_time
-            self._schedule_trace_recording(user_message, memory_text, ctx.matched_experience_skills, duration)
-            if self.quality_checker is not None:
-                import asyncio as _asyncio
-                _asyncio.create_task(self._check_reply_quality(chat_id, ctx.messages, memory_text))
+            # ── 后处理：回复已发出，失败不应再发"走神了" ──
+            memory_text = strip_split_markers(full_reply)
+            try:
+                memory_text = "\n\n".join(parts_sent) if parts_sent else memory_text
+                if ctx.session_id is not None:
+                    await self.memory.append_to_session(chat_id, ctx.session_id, "assistant", memory_text)
+                else:
+                    await self.memory.append(chat_id, "assistant", memory_text)
+                logger.debug(f"[{chat_id}] 流式回复完成，片段数: {len(parts_sent)}")
+                events.log("conversation", "outgoing",
+                    message=memory_text[:500],
+                    channel=adapter,
+                    chat_id=chat_id,
+                )
+                duration = time.monotonic() - start_time
+                self._schedule_trace_recording(user_message, memory_text, ctx.matched_experience_skills, duration)
+                if self.quality_checker is not None:
+                    import asyncio as _asyncio
+                    _asyncio.create_task(self._check_reply_quality(chat_id, ctx.messages, memory_text))
+            except Exception as post_exc:
+                logger.warning(
+                    "[brain] 后处理失败（回复已发出，不影响用户）: %s",
+                    post_exc, exc_info=True,
+                )
             return memory_text
 
         except Exception as e:

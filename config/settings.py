@@ -140,7 +140,6 @@ BROWSE_SOURCES: list[str] = [
 
 # 对话设置
 MAX_HISTORY_TURNS: int = 20  # 保留最近 N 轮对话（每轮 = 1 user + 1 assistant）
-MAX_REPLY_LENGTH: int = 4096  # Telegram 消息字符限制
 MESSAGE_BUFFER_SECONDS: float = float(os.getenv("MESSAGE_BUFFER_SECONDS", "4"))  # 消息合并等待时间
 
 # 用户画像提取
@@ -152,11 +151,11 @@ INTEREST_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("INTEREST_EXTRACT_TURN_THRE
 MEMORY_CRUD_ENABLED: bool = os.getenv("MEMORY_CRUD_ENABLED", "true").lower() in ("true", "1", "yes")
 AUTO_MEMORY_EXTRACT_ENABLED: bool = os.getenv("AUTO_MEMORY_EXTRACT_ENABLED", "true").lower() in ("true", "1", "yes")
 MEMORY_GUARD_ENABLED: bool = os.getenv("MEMORY_GUARD_ENABLED", "true").lower() in ("true", "1", "yes")
-DELEGATION_ENABLED: bool = os.getenv("DELEGATION_ENABLED", "false").lower() in ("true", "1", "yes")
-DELEGATION_MAX_CONCURRENT: int = int(os.getenv("DELEGATION_MAX_CONCURRENT", "3"))
-DELEGATION_MAX_ITERATIONS: int = int(os.getenv("DELEGATION_MAX_ITERATIONS", "20"))
+DELEGATION_ENABLED: bool = os.getenv("DELEGATION_ENABLED", "true").lower() in ("true", "1", "yes")
+AGENT_TEAM_ENABLED: bool = os.getenv("AGENT_TEAM_ENABLED", "true").lower() in ("true", "1", "yes")
 SELF_SCHEDULE_ENABLED: bool = os.getenv("SELF_SCHEDULE_ENABLED", "true").lower() in ("true", "1", "yes")
 QUALITY_CHECK_ENABLED: bool = os.getenv("LAPWING_FLAG_QUALITY_CHECK", "true").lower() in ("true", "1", "yes")
+INCIDENT_ENABLED: bool = os.getenv("INCIDENT_ENABLED", "true").lower() in ("true", "1", "yes")
 PROGRESS_REPORT_ENABLED: bool = os.getenv("PROGRESS_REPORT_ENABLED", "true").lower() in ("true", "1", "yes")
 TASK_RESUMPTION_ENABLED: bool = os.getenv("TASK_RESUMPTION_ENABLED", "true").lower() in ("true", "1", "yes")
 MESSAGE_SPLIT_ENABLED: bool = os.getenv("MESSAGE_SPLIT_ENABLED", "true").lower() in ("true", "1", "yes")
@@ -172,8 +171,6 @@ SESSION_TIMEOUT_MINUTES: int = int(os.getenv("SESSION_TIMEOUT_MINUTES", "30"))
 SESSION_DORMANT_TTL_HOURS: float = float(os.getenv("SESSION_DORMANT_TTL_HOURS", "3"))
 SESSION_MIN_MESSAGES_TO_KEEP: int = int(os.getenv("SESSION_MIN_MESSAGES_TO_KEEP", "4"))
 SESSION_MAX_DORMANT_PER_CHAT: int = int(os.getenv("SESSION_MAX_DORMANT_PER_CHAT", "5"))
-SESSION_TOPIC_DETECT_ENABLED: bool = False  # Phase 2: LLM 话题检测
-SESSION_SNAPSHOTS_DIR: Path = MEMORY_DIR / "sessions"
 
 # 语音转写（Whisper，可选；不填则回退到通用 LLM_* 配置）
 WHISPER_API_KEY: str = os.getenv("WHISPER_API_KEY", "")
@@ -334,8 +331,6 @@ if QQ_GROUP_COOLDOWN < 0:
     raise ValueError("QQ_GROUP_COOLDOWN 不能小于 0。")
 
 # 自省与进化
-SELF_REFLECTION_HOUR: int = int(os.getenv("SELF_REFLECTION_HOUR", "2"))  # 每日自省时间（小时）
-
 # 搜索配置
 SEARCH_MAX_RESULTS: int = int(os.getenv("SEARCH_MAX_RESULTS", "5"))
 CHAT_WEB_TOOLS_ENABLED: bool = os.getenv("CHAT_WEB_TOOLS_ENABLED", "true").lower() == "true"
