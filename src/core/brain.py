@@ -311,6 +311,7 @@ class LapwingBrain:
             knowledge_manager=self.knowledge_manager,
             skill_manager=self.skill_manager,
             memory_index=self.memory_index,
+            agent_registry=self.agent_registry,
         )
 
     def _inject_voice_reminder(self, messages: list[dict]) -> None:

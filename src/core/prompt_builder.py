@@ -73,6 +73,7 @@ async def build_system_prompt(
     knowledge_manager: "KnowledgeManager | None",
     skill_manager: "SkillManager | None",
     memory_index: "Any | None" = None,
+    agent_registry: "Any | None" = None,
 ) -> str:
     """Assemble layered system prompt from all context sources."""
     from src.memory.file_memory import read_memory_file, read_recent_summaries
@@ -229,6 +230,17 @@ async def build_system_prompt(
                 pass
         if _sop_texts:
             sections.append("# 标准操作流程\n\n" + "\n\n---\n\n".join(_sop_texts))
+
+    # Layer 6.8: Agent 团队概览
+    if agent_registry is not None:
+        agents_info = agent_registry.list_agents()
+        if agents_info:
+            agent_lines = ["## 你的团队（可用 Agent）", "你可以用 delegate_task 工具将任务委派给它们："]
+            for a in agents_info:
+                status_icon = "[idle]" if a["status"] == "idle" else "[busy]"
+                caps = ", ".join(a["capabilities"]) if a["capabilities"] else "general"
+                agent_lines.append(f"- {status_icon} **{a['name']}**: {caps}")
+            sections.append("\n".join(agent_lines))
 
     # Layer 7: 能力描述与工具状态
     sections.append(load_prompt("lapwing_capabilities"))

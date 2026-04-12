@@ -11,6 +11,7 @@ from config.settings import (
     DB_PATH,
     EXPERIENCE_SKILLS_DIR,
     EXPERIENCE_SKILLS_ENABLED,
+    INCIDENT_ENABLED,
     SKILL_TRACES_DIR,
     SKILLS_BUNDLED_DIR,
     SKILLS_ENABLED,
@@ -92,6 +93,8 @@ class AppContainer:
         self._credential_vault = None
         self._browser_guard = None
 
+        self.incident_manager = None
+
         self._prepared = False
         self._started = False
 
@@ -135,6 +138,7 @@ class AppContainer:
                     brain=self.brain,
                     send_fn=send_fn,
                     reminder_scheduler=self.reminder_scheduler,
+                    incident_manager=self.incident_manager,
                 )
                 self.brain.consciousness_engine = self.consciousness
                 await self.consciousness.start()
@@ -224,8 +228,21 @@ class AppContainer:
         from src.core.tactical_rules import TacticalRules
         from src.core.evolution_engine import EvolutionEngine
 
+        # Incident 管理系统（可选）
+        if INCIDENT_ENABLED:
+            from src.core.incident_manager import IncidentManager
+            self.incident_manager = IncidentManager(
+                send_notification_fn=self._send_notification_to_owner,
+            )
+            self.brain.incident_manager = self.incident_manager
+            self.brain.task_runtime.set_incident_manager(self.incident_manager)
+            logger.info("Incident 管理系统已就绪")
+
         self.brain.constitution_guard = ConstitutionGuard(self.brain.router)
-        self.brain.tactical_rules = TacticalRules(self.brain.router)
+        self.brain.tactical_rules = TacticalRules(
+            self.brain.router,
+            incident_manager=self.incident_manager,
+        )
         self.brain.evolution_engine = EvolutionEngine(
             self.brain.router, self.brain.constitution_guard
         )
@@ -295,11 +312,27 @@ class AppContainer:
             )
             logger.info("子 Agent 委托系统已就绪")
 
+        # Agent Team 系统（可选，新架构）
+        from config.settings import AGENT_TEAM_ENABLED
+        if AGENT_TEAM_ENABLED:
+            from src.core.agent_registry import AgentRegistry
+            from src.core.agent_dispatcher import AgentDispatcher
+            agent_registry = AgentRegistry()
+            self.brain.agent_registry = agent_registry
+            self.brain.agent_dispatcher = AgentDispatcher(
+                registry=agent_registry,
+                task_runtime=self.brain.task_runtime,
+            )
+            logger.info("Agent Team 系统已就绪")
+
         # 回复质量检查（可选）
         from config.settings import QUALITY_CHECK_ENABLED
         if QUALITY_CHECK_ENABLED:
             from src.core.quality_checker import ReplyQualityChecker
-            self.brain.quality_checker = ReplyQualityChecker(router=self.brain.router)
+            self.brain.quality_checker = ReplyQualityChecker(
+                router=self.brain.router,
+                incident_manager=self.incident_manager,
+            )
             logger.info("回复质量检查已就绪")
 
         # 中间进度汇报（可选）
@@ -385,3 +418,11 @@ class AppContainer:
             heartbeat.registry.register(TaskResumptionAction())
 
         return heartbeat
+
+    async def _send_notification_to_owner(self, text: str) -> None:
+        """通过消息通道通知 Kevin。由 IncidentManager 在 wont_fix 时调用。"""
+        try:
+            if self.channel_manager:
+                await self.channel_manager.send_to_owner(text)
+        except Exception:
+            logger.debug("通知 owner 失败", exc_info=True)
