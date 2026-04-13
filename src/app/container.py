@@ -319,11 +319,36 @@ class AppContainer:
             from src.core.agent_dispatcher import AgentDispatcher
             agent_registry = AgentRegistry()
             self.brain.agent_registry = agent_registry
+            from src.api.routes.chat_ws import forward_agent_progress, forward_agent_result
+
             self.brain.agent_dispatcher = AgentDispatcher(
                 registry=agent_registry,
                 task_runtime=self.brain.task_runtime,
+                on_progress=forward_agent_progress,
+                on_result=forward_agent_result,
             )
-            logger.info("Agent Team 系统已就绪")
+            # 注册具体 Agent
+            from src.agents.researcher import ResearcherAgent
+            from src.core.agent_registry import AgentCapability
+            researcher = ResearcherAgent()
+            agent_registry.register(researcher, [
+                AgentCapability("web_search", "网络搜索", ["web_search"]),
+                AgentCapability("web_fetch", "网页内容抓取", ["web_fetch"]),
+                AgentCapability("summarize", "信息摘要", []),
+                AgentCapability("multi_source_synthesis", "多来源综合", ["web_search", "web_fetch"]),
+            ])
+
+            if getattr(self.brain, "browser_manager", None):
+                from src.agents.browser_agent import BrowserAgent
+                browser_agent = BrowserAgent(self.brain.browser_manager)
+                agent_registry.register(browser_agent, [
+                    AgentCapability("browse_web", "浏览网页", ["browser_open", "browser_screenshot"]),
+                    AgentCapability("screenshot", "页面截图", ["browser_screenshot"]),
+                    AgentCapability("dom_extract", "DOM 内容提取", ["browser_open"]),
+                    AgentCapability("page_interact", "页面交互", ["browser_click", "browser_type"]),
+                ])
+
+            logger.info("Agent Team 系统已就绪（%d agents）", agent_registry.available_count)
 
         # 回复质量检查（可选）
         from config.settings import QUALITY_CHECK_ENABLED

@@ -13,6 +13,45 @@ router = APIRouter(tags=["chat"])
 _brain = None
 _channel_manager = None
 
+# chat_id → WebSocket 映射，用于 Agent 事件推送
+_chat_ws_map: dict[str, WebSocket] = {}
+
+
+async def forward_agent_progress(chat_id: str, emit) -> None:
+    """将 AgentEmit 推送到对应的 WebSocket 客户端。"""
+    ws = _chat_ws_map.get(chat_id)
+    if ws is None:
+        return
+    try:
+        await ws.send_json({
+            "type": "agent_emit",
+            "agent_name": emit.agent_name,
+            "ref_id": emit.ref_id,
+            "state": emit.state.value if hasattr(emit.state, "value") else str(emit.state),
+            "progress": emit.progress,
+            "note": emit.note,
+        })
+    except Exception:
+        pass
+
+
+async def forward_agent_result(chat_id: str, notify) -> None:
+    """将 AgentNotify 推送到对应的 WebSocket 客户端。"""
+    ws = _chat_ws_map.get(chat_id)
+    if ws is None:
+        return
+    try:
+        await ws.send_json({
+            "type": "agent_notify",
+            "agent_name": notify.agent_name,
+            "kind": notify.kind.value if hasattr(notify.kind, "value") else str(notify.kind),
+            "headline": notify.headline,
+            "detail": notify.detail,
+            "ref_command_id": notify.ref_command_id,
+        })
+    except Exception:
+        pass
+
 
 def init(brain, channel_manager) -> None:
     global _brain, _channel_manager
@@ -68,6 +107,8 @@ async def websocket_chat(ws: WebSocket):
                 else:
                     chat_id = f"{DESKTOP_WS_CHAT_ID_PREFIX}:{connection_id}"
 
+                _chat_ws_map[chat_id] = ws
+
                 if mgr is not None:
                     mgr.last_active_channel = ChannelType.DESKTOP
 
@@ -119,3 +160,7 @@ async def websocket_chat(ws: WebSocket):
         _brain._desktop_connected = bool(
             _desktop_adapter.connections if _desktop_adapter is not None else False
         )
+        # 清理 chat_id → ws 映射
+        for cid, w in list(_chat_ws_map.items()):
+            if w is ws:
+                del _chat_ws_map[cid]
