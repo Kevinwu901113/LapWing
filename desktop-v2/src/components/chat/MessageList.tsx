@@ -1,8 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef } from "react";
 import { useChatStore } from "@/stores/chat";
 import { MessageBubble } from "./MessageBubble";
 import { ToolCallIndicator } from "./ToolCallIndicator";
-import { ScrollArea } from "@/components/ui/scroll-area";
+import { AgentActivityCard } from "./AgentActivityCard";
 
 function shouldShowTimeSeparator(prev: string | undefined, curr: string): boolean {
   if (!prev) return true;
@@ -30,14 +30,30 @@ function formatDateSeparator(ts: string): string {
 export function MessageList() {
   const messages = useChatStore((s) => s.messages);
   const toolStatus = useChatStore((s) => s.toolStatus);
+  const agentActivities = useChatStore((s) => s.agentActivities);
   const bottomRef = useRef<HTMLDivElement>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const isUserScrolledUp = useRef(false);
+
+  const handleScroll = useCallback(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
+    isUserScrolledUp.current = !atBottom;
+  }, []);
 
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, toolStatus]);
+    if (!isUserScrolledUp.current) {
+      bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    }
+  }, [messages, toolStatus, agentActivities]);
 
   return (
-    <ScrollArea className="flex-1 px-4">
+    <div
+      ref={scrollContainerRef}
+      onScroll={handleScroll}
+      className="flex-1 overflow-y-auto px-4"
+    >
       <div className="py-4 space-y-3">
         {messages.map((msg, i) => (
           <div key={msg.id}>
@@ -56,8 +72,13 @@ export function MessageList() {
             <ToolCallIndicator status={toolStatus} />
           </div>
         )}
+        {agentActivities.filter(a => a.state !== "done" && a.state !== "failed").map((activity) => (
+          <div key={activity.commandId} className="pl-0">
+            <AgentActivityCard activity={activity} />
+          </div>
+        ))}
         <div ref={bottomRef} />
       </div>
-    </ScrollArea>
+    </div>
   );
 }
