@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { ChatMessage, ToolStatusInfo } from "@/types/chat";
+import type { ChatMessage, ToolStatusInfo, ToolCallEvent, AgentActivity } from "@/types/chat";
 
 type WsStatus = "connecting" | "connected" | "disconnected";
 
@@ -8,6 +8,10 @@ interface ChatState {
   wsStatus: WsStatus;
   toolStatus: ToolStatusInfo | null;
   chatId: string;
+  isStreaming: boolean;
+  activeToolCalls: ToolCallEvent[];
+  agentActivities: AgentActivity[];
+  lapwingStatus: "idle" | "thinking" | "using_tool" | "delegating";
   addMessage: (msg: ChatMessage) => void;
   updateInterim: (id: string, content: string) => void;
   setMessages: (msgs: ChatMessage[]) => void;
@@ -15,6 +19,13 @@ interface ChatState {
   setWsStatus: (status: WsStatus) => void;
   setToolStatus: (status: ToolStatusInfo | null) => void;
   setChatId: (id: string) => void;
+  setIsStreaming: (v: boolean) => void;
+  addToolCall: (tc: ToolCallEvent) => void;
+  completeToolCall: (id: string, result: string, success: boolean) => void;
+  clearToolCalls: () => void;
+  upsertAgentActivity: (activity: AgentActivity) => void;
+  clearAgentActivities: () => void;
+  setLapwingStatus: (status: "idle" | "thinking" | "using_tool" | "delegating") => void;
 }
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -22,6 +33,10 @@ export const useChatStore = create<ChatState>((set) => ({
   wsStatus: "disconnected",
   toolStatus: null,
   chatId: "",
+  isStreaming: false,
+  activeToolCalls: [],
+  agentActivities: [],
+  lapwingStatus: "idle",
   addMessage: (msg) =>
     set((s) => {
       const updated = [...s.messages, msg];
@@ -45,4 +60,27 @@ export const useChatStore = create<ChatState>((set) => ({
   setWsStatus: (wsStatus) => set({ wsStatus }),
   setToolStatus: (toolStatus) => set({ toolStatus }),
   setChatId: (chatId) => set({ chatId }),
+  setIsStreaming: (isStreaming) => set({ isStreaming }),
+  addToolCall: (tc) => set((s) => ({ activeToolCalls: [...s.activeToolCalls, tc] })),
+  completeToolCall: (id, result, success) =>
+    set((s) => ({
+      activeToolCalls: s.activeToolCalls.map((tc) =>
+        tc.id === id ? { ...tc, result, success, completedAt: Date.now() } : tc
+      ),
+    })),
+  clearToolCalls: () => set({ activeToolCalls: [] }),
+  upsertAgentActivity: (activity) =>
+    set((s) => {
+      const idx = s.agentActivities.findIndex((a) => a.commandId === activity.commandId);
+      const isDone = activity.state === "done" || activity.state === "failed";
+      const entry = isDone ? { ...activity, completedAt: Date.now() } : activity;
+      if (idx >= 0) {
+        const updated = [...s.agentActivities];
+        updated[idx] = entry;
+        return { agentActivities: updated };
+      }
+      return { agentActivities: [...s.agentActivities, entry] };
+    }),
+  clearAgentActivities: () => set({ agentActivities: [] }),
+  setLapwingStatus: (lapwingStatus) => set({ lapwingStatus }),
 }));

@@ -91,6 +91,14 @@ export const getTaskFlows = () =>
 export const cancelTaskFlow = (flowId: string) =>
   fetchJson<{ ok: boolean }>(`/api/task-flows/${flowId}/cancel`, { method: "POST" });
 
+// ── Agents ──
+export const getAgents = () =>
+  fetchJson<{ agents: { name: string; status: string; capabilities: string[]; current_command_id: string | null }[] }>("/api/agents");
+export const getActiveTasks = () =>
+  fetchJson<{ tasks: { agent_name: string; command_id: string; status: string }[] }>("/api/agents/active");
+export const cancelAgent = (agentName: string) =>
+  fetchJson<{ success: boolean; error?: string }>(`/api/agents/${agentName}/cancel`, { method: "POST" });
+
 // ── Auth ──
 export const createSession = (bootstrapToken: string) =>
   fetchJson<{ ok: boolean }>("/api/auth/session", {
