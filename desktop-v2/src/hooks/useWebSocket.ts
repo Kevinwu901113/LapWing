@@ -20,6 +20,8 @@ export function useWebSocket() {
 
   const {
     addMessage, updateInterim, setWsStatus, setToolStatus,
+    addToolCall, completeToolCall, upsertAgentActivity,
+    setIsStreaming, setLapwingStatus, clearToolCalls,
   } = useChatStore.getState();
 
   const connect = useCallback(() => {
@@ -59,6 +61,9 @@ export function useWebSocket() {
             });
           }
           setToolStatus(null);
+          setIsStreaming(false);
+          setLapwingStatus("idle");
+          clearToolCalls();
           interimIdRef.current = null;
         } else if (msg.type === "interim") {
           const interimId = interimIdRef.current ?? (interimIdRef.current = crypto.randomUUID());
@@ -71,6 +76,43 @@ export function useWebSocket() {
           });
         } else if (msg.type === "typing") {
           setToolStatus({ phase: "thinking", text: "思考中..." });
+          setLapwingStatus("thinking");
+        } else if (msg.type === "tool_call") {
+          addToolCall({
+            id: msg.call_id ?? crypto.randomUUID(),
+            name: msg.name,
+            arguments: msg.arguments ?? {},
+            startedAt: Date.now(),
+          });
+          setLapwingStatus("using_tool");
+          setToolStatus({
+            phase: "executing",
+            text: msg.name,
+            toolName: msg.name,
+          });
+        } else if (msg.type === "tool_result") {
+          completeToolCall(msg.call_id ?? "", msg.result_preview ?? "", msg.success ?? true);
+        } else if (msg.type === "agent_emit") {
+          upsertAgentActivity({
+            commandId: msg.ref_id ?? msg.command_id ?? "",
+            agentName: msg.agent_name,
+            state: msg.state,
+            progress: msg.progress ?? null,
+            note: msg.note ?? null,
+            headline: null,
+            startedAt: Date.now(),
+          });
+          setLapwingStatus("delegating");
+        } else if (msg.type === "agent_notify") {
+          upsertAgentActivity({
+            commandId: msg.ref_command_id ?? "",
+            agentName: msg.agent_name,
+            state: msg.kind === "error" ? "failed" : "done",
+            progress: 1,
+            note: null,
+            headline: msg.headline ?? null,
+            startedAt: Date.now(),
+          });
         } else if (msg.type === "error") {
           addMessage({
             id: crypto.randomUUID(),
@@ -95,7 +137,7 @@ export function useWebSocket() {
       retryDelay.current = Math.min(delay * 2, 30_000);
       retryRef.current = setTimeout(connect, delay);
     };
-  }, [addMessage, updateInterim, setWsStatus, setToolStatus]);
+  }, [addMessage, updateInterim, setWsStatus, setToolStatus, addToolCall, completeToolCall, upsertAgentActivity, setIsStreaming, setLapwingStatus, clearToolCalls]);
 
   const send = useCallback((content: string) => {
     if (wsRef.current?.readyState !== WebSocket.OPEN) return;
