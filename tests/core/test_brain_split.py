@@ -10,12 +10,16 @@ import pytest
 
 @pytest.fixture(autouse=True)
 def reset_module_cache():
+    import config.settings as _settings
+    _orig_budget = _settings.TASK_NO_ACTION_BUDGET
+    _settings.TASK_NO_ACTION_BUDGET = 0
     for mod in list(sys.modules.keys()):
-        if "brain" in mod or "fact_extractor" in mod:
+        if "brain" in mod or "fact_extractor" in mod or "task_runtime" in mod:
             del sys.modules[mod]
     yield
+    _settings.TASK_NO_ACTION_BUDGET = _orig_budget
     for mod in list(sys.modules.keys()):
-        if "brain" in mod or "fact_extractor" in mod:
+        if "brain" in mod or "fact_extractor" in mod or "task_runtime" in mod:
             del sys.modules[mod]
 
 

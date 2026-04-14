@@ -8,6 +8,14 @@ import aiosqlite
 logger = logging.getLogger("lapwing.memory.user_facts")
 
 
+def filter_visible_facts(facts: list[dict]) -> list[dict]:
+    """过滤掉内部摘要类画像，只保留用户可见的条目。"""
+    return [
+        fact for fact in facts
+        if not str(fact.get("fact_key", "")).startswith("memory_summary_")
+    ]
+
+
 class UserFactsRepository:
     """管理用户画像（facts）的数据访问。"""
 

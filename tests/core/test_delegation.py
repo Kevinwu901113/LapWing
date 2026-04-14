@@ -10,9 +10,11 @@ from unittest.mock import AsyncMock, MagicMock, patch
 from src.core.delegation import (
     AgentRole,
     BLOCKED_TOOLS,
+    DELEGATION_BLOCKED_CAPABILITIES,
     DelegationManager,
     DelegationResult,
     DelegationTask,
+    MAX_DELEGATION_DEPTH,
     ROLE_TOOLSETS,
 )
 
@@ -50,6 +52,19 @@ class TestRoleToolsets:
 
     def test_coder_has_execute_shell(self):
         assert "execute_shell" in ROLE_TOOLSETS[AgentRole.CODER]
+
+    def test_sensitive_tools_blocked_for_all_roles(self):
+        """记忆写入、调度、递归委托等敏感操作对所有角色都不可用。"""
+        sensitive = {
+            "delegate_task", "memory_note", "memory_edit", "memory_delete",
+            "schedule_task", "cancel_scheduled_task",
+        }
+        all_role_tools = set()
+        for tools in ROLE_TOOLSETS.values():
+            all_role_tools |= tools
+        assert not (all_role_tools & sensitive), (
+            f"敏感工具泄漏到角色工具集: {all_role_tools & sensitive}"
+        )
 
 
 # ── DelegationManager 测试 ──────────────────────────────────────────────────────
@@ -200,3 +215,55 @@ class TestExecuteChildTool:
         tc.arguments = {}
         result = await mgr._execute_child_tool(tc, chat_id="c1")
         assert "异常" in result
+
+
+# ── 安全加固测试 ─────────────────────────────────────────────────────────────────
+
+class TestDelegationSafety:
+    def test_blocked_capabilities_defined(self):
+        assert "memory" in DELEGATION_BLOCKED_CAPABILITIES
+        assert "schedule" in DELEGATION_BLOCKED_CAPABILITIES
+
+    def test_blocked_tools_includes_delegation(self):
+        assert "delegate_task" in BLOCKED_TOOLS
+
+    def test_blocked_tools_includes_memory(self):
+        assert "memory_note" in BLOCKED_TOOLS
+        assert "memory_edit" in BLOCKED_TOOLS
+        assert "memory_delete" in BLOCKED_TOOLS
+
+    def test_blocked_tools_includes_schedule(self):
+        assert "schedule_task" in BLOCKED_TOOLS
+
+    def test_max_depth_is_2(self):
+        assert MAX_DELEGATION_DEPTH == 2
+
+    def test_web_search_not_blocked(self):
+        assert "web_search" not in BLOCKED_TOOLS
+
+    def test_shell_not_blocked(self):
+        assert "execute_shell" not in BLOCKED_TOOLS
+
+    @pytest.mark.asyncio
+    async def test_depth_exceeded_returns_failure(self):
+        mgr = _make_manager()
+        tasks = [DelegationTask(goal="test", context="ctx")]
+        results = await mgr.delegate(tasks, "chat1", depth=MAX_DELEGATION_DEPTH)
+        assert len(results) == 1
+        assert results[0].success is False
+        assert "深度超限" in results[0].summary
+
+    @pytest.mark.asyncio
+    async def test_depth_zero_proceeds(self):
+        """depth=0 应正常执行（不被深度检查拦截）"""
+        mgr = _make_manager()
+        # 会因 LLM mock 失败，但不会被深度检查拦截
+        results = await mgr.delegate(
+            [DelegationTask(goal="test", context="ctx")],
+            "chat1",
+            depth=0,
+        )
+        # 应该尝试执行（可能因 mock 失败，但不是 depth error）
+        assert len(results) == 1
+        if not results[0].success:
+            assert "深度超限" not in results[0].summary

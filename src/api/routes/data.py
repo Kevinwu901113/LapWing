@@ -6,7 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+
+from src.memory.user_facts import filter_visible_facts
 
 logger = logging.getLogger("lapwing.api.routes.data")
 
@@ -26,13 +29,6 @@ def init(brain, *, journal_dir: Path) -> None:
     global _brain, _journal_dir
     _brain = brain
     _journal_dir = journal_dir
-
-
-def _visible_user_facts(facts: list[dict]) -> list[dict]:
-    return [
-        fact for fact in facts
-        if not str(fact.get("fact_key", "")).startswith("memory_summary_")
-    ]
 
 
 def _read_learning_entries(directory: Path) -> list[dict]:
@@ -88,7 +84,7 @@ async def get_interests(chat_id: str = Query(...)):
 
 @router.get("/api/memory")
 async def get_memory(chat_id: str = Query(...)):
-    facts = _visible_user_facts(await _brain.memory.get_user_facts(chat_id))
+    facts = filter_visible_facts(await _brain.memory.get_user_facts(chat_id))
     items = [
         {
             "index": index,
@@ -200,5 +196,7 @@ async def edit_knowledge_note(topic: str, body: KnowledgeEditRequest):
     knowledge_dir = DATA_DIR / "knowledge"
     knowledge_dir.mkdir(parents=True, exist_ok=True)
     path = knowledge_dir / f"{topic}.md"
+    if not path.resolve().is_relative_to(knowledge_dir.resolve()):
+        return JSONResponse(status_code=403, content={"error": "path traversal blocked"})
     path.write_text(body.content, encoding="utf-8")
     return {"ok": True}

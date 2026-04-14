@@ -32,6 +32,16 @@ async def write_note(target: str, content: str) -> dict:
     if not content:
         return {"success": False, "reason": "内容为空"}
 
+    # MemoryGuard 安全扫描
+    from config.settings import MEMORY_GUARD_ENABLED
+    if MEMORY_GUARD_ENABLED:
+        from src.guards.memory_guard import MemoryGuard
+        scan = MemoryGuard().scan(content)
+        if not scan.passed:
+            reason = f"笔记内容被安全检查拦截: {'; '.join(scan.threats)}"
+            logger.warning("[memory_note] %s", reason)
+            return {"success": False, "reason": reason}
+
     path = _TARGET_PATHS[target]
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     entry = f"\n\n> {date_str}\n\n{content}\n"

@@ -163,7 +163,7 @@ class ConversationMemory:
         # Migration: add channel column if missing
         try:
             await self._db.execute(
-                "ALTER TABLE conversations ADD COLUMN channel TEXT DEFAULT 'telegram'"
+                "ALTER TABLE conversations ADD COLUMN channel TEXT DEFAULT 'qq'"
             )
             await self._db.commit()
         except Exception:
@@ -412,7 +412,7 @@ class ConversationMemory:
             logger.error(f"获取对话消息失败: {e}")
             return []
 
-    async def append(self, channel_id: str, role: str, content: str, *, channel: str = "telegram") -> None:
+    async def append(self, channel_id: str, role: str, content: str, *, channel: str = "qq") -> None:
         """追加一条消息到对话历史（先写缓存，再持久化）。"""
         if channel_id not in self._store:
             self._store[channel_id] = []
@@ -466,7 +466,7 @@ class ConversationMemory:
             logger.error(f"清除频道 {channel_id} 记忆失败: {e}")
 
     async def append_to_session(
-        self, chat_id: str, session_id: str, role: str, content: str, *, channel: str = "telegram"
+        self, chat_id: str, session_id: str, role: str, content: str, *, channel: str = "qq"
     ) -> None:
         """追加消息到指定 session（先写缓存，再持久化）。"""
         if session_id not in self._session_store:

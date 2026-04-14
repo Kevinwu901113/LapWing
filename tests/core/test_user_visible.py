@@ -25,6 +25,16 @@ from src.tools.registry import build_default_tool_registry
 from src.tools.shell_executor import ShellResult
 
 
+@pytest.fixture(autouse=True)
+def _disable_no_action_budget():
+    """禁用 NoActionBudget 避免测试需要多轮文本响应"""
+    import config.settings as _s
+    orig = _s.TASK_NO_ACTION_BUDGET
+    _s.TASK_NO_ACTION_BUDGET = 0
+    yield
+    _s.TASK_NO_ACTION_BUDGET = orig
+
+
 # ── 单元测试：_extract_user_visible ──────────────────────────
 
 

@@ -25,7 +25,7 @@ class SelfReflection:
         """回顾指定日期的对话，提取经验，写入 JOURNAL_DIR/YYYY-MM-DD.md。
 
         Args:
-            chat_id: Telegram 对话 ID
+            chat_id: 对话 ID
             date_str: 日期字符串，格式 YYYY-MM-DD
 
         Returns:

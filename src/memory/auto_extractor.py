@@ -113,39 +113,19 @@ class AutoMemoryExtractor:
 
     def _format_conversation(self, messages: list[dict]) -> str:
         """把消息列表格式化为可读文本。"""
-        lines = []
-        for msg in messages:
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            if isinstance(content, list):
-                content = " ".join(
-                    part.get("text", "")
-                    for part in content
-                    if isinstance(part, dict) and part.get("type") == "text"
-                )
-            if not content or role == "system":
-                continue
-            speaker = "Kevin" if role == "user" else "Lapwing"
-            if len(content) > 500:
-                content = content[:500] + "..."
-            lines.append(f"{speaker}: {content}")
-        return "\n".join(lines)
+        from src.utils.conversation import format_messages_for_llm
+        return format_messages_for_llm(
+            messages,
+            speaker_labels={"user": "Kevin", "assistant": "Lapwing"},
+            max_content_len=500,
+        )
 
     def _parse_response(self, raw: str) -> list[dict]:
         """解析 LLM 返回的 JSON。容错处理各种格式问题。"""
-        text = raw.strip()
-        # 去掉 markdown 代码块
-        if text.startswith("```"):
-            lines = text.split("\n", 1)
-            text = lines[1] if len(lines) > 1 else ""
-        if text.endswith("```"):
-            text = text.rsplit("```", 1)[0]
-        text = text.strip()
-
-        try:
-            items = json.loads(text)
-        except json.JSONDecodeError:
-            logger.warning("无法解析提取响应: %s", text[:200])
+        from src.utils.text import parse_llm_json
+        items = parse_llm_json(raw, fallback=None)
+        if items is None:
+            logger.warning("无法解析提取响应: %s", raw.strip()[:200])
             return []
 
         if not isinstance(items, list):

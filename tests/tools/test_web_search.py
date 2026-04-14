@@ -135,12 +135,12 @@ class TestTavilySearch:
         assert results[0]["title"] == "DDG"
 
 
-@pytest.mark.asyncio
 class TestSearchCache:
 
     def setup_method(self):
         _search_cache.clear()
 
+    @pytest.mark.asyncio
     async def test_cache_hit_skips_engines(self):
         """缓存命中时不调用搜索引擎。"""
         with patch("src.tools.web_search.SEARCH_CACHE_TTL_SECONDS", 300):
@@ -159,6 +159,7 @@ class TestSearchCache:
         mock_tavily.assert_not_awaited()
         mock_ddg.assert_not_awaited()
 
+    @pytest.mark.asyncio
     async def test_cache_miss_when_disabled(self):
         """TTL=0 时禁用缓存。"""
         with patch("src.tools.web_search.SEARCH_CACHE_TTL_SECONDS", 0):

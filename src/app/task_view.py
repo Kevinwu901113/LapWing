@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
+from src.core.time_utils import now_iso
+
 _TASK_STATUS_BY_EVENT = {
     "task.started": "started",
     "task.executing": "executing",
@@ -19,10 +21,6 @@ _TASK_STATUS_BY_EVENT = {
     "task.blocked": "blocked",
 }
 _FINAL_STATUSES = {"completed", "failed", "blocked"}
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _parse_timestamp(value: str | None) -> datetime:
@@ -81,7 +79,7 @@ class TaskViewStore:
         if not task_id or not chat_id:
             return
 
-        timestamp = str(event.get("timestamp") or _now_iso())
+        timestamp = str(event.get("timestamp") or now_iso())
         phase = str(payload.get("phase", "")).strip() or status
         text = str(payload.get("text", "")).strip()
         tool_name = payload.get("tool_name")

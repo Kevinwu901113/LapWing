@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 from config.settings import BROWSE_ENABLED, BROWSE_INTERVAL_HOURS, BROWSE_SOURCES
 from src.core.heartbeat import HeartbeatAction, SenseContext
 from src.core.prompt_loader import load_prompt
+# TODO: 应通过 brain.think() 调用工具，而非直接 import tools 模块（架构违反）
 from src.tools import web_fetcher, web_search
 
 logger = logging.getLogger("lapwing.heartbeat.autonomous_browsing")
@@ -103,7 +104,7 @@ class AutonomousBrowsingAction(HeartbeatAction):
                 )
             await brain.memory.bump_interest(ctx.chat_id, query, increment=_INTEREST_INCREMENT)
 
-            event_bus = brain.__dict__.get("event_bus") if hasattr(brain, "__dict__") else None
+            event_bus = getattr(brain, "event_bus", None)
             if event_bus is not None:
                 await event_bus.publish(
                     "autonomous_browsing",

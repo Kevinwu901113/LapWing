@@ -537,6 +537,63 @@ class ExperienceSkillManager:
             "visibility": e.visibility,
         }
 
+    async def create_from_incident(self, incident: dict[str, Any]) -> str | None:
+        """从已 resolved 的 incident 创建 experience skill。返回文件路径或 None。"""
+        if incident.get("status") != "resolved":
+            return None
+        if not incident.get("resolution"):
+            return None
+
+        prompt = (
+            f"把以下问题和解决方案转化为一条简洁的操作经验。\n\n"
+            f"问题: {incident['description']}\n"
+            f"解决方案: {incident['resolution']}\n"
+            f"相关工具: {incident.get('related_tool', '无')}\n\n"
+            f"用一句话描述\"遇到什么情况时应该怎么做\"。\n"
+            f"只输出这一句话，不要其他内容。"
+        )
+        try:
+            skill_text = await self._router.complete(
+                [{"role": "user", "content": prompt}],
+                purpose="tool",
+                max_tokens=200,
+                session_key="system:exp_skill_gen",
+                origin="experience_skills.create_from_incident",
+            )
+            skill_text = skill_text.strip()
+            if not skill_text:
+                return None
+        except Exception as e:
+            logger.warning("[experience_skills] 从 incident 生成 skill 失败: %s", e)
+            return None
+
+        tool_tag = incident.get("related_tool", "general") or "general"
+        filename = f"{tool_tag}_{incident['id']}.md"
+        category_dir = self._skills_dir / tool_tag
+        category_dir.mkdir(parents=True, exist_ok=True)
+        skill_path = category_dir / filename
+
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        content = (
+            f"---\n"
+            f"source: incident\n"
+            f"incident_id: {incident['id']}\n"
+            f"created: {date_str}\n"
+            f"tool: {tool_tag}\n"
+            f"---\n\n"
+            f"{skill_text}\n"
+        )
+
+        skill_path.parent.mkdir(parents=True, exist_ok=True)
+        skill_path.write_text(content, encoding="utf-8")
+        logger.info(
+            "[experience_skills] 从 incident %s 创建 skill: %s",
+            incident["id"], filename,
+        )
+        # 重建索引以包含新 skill
+        self.rebuild_index()
+        return str(skill_path)
+
     @staticmethod
     def _deserialize_entry(d: dict[str, Any]) -> _IndexEntry:
         vis_raw = d.get("visibility")

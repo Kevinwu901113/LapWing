@@ -5,12 +5,11 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
-__all__ = ["AppContainer", "TaskViewStore", "TelegramApp"]
+__all__ = ["AppContainer", "TaskViewStore"]
 
 _EXPORTS = {
     "AppContainer": ("src.app.container", "AppContainer"),
     "TaskViewStore": ("src.app.task_view", "TaskViewStore"),
-    "TelegramApp": ("src.app.telegram_app", "TelegramApp"),
 }
 
 

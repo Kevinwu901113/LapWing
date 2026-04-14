@@ -114,22 +114,16 @@ def _extract_json_from_text(text: str) -> dict[str, Any]:
         ValueError: 所有解析尝试均失败
     """
     import re as _re
+    from src.core.reasoning_tags import strip_think_blocks
 
     # 1. 剥离 <think>...</think> 推理块
-    cleaned = _re.sub(r"<think>.*?</think>", "", text, flags=_re.DOTALL)
-    cleaned = _re.sub(r"<think>.*$", "", cleaned, flags=_re.DOTALL)
-    cleaned = cleaned.strip()
-    # 2. 剥离 markdown code fence
-    cleaned = _re.sub(r"^```(?:json)?\s*", "", cleaned, flags=_re.MULTILINE)
-    cleaned = _re.sub(r"\s*```$", "", cleaned, flags=_re.MULTILINE).strip()
-    # 3. 直接尝试 json.loads
-    try:
-        data = json.loads(cleaned)
-        if isinstance(data, dict):
-            logger.debug("_extract_json_from_text: 直接解析成功")
-            return data
-    except (json.JSONDecodeError, ValueError):
-        pass
+    cleaned = strip_think_blocks(text)
+    # 2. 剥离 markdown code fence + 直接尝试 json.loads
+    from src.utils.text import parse_llm_json
+    data = parse_llm_json(cleaned)
+    if isinstance(data, dict):
+        logger.debug("_extract_json_from_text: 直接解析成功")
+        return data
     # 4. 正则提取第一个 JSON object
     json_match = _re.search(r"\{.*\}", cleaned, _re.DOTALL)
     if json_match:

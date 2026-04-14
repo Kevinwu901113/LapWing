@@ -34,6 +34,12 @@ _PERSONA_ANCHOR = (
 )
 
 
+def _get_period_name(hour: int) -> str:
+    """将小时数映射为时段名称。"""
+    from src.core.vitals import get_period_name
+    return get_period_name(hour)
+
+
 class PromptSnapshotManager:
     """冻结 system prompt 快照，实现 session 内复用 + prefix 缓存。
 
@@ -91,31 +97,30 @@ async def build_system_prompt(
     except Exception:
         pass  # 示例文件不存在时静默跳过
 
-    # Layer 1: 行为规则（从经验中学到的）
+    # Layer 1: 行为规则（从经验中学到的 — 低频变化）
     rules = await read_memory_file(RULES_PATH, max_chars=800)
     if rules and "暂无规则" not in rules:
         sections.append(f"## 你从经验中学到的规则\n\n{rules}")
 
-    # Layer 0.5: 自我感知（轻量注入）
-    from src.core.vitals import now_taipei, now_taipei_str, uptime_human, boot_time_taipei
+    # Layer 2: 对 Kevin 的了解（文件化记忆 — 低频变化）
+    kevin_notes = await read_memory_file(KEVIN_NOTES_PATH, max_chars=1000)
+    if kevin_notes:
+        sections.append(f"## 你对他的了解\n\n{kevin_notes}")
+
+    # Layer 3: 时间感知（粗粒度 — 同一小时内不变，KV-cache 友好）
+    from src.core.vitals import now_taipei, uptime_human, boot_time_taipei
 
     now = now_taipei()
     yesterday = (now - timedelta(days=1)).strftime('%m月%d日')
     hour = now.hour
+    weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    weekday = weekday_names[now.weekday()]
 
-    # 时段感知：让她天然知道现在是早上/下午/晚上
-    if 5 <= hour < 12:
-        period = "早上"
-    elif 12 <= hour < 18:
-        period = "下午"
-    elif 18 <= hour < 23:
-        period = "晚上"
-    else:
-        period = "深夜"
+    period = _get_period_name(hour)
 
     sections.append(
         f"## 现在\n\n"
-        f"现在是 {now_taipei_str()}，{period}。"
+        f"现在是 {now.year}年{now.month}月{now.day}日 {weekday} {period}（约{hour}时）。"
         f"昨天是{yesterday}。\n"
         f"你已经醒了 {uptime_human()}（{boot_time_taipei().strftime('%m月%d日 %H:%M')} 启动）。\n"
         f"当你提到时间时必须基于上面的时间判断。"
@@ -123,13 +128,13 @@ async def build_system_prompt(
         f"{period}就是{period}，不要说错。"
     )
 
-    # Layer 0.55: 桌面端环境感知（按 owner_id 隔离）
+    # Layer 3.5: 桌面端环境感知（按 owner_id 隔离）
     from src.core.vitals import get_desktop_sensing
     desktop_sensing = get_desktop_sensing(owner_id=chat_id)
     if desktop_sensing:
         sections.append(f"## Kevin 的电脑状态\n\n{desktop_sensing['summary']}")
 
-    # Layer 0.6: 重启感知（如果刚醒来）
+    # Layer 3.6: 重启感知（如果刚醒来）
     from src.core.vitals import is_fresh_boot, get_sleep_summary
     if is_fresh_boot():
         sleep_duration = get_sleep_summary()
@@ -141,12 +146,7 @@ async def build_system_prompt(
                 f"不用刻意说'我刚重启'，但可以像刚睡醒一样自然过渡。"
             )
 
-    # Layer 2: 对 Kevin 的了解（文件化记忆）
-    kevin_notes = await read_memory_file(KEVIN_NOTES_PATH, max_chars=1000)
-    if kevin_notes:
-        sections.append(f"## 你对他的了解\n\n{kevin_notes}")
-
-    # Layer 2.5: SQLite facts 补充
+    # Layer 4: SQLite facts 补充（每次对话可能不同）
     facts = await memory.get_user_facts(chat_id)
     if facts:
         regular_facts = _split_facts(facts)
@@ -159,7 +159,7 @@ async def build_system_prompt(
                 f"{facts_text}"
             )
 
-    # Layer 2.7: 索引化记忆（按重要性排序）
+    # Layer 4.5: 索引化记忆（按重要性排序）
     if memory_index is not None:
         top_entries = memory_index.ranked_entries(limit=20)
         if top_entries:
@@ -263,19 +263,11 @@ def inject_voice_reminder(messages: list[dict]) -> None:
     """
     voice_reminder = load_prompt("lapwing_voice")
 
-    # 动态时间锚点，让她在长对话中也不忘时间
+    # 粗粒度时间锚点（同一小时内不变 → KV-cache 友好）
     from src.core.vitals import now_taipei
     now = now_taipei()
-    hour = now.hour
-    if 5 <= hour < 12:
-        period = "早上"
-    elif 12 <= hour < 18:
-        period = "下午"
-    elif 18 <= hour < 23:
-        period = "晚上"
-    else:
-        period = "深夜"
-    time_anchor = f"现在是{period}{now.strftime('%H:%M')}。说话要符合这个时间段。"
+    period = _get_period_name(now.hour)
+    time_anchor = f"现在是{period}（约{now.hour}时）。说话要符合这个时间段。"
 
     if len(messages) >= 6:
         content = f"[System Note]\n{voice_reminder}\n\n{_PERSONA_ANCHOR}\n\n{time_anchor}\n[/System Note]"

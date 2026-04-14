@@ -429,6 +429,7 @@ class BrowserManager:
         self._dom_processor = DOMProcessor()
         # 可选依赖（通过 container 注入）
         self._router: Any = None  # LLMRouter（视觉理解用）
+        self._vlm_client: Any = None  # MiniMaxVLM（VLM 端点，优先于 router）
         self._event_bus: Any = None  # DesktopEventBus
         self._browser_guard: Any = None  # BrowserGuard（JS 安全检查）
         # 视觉描述缓存：{tab_id: (timestamp, description)}
@@ -436,6 +437,10 @@ class BrowserManager:
 
     def set_router(self, router: Any) -> None:
         self._router = router
+
+    def set_vlm_client(self, client: Any) -> None:
+        """设置 MiniMax VLM 客户端（优先用于视觉理解）。"""
+        self._vlm_client = client
 
     def set_event_bus(self, event_bus: Any) -> None:
         self._event_bus = event_bus
@@ -1102,6 +1107,7 @@ class BrowserManager:
     async def _visual_describe(self, page: Any, tab_id: str) -> str | None:
         """对当前页面截图并调用视觉模型生成描述。
 
+        优先使用 MiniMax VLM 端点（如果已配置），否则回退到 LLMRouter 视觉 slot。
         缓存策略：同一 tab 在 BROWSER_VISION_CACHE_TTL_SECONDS 内不重复调用。
         失败时返回 None（退回纯 DOM 方案）。
         """
@@ -1113,7 +1119,7 @@ class BrowserManager:
             if now - cache_ts < BROWSER_VISION_CACHE_TTL_SECONDS:
                 return cache_desc
 
-        if self._router is None:
+        if self._vlm_client is None and self._router is None:
             return None
 
         try:
@@ -1126,31 +1132,45 @@ class BrowserManager:
             from src.core.prompt_loader import load_prompt
             vision_prompt = load_prompt("browser_vision_describe")
 
-            # 调用 LLMRouter 的视觉 slot
-            description = await self._router.complete(
-                messages=[
-                    {
-                        "role": "user",
-                        "content": [
-                            {
-                                "type": "image",
-                                "source": {
-                                    "type": "base64",
-                                    "media_type": "image/png",
-                                    "data": b64_data,
+            description: str | None = None
+
+            # 优先走 MiniMax VLM 端点
+            if self._vlm_client is not None:
+                try:
+                    data_url = f"data:image/png;base64,{b64_data}"
+                    description = await self._vlm_client.understand_image(
+                        prompt=vision_prompt,
+                        image_source=data_url,
+                    )
+                except Exception as vlm_exc:
+                    logger.warning("VLM 端点调用失败，尝试回退 LLMRouter: %s", vlm_exc)
+
+            # 回退到 LLMRouter 视觉 slot
+            if description is None and self._router is not None:
+                description = await self._router.complete(
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/png",
+                                        "data": b64_data,
+                                    },
                                 },
-                            },
-                            {
-                                "type": "text",
-                                "text": vision_prompt,
-                            },
-                        ],
-                    }
-                ],
-                slot=BROWSER_VISION_SLOT,
-                session_key=f"browser_vision:{tab_id}",
-                origin="browser_manager.visual_describe",
-            )
+                                {
+                                    "type": "text",
+                                    "text": vision_prompt,
+                                },
+                            ],
+                        }
+                    ],
+                    slot=BROWSER_VISION_SLOT,
+                    session_key=f"browser_vision:{tab_id}",
+                    origin="browser_manager.visual_describe",
+                )
 
             # 截断到最大长度
             if description and len(description) > BROWSER_VISION_MAX_DESCRIPTION_CHARS:

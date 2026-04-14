@@ -26,12 +26,19 @@ def _tool_turn(
 
 @pytest.fixture(autouse=True)
 def reset_module_cache():
+    import config.settings as _settings
+    _orig_budget = _settings.TASK_NO_ACTION_BUDGET
+    _orig_burst = _settings.TASK_ERROR_BURST_THRESHOLD
+    _settings.TASK_NO_ACTION_BUDGET = 0  # 禁用 NoActionBudget，避免测试需要多轮响应
+    _settings.TASK_ERROR_BURST_THRESHOLD = 99  # 禁用 ErrorBurstGuard
     for mod in list(sys.modules.keys()):
-        if "brain" in mod or "fact_extractor" in mod or "shell_policy" in mod:
+        if "brain" in mod or "fact_extractor" in mod or "shell_policy" in mod or "task_runtime" in mod:
             del sys.modules[mod]
     yield
+    _settings.TASK_NO_ACTION_BUDGET = _orig_budget
+    _settings.TASK_ERROR_BURST_THRESHOLD = _orig_burst
     for mod in list(sys.modules.keys()):
-        if "brain" in mod or "fact_extractor" in mod or "shell_policy" in mod:
+        if "brain" in mod or "fact_extractor" in mod or "shell_policy" in mod or "task_runtime" in mod:
             del sys.modules[mod]
 
 
@@ -356,7 +363,7 @@ class TestBrainTools:
                             "tool_calls": [{"id": "call_1"}],
                         },
                     ),
-                    _tool_turn(text=""),
+                    _tool_turn(text="本地命令没有执行。检测到危险命令，已拒绝执行。"),
                 ]
             )
             brain.router.build_tool_result_message = MagicMock(
@@ -683,7 +690,7 @@ class TestBrainTools:
                             "tool_calls": [{"id": "call_2"}],
                         },
                     ),
-                    _tool_turn(text=""),
+                    _tool_turn(text="原请求还没有完成"),
                 ]
             )
             brain.router.build_tool_result_message = MagicMock(
@@ -883,7 +890,7 @@ class TestBrainTools:
                             "tool_calls": [{"id": "call_1"}],
                         },
                     ),
-                    _tool_turn(text=""),
+                    _tool_turn(text="文件夹已创建"),
                 ]
             )
             brain.router.build_tool_result_message = MagicMock(
@@ -1070,7 +1077,7 @@ class TestBrainTools:
             brain.fact_extractor.notify = MagicMock()
             brain.event_bus = MagicMock()
             brain.event_bus.publish = AsyncMock()
-            brain.router.complete_with_tools = AsyncMock(return_value=_tool_turn(text=""))
+            brain.router.complete_with_tools = AsyncMock(return_value=_tool_turn(text="原请求还没有完成"))
 
             result = await brain.think("chat1", _msg)
 

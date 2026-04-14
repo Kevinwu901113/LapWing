@@ -159,11 +159,8 @@ class FactExtractor:
 
     def _format_conversation(self, messages: list[dict]) -> str:
         """将消息列表格式化为可读文本。"""
-        lines = []
-        for msg in messages:
-            role = "用户" if msg["role"] == "user" else "Lapwing"
-            lines.append(f"{role}: {msg['content']}")
-        return "\n".join(lines)
+        from src.utils.conversation import format_messages_for_llm
+        return format_messages_for_llm(messages)
 
     def _format_existing_facts(self, facts: list[dict]) -> str:
         """将已知 facts 格式化为可读文本。"""
@@ -174,12 +171,8 @@ class FactExtractor:
     def _parse_result(self, text: str) -> list[dict]:
         """防御性 JSON 解析，返回有效的 fact 列表。失败时返回空列表。"""
         try:
-            # 去掉 markdown code fence（LLM 可能包裹在 ```json ... ``` 中）
-            cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.MULTILINE)
-            cleaned = re.sub(r"\s*```$", "", cleaned.strip(), flags=re.MULTILINE)
-            cleaned = cleaned.strip()
-
-            data = json.loads(cleaned)
+            from src.utils.text import parse_llm_json
+            data = parse_llm_json(text)
 
             if not isinstance(data, list):
                 return []

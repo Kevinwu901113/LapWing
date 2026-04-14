@@ -86,8 +86,6 @@ class AppContainer:
         self.heartbeat: HeartbeatEngine | None = None
         self.consciousness: ConsciousnessEngine | None = None
         self.reminder_scheduler: ReminderScheduler | None = None
-        self.telegram_app = None
-
         # 浏览器子系统（可选）
         self._browser_manager = None
         self._credential_vault = None
@@ -174,7 +172,18 @@ class AppContainer:
             await self.heartbeat.shutdown()
             self.heartbeat = None
 
+        # API 先停，不再接受新请求
+        await self.api_server.shutdown()
+
+        # Channel 后停，处理完在途消息
         await self.channel_manager.stop_all()
+
+        # VLM 客户端关闭
+        if hasattr(self, "_vlm_client") and self._vlm_client is not None:
+            try:
+                await self._vlm_client.close()
+            except Exception:
+                pass
 
         # 浏览器子系统关闭
         if self._browser_manager is not None:
@@ -183,8 +192,6 @@ class AppContainer:
                 logger.info("浏览器子系统已关闭")
             except Exception:
                 logger.warning("浏览器关闭异常", exc_info=True)
-
-        await self.api_server.shutdown()
 
         if self.brain.interest_tracker:
             await self.brain.interest_tracker.shutdown()
@@ -407,6 +414,15 @@ class AppContainer:
         self._browser_manager.set_router(self.brain.router)
         self._browser_manager.set_event_bus(self.event_bus)
         self._browser_manager.set_browser_guard(self._browser_guard)
+
+        # MiniMax VLM 客户端（浏览器视觉理解的替代方案）
+        from config.settings import MINIMAX_VLM_ENABLED, MINIMAX_VLM_API_KEY, MINIMAX_VLM_HOST
+        if MINIMAX_VLM_ENABLED and MINIMAX_VLM_API_KEY:
+            from src.core.minimax_vlm import MiniMaxVLM
+            self._vlm_client = MiniMaxVLM(api_key=MINIMAX_VLM_API_KEY, api_host=MINIMAX_VLM_HOST)
+            self._browser_manager.set_vlm_client(self._vlm_client)
+            logger.info("MiniMax VLM 客户端已注入浏览器子系统")
+
         logger.info("浏览器子系统已就绪")
 
     def _build_heartbeat(self, send_fn) -> HeartbeatEngine:

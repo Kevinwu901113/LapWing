@@ -96,9 +96,8 @@ class InterestTracker:
     @staticmethod
     def _parse_result(text: str) -> list[dict]:
         try:
-            cleaned = re.sub(r"^```(?:json)?\s*", "", text.strip(), flags=re.MULTILINE)
-            cleaned = re.sub(r"\s*```$", "", cleaned.strip(), flags=re.MULTILINE).strip()
-            data = json.loads(cleaned)
+            from src.utils.text import parse_llm_json
+            data = parse_llm_json(text)
             if not isinstance(data, list):
                 return []
 
@@ -120,18 +119,33 @@ class InterestTracker:
             return []
 
     async def _update_interests_file(self, chat_id: str, topics: list[dict]) -> None:
-        """将新发现的兴趣追加到 interests.md。"""
+        """将新发现的兴趣追加到 interests.md（去重）。"""
         if not INTERESTS_PATH.exists():
             return
 
         date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-        new_entries = "\n".join(
-            f"- {t['topic']}（{date_str}，权重 {t['weight']:.1f}）"
-            for t in topics
-        )
 
         def _update():
             text = INTERESTS_PATH.read_text(encoding="utf-8")
+            # 提取已有兴趣名称用于去重
+            existing_topics: set[str] = set()
+            for line in text.splitlines():
+                line_stripped = line.strip()
+                if line_stripped.startswith("- "):
+                    # 提取 "- 话题名（..." 中的话题名
+                    topic_part = line_stripped[2:].split("（")[0].split("(")[0].strip()
+                    existing_topics.add(topic_part)
+
+            # 只追加不存在的新兴趣
+            new_topics = [t for t in topics if t["topic"] not in existing_topics]
+            if not new_topics:
+                return
+
+            new_entries = "\n".join(
+                f"- {t['topic']}（{date_str}，权重 {t['weight']:.1f}）"
+                for t in new_topics
+            )
+
             if "## Kevin 的兴趣" in text:
                 idx = text.index("## Kevin 的兴趣")
                 next_section = text.find("\n## ", idx + 1)

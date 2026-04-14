@@ -26,7 +26,7 @@ class TestPendingTask:
             task_id="pt-001",
             chat_id="chat-1",
             user_id="user-1",
-            adapter="telegram",
+            adapter="qq",
             user_request="帮我搜一下今天的天气",
             completed_steps=[{"tool": "web_search", "result_brief": "搜到了"}],
             partial_result="部分结果",
@@ -36,7 +36,7 @@ class TestPendingTask:
         assert task.task_id == "pt-001"
         assert task.chat_id == "chat-1"
         assert task.user_id == "user-1"
-        assert task.adapter == "telegram"
+        assert task.adapter == "qq"
         assert task.user_request == "帮我搜一下今天的天气"
         assert len(task.completed_steps) == 1
         assert task.partial_result == "部分结果"
@@ -160,7 +160,7 @@ class TestPendingTask:
             task_id="pt-001",
             chat_id="chat-1",
             user_id="user-1",
-            adapter="telegram",
+            adapter="qq",
             user_request="test request",
             completed_steps=[{"tool": "web_search"}],
             partial_result="partial",
@@ -206,7 +206,7 @@ class TestPendingTaskStore:
             "task_id": task_id,
             "chat_id": "chat-1",
             "user_id": "user-1",
-            "adapter": "telegram",
+            "adapter": "qq",
             "user_request": "test request",
         }
         defaults.update(kwargs)

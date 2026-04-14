@@ -234,8 +234,8 @@ class TestLLMRouterComplete:
             assert second_call["max_tokens"] == 512
 
 
-@pytest.mark.asyncio
 class TestLLMRouterTools:
+    @pytest.mark.asyncio
     async def test_complete_with_tools_normalizes_openai_tool_calls(self):
         with patch.dict("os.environ", {
             "LLM_API_KEY": "generic-key",
@@ -308,6 +308,7 @@ class TestLLMRouterTools:
             assert call_kwargs["tool_choice"] == "auto"
             assert call_kwargs["parallel_tool_calls"] is False
 
+    @pytest.mark.asyncio
     async def test_complete_with_tools_normalizes_anthropic_tool_use(self):
         with patch.dict("os.environ", {
             "LLM_API_KEY": "generic-key",

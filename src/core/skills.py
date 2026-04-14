@@ -493,6 +493,5 @@ def _current_os_tag() -> str:
 
 def _truncate_description(text: str, max_len: int = _CATALOG_DESCRIPTION_MAX_LEN) -> str:
     """截断描述到 max_len 字符，超出时末尾加 '…'。"""
-    if len(text) <= max_len:
-        return text
-    return text[: max_len - 1].rstrip() + "…"
+    from src.utils.text import truncate
+    return truncate(text, max_len, suffix="…")

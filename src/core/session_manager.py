@@ -11,6 +11,8 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
+from src.core.time_utils import parse_iso_datetime
+
 from config.settings import (
     SESSION_DORMANT_TTL_HOURS,
     SESSION_MAX_DORMANT_PER_CHAT,
@@ -39,13 +41,6 @@ class Session:
     compression_summary: str | None = None
 
 
-def _parse_dt(value: str | None) -> datetime | None:
-    if value is None:
-        return None
-    try:
-        return datetime.fromisoformat(value)
-    except Exception:
-        return None
 
 
 def _row_to_session(row) -> Session:
@@ -58,7 +53,7 @@ def _row_to_session(row) -> Session:
         snapshot_path=row[5],
         created_at=datetime.fromisoformat(row[6]),
         last_active_at=datetime.fromisoformat(row[7]),
-        condensed_at=_parse_dt(row[8]),
+        condensed_at=parse_iso_datetime(row[8]),
         message_count=row[9],
         parent_session_id=row[10] if len(row) > 10 else None,
         lineage_root_id=row[11] if len(row) > 11 else None,

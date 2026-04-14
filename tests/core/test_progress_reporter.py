@@ -188,7 +188,8 @@ class TestCheckAndReport:
         assert state.sent_reports[0] == "搜到了一些，我再找找"
 
     @pytest.mark.asyncio
-    async def test_inserts_system_reminder_into_messages(self):
+    async def test_does_not_insert_into_messages(self):
+        """进度汇报不应往 messages 列表追加，避免打断 tool_call → tool_result 序列。"""
         state = ProgressState(user_request="帮我查")
         for i in range(MIN_STEPS_BEFORE_CHECK):
             state.record_step("web_search", {"query": f"q{i}"}, f"r{i}")
@@ -205,12 +206,8 @@ class TestCheckAndReport:
                 messages=messages,
             )
 
-        assert len(messages) == 2
-        reminder = messages[1]
-        assert reminder["role"] == "user"
-        assert "系统提醒" in reminder["content"]
-        assert "找到了一些" in reminder["content"]
-        assert "不要重复" in reminder["content"]
+        # messages 不应被修改
+        assert len(messages) == 1
 
     @pytest.mark.asyncio
     async def test_handles_llm_failure_gracefully(self):

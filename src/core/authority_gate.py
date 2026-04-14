@@ -26,7 +26,7 @@ def identify(adapter: str, user_id: str) -> AuthLevel:
     识别用户权限级别。
 
     Args:
-        adapter: 消息来源适配器，如 "telegram"、"qq"、"desktop"
+        adapter: 消息来源适配器，如 "qq"、"desktop"
         user_id: 用户 ID 字符串
 
     Returns:

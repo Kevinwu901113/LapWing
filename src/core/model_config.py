@@ -94,8 +94,12 @@ class ModelRoutingConfig:
     slots: dict[str, SlotAssignment] = field(default_factory=dict)
 
 
-def _serialize(config: ModelRoutingConfig) -> dict[str, Any]:
-    """序列化为可写入 JSON 的 dict。"""
+def _serialize(config: ModelRoutingConfig, *, include_api_key: bool = False) -> dict[str, Any]:
+    """序列化为可写入 JSON 的 dict。
+
+    include_api_key=False（默认）时 api_key 写为 "FROM_ENV"，
+    避免明文密钥落盘。内部读取走内存中的 ProviderInfo.api_key。
+    """
     return {
         "providers": [
             {
@@ -103,7 +107,7 @@ def _serialize(config: ModelRoutingConfig) -> dict[str, Any]:
                 "name": p.name,
                 "api_type": p.api_type,
                 "base_url": p.base_url,
-                "api_key": p.api_key,
+                "api_key": p.api_key if include_api_key else "FROM_ENV",
                 "models": [{"id": m.id, "name": m.name} for m in p.models],
                 **({"reasoning_effort": p.reasoning_effort} if p.reasoning_effort else {}),
                 **({"context_compaction": True} if p.context_compaction else {}),
@@ -341,6 +345,7 @@ class ModelConfigManager:
             try:
                 data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
                 config = _deserialize(data)
+                self._resolve_env_keys(config)
                 logger.info(
                     f"Loaded model config: "
                     f"{len(config.providers)} providers, "
@@ -352,6 +357,20 @@ class ModelConfigManager:
 
         # 从 .env 迁移
         return self._migrate_from_env()
+
+    @staticmethod
+    def _resolve_env_keys(config: ModelRoutingConfig) -> None:
+        """将 api_key 为 'FROM_ENV' 或空的 provider 从环境变量回填。"""
+        import os
+        from config.settings import LLM_API_KEY, NIM_API_KEY
+        for p in config.providers:
+            if p.api_key and p.api_key != "FROM_ENV":
+                continue
+            # 按 provider id / base_url 推断对应的环境变量
+            if "nvidia" in p.base_url.lower() or p.id == "nvidia":
+                p.api_key = NIM_API_KEY or os.getenv("NIM_API_KEY", "")
+            else:
+                p.api_key = LLM_API_KEY or os.getenv("LLM_API_KEY", "")
 
     def _migrate_from_env(self) -> ModelRoutingConfig:
         """从现有 .env 配置迁移生成初始 model_routing.json。"""

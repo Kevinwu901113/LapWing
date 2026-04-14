@@ -21,7 +21,7 @@ export function useWebSocket() {
   const {
     addMessage, updateInterim, setWsStatus, setToolStatus,
     addToolCall, completeToolCall, upsertAgentActivity,
-    setIsStreaming, setLapwingStatus, clearToolCalls,
+    setIsStreaming, setLapwingStatus, clearToolCalls, setChatId,
   } = useChatStore.getState();
 
   const connect = useCallback(() => {
@@ -49,7 +49,11 @@ export function useWebSocket() {
       try {
         const msg = JSON.parse(event.data as string);
 
-        if (msg.type === "reply" || msg.type === "message") {
+        if (msg.type === "presence_ack") {
+          if (msg.chat_id) {
+            setChatId(msg.chat_id);
+          }
+        } else if (msg.type === "reply" || msg.type === "message") {
           const isFinalSignal = msg.final === true && interimIdRef.current !== null;
           if (!isFinalSignal) {
             addMessage({
@@ -59,6 +63,21 @@ export function useWebSocket() {
               timestamp: msg.timestamp ?? new Date().toISOString(),
               tool_calls: msg.tool_calls,
             });
+          } else {
+            // Attach completed tool calls to the interim message
+            const state = useChatStore.getState();
+            const completedCalls = state.activeToolCalls
+              .filter((tc) => tc.completedAt)
+              .map((tc) => ({ name: tc.name, arguments: tc.arguments, result: tc.result }));
+            if (completedCalls.length > 0) {
+              const last = state.messages[state.messages.length - 1];
+              if (last?.role === "assistant") {
+                const updated = { ...last, tool_calls: completedCalls };
+                useChatStore.setState({
+                  messages: [...state.messages.slice(0, -1), updated],
+                });
+              }
+            }
           }
           setToolStatus(null);
           setIsStreaming(false);
@@ -137,7 +156,7 @@ export function useWebSocket() {
       retryDelay.current = Math.min(delay * 2, 30_000);
       retryRef.current = setTimeout(connect, delay);
     };
-  }, [addMessage, updateInterim, setWsStatus, setToolStatus, addToolCall, completeToolCall, upsertAgentActivity, setIsStreaming, setLapwingStatus, clearToolCalls]);
+  }, [addMessage, updateInterim, setWsStatus, setToolStatus, addToolCall, completeToolCall, upsertAgentActivity, setIsStreaming, setLapwingStatus, clearToolCalls, setChatId]);
 
   const send = useCallback((content: string) => {
     if (wsRef.current?.readyState !== WebSocket.OPEN) return;

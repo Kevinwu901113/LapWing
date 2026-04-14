@@ -67,7 +67,7 @@ def _make_task(task_id: str = "pt-001", **kwargs) -> PendingTask:
         "task_id": task_id,
         "chat_id": "c1",
         "user_id": "kevin",
-        "adapter": "telegram",
+        "adapter": "qq",
         "user_request": "帮我搜一下终末地1.2的前瞻内容",
         "completed_steps": [
             {"tool": "web_search", "result_brief": "搜到了部分"},

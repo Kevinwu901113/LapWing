@@ -16,7 +16,10 @@ from src.core.vital_guard import (
     auto_backup,
     check,
     check_compound,
+    check_file_target,
     _is_vital,
+    _is_write_denied,
+    _normalize_for_detection,
 )
 from config.settings import ROOT_DIR
 
@@ -219,6 +222,88 @@ class TestIsVital:
 
     def test_system_boot(self):
         assert _is_vital(Path("/boot/grub/grub.cfg"))
+
+
+# ── auto_backup 测试 ──────────────────────────────────────────────────────────
+
+# ── 命令规范化（防 Unicode 绕过）─────────────────────────────────────────────
+
+class TestNormalization:
+    def test_fullwidth_rm_blocked(self):
+        """全角字符 ｒｍ 应被 NFKC 规范化后拦截。"""
+        _assert_block("ｒｍ -rf /")
+
+    def test_fullwidth_mkfs_blocked(self):
+        _assert_block("ｍｋｆｓ.ext4 /dev/sda")
+
+    def test_null_byte_stripped(self):
+        """null byte 插入不应绕过检测。"""
+        _assert_block("rm\x00 -rf /")
+
+    def test_ansi_escape_stripped(self):
+        """ANSI 转义序列不应绕过检测。"""
+        _assert_block("\x1b[31mrm\x1b[0m -rf /")
+
+    def test_normalize_preserves_normal_commands(self):
+        """正常命令不受规范化影响。"""
+        _assert_pass("ls -la /tmp")
+
+    def test_normalize_function(self):
+        assert _normalize_for_detection("ｒｍ") == "rm"
+        assert _normalize_for_detection("a\x00b") == "ab"
+        assert _normalize_for_detection("\x1b[31mhello\x1b[0m") == "hello"
+
+
+# ── 写入拒绝路径 ─────────────────────────────────────────────────────────────
+
+class TestWriteDenied:
+    def test_cat_to_ssh_authorized_keys_blocked(self):
+        _assert_block("cat key.pub > ~/.ssh/authorized_keys")
+
+    def test_cp_to_ssh_config_blocked(self):
+        _assert_block("cp bad_config ~/.ssh/config")
+
+    def test_echo_to_bashrc_blocked(self):
+        _assert_block("echo 'export PATH=bad' >> ~/.bashrc")
+
+    def test_sed_env_file_blocked(self):
+        env_path = ROOT_DIR / "config" / ".env"
+        _assert_block(f"sed -i 's/KEY/NEW/' {env_path}")
+
+    def test_read_ssh_is_pass(self):
+        """读取 SSH 文件不应拦截。"""
+        _assert_pass("cat ~/.ssh/authorized_keys")
+
+    def test_ls_ssh_is_pass(self):
+        _assert_pass("ls ~/.ssh/")
+
+    def test_is_write_denied_ssh_subpath(self):
+        assert _is_write_denied(Path.home() / ".ssh" / "new_key")
+
+    def test_is_write_denied_aws(self):
+        assert _is_write_denied(Path.home() / ".aws" / "credentials")
+
+    def test_is_write_denied_gnupg(self):
+        assert _is_write_denied(Path.home() / ".gnupg" / "pubring.kbx")
+
+    def test_is_write_denied_kube(self):
+        assert _is_write_denied(Path.home() / ".kube" / "config")
+
+    def test_check_file_target_ssh(self):
+        result = check_file_target(Path.home() / ".ssh" / "id_rsa")
+        assert result.verdict == Verdict.BLOCK
+
+    def test_check_file_target_env(self):
+        result = check_file_target(ROOT_DIR / "config" / ".env")
+        assert result.verdict == Verdict.BLOCK
+
+    def test_mv_from_ssh_key_blocked(self):
+        """从敏感路径 mv 走等同于删除，应拦截。"""
+        _assert_block("mv ~/.ssh/id_rsa /tmp/stolen")
+
+    def test_check_file_target_normal_file(self):
+        result = check_file_target(Path("/tmp/safe.txt"))
+        assert result.verdict == Verdict.PASS
 
 
 # ── auto_backup 测试 ──────────────────────────────────────────────────────────

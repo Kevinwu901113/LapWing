@@ -10,6 +10,8 @@ import asyncio
 import logging
 from datetime import datetime, timezone
 
+from src.core.time_utils import parse_iso_datetime
+
 logger = logging.getLogger("lapwing.core.reminder_scheduler")
 
 
@@ -214,12 +216,13 @@ class ReminderScheduler:
     @staticmethod
     def _parse_dt(value) -> datetime:
         if isinstance(value, datetime):
-            dt = value
-        else:
-            dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt.astimezone(timezone.utc)
+            if value.tzinfo is None:
+                return value.replace(tzinfo=timezone.utc)
+            return value.astimezone(timezone.utc)
+        dt = parse_iso_datetime(value)
+        if dt is None:
+            raise ValueError(f"无法解析日期时间: {value!r}")
+        return dt
 
     @staticmethod
     def _compute_delay(target: datetime) -> float:

@@ -16,7 +16,6 @@ def test_import_src_app_does_not_eagerly_import_heavy_modules():
     import src.app as app  # noqa: F401
 
     assert "src.app.container" not in sys.modules
-    assert "src.app.telegram_app" not in sys.modules
     assert "src.app.task_view" not in sys.modules
 
 
@@ -27,4 +26,3 @@ def test_accessing_task_view_store_only_imports_task_view_module():
     _ = app.TaskViewStore
     assert "src.app.task_view" in sys.modules
     assert "src.app.container" not in sys.modules
-    assert "src.app.telegram_app" not in sys.modules

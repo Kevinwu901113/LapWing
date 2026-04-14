@@ -9,7 +9,6 @@ from src.models.message import RichMessage
 
 
 class ChannelType(Enum):
-    TELEGRAM = "telegram"
     QQ = "qq"
     DESKTOP = "desktop"
 

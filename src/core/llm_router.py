@@ -48,6 +48,22 @@ _RECOVERABLE_FAILURES = {"auth", "rate_limit", "timeout", "billing"}
 _THINKING_RETRY_COOLDOWN_SECONDS = 30.0
 _MODEL_PURPOSES: tuple[str, ...] = ("chat", "tool", "heartbeat")
 
+
+def _extract_usage(response) -> tuple[int | None, int | None]:
+    """从 API 响应中提取 token 使用量，兼容 Anthropic 和 OpenAI 格式。"""
+    usage = getattr(response, "usage", None)
+    if usage is None:
+        return None, None
+    # Anthropic 格式: input_tokens / output_tokens
+    input_t = getattr(usage, "input_tokens", None)
+    output_t = getattr(usage, "output_tokens", None)
+    # OpenAI 格式: prompt_tokens / completion_tokens
+    if input_t is None:
+        input_t = getattr(usage, "prompt_tokens", None)
+    if output_t is None:
+        output_t = getattr(usage, "completion_tokens", None)
+    return input_t, output_t
+
 # Mapping from new slot names to legacy purposes (for AuthManager)
 _PURPOSE_TO_DEFAULT_SLOT: dict[str, str] = {
     "chat": "main_conversation",
@@ -82,7 +98,7 @@ _CODEX_ALLOWED_KEYS = {
     "truncation",
 }
 
-_CODEX_DEFAULT_INSTRUCTIONS = "You are a helpful assistant."
+_CODEX_DEFAULT_INSTRUCTIONS = "你是 Lapwing 的浏览器视觉理解模块。请用中文回复。"
 
 
 def _sanitize_codex_payload(payload: dict) -> dict:
@@ -504,7 +520,8 @@ class LLMRouter:
         )
         if override_api_type == "codex_oauth" or slot_api_type == "codex_oauth":
             from src.core.codex_oauth_client import get_client, reset_client
-            model = self._models.get(effective_key, "gpt-5.3-codex")
+            from config.settings import CODEX_FALLBACK_MODEL
+            model = self._models.get(effective_key, CODEX_FALLBACK_MODEL)
             if session_model_override:
                 model = session_model_override
             client = await get_client()
@@ -769,6 +786,16 @@ class LLMRouter:
             origin="query_lightweight",
         )
 
+    async def simple_completion(self, prompt: str, purpose: str = "agent_execution", max_tokens: int = 2048) -> str:
+        """简单文本补全，不走工具循环。Agent 内部逻辑使用。"""
+        messages = [{"role": "user", "content": prompt}]
+        return await self.complete(
+            messages,
+            purpose=purpose,
+            max_tokens=max_tokens,
+            origin="simple_completion",
+        )
+
     async def complete_with_tools(
         self,
         messages: list[dict],
@@ -877,10 +904,13 @@ class LLMRouter:
                         "content": list(getattr(response, "content", None) or []),
                     }
 
+                input_tokens, output_tokens = _extract_usage(response)
                 return ToolTurnResult(
                     text=text,
                     tool_calls=tool_calls,
                     continuation_message=continuation_message,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
                 )
 
             request_kwargs = {
@@ -911,10 +941,13 @@ class LLMRouter:
                     "tool_calls": raw_tool_calls,
                 }
 
+            input_tokens, output_tokens = _extract_usage(response)
             return ToolTurnResult(
                 text=message.content or "",
                 tool_calls=tool_calls,
                 continuation_message=continuation_message,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
             )
 
         _llm_start = time.monotonic()
@@ -932,6 +965,8 @@ class LLMRouter:
             duration=round(time.monotonic() - _llm_start, 2),
             purpose=origin or "unknown",
             has_tool_calls=bool(result.tool_calls),
+            input_tokens=result.input_tokens,
+            output_tokens=result.output_tokens,
         )
         return result
 

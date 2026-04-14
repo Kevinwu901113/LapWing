@@ -49,6 +49,8 @@ class PendingTask:
         return (time.time() - self.created_at) > TASK_EXPIRY_SECONDS
 
     def can_retry(self) -> bool:
+        if self.is_expired():
+            return False
         if self.retry_count >= MAX_RETRY_COUNT:
             return False
         if self.last_retry_at > 0:

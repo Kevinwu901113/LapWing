@@ -12,6 +12,7 @@ from typing import Any, Callable, Iterator
 
 from config.settings import AUTH_PROFILES_PATH
 from src.auth.models import FailureKind, PURPOSES
+from src.core.time_utils import parse_iso_datetime
 
 
 _COOLDOWN_STEPS = (60, 5 * 60, 25 * 60, 60 * 60)
@@ -286,29 +287,10 @@ def _now_ms() -> int:
     return int(datetime.now(timezone.utc).timestamp() * 1000)
 
 
-def _parse_iso_datetime(value: Any) -> datetime | None:
-    if not value:
-        return None
-    if isinstance(value, (int, float)):
-        return datetime.fromtimestamp(float(value), tz=timezone.utc)
-    if not isinstance(value, str):
-        return None
-    text = value.strip()
-    if not text:
-        return None
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
 
 
 def _is_expired(value: Any) -> bool:
-    dt = _parse_iso_datetime(value)
+    dt = parse_iso_datetime(value)
     if dt is None:
         return False
     return dt <= datetime.now(timezone.utc)

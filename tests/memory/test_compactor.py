@@ -4,7 +4,12 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
-from src.memory.compactor import ConversationCompactor
+from src.memory.compactor import (
+    ConversationCompactor,
+    SUMMARY_PREFIX,
+    _prune_tool_outputs,
+    _format_for_summary,
+)
 
 
 @pytest.fixture
@@ -131,3 +136,74 @@ class TestDoCompact:
         with patch.object(compactor, "should_compact", return_value=True):
             result = await compactor.try_compact("chat1")
         assert result is False
+
+    async def test_summary_includes_prefix(self, compactor, mock_memory, summaries_dir):
+        """压缩后摘要消息包含安全前缀。"""
+        history = [{"role": "user", "content": f"消息{i}"} for i in range(40)]
+        mock_memory.get.return_value = history
+        mock_memory._store["chat1"] = history[:]
+        await compactor.try_compact("chat1")
+        new_history = mock_memory._store["chat1"]
+        assert SUMMARY_PREFIX in new_history[0]["content"]
+
+    async def test_iterative_summary_preserves_prior(self, compactor, mock_memory, mock_router, summaries_dir):
+        """第二次压缩时将前次摘要作为上下文传入。"""
+        prior = {"role": "system", "content": "[之前的对话摘要] 第一次摘要内容"}
+        history = [prior] + [{"role": "user", "content": f"消息{i}"} for i in range(39)]
+        mock_memory.get.return_value = history
+        mock_memory._store["chat1"] = history[:]
+        await compactor.try_compact("chat1")
+        # 验证 LLM 收到的 prompt 包含前次摘要
+        call_args = mock_router.complete.call_args
+        prompt_content = call_args[0][0][0]["content"]
+        assert "前次摘要供参考" in prompt_content
+        assert "第一次摘要内容" in prompt_content
+
+
+# ── 工具输出修剪测试 ─────────────────────────────────────────────────────────
+
+class TestPruneToolOutputs:
+    def test_short_tool_output_kept(self):
+        msgs = [{"role": "tool", "content": "OK"}]
+        result = _prune_tool_outputs(msgs)
+        assert result[0]["content"] == "OK"
+
+    def test_long_tool_output_pruned(self):
+        long_content = "x" * 500
+        msgs = [{"role": "tool", "content": long_content}]
+        result = _prune_tool_outputs(msgs)
+        assert "工具输出已精简" in result[0]["content"]
+        assert "500" in result[0]["content"]
+
+    def test_user_messages_untouched(self):
+        msgs = [{"role": "user", "content": "x" * 500}]
+        result = _prune_tool_outputs(msgs)
+        assert result[0]["content"] == "x" * 500
+
+    def test_custom_threshold(self):
+        msgs = [{"role": "tool", "content": "x" * 50}]
+        result = _prune_tool_outputs(msgs, max_tool_content=30)
+        assert "工具输出已精简" in result[0]["content"]
+
+
+class TestFormatForSummary:
+    def test_user_message(self):
+        result = _format_for_summary([{"role": "user", "content": "你好"}])
+        assert result == "用户: 你好"
+
+    def test_tool_message(self):
+        result = _format_for_summary([{"role": "tool", "content": "结果"}])
+        assert result == "[工具结果]: 结果"
+
+    def test_system_message(self):
+        result = _format_for_summary([{"role": "system", "content": "系统"}])
+        assert result == "[系统]: 系统"
+
+    def test_assistant_message(self):
+        result = _format_for_summary([{"role": "assistant", "content": "回复"}])
+        assert result == "Lapwing: 回复"
+
+    def test_list_content_blocks(self):
+        result = _format_for_summary([{"role": "assistant", "content": [{"text": "hello"}, {"text": "world"}]}])
+        assert "hello" in result
+        assert "world" in result

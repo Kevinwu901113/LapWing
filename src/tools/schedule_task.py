@@ -66,8 +66,8 @@ async def _execute_schedule_task(
         try:
             h, m = map(int, time_str.split(":"))
             # time_of_day 是台北时间，需转换为 UTC 存储
-            taipei_tz = timezone(timedelta(hours=8))
-            now_taipei = now.astimezone(taipei_tz)
+            from src.core.vitals import _TAIPEI_TZ
+            now_taipei = now.astimezone(_TAIPEI_TZ)
             target_taipei = now_taipei.replace(hour=h, minute=m, second=0, microsecond=0)
             if target_taipei <= now_taipei:
                 target_taipei = target_taipei + timedelta(days=1)
@@ -94,8 +94,8 @@ async def _execute_schedule_task(
         try:
             target = datetime.strptime(dt_str, "%Y-%m-%d %H:%M")
             # 模型给的时间是台北时间，转换为 UTC
-            taipei_tz = timezone(timedelta(hours=8))
-            next_trigger = target.replace(tzinfo=taipei_tz).astimezone(timezone.utc)
+            from src.core.vitals import _TAIPEI_TZ
+            next_trigger = target.replace(tzinfo=_TAIPEI_TZ).astimezone(timezone.utc)
         except ValueError:
             return ToolExecutionResult(
                 success=False,

@@ -1,4 +1,4 @@
-"""delegate_task 工具执行器 — 优先走 AgentDispatcher，回退到 DelegationManager。"""
+"""delegate_task 工具执行器 — 通过 DelegationManager 委派子 agent。"""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExec
 
 logger = logging.getLogger("lapwing.tools.delegation_tool")
 
-# 字符串 → AgentRole 映射（旧 delegation 路径使用）
+# 字符串 → AgentRole 映射（回退用，agent_name 优先）
 _ROLE_MAP: dict[str, AgentRole] = {
     "researcher": AgentRole.RESEARCHER,
     "coder": AgentRole.CODER,
@@ -23,7 +23,7 @@ async def delegate_task_executor(
     request: ToolExecutionRequest,
     context: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    """执行委托任务。优先走 AgentDispatcher，回退到 DelegationManager。"""
+    """执行委托任务。"""
     raw_tasks = request.arguments.get("tasks", [])
     if not raw_tasks:
         return ToolExecutionResult(
@@ -32,39 +32,6 @@ async def delegate_task_executor(
             reason="缺少 tasks 参数",
         )
 
-    # 新 Agent Team 路径（优先）
-    agent_dispatcher = context.services.get("agent_dispatcher")
-    if agent_dispatcher is not None:
-        first_task = raw_tasks[0]
-        goal = str(first_task.get("goal", "")).strip()
-        if not goal:
-            return ToolExecutionResult(
-                success=False,
-                payload={"error": "缺少任务目标"},
-                reason="缺少任务目标",
-            )
-        ctx_text = str(first_task.get("context", "")).strip()
-        target = first_task.get("agent") or request.arguments.get("agent")
-        full_description = f"{goal}\n\n背景：{ctx_text}" if ctx_text else goal
-
-        from src.core.agent_protocol import AgentNotifyKind
-        notify = await agent_dispatcher.dispatch(
-            task_description=full_description,
-            target_agent=target,
-            chat_id=context.chat_id,
-        )
-        if notify and notify.kind == AgentNotifyKind.RESULT:
-            return ToolExecutionResult(
-                success=True,
-                payload={"result": notify.headline, "detail": notify.detail, "data": notify.payload},
-            )
-        return ToolExecutionResult(
-            success=False,
-            payload={"error": notify.headline if notify else "Unknown error"},
-            reason=notify.detail if notify else "Agent failed",
-        )
-
-    # 旧 DelegationManager 路径（回退）
     delegation_manager: DelegationManager | None = context.services.get("delegation_manager")
     if delegation_manager is None:
         return ToolExecutionResult(
@@ -78,12 +45,18 @@ async def delegate_task_executor(
     for raw in raw_tasks[:3]:
         goal = str(raw.get("goal", "")).strip()
         ctx = str(raw.get("context", "")).strip()
+        agent_name = str(raw.get("agent", "")).strip().lower() or None
         role_str = str(raw.get("role", "general")).strip().lower()
         role = _ROLE_MAP.get(role_str, AgentRole.GENERAL)
 
         if not goal:
             continue
-        tasks.append(DelegationTask(goal=goal, context=ctx, role=role))
+        tasks.append(DelegationTask(
+            goal=goal,
+            context=ctx,
+            role=role,
+            agent_name=agent_name,
+        ))
 
     if not tasks:
         return ToolExecutionResult(
@@ -111,8 +84,9 @@ async def delegate_task_executor(
     all_success = True
     for r in results:
         status = "完成" if r.success else "失败"
+        agent_label = r.agent_name or r.role.value
         lines.append(
-            f"### 子任务 {r.task_index + 1} ({r.role.value}) — {status}\n"
+            f"### 子任务 {r.task_index + 1} ({agent_label}) — {status}\n"
             f"耗时: {r.duration_seconds:.1f}s | 工具调用: {r.tool_calls_count} 次\n"
             f"{r.summary}"
         )

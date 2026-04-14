@@ -6,7 +6,7 @@ from src.adapters.base import BaseAdapter, ChannelType
 
 
 class FakeAdapter(BaseAdapter):
-    channel_type = ChannelType.TELEGRAM
+    channel_type = ChannelType.QQ
 
     def __init__(self):
         super().__init__(config={})
@@ -37,7 +37,7 @@ async def test_register_and_start_all():
 
     mgr = ChannelManager()
     adapter = FakeAdapter()
-    mgr.register(ChannelType.TELEGRAM, adapter)
+    mgr.register(ChannelType.QQ, adapter)
     await mgr.start_all()
     assert adapter.started
 
@@ -48,7 +48,7 @@ async def test_stop_all():
 
     mgr = ChannelManager()
     adapter = FakeAdapter()
-    mgr.register(ChannelType.TELEGRAM, adapter)
+    mgr.register(ChannelType.QQ, adapter)
     await mgr.start_all()
     await mgr.stop_all()
     assert adapter.stopped
@@ -60,21 +60,20 @@ async def test_send_to_channel():
 
     mgr = ChannelManager()
     adapter = FakeAdapter()
-    mgr.register(ChannelType.TELEGRAM, adapter)
-    await mgr.send(ChannelType.TELEGRAM, "123", "hello")
+    mgr.register(ChannelType.QQ, adapter)
+    await mgr.send(ChannelType.QQ, "123", "hello")
     assert adapter.sent == [("123", "hello")]
 
 
 @pytest.mark.asyncio
 async def test_send_to_owner_uses_last_active():
     from src.core.channel_manager import ChannelManager
+    from src.adapters.desktop_adapter import DesktopChannelAdapter
 
     mgr = ChannelManager()
 
-    tg = FakeAdapter()
-    tg.channel_type = ChannelType.TELEGRAM
-    tg.config = {"kevin_id": "111"}
-    mgr.register(ChannelType.TELEGRAM, tg)
+    desktop = DesktopChannelAdapter()
+    mgr.register(ChannelType.DESKTOP, desktop)
 
     qq = FakeAdapter()
     qq.channel_type = ChannelType.QQ
@@ -84,7 +83,6 @@ async def test_send_to_owner_uses_last_active():
     mgr.last_active_channel = ChannelType.QQ
     await mgr.send_to_owner("hi")
     assert qq.sent == [("222", "hi")]
-    assert tg.sent == []
 
 
 @pytest.mark.asyncio
@@ -93,14 +91,14 @@ async def test_send_to_owner_fallback():
 
     mgr = ChannelManager()
 
-    tg = FakeAdapter()
-    tg.channel_type = ChannelType.TELEGRAM
-    tg.config = {"kevin_id": "111"}
-    mgr.register(ChannelType.TELEGRAM, tg)
+    qq = FakeAdapter()
+    qq.channel_type = ChannelType.QQ
+    qq.config = {"kevin_id": "111"}
+    mgr.register(ChannelType.QQ, qq)
 
     # No last_active_channel set — should fallback to first connected
     await mgr.send_to_owner("hi")
-    assert tg.sent == [("111", "hi")]
+    assert qq.sent == [("111", "hi")]
 
 
 @pytest.mark.asyncio
@@ -110,10 +108,6 @@ async def test_send_to_owner_desktop_priority():
     from src.adapters.desktop_adapter import DesktopChannelAdapter
 
     mgr = ChannelManager()
-
-    tg = FakeAdapter()
-    tg.config = {"kevin_id": "111"}
-    mgr.register(ChannelType.TELEGRAM, tg)
 
     qq = FakeAdapter()
     qq.config = {"kevin_id": "222"}
@@ -133,7 +127,6 @@ async def test_send_to_owner_desktop_priority():
     await mgr.send_to_owner("hello desktop")
 
     assert qq.sent == []
-    assert tg.sent == []
     assert any(m.get("content") == "hello desktop" for m in fake_ws)
 
 

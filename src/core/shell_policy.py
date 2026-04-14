@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Callable, Literal
 
+from src.core.shell_types import VerificationStatus
+from src.core.verifier import verify_shell_constraints_status
 from src.tools.shell_executor import ShellResult
 
 _CURRENT_USER = getpass.getuser()
@@ -236,15 +238,7 @@ class AlternativeProposal:
     blocked_command: str
 
 
-@dataclass
-class VerificationStatus:
-    """任务级验证结果。"""
-
-    completed: bool
-    directory_path: str | None = None
-    file_path: str | None = None
-    file_content: str = ""
-    reason: str = ""
+# VerificationStatus 已移至 src/core/shell_types.py，此处 re-export 保持兼容
 
 
 @dataclass
@@ -525,8 +519,6 @@ def infer_permission_denied_alternative(
 
 
 def verify_constraints(constraints: ExecutionConstraints) -> VerificationStatus:
-    from src.core.verifier import verify_shell_constraints_status
-
     return verify_shell_constraints_status(constraints)
 
 

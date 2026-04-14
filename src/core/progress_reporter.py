@@ -163,16 +163,9 @@ async def check_and_report(
         # 发送给用户（bypass monologue filter，进度汇报是专门生成的，不应被拦截）
         await on_interim_text(report_message, bypass_monologue_filter=True)
 
-        # 注入到消息列表，让后续 LLM 调用知道自己说过什么
-        # 使用 user 角色 + [系统提醒] 前缀（已有模式，兼容所有 API）
-        messages.append({
-            "role": "user",
-            "content": (
-                f"[系统提醒] 你刚才向用户发送了以下进度消息：\n"
-                f"「{report_message}」\n"
-                f"继续工作，最终回复时不要重复已经说过的内容。"
-            ),
-        })
+        # 不往 messages 列表追加：在 tool loop 中间插入 user 角色消息会打断
+        # tool_call → tool_result 序列，导致 MiniMax 返回 400。
+        # 进度汇报是临时状态更新，不是对话的一部分。
 
         state.record_report(report_message)
         return True

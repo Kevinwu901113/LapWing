@@ -178,12 +178,177 @@ def preview_patch(
         )
 
 
+# ── 模糊匹配策略 ────────────────────────────────────────────────────────────
+
+
+def _match_line_trimmed(
+    old_content: str, old_text: str, new_text: str, count: int,
+) -> tuple[str, int] | None:
+    """每行 strip() 后比较，找到匹配块后替换原始内容。"""
+    content_lines = old_content.splitlines(keepends=True)
+    search_lines = old_text.splitlines()
+    search_stripped = [line.strip() for line in search_lines]
+    if not search_stripped:
+        return None
+
+    matched = 0
+    result_lines = list(content_lines)
+    # 从后往前查找，避免替换后偏移影响
+    positions = []
+    for i in range(len(content_lines) - len(search_stripped) + 1):
+        block = [content_lines[i + j].rstrip("\n\r").strip() for j in range(len(search_stripped))]
+        if block == search_stripped:
+            positions.append(i)
+
+    for pos in reversed(positions[:count]):
+        # 推断缩进：用原始内容第一行的缩进
+        original_first = content_lines[pos]
+        indent = original_first[: len(original_first) - len(original_first.lstrip())]
+        # 检测 new_text 自身的基线缩进（第一行的缩进）
+        new_lines = new_text.splitlines(keepends=True)
+        new_base = new_lines[0][: len(new_lines[0]) - len(new_lines[0].lstrip())] if new_lines else ""
+        indented_new = []
+        for nl in new_lines:
+            # 去掉 new_text 基线缩进，加上原始缩进，保留相对缩进
+            if new_base and nl.startswith(new_base):
+                relative = nl[len(new_base):]
+                indented_new.append(indent + relative)
+            else:
+                # new_base 为空时，保留 new_text 行的原始相对缩进
+                indented_new.append(indent + nl)
+        # 确保最后一行有换行（如果原始块最后一行有的话）
+        if indented_new and not indented_new[-1].endswith("\n"):
+            if pos + len(search_stripped) < len(content_lines):
+                indented_new[-1] += "\n"
+        result_lines[pos: pos + len(search_stripped)] = indented_new
+        matched += 1
+
+    if matched == 0:
+        return None
+    return "".join(result_lines), matched
+
+
+def _match_whitespace_normalized(
+    old_content: str, old_text: str, new_text: str, count: int,
+) -> tuple[str, int] | None:
+    """将连续空白折叠为单空格后匹配，找到原始 span 后替换。"""
+    def _normalize_ws(s: str) -> str:
+        return re.sub(r"\s+", " ", s).strip()
+
+    norm_content = _normalize_ws(old_content)
+    norm_search = _normalize_ws(old_text)
+    if not norm_search or norm_search not in norm_content:
+        return None
+
+    # 建立 normalized→original 的位置映射
+    # 找到 normalized 文本中的匹配位置，映射回原始位置
+    matched = 0
+    result = old_content
+    for _ in range(count):
+        norm_result = _normalize_ws(result)
+        idx = norm_result.find(norm_search)
+        if idx < 0:
+            break
+        # 映射 normalized 索引回原始文本
+        orig_start = _map_normalized_pos(result, idx)
+        orig_end = _map_normalized_pos(result, idx + len(norm_search))
+        if orig_start is None or orig_end is None:
+            break
+        result = result[:orig_start] + new_text + result[orig_end:]
+        matched += 1
+
+    return (result, matched) if matched > 0 else None
+
+
+def _map_normalized_pos(text: str, norm_pos: int) -> int | None:
+    """将 whitespace-normalized 位置映射回原始文本位置。"""
+    orig_idx = 0
+    norm_idx = 0
+    in_space = False
+    # 跳过前导空白（normalized 会 strip）
+    while orig_idx < len(text) and text[orig_idx] in " \t\n\r":
+        orig_idx += 1
+    while orig_idx <= len(text) and norm_idx < norm_pos:
+        if orig_idx >= len(text):
+            return None
+        ch = text[orig_idx]
+        if ch in " \t\n\r":
+            if not in_space:
+                norm_idx += 1  # 折叠空白计为一个空格
+                in_space = True
+            orig_idx += 1
+        else:
+            norm_idx += 1
+            orig_idx += 1
+            in_space = False
+    return orig_idx
+
+
+def _match_indentation_flexible(
+    old_content: str, old_text: str, new_text: str, count: int,
+) -> tuple[str, int] | None:
+    """完全忽略行首缩进匹配，用原始内容的缩进级别应用 new_text。"""
+    content_lines = old_content.splitlines(keepends=True)
+    search_lines = old_text.splitlines()
+    search_content = [line.lstrip() for line in search_lines]
+    if not search_content or not any(search_content):
+        return None
+
+    matched = 0
+    result_lines = list(content_lines)
+    positions = []
+    for i in range(len(content_lines) - len(search_content) + 1):
+        block = [content_lines[i + j].rstrip("\n\r").lstrip() for j in range(len(search_content))]
+        if block == search_content:
+            positions.append(i)
+
+    for pos in reversed(positions[:count]):
+        # 检测原始块的缩进模式
+        original_indent = content_lines[pos][: len(content_lines[pos]) - len(content_lines[pos].lstrip())]
+        new_lines = new_text.splitlines(keepends=True)
+        # 检测 new_text 自身的缩进基线（第一行的缩进）
+        new_base_indent = new_lines[0][: len(new_lines[0]) - len(new_lines[0].lstrip())] if new_lines else ""
+        indented_new = []
+        for nl in new_lines:
+            # 去掉 new_text 的基线缩进，替换为原始缩进
+            stripped = nl
+            if new_base_indent and stripped.startswith(new_base_indent):
+                stripped = stripped[len(new_base_indent):]
+            indented_new.append(original_indent + stripped.lstrip() if not stripped.startswith(" ") else original_indent + stripped)
+        if indented_new and not indented_new[-1].endswith("\n"):
+            if pos + len(search_content) < len(content_lines):
+                indented_new[-1] += "\n"
+        result_lines[pos: pos + len(search_content)] = indented_new
+        matched += 1
+
+    return ("".join(result_lines), matched) if matched > 0 else None
+
+
+_FUZZY_STRATEGIES = [
+    ("line_trimmed", _match_line_trimmed),
+    ("whitespace_normalized", _match_whitespace_normalized),
+    ("indentation_flexible", _match_indentation_flexible),
+]
+
+
+def _fuzzy_find_and_replace(
+    old_content: str, old_text: str, new_text: str, count: int,
+) -> tuple[str, int, str]:
+    """逐级尝试模糊匹配策略。返回 (new_content, matched_count, strategy_name)。"""
+    for name, strategy_fn in _FUZZY_STRATEGIES:
+        result = strategy_fn(old_content, old_text, new_text, count)
+        if result is not None:
+            return (*result, name)
+    return (old_content, 0, "none")
+
+
 def replace_in_file(
     path: str,
     old_text: str,
     new_text: str,
     *,
     use_regex: bool = False,
+    fuzzy: bool = True,
     count: int = 1,
     root_dir: Path | str = ROOT_DIR,
 ) -> FileEditResult:
@@ -199,6 +364,7 @@ def replace_in_file(
             )
 
         old_content = _read_text(abs_path)
+        fuzzy_strategy = None
         if use_regex:
             new_content, matched = re.subn(old_text, new_text, old_content, count=count)
         else:
@@ -208,6 +374,12 @@ def replace_in_file(
                 matched = min(matched, count)
             else:
                 new_content = old_content
+
+            # 精确匹配失败时尝试模糊匹配
+            if matched == 0 and fuzzy:
+                new_content, matched, fuzzy_strategy = _fuzzy_find_and_replace(
+                    old_content, old_text, new_text, count,
+                )
 
         if matched == 0:
             return FileEditResult(
@@ -228,6 +400,9 @@ def replace_in_file(
 
         backup_path = _backup_file(abs_path)
         _write_text_atomic(abs_path, new_content)
+        metadata: dict[str, Any] = {"matched": matched, "use_regex": use_regex}
+        if fuzzy_strategy:
+            metadata["fuzzy_strategy"] = fuzzy_strategy
         return FileEditResult(
             success=True,
             operation=operation,
@@ -235,7 +410,7 @@ def replace_in_file(
             changed=True,
             backup_path=backup_path,
             diff=_build_diff(abs_path, old_content, new_content),
-            metadata={"matched": matched, "use_regex": use_regex},
+            metadata=metadata,
         )
     except Exception as exc:
         return FileEditResult(

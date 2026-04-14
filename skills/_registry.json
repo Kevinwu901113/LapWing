@@ -1,13 +1,13 @@
 {
-  "total_executions": 433,
+  "total_executions": 630,
   "total_with_skill": 0,
-  "total_without_skill": 433,
+  "total_without_skill": 630,
   "skill_match_rate": 0.0,
   "match_level_distribution": {
     "quick": 0,
     "index": 0,
     "semantic": 0,
-    "none": 433
+    "none": 630
   },
   "daily_stats": [
     {
@@ -103,7 +103,21 @@
     },
     {
       "date": "2026-04-12",
-      "executions": 1,
+      "executions": 82,
+      "with_skill": 0,
+      "skills_created": 0,
+      "skills_updated": 0
+    },
+    {
+      "date": "2026-04-13",
+      "executions": 87,
+      "with_skill": 0,
+      "skills_created": 0,
+      "skills_updated": 0
+    },
+    {
+      "date": "2026-04-14",
+      "executions": 29,
       "with_skill": 0,
       "skills_created": 0,
       "skills_updated": 0

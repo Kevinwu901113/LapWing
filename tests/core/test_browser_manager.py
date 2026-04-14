@@ -161,7 +161,7 @@ async def browser_mgr(tmp_path, monkeypatch):
     monkeypatch.setattr("src.core.browser_manager.BROWSER_PAGE_TEXT_MAX_CHARS", 4000)
     monkeypatch.setattr("src.core.browser_manager.BROWSER_SCREENSHOT_RETAIN_DAYS", 7)
     monkeypatch.setattr("src.core.browser_manager.BROWSER_LOCALE", "zh-CN")
-    monkeypatch.setattr("src.core.browser_manager.BROWSER_TIMEZONE", "Asia/Taipei")
+    monkeypatch.setattr("src.core.browser_manager.BROWSER_TIMEZONE", "Asia/Shanghai")
 
     mgr = BrowserManager()
     await mgr.start()

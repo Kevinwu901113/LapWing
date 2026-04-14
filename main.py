@@ -15,8 +15,6 @@ from config.settings import (
     DATA_DIR,
     LOG_LEVEL,
     LOGS_DIR,
-    TELEGRAM_PROXY_URL,
-    TELEGRAM_TOKEN,
 )
 from src.auth.service import AuthManager
 
@@ -271,7 +269,10 @@ def handle_credential_command(args: argparse.Namespace) -> int:
     raise ValueError("未知 credential 子命令")
 
 
-def run_telegram_bot(logger: logging.Logger) -> int:
+def run_bot(logger: logging.Logger) -> int:
+    import asyncio
+    import signal
+
     global _PID_FILE
     pid_path = DATA_DIR / "lapwing.pid"
     pid_path.parent.mkdir(parents=True, exist_ok=True)
@@ -285,12 +286,6 @@ def run_telegram_bot(logger: logging.Logger) -> int:
         return 1
 
     from src.app.container import AppContainer
-    from src.app.telegram_app import TelegramApp
-    from config.settings import TELEGRAM_KEVIN_ID
-
-    if not TELEGRAM_TOKEN:
-        logger.error("TELEGRAM_TOKEN 未配置！请检查 config/.env")
-        return 1
 
     logger.info("Lapwing 正在启动...")
 
@@ -303,9 +298,6 @@ def run_telegram_bot(logger: logging.Logger) -> int:
         logger.warning("Vital manifest 生成失败: %s", _manifest_err)
 
     container = AppContainer(db_path=DB_PATH, data_dir=DATA_DIR)
-
-    telegram_app = TelegramApp(container=container, tg_config={"kevin_id": TELEGRAM_KEVIN_ID})
-    container.telegram_app = telegram_app
 
     # Register QQ adapter if enabled
     from config.settings import QQ_ENABLED
@@ -381,7 +373,10 @@ def run_telegram_bot(logger: logging.Logger) -> int:
                 logger.warning("[qq/model] %s", exc)
                 await send_fn("模型切换失败，请稍后再试。")
 
-        async def _qq_on_message(chat_id: str, text: str, channel, raw_event: dict) -> None:
+        async def _qq_on_message(
+            chat_id: str, text: str, channel, raw_event: dict,
+            image_urls: list[str] | None = None,
+        ) -> None:
             """QQ 消息进入 Brain 的桥接。"""
             container.channel_manager.last_active_channel = channel
             brain = container.brain
@@ -393,6 +388,19 @@ def run_telegram_bot(logger: logging.Logger) -> int:
             if text.startswith("/model") or text.startswith("/models"):
                 await _qq_cmd_model(chat_id, text, brain, send_fn)
                 return
+
+            # 图片下载转 base64（QQ CDN URL 有时效性，需在调用 LLM 前下载）
+            images: list[dict] | None = None
+            if image_urls:
+                qq_adp = container.channel_manager.adapters.get(ChannelType.QQ)
+                if qq_adp is not None:
+                    downloaded = []
+                    for url in image_urls:
+                        img = await qq_adp._download_image_as_base64(url)
+                        if img:
+                            downloaded.append(img)
+                    if downloaded:
+                        images = downloaded
 
             async def typing_fn() -> None:
                 pass  # QQ 无 typing indicator
@@ -408,6 +416,7 @@ def run_telegram_bot(logger: logging.Logger) -> int:
                 status_callback=noop_status,
                 adapter="qq",
                 user_id=str(raw_event.get("user_id", "")),
+                images=images,
             )
 
         qq_adapter = QQAdapter(config=qq_config, on_message=_qq_on_message)
@@ -417,11 +426,26 @@ def run_telegram_bot(logger: logging.Logger) -> int:
         container.channel_manager.register(ChannelType.QQ, qq_adapter)
         logger.info("QQ 通道已注册（群聊: %s）", QQ_GROUP_IDS or "无")
 
-    app = telegram_app.build_application(
-        token=TELEGRAM_TOKEN,
-        proxy_url=TELEGRAM_PROXY_URL,
-    )
-    app.run_polling(drop_pending_updates=True)
+    async def _run() -> None:
+        stop_event = asyncio.Event()
+
+        def _signal_handler() -> None:
+            stop_event.set()
+
+        loop = asyncio.get_running_loop()
+        for sig in (signal.SIGINT, signal.SIGTERM):
+            loop.add_signal_handler(sig, _signal_handler)
+
+        async def _send_to_owner(text: str) -> None:
+            await container.channel_manager.send_to_owner(text)
+
+        await container.start(send_fn=_send_to_owner)
+        logger.info("Lapwing 已启动，等待消息...")
+        await stop_event.wait()
+        logger.info("收到停止信号，正在关闭...")
+        await container.shutdown()
+
+    asyncio.run(_run())
     logger.info("Lapwing 已关闭")
     return 0
 
@@ -436,7 +460,7 @@ def main() -> None:
             raise SystemExit(handle_auth_command(args))
         if args.top_command == "credential":
             raise SystemExit(handle_credential_command(args))
-        raise SystemExit(run_telegram_bot(logger))
+        raise SystemExit(run_bot(logger))
     except KeyboardInterrupt:
         logger.info("Lapwing 已取消")
         raise SystemExit(130)

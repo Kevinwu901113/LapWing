@@ -188,7 +188,7 @@ def build_default_tool_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="web_search",
-            description="联网搜索网页信息。输入 query，返回标题、链接和摘要结果列表。",
+            description="联网搜索网页信息。输入 query，返回标题、链接和摘要结果列表。默认搜索中文内容——query 应该用中文写，除非要搜的内容本身是英文的（如英文论文、英文软件文档）。",
             json_schema={
                 "type": "object",
                 "properties": {
@@ -209,11 +209,12 @@ def build_default_tool_registry() -> ToolRegistry:
     registry.register(
         ToolSpec(
             name="web_fetch",
-            description="抓取指定 URL 的标题与正文文本，用于进一步阅读与总结。",
+            description="获取指定 URL 的网页内容。可以附带一个问题，系统会自动提取与问题相关的内容。",
             json_schema={
                 "type": "object",
                 "properties": {
                     "url": {"type": "string", "description": "需要抓取的网页 URL（http/https）"},
+                    "question": {"type": "string", "description": "想从这个网页中了解的问题（可选，填写后系统会自动提取相关内容而非返回全文）"},
                     "max_chars": {"type": "integer", "description": "可选，正文最大字符数（默认 8000）"},
                 },
                 "required": ["url"],
@@ -636,8 +637,9 @@ def build_default_tool_registry() -> ToolRegistry:
         registry.register(ToolSpec(
             name="delegate_task",
             description=(
-                "将子任务委派给专项助手并行执行。用于复杂任务的拆解。"
+                "将子任务委派给专项 Agent 执行。用于复杂任务的拆解。"
                 "每个子任务需要清晰的目标和充分的背景信息。最多3个并行。"
+                "可用 Agent：researcher（调研）、coder（编程）、browser（浏览）。"
             ),
             json_schema={
                 "type": "object",
@@ -648,21 +650,21 @@ def build_default_tool_registry() -> ToolRegistry:
                         "items": {
                             "type": "object",
                             "properties": {
+                                "agent": {
+                                    "type": "string",
+                                    "enum": ["researcher", "coder", "browser"],
+                                    "description": "目标 Agent：researcher 调研 / coder 编程 / browser 浏览网页",
+                                },
                                 "goal": {
                                     "type": "string",
                                     "description": "任务目标，清晰描述要做什么",
                                 },
                                 "context": {
                                     "type": "string",
-                                    "description": "必要的背景信息（要充分！子 agent 看不到对话上下文）",
-                                },
-                                "role": {
-                                    "type": "string",
-                                    "enum": ["researcher", "coder", "general"],
-                                    "description": "角色类型：researcher 信息搜集 / coder 写代码 / general 通用",
+                                    "description": "必要的背景信息（要充分！Agent 看不到对话上下文）",
                                 },
                             },
-                            "required": ["goal", "context"],
+                            "required": ["agent", "goal", "context"],
                         },
                         "description": "任务列表（最多3个并行）",
                     },
@@ -836,6 +838,39 @@ def build_default_tool_registry() -> ToolRegistry:
             "properties": {},
         },
         executor=SELF_STATUS_EXECUTORS["self_status"],
+        capability="general",
+        risk_level="low",
+    ))
+
+    # ── Incident 自报告 ──
+    from src.tools.incident_tool import execute_report_incident
+    registry.register(ToolSpec(
+        name="report_incident",
+        description=(
+            "报告一个你发现的问题或失败。当你注意到自己犯了错、某个工具反复失败、"
+            "或者某个能力有缺陷时使用。不是用来记录普通记忆的——普通记忆用 memory_note。"
+            "这个工具专门用于你觉得需要调查和修复的问题。"
+        ),
+        json_schema={
+            "type": "object",
+            "properties": {
+                "description": {
+                    "type": "string",
+                    "description": "问题描述：发生了什么，你觉得原因是什么",
+                },
+                "severity": {
+                    "type": "string",
+                    "enum": ["low", "medium", "high"],
+                    "description": "严重程度。low=小问题，medium=影响回复质量，high=功能不可用",
+                },
+                "related_tool": {
+                    "type": "string",
+                    "description": "相关的工具名（如果有），如 web_search、execute_shell",
+                },
+            },
+            "required": ["description"],
+        },
+        executor=execute_report_incident,
         capability="general",
         risk_level="low",
     ))

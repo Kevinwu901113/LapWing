@@ -83,31 +83,30 @@ async def test_read_file_tool_payload_compatible():
 
 
 @pytest.mark.asyncio
-async def test_write_file_tool_payload_compatible():
+async def test_write_file_tool_payload_compatible(tmp_path):
     registry = build_default_tool_registry()
     execute_shell = AsyncMock(
-        side_effect=[
-            ShellResult(stdout="", stderr="", return_code=0, cwd="/tmp"),
-            ShellResult(stdout="", stderr="", return_code=0, cwd="/tmp"),
-        ]
+        return_value=ShellResult(stdout="", stderr="", return_code=0, cwd="/tmp"),
     )
     context = ToolExecutionContext(
         execute_shell=execute_shell,
         shell_default_cwd="/tmp",
     )
+    target = tmp_path / "a.txt"
 
     result = await registry.execute(
         ToolExecutionRequest(
             name="write_file",
-            arguments={"path": "/tmp/a.txt", "content": "abc"},
+            arguments={"path": str(target), "content": "abc"},
         ),
         context=context,
     )
 
-    assert execute_shell.await_count == 2
-    assert result.payload["path"] == "/tmp/a.txt"
+    assert result.success is True
+    assert result.payload["path"] == str(target)
     assert result.payload["action"] == "written"
     assert result.payload["return_code"] == 0
+    assert target.read_text() == "abc"
 
 
 @pytest.mark.asyncio

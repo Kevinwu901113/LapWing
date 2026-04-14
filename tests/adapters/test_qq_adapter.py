@@ -48,11 +48,11 @@ class TestExtractText:
         assert adapter._extract_text({"message": []}) == ""
 
 
-class TestExtractImage:
+class TestExtractImageUrls:
     def test_no_image(self):
         adapter = _make_adapter()
         event = {"message": [{"type": "text", "data": {"text": "hi"}}]}
-        assert adapter._extract_image(event) is None
+        assert adapter._extract_image_urls(event) == []
 
     def test_has_image(self):
         adapter = _make_adapter()
@@ -61,11 +61,25 @@ class TestExtractImage:
                 {"type": "image", "data": {"url": "https://example.com/img.png"}},
             ]
         }
-        assert adapter._extract_image(event) == "https://example.com/img.png"
+        assert adapter._extract_image_urls(event) == ["https://example.com/img.png"]
+
+    def test_multiple_images(self):
+        adapter = _make_adapter()
+        event = {
+            "message": [
+                {"type": "image", "data": {"url": "https://example.com/a.png"}},
+                {"type": "text", "data": {"text": "caption"}},
+                {"type": "image", "data": {"url": "https://example.com/b.jpg"}},
+            ]
+        }
+        assert adapter._extract_image_urls(event) == [
+            "https://example.com/a.png",
+            "https://example.com/b.jpg",
+        ]
 
     def test_string_message_no_image(self):
         adapter = _make_adapter()
-        assert adapter._extract_image({"message": "text"}) is None
+        assert adapter._extract_image_urls({"message": "text"}) == []
 
 
 class TestMarkdownToPlain:

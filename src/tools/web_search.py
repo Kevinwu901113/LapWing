@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import os
 import time
 import urllib.parse
 from html.parser import HTMLParser
@@ -18,6 +19,10 @@ from config.settings import (
 )
 
 logger = logging.getLogger("lapwing.tools.web_search")
+
+# 搜索超时配置（秒）
+_SEARCH_TIMEOUT = int(os.getenv("SEARCH_TIMEOUT", "15"))
+_SEARCH_TOTAL_TIMEOUT = int(os.getenv("SEARCH_TOTAL_TIMEOUT", "25"))
 
 _BING_TIMEOUT = 10
 _BING_UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
@@ -132,7 +137,27 @@ async def search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
     if cached is not None:
         return cached
 
-    # 2. 根据 SEARCH_PROVIDER 确定引擎顺序
+    # 2. 总超时保护
+    try:
+        results = await asyncio.wait_for(
+            _search_with_fallback(query, max_results),
+            timeout=_SEARCH_TOTAL_TIMEOUT,
+        )
+    except asyncio.TimeoutError:
+        logger.error("[web_search] 搜索总超时 (%ds): %r", _SEARCH_TOTAL_TIMEOUT, query)
+        return []
+
+    if not results:
+        logger.warning("[web_search] 所有搜索引擎均无结果: %r", query)
+
+    # 3. 写入缓存
+    _cache_put(query, max_results, results)
+
+    return results
+
+
+async def _search_with_fallback(query: str, max_results: int) -> list[dict[str, Any]]:
+    """搜索回退链：Tavily → DDG → Bing。"""
     use_tavily = SEARCH_PROVIDER == "tavily" or (
         SEARCH_PROVIDER == "auto" and TAVILY_API_KEY
     )
@@ -140,26 +165,20 @@ async def search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
 
     results: list[dict[str, Any]] = []
 
-    # 3. Tavily
+    # Tavily
     if use_tavily:
         results = await _tavily_search(query, max_results)
 
-    # 4. DDG 回退
+    # DDG 回退
     if not results and use_ddg:
         if use_tavily:
             logger.info("[web_search] Tavily 无结果，回退 DDG: %r", query)
         results = await _ddg_search(query, max_results)
 
-    # 5. Bing 回退
+    # Bing 回退
     if not results:
         logger.info("[web_search] DDG 无结果，回退 Bing: %r", query)
         results = await _bing_search(query, max_results)
-
-    if not results:
-        logger.warning("[web_search] 所有搜索引擎均无结果: %r", query)
-
-    # 6. 写入缓存
-    _cache_put(query, max_results, results)
 
     return results
 
@@ -167,14 +186,20 @@ async def search(query: str, max_results: int = 5) -> list[dict[str, Any]]:
 # ── Tavily ───────────────────────────────────────────────────────────────────
 
 async def _tavily_search(query: str, max_results: int) -> list[dict[str, Any]]:
-    """用 Tavily 搜索（在线程池中执行同步 SDK）。"""
+    """用 Tavily 搜索（在线程池中执行同步 SDK），带超时保护。"""
     if not TAVILY_API_KEY:
         return []
     try:
-        results = await asyncio.to_thread(_sync_tavily_search, query, max_results)
+        results = await asyncio.wait_for(
+            asyncio.to_thread(_sync_tavily_search, query, max_results),
+            timeout=_SEARCH_TIMEOUT,
+        )
         if results:
             logger.info("[web_search] Tavily query=%r → %d 条", query, len(results))
         return results
+    except asyncio.TimeoutError:
+        logger.warning("[web_search] Tavily 搜索超时 (%ds): %r", _SEARCH_TIMEOUT, query)
+        return []
     except Exception as e:
         logger.warning("[web_search] Tavily 异常 (%s): %s", type(e).__name__, e)
         return []
@@ -189,6 +214,7 @@ def _sync_tavily_search(query: str, max_results: int) -> list[dict[str, Any]]:
         query=query,
         max_results=max_results,
         search_depth=TAVILY_SEARCH_DEPTH,
+        country="cn",
     )
 
     results: list[dict[str, Any]] = []
@@ -209,12 +235,18 @@ def _sync_tavily_search(query: str, max_results: int) -> list[dict[str, Any]]:
 # ── DuckDuckGo ───────────────────────────────────────────────────────────────
 
 async def _ddg_search(query: str, max_results: int) -> list[dict[str, Any]]:
-    """用 DuckDuckGo 搜索（在线程池中执行）。"""
+    """用 DuckDuckGo 搜索（在线程池中执行），带超时保护。"""
     try:
-        results = await asyncio.to_thread(_sync_ddg_search, query, max_results)
+        results = await asyncio.wait_for(
+            asyncio.to_thread(_sync_ddg_search, query, max_results),
+            timeout=_SEARCH_TIMEOUT,
+        )
         if results:
             logger.info("[web_search] DDG query=%r → %d 条", query, len(results))
         return results
+    except asyncio.TimeoutError:
+        logger.warning("[web_search] DDG 搜索超时 (%ds): %r", _SEARCH_TIMEOUT, query)
+        return []
     except Exception as e:
         logger.warning("[web_search] DDG 异常 (%s): %s", type(e).__name__, e)
         return []
@@ -226,7 +258,7 @@ def _sync_ddg_search(query: str, max_results: int) -> list[dict[str, Any]]:
 
     results: list[dict[str, Any]] = []
     with DDGS(proxy=SEARCH_PROXY_URL or None) as ddgs:
-        for r in ddgs.text(query, max_results=max_results):
+        for r in ddgs.text(query, max_results=max_results, region="cn-zh"):
             results.append({
                 "title": r.get("title", ""),
                 "url": r.get("href", ""),

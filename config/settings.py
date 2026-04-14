@@ -33,6 +33,7 @@ KEVIN_NOTES_PATH = MEMORY_DIR / "KEVIN.md"
 RULES_PATH = EVOLUTION_DIR / "rules.md"
 INTERESTS_PATH = EVOLUTION_DIR / "interests.md"
 CHANGELOG_PATH = EVOLUTION_DIR / "changelog.md"
+SCHEDULED_TASKS_PATH = DATA_DIR / "scheduled_tasks.json"
 
 # Compaction 配置
 COMPACTION_TRIGGER_RATIO = float(os.getenv("COMPACTION_TRIGGER_RATIO", "0.8"))
@@ -46,19 +47,8 @@ API_BOOTSTRAP_TOKEN_PATH = AUTH_DIR / "api-bootstrap-token"
 # 加载环境变量
 load_dotenv(CONFIG_DIR / ".env")
 
-# Telegram
-TELEGRAM_TOKEN: str = os.getenv("TELEGRAM_TOKEN", "")
-TELEGRAM_PROXY_URL: str = os.getenv("TELEGRAM_PROXY_URL", "")
-SEARCH_PROXY_URL: str = os.getenv("SEARCH_PROXY_URL", "") or TELEGRAM_PROXY_URL
-TELEGRAM_TEXT_MODE: str = os.getenv("TELEGRAM_TEXT_MODE", "markdown").strip().lower()
-TELEGRAM_MARKDOWN_TABLE_MODE: str = os.getenv("TELEGRAM_MARKDOWN_TABLE_MODE", "code").strip().lower()
-TELEGRAM_HTML_CHUNK_LIMIT: int = int(os.getenv("TELEGRAM_HTML_CHUNK_LIMIT", "4000"))
-TELEGRAM_PROGRESS_STYLE: str = os.getenv("TELEGRAM_PROGRESS_STYLE", "silent").strip().lower()
-TELEGRAM_PROGRESS_DEDUP: bool = os.getenv("TELEGRAM_PROGRESS_DEDUP", "true").lower() == "true"
-TELEGRAM_PROGRESS_THROTTLE_SECONDS: float = float(
-    os.getenv("TELEGRAM_PROGRESS_THROTTLE_SECONDS", "1.0")
-)
-TELEGRAM_KEVIN_ID: str = os.getenv("TELEGRAM_KEVIN_ID", "")
+# 网络代理
+SEARCH_PROXY_URL: str = os.getenv("SEARCH_PROXY_URL", "")
 
 # QQ (NapCat OneBot v11)
 QQ_ENABLED: bool = os.getenv("QQ_ENABLED", "false").lower() == "true"
@@ -114,6 +104,7 @@ OPENAI_CODEX_AUTH_REDIRECT_HOST: str = os.getenv("OPENAI_CODEX_AUTH_REDIRECT_HOS
 OPENAI_CODEX_AUTH_REDIRECT_PORT: int = int(os.getenv("OPENAI_CODEX_AUTH_REDIRECT_PORT", "1455"))
 OPENAI_CODEX_AUTH_REDIRECT_PATH: str = os.getenv("OPENAI_CODEX_AUTH_REDIRECT_PATH", "/auth/callback")
 OPENAI_CODEX_AUTH_PROXY_URL: str = os.getenv("OPENAI_CODEX_AUTH_PROXY_URL", "")
+CODEX_FALLBACK_MODEL: str = os.getenv("CODEX_FALLBACK_MODEL", "gpt-5.3-codex")
 
 # 心跳配置
 HEARTBEAT_ENABLED: bool = os.getenv("HEARTBEAT_ENABLED", "true").lower() == "true"
@@ -124,7 +115,7 @@ HEARTBEAT_SLOW_HOUR: int = int(os.getenv("HEARTBEAT_SLOW_HOUR", "3"))
 CONSCIOUSNESS_ENABLED: bool = os.getenv("CONSCIOUSNESS_ENABLED", "true").lower() == "true"
 CONSCIOUSNESS_DEFAULT_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_DEFAULT_INTERVAL", "600"))
 CONSCIOUSNESS_MIN_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_MIN_INTERVAL", "120"))
-CONSCIOUSNESS_MAX_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_MAX_INTERVAL", "1800"))
+CONSCIOUSNESS_MAX_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_MAX_INTERVAL", "14400"))
 CONSCIOUSNESS_AFTER_CHAT_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_AFTER_CHAT_INTERVAL", "120"))
 CONSCIOUSNESS_CONVERSATION_END_DELAY: int = int(os.getenv("CONSCIOUSNESS_CONVERSATION_END_DELAY", "300"))
 
@@ -154,7 +145,7 @@ MEMORY_GUARD_ENABLED: bool = os.getenv("MEMORY_GUARD_ENABLED", "true").lower() i
 DELEGATION_ENABLED: bool = os.getenv("DELEGATION_ENABLED", "true").lower() in ("true", "1", "yes")
 AGENT_TEAM_ENABLED: bool = os.getenv("AGENT_TEAM_ENABLED", "true").lower() in ("true", "1", "yes")
 SELF_SCHEDULE_ENABLED: bool = os.getenv("SELF_SCHEDULE_ENABLED", "true").lower() in ("true", "1", "yes")
-QUALITY_CHECK_ENABLED: bool = os.getenv("LAPWING_FLAG_QUALITY_CHECK", "true").lower() in ("true", "1", "yes")
+QUALITY_CHECK_ENABLED: bool = os.getenv("QUALITY_CHECK_ENABLED", "true").lower() in ("true", "1", "yes")
 INCIDENT_ENABLED: bool = os.getenv("INCIDENT_ENABLED", "true").lower() in ("true", "1", "yes")
 PROGRESS_REPORT_ENABLED: bool = os.getenv("PROGRESS_REPORT_ENABLED", "true").lower() in ("true", "1", "yes")
 TASK_RESUMPTION_ENABLED: bool = os.getenv("TASK_RESUMPTION_ENABLED", "true").lower() in ("true", "1", "yes")
@@ -185,10 +176,11 @@ SHELL_DEFAULT_CWD: str = os.getenv("SHELL_DEFAULT_CWD", str(ROOT_DIR))
 SHELL_MAX_OUTPUT_CHARS: int = int(os.getenv("SHELL_MAX_OUTPUT_CHARS", "4000"))
 SHELL_BACKEND: str = os.getenv("SHELL_BACKEND", "local")
 TASK_MAX_TOOL_ROUNDS: int = int(os.getenv("TASK_MAX_TOOL_ROUNDS", "32"))
+TASK_NO_ACTION_BUDGET: int = int(os.getenv("TASK_NO_ACTION_BUDGET", "3"))
+TASK_ERROR_BURST_THRESHOLD: int = int(os.getenv("TASK_ERROR_BURST_THRESHOLD", "3"))
 
 # Skills（AgentSkills / OpenClaw-compatible）
 SKILLS_ENABLED: bool = os.getenv("SKILLS_ENABLED", "true").lower() == "true"
-SKILLS_COMMANDS_ENABLED: bool = os.getenv("SKILLS_COMMANDS_ENABLED", "true").lower() == "true"
 SKILLS_WORKSPACE_DIR: str = os.getenv("SKILLS_WORKSPACE_DIR", str(ROOT_DIR / "skills"))
 SKILLS_MANAGED_DIR: str = os.getenv("SKILLS_MANAGED_DIR", str(Path.home() / ".lapwing" / "skills"))
 SKILLS_BUNDLED_DIR: str = os.getenv("SKILLS_BUNDLED_DIR", str(ROOT_DIR / "bundled_skills"))
@@ -237,7 +229,7 @@ LOOP_DETECTION_DETECTOR_KNOWN_POLL_NO_PROGRESS: bool = (
 )
 
 # ── 浏览器子系统 ──
-BROWSER_ENABLED: bool = os.getenv("BROWSER_ENABLED", "false").lower() in ("true", "1", "yes")
+BROWSER_ENABLED: bool = os.getenv("BROWSER_ENABLED", "true").lower() in ("true", "1", "yes")
 BROWSER_HEADLESS: bool = os.getenv("BROWSER_HEADLESS", "true").lower() in ("true", "1", "yes")
 BROWSER_USER_DATA_DIR: str = os.getenv("BROWSER_USER_DATA_DIR", str(DATA_DIR / "browser" / "profile"))
 BROWSER_MAX_TABS: int = int(os.getenv("BROWSER_MAX_TABS", "8"))
@@ -249,7 +241,7 @@ BROWSER_SCREENSHOT_RETAIN_DAYS: int = int(os.getenv("BROWSER_SCREENSHOT_RETAIN_D
 BROWSER_VIEWPORT_WIDTH: int = int(os.getenv("BROWSER_VIEWPORT_WIDTH", "1280"))
 BROWSER_VIEWPORT_HEIGHT: int = int(os.getenv("BROWSER_VIEWPORT_HEIGHT", "720"))
 BROWSER_LOCALE: str = os.getenv("BROWSER_LOCALE", "zh-CN")
-BROWSER_TIMEZONE: str = os.getenv("BROWSER_TIMEZONE", "Asia/Taipei")
+BROWSER_TIMEZONE: str = os.getenv("BROWSER_TIMEZONE", "Asia/Shanghai")
 BROWSER_MAX_ELEMENT_COUNT: int = int(os.getenv("BROWSER_MAX_ELEMENT_COUNT", "50"))
 BROWSER_WAIT_AFTER_ACTION_MS: int = int(os.getenv("BROWSER_WAIT_AFTER_ACTION_MS", "1000"))
 BROWSER_URL_BLACKLIST: list[str] = [
@@ -278,6 +270,10 @@ BROWSER_VISION_MAX_DESCRIPTION_CHARS: int = int(os.getenv("BROWSER_VISION_MAX_DE
 BROWSER_VISION_CACHE_TTL_SECONDS: int = int(os.getenv("BROWSER_VISION_CACHE_TTL_SECONDS", "30"))
 BROWSER_VISION_IMG_THRESHOLD: int = int(os.getenv("BROWSER_VISION_IMG_THRESHOLD", "5"))
 BROWSER_VISION_ALT_RATIO_THRESHOLD: float = float(os.getenv("BROWSER_VISION_ALT_RATIO_THRESHOLD", "0.3"))
+# MiniMax VLM 端点（浏览器视觉理解的替代方案，优先于 LLMRouter vision slot）
+MINIMAX_VLM_ENABLED: bool = os.getenv("MINIMAX_VLM_ENABLED", "false").lower() in ("true", "1", "yes")
+MINIMAX_VLM_API_KEY: str = os.getenv("MINIMAX_VLM_API_KEY", "") or LLM_CHAT_API_KEY or LLM_API_KEY
+MINIMAX_VLM_HOST: str = os.getenv("MINIMAX_VLM_HOST", "https://api.minimaxi.com")
 # 凭据保险柜
 CREDENTIAL_VAULT_PATH: str = os.getenv("CREDENTIAL_VAULT_PATH", str(DATA_DIR / "credentials" / "vault.enc"))
 
@@ -313,18 +309,6 @@ if LOOP_DETECTION_CRITICAL_THRESHOLD >= LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_TH
     raise ValueError(
         "LOOP_DETECTION_CRITICAL_THRESHOLD 必须小于 LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD。"
     )
-if TELEGRAM_TEXT_MODE not in {"markdown", "html"}:
-    raise ValueError("TELEGRAM_TEXT_MODE 仅支持 markdown 或 html。")
-if TELEGRAM_MARKDOWN_TABLE_MODE not in {"code", "bullets", "off"}:
-    raise ValueError("TELEGRAM_MARKDOWN_TABLE_MODE 仅支持 code、bullets、off。")
-if TELEGRAM_HTML_CHUNK_LIMIT <= 0:
-    raise ValueError("TELEGRAM_HTML_CHUNK_LIMIT 必须是正整数。")
-if TELEGRAM_HTML_CHUNK_LIMIT > 4096:
-    raise ValueError("TELEGRAM_HTML_CHUNK_LIMIT 不能超过 Telegram 限制 4096。")
-if TELEGRAM_PROGRESS_STYLE not in {"report", "silent"}:
-    raise ValueError("TELEGRAM_PROGRESS_STYLE 仅支持 report 或 silent。")
-if TELEGRAM_PROGRESS_THROTTLE_SECONDS < 0:
-    raise ValueError("TELEGRAM_PROGRESS_THROTTLE_SECONDS 不能小于 0。")
 if QQ_GROUP_CONTEXT_SIZE <= 0:
     raise ValueError("QQ_GROUP_CONTEXT_SIZE 必须是正整数。")
 if QQ_GROUP_COOLDOWN < 0:
@@ -362,14 +346,12 @@ API_ALLOWED_ORIGINS: list[str] = [
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
 
 # 权限认证 (AuthorityGate)
-# OWNER_IDS：合并环境变量 + 已有的 Telegram/QQ Kevin ID
+# OWNER_IDS：合并环境变量 + QQ Kevin ID
 OWNER_IDS: set[str] = {
     item.strip()
     for item in os.getenv("OWNER_IDS", "").split(",")
     if item.strip()
 }
-if TELEGRAM_KEVIN_ID:
-    OWNER_IDS.add(TELEGRAM_KEVIN_ID)
 if QQ_KEVIN_ID:
     OWNER_IDS.add(QQ_KEVIN_ID)
 

@@ -30,9 +30,9 @@ class TestIdentify:
                 with patch("src.core.authority_gate.TRUSTED_IDS", set()):
                     assert identify("desktop", "123") == AuthLevel.GUEST
 
-    def test_owner_by_id_telegram(self):
+    def test_owner_by_id_qq_adapter(self):
         with patch("src.core.authority_gate.OWNER_IDS", {"111"}):
-            assert identify("telegram", "111") == AuthLevel.OWNER
+            assert identify("qq", "111") == AuthLevel.OWNER
 
     def test_owner_by_id_qq(self):
         with patch("src.core.authority_gate.OWNER_IDS", {"222"}):
@@ -41,23 +41,23 @@ class TestIdentify:
     def test_trusted_by_id(self):
         with patch("src.core.authority_gate.OWNER_IDS", set()):
             with patch("src.core.authority_gate.TRUSTED_IDS", {"333"}):
-                assert identify("telegram", "333") == AuthLevel.TRUSTED
+                assert identify("qq", "333") == AuthLevel.TRUSTED
 
     def test_unknown_user_is_guest(self):
         with patch("src.core.authority_gate.OWNER_IDS", {"111"}):
             with patch("src.core.authority_gate.TRUSTED_IDS", {"222"}):
-                assert identify("telegram", "999") == AuthLevel.GUEST
+                assert identify("qq", "999") == AuthLevel.GUEST
 
     def test_owner_takes_priority_over_trusted(self):
         """同一 ID 同时在 OWNER_IDS 和 TRUSTED_IDS → OWNER 优先。"""
         with patch("src.core.authority_gate.OWNER_IDS", {"555"}):
             with patch("src.core.authority_gate.TRUSTED_IDS", {"555"}):
-                assert identify("telegram", "555") == AuthLevel.OWNER
+                assert identify("qq", "555") == AuthLevel.OWNER
 
     def test_empty_user_id_is_guest(self):
         with patch("src.core.authority_gate.OWNER_IDS", set()):
             with patch("src.core.authority_gate.TRUSTED_IDS", set()):
-                assert identify("telegram", "") == AuthLevel.GUEST
+                assert identify("qq", "") == AuthLevel.GUEST
 
 
 # ── authorize() 测试 ──────────────────────────────────────────────────────────

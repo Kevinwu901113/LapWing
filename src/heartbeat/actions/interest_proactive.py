@@ -6,7 +6,6 @@ import random
 from src.core.heartbeat import HeartbeatAction, SenseContext
 from src.core.prompt_loader import load_prompt
 from src.heartbeat.proactive_filter import filter_proactive_message
-from src.tools import web_fetcher, web_search
 
 logger = logging.getLogger("lapwing.heartbeat.interest_proactive")
 
@@ -28,7 +27,7 @@ class InterestProactiveAction(HeartbeatAction):
         return self._prompt_template
 
     async def execute(self, ctx: SenseContext, brain, send_fn) -> None:
-        # 提高门槛：至少沉默 3 小时（原来 2 小时）
+        # 提高门槛：至少沉默 3 小时
         if ctx.silence_hours < 3.0:
             return
         if ctx.now_taipei_hour >= 23 or ctx.now_taipei_hour < 8:
@@ -43,24 +42,8 @@ class InterestProactiveAction(HeartbeatAction):
                 return
 
             topic = top_interests[0]["topic"]
-            results = await web_search.search(topic, max_results=3)
-            if not results:
-                return
+            interests_list = ", ".join(i["topic"] for i in top_interests)
 
-            # 先读一篇全文，确保真的理解了再说
-            best_result = results[0]
-            comprehension_context = ""
-            try:
-                fetched = await web_fetcher.fetch(best_result.get("url", ""))
-                if fetched.success and fetched.text:
-                    comprehension_context = f"\n\n全文摘要：\n{fetched.text[:1500]}"
-            except Exception:
-                pass  # 抓不到全文就用 snippet
-
-            search_results = "\n\n".join(
-                f"[{result['title']}]({result['url']})\n{result['snippet']}"
-                for result in results
-            )
             from src.core.vitals import now_taipei
             now = now_taipei()
             hour = now.hour
@@ -72,21 +55,25 @@ class InterestProactiveAction(HeartbeatAction):
                 period = "晚上"
             else:
                 period = "深夜"
-            time_context = f"现在是台北时间{now.strftime('%H:%M')}（{period}）。注意：说话要符合这个时间段。"
 
             prompt = self._prompt.format(
                 topic=topic,
-                search_results=search_results + comprehension_context,
+                search_results="（请用 web_search 工具搜索相关内容，确认后再分享）",
                 user_facts_summary=ctx.user_facts_summary,
             )
-            prompt = f"{time_context}\n\n{prompt}"
 
-            message = await brain.router.complete(
-                [{"role": "user", "content": prompt}],
-                slot="heartbeat_proactive",
+            message = await brain.compose_proactive(
+                purpose="兴趣分享",
+                context_prompt=prompt,
+                sense_context={
+                    "沉默时长": f"{ctx.silence_hours:.1f}小时",
+                    "当前时段": period,
+                    "当前时间": now.strftime("%H:%M"),
+                    "兴趣列表": interests_list,
+                },
+                tools=["web_search", "image_search"],
                 max_tokens=300,
-                session_key=f"chat:{ctx.chat_id}",
-                origin="heartbeat.interest_proactive",
+                chat_id=ctx.chat_id,
             )
             if not message:
                 return
@@ -101,7 +88,7 @@ class InterestProactiveAction(HeartbeatAction):
                 return
 
             await send_fn(message)
-            event_bus = brain.__dict__.get("event_bus") if hasattr(brain, "__dict__") else None
+            event_bus = getattr(brain, "event_bus", None)
             if event_bus is not None:
                 await event_bus.publish(
                     "interest_proactive",
@@ -112,22 +99,21 @@ class InterestProactiveAction(HeartbeatAction):
                     },
                 )
 
-            first = results[0]
             await brain.memory.add_discovery(
                 chat_id=ctx.chat_id,
                 source="interest_search",
-                title=first.get("title", topic),
+                title=topic,
                 summary=message[:500],
-                url=first.get("url"),
+                url=None,
             )
-            # 写入记忆时附加来源标注，帮助后续对话保持一致性
+            # 写入记忆时附加来源标注
             source_tag = f"\n[source: 基于搜索「{topic}」的结果主动分享，已确认内容]"
             await brain.memory.append(ctx.chat_id, "assistant", message + source_tag)
             await brain.memory.decay_interests(ctx.chat_id, factor=0.9)
             if hasattr(brain, "knowledge_manager") and brain.knowledge_manager is not None:
                 brain.knowledge_manager.save_note(
                     topic=topic,
-                    source_url=first.get("url", ""),
+                    source_url="",
                     content=message,
                 )
             logger.info(f"[{ctx.chat_id}] 已发送兴趣驱动主动消息，topic={topic!r}")

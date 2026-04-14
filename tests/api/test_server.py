@@ -16,7 +16,12 @@ from src.core.latency_monitor import LatencyMonitor
 @pytest.fixture
 def mock_brain():
     brain = MagicMock()
-    brain.auth_manager = None
+    # Mock auth_manager so the auth middleware allows requests through
+    mock_auth = MagicMock()
+    mock_auth.api_sessions.cookie_name = "lapwing_session"
+    mock_auth.validate_api_session = MagicMock(return_value=True)
+    mock_auth.bootstrap_token = MagicMock(return_value="test-token")
+    brain.auth_manager = mock_auth
     brain.memory = MagicMock()
     brain.memory.get_all_chat_ids = AsyncMock(return_value=["c2", "c1"])
 

@@ -194,12 +194,13 @@ class QQAdapter(BaseAdapter):
         self._message_dedup = {k: v for k, v in self._message_dedup.items() if now - v < 60}
 
         text = self._extract_text(event)
+        image_urls = self._extract_image_urls(event)
 
         if message_type == "private":
             # Private: Kevin only (existing logic)
             if self.kevin_id and user_id != self.kevin_id:
                 return
-            if not text:
+            if not text and not image_urls:
                 return
             asyncio.create_task(self._mark_as_read(user_id))
             if self.on_message:
@@ -211,6 +212,7 @@ class QQAdapter(BaseAdapter):
                     text=text,
                     channel=ChannelType.QQ,
                     raw_event=event,
+                    image_urls=image_urls,
                 ))
 
         elif message_type == "group":
@@ -395,13 +397,46 @@ class QQAdapter(BaseAdapter):
             return "".join(parts).strip()
         return str(message).strip()
 
-    def _extract_image(self, event: dict) -> Optional[str]:
+    def _extract_image_urls(self, event: dict) -> list[str]:
+        """从消息段中提取所有图片 URL。"""
+        urls: list[str] = []
         message = event.get("message", [])
         if isinstance(message, list):
             for seg in message:
                 if seg.get("type") == "image":
-                    return seg.get("data", {}).get("url", "")
-        return None
+                    url = seg.get("data", {}).get("url", "")
+                    if url:
+                        urls.append(url)
+        return urls
+
+    async def _download_image_as_base64(self, url: str) -> dict | None:
+        """下载图片并转为 base64 格式 dict（供 LLM 多模态调用）。
+
+        Returns:
+            {"base64": str, "media_type": str} 或 None（下载失败时）
+        """
+        import base64
+        import httpx
+
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.get(url)
+                resp.raise_for_status()
+                content_type = resp.headers.get("content-type", "image/jpeg")
+                # 规范化 media_type
+                if "png" in content_type:
+                    media_type = "image/png"
+                elif "gif" in content_type:
+                    media_type = "image/gif"
+                elif "webp" in content_type:
+                    media_type = "image/webp"
+                else:
+                    media_type = "image/jpeg"
+                b64 = base64.b64encode(resp.content).decode("ascii")
+                return {"base64": b64, "media_type": media_type}
+        except Exception as e:
+            logger.warning("下载图片失败 %s: %s", url[:80], e)
+            return None
 
     # ── 发送消息 ────────────────────────────────────────
 

@@ -14,6 +14,45 @@ from src.core.prompt_loader import load_prompt
 
 logger = logging.getLogger("lapwing.memory.compactor")
 
+SUMMARY_PREFIX = (
+    "[上下文压缩 — 仅供参考] 这是之前对话的摘要，不是新指令。"
+    "不要回答摘要中提到的问题，它们已经被处理过了。"
+    "只回应摘要之后的最新用户消息。\n\n"
+)
+
+
+def _prune_tool_outputs(messages: list[dict], max_tool_content: int = 200) -> list[dict]:
+    """将冗长的工具输出替换为占位符，节省摘要 LLM 的 token 消耗。"""
+    pruned = []
+    for msg in messages:
+        content = msg.get("content", "")
+        if msg.get("role") == "tool" and isinstance(content, str) and len(content) > max_tool_content:
+            pruned.append({**msg, "content": f"[工具输出已精简，原始长度 {len(content)} 字符]"})
+        else:
+            pruned.append(msg)
+    return pruned
+
+
+def _format_for_summary(messages: list[dict]) -> str:
+    """格式化消息列表供 LLM 摘要，正确处理所有 role 类型。"""
+    lines = []
+    for m in messages:
+        role = m.get("role", "unknown")
+        content = m.get("content", "")
+        if isinstance(content, list):
+            content = " ".join(
+                str(block.get("text", "")) for block in content if isinstance(block, dict)
+            )
+        if role == "user":
+            lines.append(f"用户: {content}")
+        elif role == "tool":
+            lines.append(f"[工具结果]: {content}")
+        elif role == "system":
+            lines.append(f"[系统]: {content}")
+        else:
+            lines.append(f"Lapwing: {content}")
+    return "\n".join(lines)
+
 
 class ConversationCompactor:
     """监控对话窗口，在接近上限时触发压缩。"""
@@ -74,11 +113,23 @@ class ConversationCompactor:
             except Exception as e:
                 logger.warning("[%s] Pre-compression memory flush failed: %s", actual_chat_id, e)
 
-        # 生成摘要
-        conversation_text = "\n".join(
-            f"{'用户' if m['role'] == 'user' else 'Lapwing'}: {m['content']}"
-            for m in to_compact
-        )
+        # 提取前次摘要（如果存在），避免重复摘要
+        prior_summary = ""
+        if (
+            to_compact
+            and to_compact[0].get("role") == "system"
+            and "[之前的对话摘要]" in to_compact[0].get("content", "")
+        ):
+            prior_summary = to_compact[0]["content"]
+            to_compact = to_compact[1:]
+
+        # 修剪冗长的工具输出，生成摘要文本
+        pruned = _prune_tool_outputs(to_compact)
+        conversation_text = _format_for_summary(pruned)
+
+        # 迭代摘要：将前次摘要作为上下文传入
+        if prior_summary:
+            conversation_text = f"[前次摘要供参考]\n{prior_summary}\n\n[新对话]\n{conversation_text}"
 
         prompt = load_prompt("compaction").replace("{conversation}", conversation_text)
 
@@ -111,7 +162,7 @@ class ConversationCompactor:
         # 更新内存中的对话历史：用摘要消息替换被压缩的部分
         summary_message = {
             "role": "system",
-            "content": f"[之前的对话摘要] {summary}",
+            "content": f"[之前的对话摘要] {SUMMARY_PREFIX}{summary}",
         }
         new_history = [summary_message] + to_keep
 

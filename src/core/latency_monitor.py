@@ -20,11 +20,9 @@ from config.settings import (
     TOOL_LOOP_SLO_WEB_P95_MS,
 )
 
+from src.core.time_utils import now_iso
+
 logger = logging.getLogger("lapwing.core.latency_monitor")
-
-
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass
@@ -36,7 +34,7 @@ class _RollingMetric:
 
     def add_sample(self, value_ms: int) -> None:
         self.samples.append(max(int(value_ms), 0))
-        self.last_updated = _now_iso()
+        self.last_updated = now_iso()
 
     def p95(self) -> int | None:
         if not self.samples:
@@ -105,7 +103,7 @@ class LatencyMonitor:
         )
 
         self._shell_long_command_excluded = 0
-        self._last_updated = _now_iso()
+        self._last_updated = now_iso()
         self._warn_state: dict[str, bool] = {}
 
         self._pending_event_published_at: dict[int, float] = {}
@@ -116,7 +114,7 @@ class LatencyMonitor:
         if bucket == "shell_local":
             if value_ms > self._long_command_cutoff_ms:
                 self._shell_long_command_excluded += 1
-                self._last_updated = _now_iso()
+                self._last_updated = now_iso()
                 return
             metric = self._tool_loop_shell
             warn_key = "tool_loop.shell_local"
@@ -125,7 +123,7 @@ class LatencyMonitor:
             warn_key = "tool_loop.web_search"
 
         metric.add_sample(value_ms)
-        self._last_updated = metric.last_updated or _now_iso()
+        self._last_updated = metric.last_updated or now_iso()
         self._warn_if_needed(warn_key, metric)
 
     def record_event_published(self, event: dict[str, Any]) -> None:
@@ -145,7 +143,7 @@ class LatencyMonitor:
             return
         duration_ms = max(int((time.perf_counter() - published_at) * 1000), 0)
         self._event_publish_to_sse.add_sample(duration_ms)
-        self._last_updated = self._event_publish_to_sse.last_updated or _now_iso()
+        self._last_updated = self._event_publish_to_sse.last_updated or now_iso()
         self._warn_if_needed("event_pipeline.publish_to_sse", self._event_publish_to_sse)
 
     def record_frontend_start_to_ui_samples(self, samples_ms: list[float]) -> int:
@@ -161,7 +159,7 @@ class LatencyMonitor:
             accepted += 1
 
         if accepted > 0:
-            self._last_updated = self._frontend_start_to_ui.last_updated or _now_iso()
+            self._last_updated = self._frontend_start_to_ui.last_updated or now_iso()
             self._warn_if_needed("frontend.start_to_ui", self._frontend_start_to_ui)
         return accepted
 

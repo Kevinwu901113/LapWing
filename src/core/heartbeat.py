@@ -106,8 +106,8 @@ class SenseLayer:
                 for m in recent
             )
 
-        taipei_tz = timezone(timedelta(hours=8))
-        now_taipei_hour = now.astimezone(taipei_tz).hour
+        from src.core.vitals import _TAIPEI_TZ
+        now_taipei_hour = now.astimezone(_TAIPEI_TZ).hour
 
         return SenseContext(
             beat_type=beat_type,
@@ -204,8 +204,8 @@ class ProactiveRuntime:
             {"name": action.name, "description": action.description}
             for action in available_actions
         ]
-        _taipei_tz = timezone(timedelta(hours=8))
-        now_str = ctx.now.astimezone(_taipei_tz).strftime("%Y-%m-%d %H:%M") + " 台北时间"
+        from src.core.vitals import _TAIPEI_TZ
+        now_str = ctx.now.astimezone(_TAIPEI_TZ).strftime("%Y-%m-%d %H:%M") + " 台北时间"
         prompt = self._decision_prompt_text.format(
             beat_type=ctx.beat_type,
             now=now_str,

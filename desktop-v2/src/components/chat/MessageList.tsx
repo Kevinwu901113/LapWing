@@ -27,9 +27,26 @@ function formatDateSeparator(ts: string): string {
   }
 }
 
+function TypingIndicator() {
+  return (
+    <div className="flex items-center gap-2 pl-10">
+      <div className="flex items-center gap-1 px-3 py-2 rounded-lg bg-surface border border-surface-border">
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="block w-1.5 h-1.5 rounded-full bg-text-muted animate-bounce"
+            style={{ animationDelay: `${i * 0.15}s`, animationDuration: "1.2s" }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 export function MessageList() {
   const messages = useChatStore((s) => s.messages);
   const toolStatus = useChatStore((s) => s.toolStatus);
+  const lapwingStatus = useChatStore((s) => s.lapwingStatus);
   const agentActivities = useChatStore((s) => s.agentActivities);
   const bottomRef = useRef<HTMLDivElement>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -46,7 +63,9 @@ export function MessageList() {
     if (!isUserScrolledUp.current) {
       bottomRef.current?.scrollIntoView({ behavior: "smooth" });
     }
-  }, [messages, toolStatus, agentActivities]);
+  }, [messages, toolStatus, lapwingStatus, agentActivities]);
+
+  const isThinking = lapwingStatus === "thinking" && !toolStatus;
 
   return (
     <div
@@ -55,6 +74,14 @@ export function MessageList() {
       className="flex-1 overflow-y-auto px-4"
     >
       <div className="py-4 space-y-3">
+        {messages.length === 0 && (
+          <div className="flex flex-col items-center justify-center h-full pt-24 text-text-muted">
+            <div className="w-12 h-12 rounded-full bg-gradient-to-br from-lapwing-light to-lapwing-dark flex items-center justify-center text-void text-lg font-bold mb-3">
+              L
+            </div>
+            <span className="text-sm">开始和 Lapwing 聊天吧</span>
+          </div>
+        )}
         {messages.map((msg, i) => (
           <div key={msg.id}>
             {shouldShowTimeSeparator(messages[i - 1]?.timestamp, msg.timestamp) && (
@@ -67,6 +94,7 @@ export function MessageList() {
             <MessageBubble message={msg} />
           </div>
         ))}
+        {isThinking && <TypingIndicator />}
         {toolStatus && (
           <div className="pl-10">
             <ToolCallIndicator status={toolStatus} />

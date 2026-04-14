@@ -30,7 +30,7 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
       ...init?.headers,
     },
   });
-  if (!res.ok) throw new Error(`API ${res.status}: ${res.statusText}`);
+  if (!res.ok) throw new Error(`接口错误 ${res.status}: ${res.statusText}`);
   return res.json();
 }
 

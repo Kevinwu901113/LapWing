@@ -41,6 +41,7 @@ from src.auth.models import FailureKind, PurposeConfig, ResolvedAuthCandidate
 from src.auth.openai_codex import OpenAICodexAuthProvider, _decode_jwt_payload
 from src.auth.resolver import resolve_secret_ref
 from src.auth.storage import AuthStore
+from src.core.time_utils import now_iso, parse_iso_datetime
 
 logger = logging.getLogger("lapwing.auth.service")
 
@@ -157,8 +158,8 @@ class OAuthLoginManager:
             authorize_url=str(request["authorizeUrl"]),
             profile_id_hint=profile_id,
             return_to=self._sanitize_return_to(return_to),
-            created_at=_now_iso(),
-            updated_at=_now_iso(),
+            created_at=now_iso(),
+            updated_at=now_iso(),
             expires_at_ts=time.time() + _OAUTH_LOGIN_TTL_SECONDS,
         )
         with self._lock:
@@ -224,7 +225,7 @@ class OAuthLoginManager:
             if session.status == "failed":
                 return 400, self._render_session_page(session)
             session.status = "completing"
-            session.updated_at = _now_iso()
+            session.updated_at = now_iso()
 
         if error:
             message = error_description or error
@@ -256,7 +257,7 @@ class OAuthLoginManager:
                 if current is None:
                     raise KeyError(session.login_id)
                 current.status = "completed"
-                current.updated_at = _now_iso()
+                current.updated_at = now_iso()
                 current.resolved_profile_id = resolved_profile_id
                 current.profile_summary = resolved_summary
                 current.completion_message = "OpenAI 登录成功，profile 已写入 Lapwing auth store。"
@@ -275,7 +276,7 @@ class OAuthLoginManager:
             if session is None:
                 return
             session.status = "failed"
-            session.updated_at = _now_iso()
+            session.updated_at = now_iso()
             session.error = message
             session.completion_message = "OpenAI 登录失败。"
             session.wait_event.set()
@@ -346,7 +347,7 @@ class OAuthLoginManager:
             if session is None:
                 continue
             session.status = "expired"
-            session.updated_at = _now_iso()
+            session.updated_at = now_iso()
             session.error = "OAuth 登录已超时，请重新发起。"
             session.completion_message = "OpenAI 登录已超时。"
             session.wait_event.set()
@@ -858,7 +859,7 @@ class AuthManager:
         if profile_type != "oauth":
             raise ValueError(f"未知 profile type: {profile_type}")
 
-        expires_at = _parse_iso_datetime(profile.get("expiresAt"))
+        expires_at = parse_iso_datetime(profile.get("expiresAt"))
         refresh_deadline = datetime.now(timezone.utc) + timedelta(seconds=AUTH_REFRESH_SKEW_SECONDS)
         if expires_at is not None and expires_at <= refresh_deadline:
             provider_name = str(profile.get("provider") or "")
@@ -999,23 +1000,6 @@ def _infer_provider_from_route(base_url: str, model: str) -> str:
     return ""
 
 
-def _now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
-
-
-def _parse_iso_datetime(value: Any) -> datetime | None:
-    if not value or not isinstance(value, str):
-        return None
-    text = value.strip()
-    if text.endswith("Z"):
-        text = text[:-1] + "+00:00"
-    try:
-        dt = datetime.fromisoformat(text)
-    except ValueError:
-        return None
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
 
 
 def json_string(value: str) -> str:

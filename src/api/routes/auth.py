@@ -66,15 +66,16 @@ async def get_auth_status():
 async def create_desktop_token(request: Request):
     """Generate a long-lived token for the desktop client."""
     import secrets
-    from config.settings import API_BOOTSTRAP_TOKEN_PATH, AUTH_DIR
+    from config.settings import API_BOOTSTRAP_TOKEN_PATH, DESKTOP_AUTH_TOKENS_PATH
     body = await request.json()
     bootstrap = body.get("bootstrap_token", "")
-    if API_BOOTSTRAP_TOKEN_PATH.exists():
-        expected = API_BOOTSTRAP_TOKEN_PATH.read_text().strip()
-        if bootstrap != expected:
-            raise HTTPException(status_code=401, detail="Invalid bootstrap token")
+    if not API_BOOTSTRAP_TOKEN_PATH.exists():
+        raise HTTPException(status_code=503, detail="auth not ready, server still initializing")
+    expected = API_BOOTSTRAP_TOKEN_PATH.read_text().strip()
+    if bootstrap != expected:
+        raise HTTPException(status_code=401, detail="Invalid bootstrap token")
     token = secrets.token_urlsafe(32)
-    token_path = AUTH_DIR / "desktop-tokens.json"
+    token_path = DESKTOP_AUTH_TOKENS_PATH
     tokens: list = []
     if token_path.exists():
         tokens = json.loads(token_path.read_text(encoding="utf-8"))

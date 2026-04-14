@@ -34,7 +34,7 @@ class AgentRole(Enum):
     GENERAL = "general"           # 通用任务
 
 
-# 每个角色允许的工具名集合
+# 每个角色允许的工具名集合（旧路径回退用）
 ROLE_TOOLSETS: dict[AgentRole, set[str]] = {
     AgentRole.RESEARCHER: {"web_search", "web_fetch", "read_file"},
     AgentRole.CODER: {"execute_shell", "read_file", "write_file", "run_python_code"},
@@ -42,6 +42,15 @@ ROLE_TOOLSETS: dict[AgentRole, set[str]] = {
     AgentRole.FILE_AGENT: {"read_file", "write_file", "execute_shell"},
     AgentRole.GENERAL: {"web_search", "web_fetch", "read_file", "execute_shell"},
 }
+
+# 最大委派深度（防止递归委派）
+MAX_DELEGATION_DEPTH: int = 2
+
+# 子 agent 禁止使用的 capability 类别
+DELEGATION_BLOCKED_CAPABILITIES: frozenset[str] = frozenset({
+    "memory",     # 不写共享记忆
+    "schedule",   # 不创建提醒
+})
 
 # 所有子 agent 一律禁止的工具
 BLOCKED_TOOLS: set[str] = {
@@ -68,6 +77,7 @@ class DelegationTask:
     goal: str
     context: str
     role: AgentRole = AgentRole.GENERAL
+    agent_name: str | None = None  # 指定 Agent 定义名（优先于 role）
     max_iterations: int = 20
 
 
@@ -80,6 +90,7 @@ class DelegationResult:
     summary: str
     duration_seconds: float
     tool_calls_count: int
+    agent_name: str | None = None
     error: str | None = None
 
 
@@ -110,12 +121,34 @@ class DelegationManager:
         self,
         tasks: list[DelegationTask],
         chat_id: str,
+        *,
+        depth: int = 0,
     ) -> list[DelegationResult]:
         """执行一组委托任务，最多 MAX_CONCURRENT 个并行。
+
+        Args:
+            tasks: 委托任务列表
+            chat_id: 对话 ID
+            depth: 当前委派深度（0=顶层），超过 MAX_DELEGATION_DEPTH 时拒绝
 
         Returns:
             按 task_index 排序的结果列表。
         """
+        if depth >= MAX_DELEGATION_DEPTH:
+            logger.warning("委派深度超限 (depth=%d, max=%d)，拒绝执行", depth, MAX_DELEGATION_DEPTH)
+            return [
+                DelegationResult(
+                    task_index=i,
+                    role=t.role,
+                    success=False,
+                    summary=f"委派深度超限（最大 {MAX_DELEGATION_DEPTH} 层）",
+                    duration_seconds=0,
+                    tool_calls_count=0,
+                    error="delegation depth exceeded",
+                )
+                for i, t in enumerate(tasks)
+            ]
+
         tasks = tasks[:self.MAX_CONCURRENT]
 
         # 发布委托开始事件
@@ -190,16 +223,15 @@ class DelegationManager:
         """执行单个子 agent。"""
         start = time.monotonic()
 
-        # 构建子 agent 的 system prompt（聚焦任务，不含人格）
+        # 构建子 agent 的 system prompt
         system_prompt = self._build_child_system_prompt(task)
 
-        # 过滤工具集
-        allowed_names = ROLE_TOOLSETS.get(task.role, set()) - BLOCKED_TOOLS
-        child_tools = [
-            spec.to_function_tool()
-            for spec in self._tool_registry.list_tools()
-            if spec.name in allowed_names and spec.visibility == "model"
-        ]
+        # 过滤工具集：优先用 AgentDefinition 的 capabilities，回退到 ROLE_TOOLSETS
+        child_tools = self._build_child_tools(task)
+        # 构建允许的工具名集合（用于运行时安全检查）
+        allowed_names = {t["function"]["name"] for t in child_tools if "function" in t}
+
+        agent_label = task.agent_name or task.role.value
 
         # 隔离的消息列表
         messages: list[dict[str, Any]] = [
@@ -218,10 +250,10 @@ class DelegationManager:
                     slot="agent_execution",
                     max_tokens=2048,
                     session_key=f"delegation:{chat_id}:{index}",
-                    origin=f"delegation.child.{task.role.value}",
+                    origin=f"delegation.child.{agent_label}",
                 )
             except Exception as e:
-                logger.warning("子 agent [%d:%s] LLM 调用失败: %s", index, task.role.value, e)
+                logger.warning("子 agent [%d:%s] LLM 调用失败: %s", index, agent_label, e)
                 return DelegationResult(
                     task_index=index,
                     role=task.role,
@@ -229,6 +261,7 @@ class DelegationManager:
                     summary=f"LLM 调用失败: {e}",
                     duration_seconds=time.monotonic() - start,
                     tool_calls_count=tool_calls_count,
+                    agent_name=task.agent_name,
                     error=str(e),
                 )
 
@@ -252,7 +285,7 @@ class DelegationManager:
                 if self._event_bus:
                     await self._event_bus.publish("delegation.tool_call", {
                         "child_index": index,
-                        "role": task.role.value,
+                        "role": agent_label,
                         "tool": tc.name,
                         "round": _round,
                     })
@@ -283,7 +316,37 @@ class DelegationManager:
             summary=final_text or "（子 agent 未产出文本结果）",
             duration_seconds=elapsed,
             tool_calls_count=tool_calls_count,
+            agent_name=task.agent_name,
         )
+
+    def _build_child_tools(self, task: DelegationTask) -> list[dict[str, Any]]:
+        """构建子 agent 的工具列表。
+
+        优先用 AgentDefinition 的 capabilities 过滤，回退到 ROLE_TOOLSETS 白名单。
+        """
+        if task.agent_name:
+            from src.agents.registry import get_agent_definition
+            agent_def = get_agent_definition(task.agent_name)
+            if agent_def:
+                # 用 capability 过滤 + 排除 BLOCKED_TOOLS + agent 额外禁止的
+                blocked = BLOCKED_TOOLS | agent_def.blocked_tools
+                specs = self._tool_registry.list_tools(
+                    capabilities=set(agent_def.capabilities),
+                    include_internal=False,
+                )
+                return [
+                    spec.to_function_tool()
+                    for spec in specs
+                    if spec.name not in blocked
+                ]
+
+        # 旧路径回退：用 ROLE_TOOLSETS 白名单
+        allowed_names = ROLE_TOOLSETS.get(task.role, set()) - BLOCKED_TOOLS
+        return [
+            spec.to_function_tool()
+            for spec in self._tool_registry.list_tools()
+            if spec.name in allowed_names and spec.visibility == "model"
+        ]
 
     async def _execute_child_tool(self, tc, *, chat_id: str = "") -> str:
         """执行子 agent 的工具调用。"""
@@ -319,7 +382,27 @@ class DelegationManager:
             return f"工具执行异常: {e}"
 
     def _build_child_system_prompt(self, task: DelegationTask) -> str:
-        """构建子 agent 的 system prompt（聚焦任务，不含人格）。"""
+        """构建子 agent 的 system prompt。
+
+        优先从 AgentDefinition 加载专属 prompt，回退到通用模板。
+        """
+        # 尝试加载 Agent 专属 prompt
+        if task.agent_name:
+            from src.agents.registry import get_agent_definition
+            agent_def = get_agent_definition(task.agent_name)
+            if agent_def:
+                try:
+                    from src.core.prompt_loader import load_prompt
+                    base_prompt = load_prompt(agent_def.system_prompt_file)
+                    # 拼接任务上下文
+                    parts = [base_prompt, f"\n## 当前任务\n{task.goal}"]
+                    if task.context:
+                        parts.append(f"\n## 背景信息\n{task.context}")
+                    return "\n".join(parts)
+                except FileNotFoundError:
+                    logger.warning("Agent prompt 文件不存在: %s", agent_def.system_prompt_file)
+
+        # 通用回退模板
         return f"""你是一个专项任务助手，被委派来完成以下任务。
 
 ## 任务目标

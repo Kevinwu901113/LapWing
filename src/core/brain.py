@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from src.auth.service import AuthManager
 from src.core.llm_router import LLMRouter
 from src.core.prompt_loader import load_prompt
+from src.core.output_sanitizer import sanitize_outgoing
 from src.core.reasoning_tags import (
     split_on_markers,
     split_on_paragraphs,
@@ -117,7 +118,14 @@ class LapwingBrain:
         self.router = LLMRouter(auth_manager=self.auth_manager, model_config=model_config)
         self.tool_registry = build_default_tool_registry()
         self.memory = ConversationMemory(db_path)
-        self.task_runtime = TaskRuntime(router=self.router, tool_registry=self.tool_registry, memory=self.memory)
+        from config.settings import TASK_NO_ACTION_BUDGET, TASK_ERROR_BURST_THRESHOLD
+        self.task_runtime = TaskRuntime(
+            router=self.router,
+            tool_registry=self.tool_registry,
+            memory=self.memory,
+            no_action_budget=TASK_NO_ACTION_BUDGET,
+            error_burst_threshold=TASK_ERROR_BURST_THRESHOLD,
+        )
         self.fact_extractor = FactExtractor(self.memory, self.router)
         from src.memory.compactor import ConversationCompactor
         self.compactor = ConversationCompactor(self.memory, self.router)
@@ -147,6 +155,8 @@ class LapwingBrain:
         self.consciousness_engine = None  # Set externally (ConsciousnessEngine | None)
         self.pending_task_store = None  # Set externally (PendingTaskStore | None)
         self._conversation_end_task: asyncio.Task | None = None
+        from src.core.background_review import BackgroundReviewer
+        self._background_reviewer = BackgroundReviewer(interval=10)
 
     async def init_db(self) -> None:
         """初始化数据库连接和表结构。"""
@@ -351,6 +361,53 @@ class LapwingBrain:
                 recent_messages.append({"role": "user", "content": user_message})
         return recent_messages
 
+    @staticmethod
+    def _inject_images_into_last_user_message(
+        messages: list[dict], images: list[dict]
+    ) -> None:
+        """将图片以 Anthropic content blocks 格式注入到最后一条 user 消息中。
+
+        images 列表中每个 dict 支持两种格式：
+          - {"base64": str, "media_type": str}  — base64 编码图片
+          - {"url": str}                        — 图片 URL（直接传给 LLM）
+        """
+        # 找到最后一条 user 消息
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg["content"]
+                # 将现有文本内容转为 content block 列表
+                if isinstance(content, str):
+                    blocks: list[dict] = []
+                    if content.strip():
+                        blocks.append({"type": "text", "text": content})
+                elif isinstance(content, list):
+                    blocks = list(content)
+                else:
+                    blocks = []
+
+                # 追加图片 content blocks（Anthropic 格式）
+                for img in images:
+                    if "base64" in img:
+                        blocks.append({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": img.get("media_type", "image/jpeg"),
+                                "data": img["base64"],
+                            },
+                        })
+                    elif "url" in img:
+                        blocks.append({
+                            "type": "image",
+                            "source": {
+                                "type": "url",
+                                "url": img["url"],
+                            },
+                        })
+
+                msg["content"] = blocks
+                break
+
     def _skill_activation_tool_enabled(self) -> bool:
         return self.skill_manager is not None and self.skill_manager.has_model_visible_skills()
 
@@ -520,6 +577,7 @@ class LapwingBrain:
         chat_id: str,
         user_message: str,
         send_fn=None,
+        images: list[dict] | None = None,
     ) -> "_ThinkCtx":
         """共享前置逻辑：记忆写入、纠正检测、agent dispatch、context 组装。
 
@@ -535,10 +593,16 @@ class LapwingBrain:
             except Exception as e:
                 logger.warning(f"[{chat_id}] Session resolution failed, using legacy path: {e}")
 
+        # 存储文本到记忆（图片不持久化，只在当前 LLM 调用中传递）
+        stored_text = user_message
+        if images:
+            img_tag = f"[用户发送了{len(images)}张图片]" if len(images) > 1 else "[用户发送了图片]"
+            stored_text = f"{user_message}\n{img_tag}" if user_message.strip() else img_tag
+
         if session_id is not None:
-            await self.memory.append_to_session(chat_id, session_id, "user", user_message)
+            await self.memory.append_to_session(chat_id, session_id, "user", stored_text)
         else:
-            await self.memory.append(chat_id, "user", user_message)
+            await self.memory.append(chat_id, "user", stored_text)
 
         self.fact_extractor.notify(chat_id)
         if self.interest_tracker is not None:
@@ -595,6 +659,10 @@ class LapwingBrain:
             {"role": "system", "content": system_content},
             *recent_messages,
         ]
+
+        # 多模态：将图片注入到最后一条 user 消息中（Anthropic content blocks 格式）
+        if images:
+            self._inject_images_into_last_user_message(messages, images)
 
         # 经验技能检索与注入（Pattern 5：注入为 user message 保护 prefix cache）
         matched_experience_skills = None
@@ -702,7 +770,7 @@ class LapwingBrain:
         """处理用户消息，返回 Lapwing 的回复。
 
         Args:
-            chat_id: Telegram 对话 ID
+            chat_id: 对话 ID
             user_message: 用户发送的消息
 
         Returns:
@@ -749,7 +817,10 @@ class LapwingBrain:
                 await self.memory.remove_last_session(ctx.session_id)
             else:
                 await self.memory.remove_last(chat_id)
-            return "抱歉，我刚才走神了一下。你能再说一次吗？"
+            # 内部调用（意识循环等）不应返回面向用户的 fallback，直接抛出让调用方处理
+            if chat_id.startswith("__"):
+                raise
+            return f"出错了：{e}"
 
     async def think_conversational(
         self,
@@ -761,16 +832,18 @@ class LapwingBrain:
         adapter: str = "",
         user_id: str = "",
         metadata: dict | None = None,
+        images: list[dict] | None = None,
     ) -> str:
-        """边查边说模式：中间文字通过 send_fn 实时发出，供 Telegram 对话使用。
+        """边查边说模式：中间文字通过 send_fn 实时发出。
 
         Args:
-            chat_id: Telegram 对话 ID
+            chat_id: 对话 ID
             user_message: 用户消息（已经过消息合并）
             send_fn: 发送一条消息给用户的异步回调
             typing_fn: 发送 typing indicator 的异步回调
             status_callback: 桌面端状态回调（透传给 task_runtime）
             metadata: 额外元数据（如 task_resumption 恢复触发信息）
+            images: 图片列表，每个元素为 {"base64": str, "media_type": str} 或 {"url": str}
 
         Returns:
             完整回复文本（所有中间文字 + 最终文字拼接），用于记录到记忆
@@ -795,7 +868,7 @@ class LapwingBrain:
                 chat_id, metadata=metadata,
             )
         else:
-            ctx = await self._prepare_think(chat_id, user_message, send_fn=send_fn)
+            ctx = await self._prepare_think(chat_id, user_message, send_fn=send_fn, images=images)
         if ctx.early_reply is not None:
             self._schedule_conversation_end()  # ← ADD THIS
             return ctx.early_reply
@@ -811,6 +884,9 @@ class LapwingBrain:
             如果模型未输出 [SPLIT] 但文本含多个段落（\\n\\n），
             在 MESSAGE_SPLIT_FALLBACK_NEWLINE 开启时自动按段落拆分。
             """
+            text = sanitize_outgoing(text)  # 兜底过滤内部标记
+            if not text:
+                return
             if not MESSAGE_SPLIT_ENABLED:
                 await send_fn(text)
                 parts_sent.append(text)
@@ -905,6 +981,13 @@ class LapwingBrain:
                 if self.quality_checker is not None:
                     import asyncio as _asyncio
                     _asyncio.create_task(self._check_reply_quality(chat_id, ctx.messages, memory_text))
+                # 背景自动回顾（每 N 轮用户消息后异步执行）
+                if not is_resumption:
+                    await self._background_reviewer.maybe_review(
+                        router=self.router,
+                        memory=self.memory,
+                        chat_id=chat_id,
+                    )
             except Exception as post_exc:
                 logger.warning(
                     "[brain] 后处理失败（回复已发出，不影响用户）: %s",
@@ -923,6 +1006,103 @@ class LapwingBrain:
             return error_msg
         finally:
             self._schedule_conversation_end()
+
+    async def compose_proactive(
+        self,
+        purpose: str,
+        context_prompt: str,
+        *,
+        sense_context: dict | None = None,
+        tools: list[str] | None = None,
+        max_tokens: int = 300,
+        chat_id: str | None = None,
+    ) -> str | None:
+        """Generate a proactive message with full persona pipeline.
+
+        Unlike think_conversational(), this does NOT require a user message.
+        Used by heartbeat/consciousness actions for user-facing proactive messages.
+
+        Args:
+            purpose: Human-readable reason (e.g., "主动消息", "兴趣分享")
+            context_prompt: The action-specific prompt with context
+            sense_context: Optional environment context dict
+            tools: Optional list of tool names to allow. None = no tools.
+            max_tokens: Max tokens for the LLM response
+            chat_id: Target chat_id. If None, uses channel_manager default.
+
+        Returns:
+            Generated message text, or None if the model decides not to speak.
+        """
+        resolved_chat_id = chat_id
+        if resolved_chat_id is None and self.channel_manager is not None:
+            resolved_chat_id = getattr(self.channel_manager, "default_chat_id", None)
+        if resolved_chat_id is None:
+            logger.warning("[compose_proactive] 无法确定 chat_id，跳过")
+            return None
+
+        # 1. 构建完整 system prompt（8 层：soul → rules → time → memory → facts → vectors → summaries → voice）
+        system_content = await self._build_system_prompt(resolved_chat_id)
+
+        # 2. 构造消息列表
+        sense_text = ""
+        if sense_context:
+            sense_text = "[当前环境]\n"
+            for k, v in sense_context.items():
+                sense_text += f"- {k}: {v}\n"
+            sense_text += "\n"
+
+        messages = [
+            {"role": "system", "content": system_content},
+            {"role": "user", "content": f"{sense_text}{context_prompt}"},
+        ]
+
+        # 3. voice.md depth-0 注入（与 think_conversational 共享同一个注入逻辑）
+        self._inject_voice_reminder(messages)
+
+        # 4. 生成回复
+        if tools:
+            # 有工具需求：走 TaskRuntime
+            from src.core.shell_policy import extract_execution_constraints
+            tool_specs = self.task_runtime.chat_tools(
+                shell_enabled=False,
+                web_enabled=True,
+                skill_activation_enabled=False,
+            )
+            # 过滤为仅允许的工具名
+            allowed = set(tools)
+            tool_specs = [t for t in tool_specs if t.get("function", {}).get("name") in allowed]
+
+            deps = RuntimeDeps(
+                execute_shell=execute_shell,
+                policy=build_shell_runtime_policy(verify_constraints_fn=verify_constraints),
+                shell_default_cwd=SHELL_DEFAULT_CWD,
+                shell_allow_sudo=SHELL_ALLOW_SUDO,
+            )
+            constraints = extract_execution_constraints("")
+
+            response_text = await self.task_runtime.complete_chat(
+                chat_id=resolved_chat_id,
+                messages=messages,
+                constraints=constraints,
+                tools=tool_specs,
+                deps=deps,
+                adapter="",
+                user_id="",
+            )
+        else:
+            # 无工具：单次 LLM 调用
+            response_text = await self.router.complete(
+                messages,
+                slot="heartbeat_proactive",
+                max_tokens=max_tokens,
+                session_key=f"chat:{resolved_chat_id}",
+                origin=f"compose_proactive.{purpose}",
+            )
+
+        if not response_text or not response_text.strip():
+            return None
+
+        return response_text
 
     def _schedule_trace_recording(
         self,

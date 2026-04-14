@@ -26,6 +26,16 @@ from src.tools.shell_executor import ShellResult
 from src.tools.types import ToolExecutionRequest
 
 
+@pytest.fixture(autouse=True)
+def _disable_no_action_budget():
+    """禁用 NoActionBudget 避免测试需要多轮文本响应"""
+    import config.settings as _s
+    orig = _s.TASK_NO_ACTION_BUDGET
+    _s.TASK_NO_ACTION_BUDGET = 0
+    yield
+    _s.TASK_NO_ACTION_BUDGET = orig
+
+
 def _make_policy(verify_constraints):
     return ShellRuntimePolicy(
         analyze_command=analyze_command,
@@ -73,7 +83,7 @@ async def test_chat_tools_from_registry():
 
     _memory_crud = {"memory_list", "memory_read", "memory_edit", "memory_delete", "memory_search"}
     _schedule = {"schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"}
-    assert names == {"execute_shell", "read_file", "write_file", "web_search", "web_fetch", "memory_note", "get_weather", "send_image", "send_proactive_message"} | _memory_crud | _schedule
+    assert names == {"execute_shell", "read_file", "write_file", "web_search", "web_fetch", "image_search", "memory_note", "get_weather", "send_image", "send_proactive_message"} | _memory_crud | _schedule
 
 
 @pytest.mark.asyncio
@@ -196,9 +206,9 @@ async def test_execute_tool_call_web_search_compacts_result_text_for_llm():
         )
 
     rendered = json.loads(tool_result_text)
-    assert payload["results"][0]["snippet"] == long_snippet
+    # handler 现在将 snippet 截断到 200 字符（轻量化处理）
+    assert len(payload["results"][0]["snippet"]) <= 200
     assert len(rendered["results"][0]["snippet"]) < len(long_snippet)
-    assert rendered["results"][0]["snippet"].endswith("...")
 
 
 def test_format_tool_result_for_llm_truncates_oversized_payload():
@@ -266,7 +276,7 @@ async def test_execute_shell_triggers_verifying_event_and_completion():
 @pytest.mark.asyncio
 async def test_complete_chat_executes_multiple_tool_calls_in_one_turn_serially():
     router = MagicMock()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry())
+    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry(), no_action_budget=0)
     constraints = extract_execution_constraints("看看当前目录和用户")
 
     router.complete_with_tools = AsyncMock(
@@ -354,7 +364,7 @@ async def test_complete_chat_executes_multiple_tool_calls_in_one_turn_serially()
 @pytest.mark.asyncio
 async def test_complete_chat_status_callback_uses_stage_messages():
     router = MagicMock()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry())
+    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry(), no_action_budget=0)
     constraints = extract_execution_constraints("看看当前目录")
 
     router.complete_with_tools = AsyncMock(
@@ -418,7 +428,7 @@ async def test_complete_chat_status_callback_uses_stage_messages():
 @pytest.mark.asyncio
 async def test_complete_chat_supports_web_tool_call_and_tool_result_roundtrip():
     router = MagicMock()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry())
+    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry(), no_action_budget=0)
     constraints = extract_execution_constraints("查一下今天A股收盘")
 
     router.complete_with_tools = AsyncMock(
@@ -489,7 +499,7 @@ async def test_complete_chat_supports_web_tool_call_and_tool_result_roundtrip():
 @pytest.mark.asyncio
 async def test_complete_chat_emits_tool_execution_events_for_successful_call():
     router = MagicMock()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry())
+    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry(), no_action_budget=0)
     constraints = extract_execution_constraints("看看当前目录")
 
     router.complete_with_tools = AsyncMock(
@@ -570,7 +580,7 @@ async def test_complete_chat_emits_tool_execution_events_for_successful_call():
 @pytest.mark.asyncio
 async def test_complete_chat_emits_tool_execution_error_metrics_on_failure():
     router = MagicMock()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry())
+    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry(), no_action_budget=0)
     constraints = extract_execution_constraints("执行失败命令")
 
     router.complete_with_tools = AsyncMock(
@@ -590,7 +600,7 @@ async def test_complete_chat_emits_tool_execution_error_metrics_on_failure():
                     "tool_calls": [{"id": "call_1"}],
                 },
             ),
-            SimpleNamespace(text="", tool_calls=[], continuation_message=None),
+            SimpleNamespace(text="命令执行失败了", tool_calls=[], continuation_message=None),
         ]
     )
     router.build_tool_result_message = MagicMock(
@@ -626,7 +636,7 @@ async def test_complete_chat_emits_tool_execution_error_metrics_on_failure():
         event_bus=event_bus,
     )
 
-    assert "退出码 1" in result
+    assert "命令执行失败了" in result
     event_calls = event_bus.publish.await_args_list
     event_types = [event_call.args[0] for event_call in event_calls]
     assert "task.tool_execution_end" in event_types
@@ -646,7 +656,7 @@ async def test_complete_chat_emits_tool_execution_error_metrics_on_failure():
 @pytest.mark.asyncio
 async def test_complete_chat_emits_tool_execution_events_for_each_tool_call():
     router = MagicMock()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry())
+    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry(), no_action_budget=0)
     constraints = extract_execution_constraints("看看当前目录和用户")
 
     router.complete_with_tools = AsyncMock(

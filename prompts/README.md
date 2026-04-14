@@ -24,7 +24,6 @@
 | 文件 | 用途 |
 |------|------|
 | `memory_extract.md` | 记忆提取 Prompt — 从对话中提取关键事实 |
-| `heartbeat_consolidation.md` | 记忆整合 Prompt — 合并长期记忆 |
 | `compaction.md` | 对话 Compaction Prompt — 压缩过长对话历史 |
 
 ## QQ 群聊

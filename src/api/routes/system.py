@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
 logger = logging.getLogger("lapwing.api.routes.system")
@@ -237,12 +237,6 @@ async def get_recent_logs(
 async def get_platform_config():
     from config import settings
     return {
-        "telegram": {
-            "enabled": bool(settings.TELEGRAM_TOKEN),
-            "proxy_url": settings.TELEGRAM_PROXY_URL,
-            "kevin_id": settings.TELEGRAM_KEVIN_ID,
-            "text_mode": settings.TELEGRAM_TEXT_MODE,
-        },
         "qq": {
             "enabled": settings.QQ_ENABLED,
             "ws_url": settings.QQ_WS_URL,
@@ -458,6 +452,8 @@ async def delete_knowledge_note(topic: str):
     from config.settings import DATA_DIR as _DATA_DIR
     knowledge_dir = _DATA_DIR / "knowledge"
     note_path = knowledge_dir / f"{topic}.md"
+    if not note_path.resolve().is_relative_to(knowledge_dir.resolve()):
+        return JSONResponse(status_code=403, content={"error": "path traversal blocked"})
     if not note_path.exists():
         raise HTTPException(status_code=404, detail="笔记不存在")
     note_path.unlink()

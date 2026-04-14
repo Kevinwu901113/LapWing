@@ -62,6 +62,28 @@ def now_taipei() -> datetime:
     return datetime.now(_TAIPEI_TZ)
 
 
+def get_period_name(hour: int | None = None) -> str:
+    """Return human-readable period name for the given hour (0-23)."""
+    if hour is None:
+        hour = now_taipei().hour
+    if 0 <= hour < 5:
+        return "深夜"
+    elif 5 <= hour < 8:
+        return "早上"
+    elif 8 <= hour < 11:
+        return "上午"
+    elif 11 <= hour < 13:
+        return "中午"
+    elif 13 <= hour < 17:
+        return "下午"
+    elif 17 <= hour < 19:
+        return "傍晚"
+    elif 19 <= hour < 23:
+        return "晚上"
+    else:
+        return "深夜"
+
+
 def now_taipei_str() -> str:
     now = now_taipei()
     weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]

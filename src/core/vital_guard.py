@@ -12,12 +12,16 @@ import json
 import re
 import shlex
 import shutil
+import logging
+import unicodedata
 from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
 
 from config.settings import ROOT_DIR, CONSTITUTION_PATH
+
+logger = logging.getLogger("lapwing.core.vital_guard")
 
 
 class Verdict(Enum):
@@ -94,6 +98,33 @@ REPLACE_PREFIXES: tuple[str, ...] = (
     "uv pip install",
 )
 
+# ── 写入拒绝路径（敏感凭据/配置，BLOCK 而非 VERIFY_FIRST）───────────────────
+
+WRITE_DENIED_PATHS: frozenset[Path] = frozenset({
+    Path.home() / ".ssh" / "authorized_keys",
+    Path.home() / ".ssh" / "id_rsa",
+    Path.home() / ".ssh" / "id_ed25519",
+    Path.home() / ".ssh" / "config",
+    Path.home() / ".bashrc",
+    Path.home() / ".zshrc",
+    Path.home() / ".profile",
+    Path.home() / ".netrc",
+    Path.home() / ".pgpass",
+    Path.home() / ".npmrc",
+    Path.home() / ".pypirc",
+    Path("/etc/sudoers"),
+    Path("/etc/passwd"),
+    Path("/etc/shadow"),
+    ROOT_DIR / "config" / ".env",
+})
+
+WRITE_DENIED_PREFIXES: tuple[Path, ...] = (
+    Path.home() / ".ssh",
+    Path.home() / ".aws",
+    Path.home() / ".gnupg",
+    Path.home() / ".kube",
+)
+
 
 # ── 路径工具函数 ───────────────────────────────────────────────────────────────
 
@@ -129,6 +160,28 @@ def _is_vital(p: Path) -> bool:
     return False
 
 
+def _is_write_denied(p: Path) -> bool:
+    """检查路径是否在写入拒绝列表中（敏感凭据/配置文件）。"""
+    resolved = p.resolve()
+    if resolved in WRITE_DENIED_PATHS:
+        return True
+    for prefix in WRITE_DENIED_PREFIXES:
+        try:
+            resolved.relative_to(prefix)
+            return True
+        except ValueError:
+            continue
+    return False
+
+
+def _normalize_for_detection(command: str) -> str:
+    """规范化命令字符串，防止通过 Unicode 技巧绕过检测。"""
+    command = command.replace('\x00', '')                    # 去 null byte
+    command = unicodedata.normalize('NFKC', command)         # 全角→半角
+    command = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', command) # 去 ANSI 转义序列
+    return command
+
+
 def _extract_redirect_targets(command: str) -> list[Path]:
     """提取重定向目标路径（>, >>, 2>, 1>）。"""
     targets: list[Path] = []
@@ -161,7 +214,7 @@ def check(command: str, *, relaxed: bool = False) -> GuardResult:
         relaxed: Docker 容器内执行时为 True，VERIFY_FIRST 降级为 PASS
                 （容器是临时环境，无需备份宿主文件；BLOCK 仍保留）。
     """
-    cmd_stripped = command.strip()
+    cmd_stripped = _normalize_for_detection(command.strip())
     if not cmd_stripped:
         return GuardResult(Verdict.PASS, "")
 
@@ -190,6 +243,44 @@ def check(command: str, *, relaxed: bool = False) -> GuardResult:
     arg_paths = _resolve_paths(tokens[1:])
     redirect_paths = _extract_redirect_targets(cmd_stripped)
     all_paths = arg_paths + redirect_paths
+
+    # ── 阶段 2.5：写入拒绝路径检查 ────────────────────────────────────────────
+    # 删除操作直接拦截
+    denied_targets = [p for p in arg_paths if _is_write_denied(p)]
+    if denied_targets and base_cmd in DESTRUCTIVE_CMDS:
+        return GuardResult(
+            Verdict.BLOCK,
+            f"不能删除敏感路径: {', '.join(str(p) for p in denied_targets)}",
+        )
+    # 写入类命令的目标路径检查
+    if denied_targets and base_cmd in MODIFY_CMDS:
+        # sed/tee 直接写入参数中的文件
+        if base_cmd in ("sed", "tee"):
+            return GuardResult(
+                Verdict.BLOCK,
+                f"不能写入敏感路径: {', '.join(str(p) for p in denied_targets)}",
+            )
+        # cp/mv/install 的最后一个参数是目标
+        if len(arg_paths) >= 2 and _is_write_denied(arg_paths[-1]):
+            return GuardResult(
+                Verdict.BLOCK,
+                f"不能写入敏感路径: {arg_paths[-1]}",
+            )
+    # mv 从敏感路径移走等同于删除
+    if base_cmd == "mv" and len(arg_paths) >= 2:
+        denied_sources = [p for p in arg_paths[:-1] if _is_write_denied(p)]
+        if denied_sources:
+            return GuardResult(
+                Verdict.BLOCK,
+                f"不能移动敏感路径: {', '.join(str(p) for p in denied_sources)}",
+            )
+    # 重定向到拒绝路径
+    denied_redirects = [p for p in redirect_paths if _is_write_denied(p)]
+    if denied_redirects:
+        return GuardResult(
+            Verdict.BLOCK,
+            f"不能通过重定向写入敏感路径: {', '.join(str(p) for p in denied_redirects)}",
+        )
 
     vital_targets = [p for p in all_paths if _is_vital(p)]
 
@@ -271,7 +362,7 @@ def check_compound(command: str, *, relaxed: bool = False) -> GuardResult:
         relaxed: Docker 容器内执行时为 True，透传给 check()。
     """
     # 按命令分隔符拆分。\|\| 必须在 \| 之前匹配，保证 || 不被拆成两个 |
-    sub_commands = re.split(r"\s*(?:&&|\|\||\|(?!\|)|;)\s*", command)
+    sub_commands = re.split(r"\s*(?:&&|\|\||\|(?!\|)|;)\s*", _normalize_for_detection(command))
 
     worst: GuardResult = GuardResult(Verdict.PASS, "")
 
@@ -306,6 +397,8 @@ def check_file_target(path: Path) -> GuardResult:
     Returns:
         PASS 表示可以直接操作，VERIFY_FIRST 表示需要先备份，BLOCK 表示绝对禁止。
     """
+    if _is_write_denied(path):
+        return GuardResult(Verdict.BLOCK, f"不能通过文件工具写入敏感路径: {path}")
     if not _is_vital(path):
         return GuardResult(Verdict.PASS, "")
     if path == _CONSTITUTION_RESOLVED or path == _SELF_PATH:
@@ -343,8 +436,8 @@ async def auto_backup(paths: list[Path]) -> Path:
                 shutil.copytree(p, dest, dirs_exist_ok=True)
             else:
                 shutil.copy2(p, dest)
-        except Exception:
-            pass  # 备份失败不阻断主流程
+        except Exception as e:
+            logger.warning("VitalGuard backup failed for %s: %s", p, e)
 
     # 保留最近 50 个备份（只在超出时才排序）
     try:
@@ -352,8 +445,8 @@ async def auto_backup(paths: list[Path]) -> Path:
         if len(all_backups) > 50:
             for old in sorted(all_backups, reverse=True)[50:]:
                 shutil.rmtree(old, ignore_errors=True)
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("VitalGuard backup cleanup failed: %s", e)
 
     return backup_path
 
@@ -376,8 +469,8 @@ async def auto_commit(message: str) -> None:
             stderr=asyncio.subprocess.DEVNULL,
         )
         await proc.communicate()
-    except Exception:
-        pass  # git 不可用时静默失败
+    except Exception as e:
+        logger.warning("VitalGuard auto-commit failed: %s", e)
 
 
 # ── Manifest 生成（供 Sentinel 和 main.py 使用）────────────────────────────────

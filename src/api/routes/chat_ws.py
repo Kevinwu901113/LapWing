@@ -79,7 +79,13 @@ async def websocket_chat(ws: WebSocket):
         _desktop_adapter.add_connection(connection_id, ws)
     _brain._desktop_connected = True
 
-    await ws.send_json({"type": "presence_ack", "status": "connected"})
+    # 确定 chat_id 并在 presence_ack 中发送给前端
+    if DESKTOP_DEFAULT_OWNER and OWNER_IDS:
+        chat_id = next(iter(OWNER_IDS))
+    else:
+        chat_id = f"{DESKTOP_WS_CHAT_ID_PREFIX}:{connection_id}"
+
+    await ws.send_json({"type": "presence_ack", "status": "connected", "chat_id": chat_id})
 
     try:
         while True:
@@ -98,14 +104,27 @@ async def websocket_chat(ws: WebSocket):
 
             if msg_type == "message":
                 content = str(msg.get("content", "")).strip()
-                if not content:
-                    continue
 
-                # 桌面端使用 OWNER 的 ID 作为 chat_id，与 QQ 私聊共享对话流
-                if DESKTOP_DEFAULT_OWNER and OWNER_IDS:
-                    chat_id = next(iter(OWNER_IDS))
-                else:
-                    chat_id = f"{DESKTOP_WS_CHAT_ID_PREFIX}:{connection_id}"
+                # 解析图片 segments（前端可通过 segments 字段发送图片）
+                images: list[dict] | None = None
+                segments = msg.get("segments")
+                if isinstance(segments, list):
+                    img_list = []
+                    for seg in segments:
+                        if seg.get("type") == "image":
+                            data = seg.get("data", seg)
+                            if "base64" in data:
+                                img_list.append({
+                                    "base64": data["base64"],
+                                    "media_type": data.get("media_type", "image/jpeg"),
+                                })
+                            elif "url" in data:
+                                img_list.append({"url": data["url"]})
+                    if img_list:
+                        images = img_list
+
+                if not content and not images:
+                    continue
 
                 _chat_ws_map[chat_id] = ws
 
@@ -144,6 +163,7 @@ async def websocket_chat(ws: WebSocket):
                         status_callback=status_callback,
                         adapter="desktop",
                         user_id="owner",
+                        images=images,
                     )
                     await ws.send_json({"type": "reply", "content": "", "final": True})
                 except Exception as exc:

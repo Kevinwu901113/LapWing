@@ -98,7 +98,7 @@ def create_app(
 
         auth_manager = app.state.auth_manager
         if auth_manager is None:
-            return await call_next(request)
+            return JSONResponse(status_code=503, content={"error": "auth service not ready"})
 
         session_token = request.cookies.get(auth_manager.api_sessions.cookie_name)
         auth_header = request.headers.get("authorization", "")
@@ -200,6 +200,15 @@ class LocalApiServer:
         for _ in range(50):
             if self._server.started:
                 logger.info(f"本地 API 已启动：http://{self._host}:{self._port}")
+                from config.settings import DESKTOP_DEFAULT_OWNER
+                if DESKTOP_DEFAULT_OWNER and self._host != "127.0.0.1":
+                    logger.critical(
+                        "SECURITY WARNING: DESKTOP_DEFAULT_OWNER=true with API_HOST=%s. "
+                        "WebSocket grants OWNER access without authentication. "
+                        "Any machine on the network can execute shell commands. "
+                        "Set API_HOST=127.0.0.1 or DESKTOP_DEFAULT_OWNER=false.",
+                        self._host,
+                    )
                 return
             if self._task.done():
                 break

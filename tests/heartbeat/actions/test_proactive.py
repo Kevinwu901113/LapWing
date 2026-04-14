@@ -20,12 +20,14 @@ def ctx():
 @pytest.fixture
 def mock_brain():
     b = MagicMock()
+    b.event_bus = None
     b.memory = MagicMock()
     b.memory.get_unshared_discoveries = AsyncMock(return_value=[])
     b.memory.append = AsyncMock()
     b.memory.mark_discovery_shared = AsyncMock()
     b.router = MagicMock()
-    b.router.complete = AsyncMock(return_value="你好，好久不见，最近怎么样？")
+    b.router.query_lightweight = AsyncMock(return_value="PASS")
+    b.compose_proactive = AsyncMock(return_value="你好，好久不见，最近怎么样？")
     return b
 
 
@@ -51,13 +53,16 @@ class TestProactiveMessageAction:
             "c1", "assistant", "你好，好久不见，最近怎么样？"
         )
 
-    async def test_uses_heartbeat_slot(self, ctx, mock_brain, mock_send_fn):
+    async def test_uses_compose_proactive(self, ctx, mock_brain, mock_send_fn):
         await ProactiveMessageAction().execute(ctx, mock_brain, mock_send_fn)
-        assert mock_brain.router.complete.call_args.kwargs.get("slot") == "heartbeat_proactive"
+        mock_brain.compose_proactive.assert_awaited_once()
+        call_kwargs = mock_brain.compose_proactive.call_args.kwargs
+        assert call_kwargs["chat_id"] == "c1"
+        assert call_kwargs["max_tokens"] == 200
+        assert call_kwargs["purpose"] == "主动消息"
 
-    async def test_forwards_clean_router_output(self, ctx, mock_brain, mock_send_fn):
-        # Router strips thinking tags internally; action just forwards clean content.
-        mock_brain.router.complete = AsyncMock(return_value="你好")
+    async def test_forwards_clean_output(self, ctx, mock_brain, mock_send_fn):
+        mock_brain.compose_proactive = AsyncMock(return_value="你好")
 
         await ProactiveMessageAction().execute(ctx, mock_brain, mock_send_fn)
 
@@ -65,7 +70,12 @@ class TestProactiveMessageAction:
         mock_brain.memory.append.assert_awaited_once_with("c1", "assistant", "你好")
 
     async def test_silent_on_llm_failure(self, ctx, mock_brain, mock_send_fn):
-        mock_brain.router.complete = AsyncMock(side_effect=Exception("API error"))
+        mock_brain.compose_proactive = AsyncMock(side_effect=Exception("API error"))
+        await ProactiveMessageAction().execute(ctx, mock_brain, mock_send_fn)
+        mock_send_fn.assert_not_called()
+
+    async def test_silent_when_compose_returns_none(self, ctx, mock_brain, mock_send_fn):
+        mock_brain.compose_proactive = AsyncMock(return_value=None)
         await ProactiveMessageAction().execute(ctx, mock_brain, mock_send_fn)
         mock_send_fn.assert_not_called()
 
@@ -89,4 +99,3 @@ class TestProactiveMessageAction:
                 "text": "你好，好久不见，最近怎么样？",
             },
         )
-

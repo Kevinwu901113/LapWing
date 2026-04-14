@@ -34,13 +34,14 @@ CATEGORIES = {
     "evolution":    {"file": "evolution.log",     "max_bytes": 1 * 1024 * 1024, "retain_days": 30, "style": "multi"},
     "system":       {"file": "system.log",        "max_bytes": 2 * 1024 * 1024, "retain_days": 7,  "style": "single"},
     "debug":        {"file": "debug.log",         "max_bytes": 1 * 1024 * 1024, "retain_days": 3,  "style": "single"},
+    "tool_loop":    {"file": "tool_loop.log",    "max_bytes": 2 * 1024 * 1024, "retain_days": 5,  "style": "single"},
 }
 
 
 class EventLogger:
     """业务事件日志的唯一写入口。线程安全。"""
 
-    def __init__(self, log_dir: str = "logs", db_path: str = "data/lapwing.db"):
+    def __init__(self, log_dir: str = "logs", db_path: str = "data/events.db"):
         self._log_dir = Path(log_dir)
         self._log_dir.mkdir(parents=True, exist_ok=True)
         self._db_path = db_path
@@ -60,7 +61,7 @@ class EventLogger:
 
     def _init_db(self):
         """初始化 SQLite 表。"""
-        self._db = sqlite3.connect(self._db_path, check_same_thread=False)
+        self._db = sqlite3.connect(self._db_path, check_same_thread=False, timeout=10)
         self._db.execute("PRAGMA journal_mode=WAL")
         self._db.execute("""
             CREATE TABLE IF NOT EXISTS event_log (
@@ -360,9 +361,8 @@ _ICONS = {
 
 def _truncate(text: str, max_len: int) -> str:
     """截断文本。"""
-    if len(text) <= max_len:
-        return text
-    return text[:max_len - 3] + "..."
+    from src.utils.text import truncate
+    return truncate(text, max_len)
 
 
 # ── 全局单例 ──

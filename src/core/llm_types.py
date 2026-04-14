@@ -20,6 +20,8 @@ class ToolTurnResult:
     text: str
     tool_calls: list[ToolCallRequest]
     continuation_message: dict[str, Any] | None = None
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 @dataclass(frozen=True)

@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections import deque
 import hashlib
 import json
 import logging
+import os
+from datetime import datetime
 from pathlib import Path
 import re
 import time
@@ -18,18 +21,31 @@ from config.settings import (
     ROOT_DIR,
     SELF_SCHEDULE_ENABLED,
     SHELL_DEFAULT_CWD,
+    TASK_ERROR_BURST_THRESHOLD,
     TASK_MAX_TOOL_ROUNDS,
+    TASK_NO_ACTION_BUDGET,
 )
 from src.core.llm_router import ToolCallRequest
 
 # Re-export types for backward compatibility
 from src.core.task_types import (  # noqa: F401
+    ErrorBurstGuard,
     LoopDetectionConfig,
     LoopDetectionState,
+    LoopRecoveryState,
+    NoActionBudget,
     RuntimeDeps,
     TaskLoopStep,
     TaskLoopResult,
     _refresh_voice_reminder,
+)
+from src.core.llm_exceptions import (
+    classify_as_llm_exception,
+    PromptTooLongError,
+    EmptyResponseError,
+    APIOverloadError,
+    APITimeoutError,
+    APIConnectionError,
 )
 from src.core.runtime_profiles import RuntimeProfile, get_runtime_profile
 from src.core.shell_policy import (
@@ -61,6 +77,14 @@ _MAX_TOOL_ROUNDS = TASK_MAX_TOOL_ROUNDS
 _TOOL_RESULT_MAX_CHARS = 12000
 _WEB_SEARCH_SNIPPET_MAX_CHARS = 280
 
+# ── Tool result budgeting ────────────────────────────────────────────────────
+TOOL_RESULT_BUDGET_MAX_CHARS = 50_000
+TOOL_RESULT_PREVIEW_CHARS = 2_000
+TOOL_RESULT_DIR = os.path.join(str(ROOT_DIR), "data", "tool_results")
+BUDGET_EXEMPT_TOOLS = frozenset({
+    "file_read", "read_file", "file_read_segment", "memory_read",
+})
+
 # VitalGuard 对命令类型的分类（模块级常量，避免每次 execute_tool() 重建）
 _SHELL_TOOLS: frozenset[str] = frozenset({"execute_shell", "run_python_code"})
 _FILE_WRITE_TOOLS: frozenset[str] = frozenset({
@@ -74,16 +98,51 @@ _USER_VISIBLE_RE = re.compile(
 )
 
 
+def _sanitize_visible_text(text: str) -> str:
+    """从可见文本中移除调试日志残留，防止工具调用描述泄露给用户。"""
+    from src.core.output_sanitizer import sanitize_outgoing
+    text = re.sub(r"\[调用\s+\w+\s*(?:工具)?[^\]]*\]", "", text)
+    text = re.sub(r"\[/函数调用结果\]", "", text)
+    text = re.sub(r"\[函数调用结果\]", "", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    text = re.sub(r"</?user_visible>", "", text)
+    text = sanitize_outgoing(text)  # 兜底过滤
+    return text.strip()
+
+
 def _extract_user_visible(text: str) -> str:
     """从 LLM 中间轮次文本中提取 <user_visible> 标签内的内容。
 
     只有被 <user_visible>...</user_visible> 包裹的文本才会返回；
     多个标签的内容用换行拼接；没有标签则返回空字符串。
+    最后做 sanitize 清理，防止 LLM 误将调试日志写入标签内。
     """
     matches = _USER_VISIBLE_RE.findall(text)
     if not matches:
         return ""
-    return "\n".join(m.strip() for m in matches if m.strip())
+    combined = "\n".join(m.strip() for m in matches if m.strip())
+    return _sanitize_visible_text(combined)
+
+
+# ── 模拟工具调用检测（模块级辅助函数）──
+
+_SIMULATED_TOOL_PATTERNS = [
+    re.compile(r"\[调用\s+\w+[:\s(].*?[\])]"),
+    re.compile(r"\[tool_call:\s*.*?\]", re.IGNORECASE),
+    re.compile(r"\[calling\s+\w+[:\s].*?\]", re.IGNORECASE),
+]
+
+
+def _contains_simulated_tool_call(text: str) -> bool:
+    """检测文本中是否包含模拟的工具调用。"""
+    return any(p.search(text) for p in _SIMULATED_TOOL_PATTERNS)
+
+
+def _strip_simulated_tool_calls(text: str) -> str:
+    """移除文本中的模拟工具调用。"""
+    for p in _SIMULATED_TOOL_PATTERNS:
+        text = p.sub("", text)
+    return text.strip()
 
 
 class TaskRuntime:
@@ -97,6 +156,8 @@ class TaskRuntime:
         loop_detection_config: LoopDetectionConfig | None = None,
         latency_monitor: Any | None = None,
         memory: Any | None = None,
+        no_action_budget: int | None = None,
+        error_burst_threshold: int | None = None,
     ) -> None:
         self._router = router
         self._max_tool_rounds = max_tool_rounds
@@ -105,9 +166,14 @@ class TaskRuntime:
         self._loop_detection_config = loop_detection_config or LoopDetectionConfig()
         self._latency_monitor = latency_monitor
         self._memory = memory
+        # 从 config.settings 直接读取（支持测试时动态修改）
+        import config.settings as _cfg
+        self._no_action_budget = no_action_budget if no_action_budget is not None else _cfg.TASK_NO_ACTION_BUDGET
+        self._error_burst_threshold = error_burst_threshold if error_burst_threshold is not None else _cfg.TASK_ERROR_BURST_THRESHOLD
         self._memory_index: Any | None = None
         self._progress_enabled: bool = False
         self._pending_task_store: Any | None = None
+        self._incident_manager: Any | None = None
 
     def set_browser_guard(self, browser_guard: Any | None) -> None:
         self._browser_guard = browser_guard
@@ -123,6 +189,40 @@ class TaskRuntime:
 
     def set_progress_enabled(self, enabled: bool) -> None:
         self._progress_enabled = enabled
+
+    def set_incident_manager(self, manager: Any | None) -> None:
+        self._incident_manager = manager
+
+    # -- 公开属性，供 Agent 使用 --
+
+    @property
+    def llm_router(self):
+        """LLM 路由器实例。"""
+        return self._router
+
+    @property
+    def tool_registry(self) -> ToolRegistry:
+        """工具注册表实例。"""
+        return self._tool_registry
+
+    def create_agent_context(self, agent_name: str) -> ToolExecutionContext:
+        """为子 Agent 创建工具执行上下文（TRUSTED 权限）。"""
+
+        async def _noop_shell(cmd: str):
+            return ShellResult(stdout="", stderr="Shell disabled for agents", return_code=1)
+
+        return ToolExecutionContext(
+            execute_shell=_noop_shell,
+            shell_default_cwd=SHELL_DEFAULT_CWD,
+            workspace_root=SHELL_DEFAULT_CWD,
+            services={},
+            adapter="agent",
+            user_id=f"agent:{agent_name}",
+            auth_level=1,  # TRUSTED
+            chat_id=f"agent-{agent_name}",
+            memory=self._memory,
+            memory_index=self._memory_index,
+        )
 
     def clear_chat_state(self, chat_id: str) -> None:
         self._pending_shell_confirmations.pop(chat_id, None)
@@ -212,7 +312,7 @@ class TaskRuntime:
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
         if web_enabled:
-            tool_names.update({"web_search", "web_fetch"})
+            tool_names.update({"web_search", "web_fetch", "image_search"})
         if skill_activation_enabled:
             tool_names.add("activate_skill")
         if MEMORY_CRUD_ENABLED:
@@ -266,7 +366,7 @@ class TaskRuntime:
         on_consent_required: Callable[[ExecutionSessionState], str] | None = None,
         services: dict[str, Any] | None = None,
         profile: str | RuntimeProfile = "chat_shell",
-        on_interim_text: Callable[[str], "Awaitable[None]"] | None = None,
+        on_interim_text: Callable[..., "Awaitable[None]"] | None = None,
         on_typing: Callable[[], "Awaitable[None]"] | None = None,
         adapter: str = "",
         user_id: str = "",
@@ -317,6 +417,13 @@ class TaskRuntime:
         interim_parts: list[str] = []  # 收集已通过 on_interim_text 发出的中间文字
         loop_detection_state = self._new_loop_detection_state()
         simulated_tool_retries = 0
+        recovery = LoopRecoveryState()
+        no_action_budget = NoActionBudget(
+            default=self._no_action_budget,
+            remaining=self._no_action_budget,
+        )
+        error_guard = ErrorBurstGuard(threshold=self._error_burst_threshold)
+        has_used_tools = False  # budget 仅在 LLM 曾使用工具后才激活
 
         # 进度汇报状态
         progress_state: Any | None = None
@@ -327,15 +434,78 @@ class TaskRuntime:
             )
 
         async def _step_runner(round_index: int) -> TaskLoopStep:
-            nonlocal last_payload, final_reply, simulated_tool_retries
+            nonlocal last_payload, final_reply, simulated_tool_retries, has_used_tools
+            recovery.record_transition("tool_turn")
             round_started_at = time.perf_counter()
-            turn = await self._router.complete_with_tools(
-                self._with_shell_state_context(messages, state),
-                tools=tools,
-                slot="main_conversation",
-                session_key=f"chat:{chat_id}",
-                origin="task_runtime.chat",
-            )
+
+            try:
+                turn = await self._router.complete_with_tools(
+                    self._with_shell_state_context(messages, state),
+                    tools=tools,
+                    slot="main_conversation",
+                    session_key=f"chat:{chat_id}",
+                    origin="task_runtime.chat",
+                )
+                recovery.reset_api_errors()
+            except Exception as raw_exc:
+                typed = classify_as_llm_exception(raw_exc)
+                if typed is None:
+                    raise  # 不可恢复的错误
+
+                if isinstance(typed, PromptTooLongError) and recovery.can_reactive_compact():
+                    recovery.reactive_compact_attempts += 1
+                    recovery.record_transition("reactive_compact")
+                    logger.warning(
+                        "[runtime] Prompt too long, reactive compact (attempt %d/%d)",
+                        recovery.reactive_compact_attempts,
+                        recovery.MAX_REACTIVE_COMPACT,
+                    )
+                    _events.log("tool_loop", "reactive_compact",
+                        attempt=recovery.reactive_compact_attempts,
+                    )
+                    self._reactive_compact(messages)
+                    return TaskLoopStep()  # retry
+
+                if isinstance(typed, (APIOverloadError, APITimeoutError, APIConnectionError)):
+                    if recovery.can_retry_api():
+                        recovery.consecutive_api_errors += 1
+                        recovery.record_transition("api_retry")
+                        wait = 2 ** recovery.consecutive_api_errors
+                        logger.warning(
+                            "[runtime] API error (%s), retrying in %ds (attempt %d/%d)",
+                            type(typed).__name__,
+                            wait,
+                            recovery.consecutive_api_errors,
+                            recovery.MAX_CONSECUTIVE_API_ERRORS,
+                        )
+                        _events.log("tool_loop", "api_retry",
+                            error=type(typed).__name__,
+                            attempt=recovery.consecutive_api_errors,
+                            wait_seconds=wait,
+                        )
+                        await asyncio.sleep(wait)
+                        return TaskLoopStep()  # retry
+
+                raise  # 恢复次数耗尽
+
+            # ── 空响应恢复 ──
+            if not turn.tool_calls and not (turn.text or "").strip():
+                if recovery.can_output_recovery():
+                    recovery.max_output_recovery_count += 1
+                    recovery.record_transition("output_recovery")
+                    logger.warning(
+                        "[runtime] Empty response, injecting continue (attempt %d/%d)",
+                        recovery.max_output_recovery_count,
+                        recovery.MAX_OUTPUT_RECOVERY,
+                    )
+                    _events.log("tool_loop", "output_recovery",
+                        attempt=recovery.max_output_recovery_count,
+                    )
+                    messages.append({
+                        "role": "user",
+                        "content": "请继续你刚才的回答。",
+                    })
+                    return TaskLoopStep()  # retry
 
             if not turn.tool_calls:
                 # ── 模拟工具调用检测 ──
@@ -358,8 +528,24 @@ class TaskRuntime:
                         })
                         return TaskLoopStep()  # continue loop
 
+                # ── No-Action Budget（仅在 LLM 曾使用工具后激活）──
+                if has_used_tools and no_action_budget.consume():
+                    logger.debug(
+                        "[runtime] No-action budget consumed (remaining=%d), continuing loop",
+                        no_action_budget.remaining,
+                    )
+                    return TaskLoopStep()  # 还有预算，继续循环
+                if has_used_tools and no_action_budget.exhausted:
+                    logger.info(
+                        "No-action budget exhausted after %d consecutive no-action turns",
+                        no_action_budget.default,
+                    )
+                    _events.log("tool_loop", "no_action_budget_exhausted",
+                        budget=no_action_budget.default,
+                    )
+
                 await _emit_status("stage:finalizing")
-                final_text = model_text
+                final_text = _sanitize_visible_text(model_text)
                 if final_text and on_interim_text is not None:
                     try:
                         await on_interim_text(final_text)
@@ -377,7 +563,9 @@ class TaskRuntime:
                 )
                 return TaskLoopStep(completed=True, payload=last_payload)
 
-            # LLM 返回了 tool_call，文字部分是中间回复
+            # LLM 返回了 tool_call — 重置 no-action 预算并标记
+            has_used_tools = True
+            no_action_budget.reset()
             # 默认静默：只发送 <user_visible> 标签内的内容，防止工具 JSON / 源码泄露
             interim_text = (turn.text or "").strip()
             if interim_text:
@@ -633,6 +821,37 @@ class TaskRuntime:
                     **tool_event_common,
                     **tool_event_metrics,
                 )
+                # ── Error Burst Guard ──
+                if execution_success:
+                    error_guard.record_success()
+                else:
+                    should_break = error_guard.record_error(
+                        tool_result_text[:200] if tool_result_text else "unknown error"
+                    )
+                    if should_break:
+                        logger.warning(
+                            "[runtime] Error burst guard triggered: %s",
+                            error_guard.summary,
+                        )
+                        _events.log("tool_loop", "error_burst_triggered",
+                            error_count=error_guard.error_count,
+                            summary=error_guard.summary,
+                        )
+                        # 注入错误摘要让 LLM 在下一轮有机会调整策略
+                        messages.append({
+                            "role": "user",
+                            "content": (
+                                f"[系统警告] 连续 {error_guard.threshold} 次工具调用失败。"
+                                f"{error_guard.summary}\n"
+                                "请换一种方法或放弃这个子任务。如果继续尝试同样的方法仍然失败，我将终止执行。"
+                            ),
+                        })
+                        # 不直接 break——给 LLM 最后一次机会在下一轮调整
+                        tool_results.append((tool_call, tool_result_text))
+                        executed_tool_names.append(tool_call.name)
+                        _record_round_latency()
+                        return TaskLoopStep(payload=last_payload)
+
                 tool_results.append((tool_call, tool_result_text))
                 executed_tool_names.append(tool_call.name)
                 self._record_tool_signature(
@@ -733,6 +952,26 @@ class TaskRuntime:
             # 重新注入 voice reminder（tool call 循环会让消息越来越长，
             # 导致 voice reminder 离生成位置越来越远）
             _refresh_voice_reminder(messages)
+
+            # ── Loop turn 日志 ──
+            result_chars = sum(len(t[1]) for t in tool_results) if tool_results else 0
+            recovery.total_result_chars += result_chars
+            logger.info(
+                "[runtime] Loop turn=%d transition=%s tool_calls=%d result_chars=%d total_chars=%d",
+                recovery.turn_count,
+                recovery.transition_reason,
+                len(executed_tool_names),
+                result_chars,
+                recovery.total_result_chars,
+            )
+            _events.log("tool_loop", "turn_complete",
+                turn=recovery.turn_count,
+                transition=recovery.transition_reason,
+                tool_calls=executed_tool_names,
+                compact_attempts=recovery.reactive_compact_attempts,
+                api_errors=recovery.consecutive_api_errors,
+                result_chars=result_chars,
+            )
             return TaskLoopStep(payload=last_payload)
 
         loop_result = await self.run_task_loop(
@@ -740,13 +979,34 @@ class TaskRuntime:
             step_runner=_step_runner,
         )
 
+        # ── Loop 完成摘要日志 ──
+        logger.info(
+            "[runtime] Tool loop completed: turns=%d compact=%d output_recovery=%d "
+            "api_retries=%d total_result_chars=%d reason=%s",
+            recovery.turn_count,
+            recovery.reactive_compact_attempts,
+            recovery.max_output_recovery_count,
+            recovery.consecutive_api_errors,
+            recovery.total_result_chars,
+            loop_result.reason or "normal",
+        )
+        _events.log("tool_loop", "complete",
+            turns=recovery.turn_count,
+            compact_attempts=recovery.reactive_compact_attempts,
+            output_recoveries=recovery.max_output_recovery_count,
+            api_retries=recovery.consecutive_api_errors,
+            total_result_chars=recovery.total_result_chars,
+            reason=loop_result.reason or "normal",
+        )
+
         # ── 收集已完成步骤（用于完成度检查）──
         _completed_steps = progress_state.completed_steps if progress_state else []
         _user_request = progress_state.user_request if progress_state else constraints.original_user_message
 
         if final_reply is not None:
-            # 清理最终回复中可能残留的 <user_visible> 标签
-            final_reply = re.sub(r"</?user_visible>", "", final_reply).strip()
+            # 清理最终回复中可能残留的内部标记
+            from src.core.output_sanitizer import sanitize_outgoing
+            final_reply = sanitize_outgoing(final_reply)
             # 循环内提前结束（可能是 circuit breaker），检查是否完成
             if _completed_steps and loop_result.reason in (
                 "max_rounds_exceeded", "",
@@ -883,7 +1143,7 @@ class TaskRuntime:
             )
             return state.failure_message()
 
-        reply = model_text or self.tool_fallback_reply(last_payload)
+        reply = _sanitize_visible_text(model_text) if model_text else self.tool_fallback_reply(last_payload)
         if last_payload and last_payload.get("blocked"):
             await self._publish_task_event(
                 event_bus,
@@ -1163,6 +1423,81 @@ class TaskRuntime:
                 state.record_failure(verification.reason, "verification_failed")
         return execution
 
+    def _reactive_compact(self, messages: list[dict[str, Any]]) -> None:
+        """紧急压缩：context 快满时，清理旧的 tool results。"""
+        KEEP_RECENT = 6
+
+        tool_result_indices: list[int] = []
+        for i, msg in enumerate(messages):
+            role = msg.get("role", "")
+            if role == "tool":
+                tool_result_indices.append(i)
+            elif role == "user" and isinstance(msg.get("content"), list):
+                for block in msg["content"]:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        tool_result_indices.append(i)
+                        break
+
+        if len(tool_result_indices) <= KEEP_RECENT:
+            return
+
+        to_clear = tool_result_indices[:-KEEP_RECENT]
+        for idx in to_clear:
+            msg = messages[idx]
+            if msg.get("role") == "tool":
+                msg["content"] = "(此工具结果已被清理以节省上下文空间)"
+            elif isinstance(msg.get("content"), list):
+                for block in msg["content"]:
+                    if isinstance(block, dict) and block.get("type") == "tool_result":
+                        block["content"] = "(已清理)"
+
+        logger.info("[runtime] Reactive compact: cleared %d old tool results", len(to_clear))
+
+    def _budget_tool_result(
+        self,
+        tool_name: str,
+        result: ToolExecutionResult,
+    ) -> ToolExecutionResult:
+        """大工具结果存磁盘，只留预览在 context。"""
+        if tool_name in BUDGET_EXEMPT_TOOLS:
+            return result
+
+        payload_str = json.dumps(result.payload, ensure_ascii=False, default=str)
+        if len(payload_str) <= TOOL_RESULT_BUDGET_MAX_CHARS:
+            return result
+
+        os.makedirs(TOOL_RESULT_DIR, exist_ok=True)
+
+        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        filename = f"{ts}_{tool_name}.txt"
+        filepath = os.path.join(TOOL_RESULT_DIR, filename)
+
+        try:
+            with open(filepath, "w", encoding="utf-8") as f:
+                f.write(payload_str)
+        except OSError as exc:
+            logger.warning("[runtime] 写入大结果到磁盘失败: %s", exc)
+            return result
+
+        preview = payload_str[:TOOL_RESULT_PREVIEW_CHARS]
+        original_len = len(payload_str)
+        logger.info(
+            "[runtime] Tool result budgeted: %s, %d chars → preview %d chars, saved to %s",
+            tool_name, original_len, len(preview), filepath,
+        )
+
+        result.payload = {
+            "preview": preview,
+            "full_result_path": filepath,
+            "truncated": True,
+            "original_chars": original_len,
+            "note": (
+                f"完整结果已保存到 {filepath}（{original_len} 字符）。"
+                "如需查看完整内容，请使用 read_file 工具读取该文件。"
+            ),
+        }
+        return result
+
     async def _execute_tool_call(
         self,
         *,
@@ -1189,12 +1524,48 @@ class TaskRuntime:
             adapter=adapter,
             user_id=user_id,
         )
+
+        # Incident 采集：工具执行失败时创建 incident
+        if not execution.success and self._incident_manager is not None:
+            self._maybe_create_tool_incident(tool_call, execution, chat_id)
+
+        # P0: 大结果存磁盘，只留预览
+        execution = self._budget_tool_result(tool_call.name, execution)
         payload = execution.payload
         tool_result_text = self._format_tool_result_for_llm(
             tool_name=tool_call.name,
             payload=payload,
         )
         return tool_result_text, payload, execution.success
+
+    def _maybe_create_tool_incident(
+        self,
+        tool_call: ToolCallRequest,
+        execution: ToolExecutionResult,
+        chat_id: str,
+    ) -> None:
+        """工具失败时异步创建 incident（fire-and-forget）。"""
+        from src.core.incident_filter import should_create_incident, tool_failure_severity
+
+        should, error_type = should_create_incident(tool_call.name, execution)
+        if not should:
+            return
+
+        asyncio.create_task(
+            self._incident_manager.create(
+                source="tool_failure",
+                description=f"工具 {tool_call.name} 执行失败: {execution.reason[:100]}",
+                context={
+                    "tool_name": tool_call.name,
+                    "arguments": tool_call.arguments,
+                    "error_type": error_type,
+                    "error_message": execution.reason[:500],
+                    "chat_id": chat_id,
+                },
+                severity=tool_failure_severity(error_type),
+                related_tool=tool_call.name,
+            )
+        )
 
     def _format_tool_result_for_llm(
         self,
@@ -1437,6 +1808,10 @@ class TaskRuntime:
         if not text or not available_tools:
             return False
 
+        # 先用模块级 bracket pattern 检测（[调用 xxx: ...] 等）
+        if _contains_simulated_tool_call(text):
+            return True
+
         text_lower = text.lower()
         for tool_name in available_tools:
             if tool_name not in text_lower:
@@ -1449,7 +1824,6 @@ class TaskRuntime:
                     return True
 
         if '"tool"' in text or '"function"' in text or '"name"' in text:
-            import re
             if re.search(r'\{\s*"(tool|function|name)"\s*:', text):
                 return True
 
@@ -1652,16 +2026,34 @@ class TaskRuntime:
     def _parse_completion_result(raw: str) -> dict:
         """解析 LLM 返回的完成度判断 JSON。"""
         import re as _re
-        # 尝试从 markdown code block 中提取 JSON
+        from src.core.reasoning_tags import strip_think_blocks
+
+        raw = strip_think_blocks(raw)
+
+        # 策略 1：从 markdown code block 提取
         match = _re.search(r"```(?:json)?\s*(.*?)\s*```", raw, _re.DOTALL)
-        text = match.group(1) if match else raw.strip()
+        text = match.group(1) if match else None
+
+        # 策略 2：从文本中找第一个 {...} 块
+        if text is None:
+            brace_match = _re.search(r"\{[^{}]*\}", raw, _re.DOTALL)
+            text = brace_match.group(0) if brace_match else raw.strip()
+
         try:
             result = json.loads(text)
+            # 必须是 dict，裸字符串/数字/数组都不行
+            if not isinstance(result, dict):
+                logger.warning(
+                    "完成度判断结果不是 JSON 对象 (got %s): %s",
+                    type(result).__name__, text[:200],
+                )
+                return {"completed": False, "worth_retrying": True, "remaining": "解析失败，建议重试"}
+
             return {
-                "completed": bool(result.get("completed", True)),
-                "worth_retrying": bool(result.get("worth_retrying", False)),
+                "completed": bool(result.get("completed", False)),
+                "worth_retrying": bool(result.get("worth_retrying", True)),
                 "remaining": str(result.get("remaining", "")),
             }
-        except (json.JSONDecodeError, AttributeError):
+        except (json.JSONDecodeError, ValueError):
             logger.warning("无法解析完成度判断结果: %s", raw[:200])
-            return {"completed": True, "worth_retrying": False, "remaining": ""}
+            return {"completed": False, "worth_retrying": True, "remaining": "解析失败，建议重试"}

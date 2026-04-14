@@ -18,28 +18,42 @@ def _make_engine(brain=None, send_fn=None, reminder_scheduler=None):
     )
 
 
-class TestParseNextInterval:
+class TestParseAndStripNext:
     def test_parses_minutes(self):
         engine = _make_engine()
-        assert engine._parse_next_interval("无事 [NEXT: 10m]") == 600
+        text, interval = engine._parse_and_strip_next("无事 [NEXT: 10m]")
+        assert interval == 600
+        assert text == "无事"
 
     def test_parses_hours(self):
         engine = _make_engine()
-        assert engine._parse_next_interval("做完了 [NEXT: 2h]") == 7200
+        text, interval = engine._parse_and_strip_next("做完了 [NEXT: 2h]")
+        assert interval == 7200
+        assert text == "做完了"
+
+    def test_parses_seconds(self):
+        engine = _make_engine()
+        text, interval = engine._parse_and_strip_next("快速检查 [NEXT: 30s]")
+        assert interval == 30
+        assert text == "快速检查"
 
     def test_default_on_missing(self):
         engine = _make_engine()
-        from config.settings import CONSCIOUSNESS_DEFAULT_INTERVAL
-        assert engine._parse_next_interval("无事") == CONSCIOUSNESS_DEFAULT_INTERVAL
+        text, interval = engine._parse_and_strip_next("无事")
+        assert interval is None
+        assert text == "无事"
 
     def test_default_on_empty(self):
         engine = _make_engine()
-        from config.settings import CONSCIOUSNESS_DEFAULT_INTERVAL
-        assert engine._parse_next_interval("") == CONSCIOUSNESS_DEFAULT_INTERVAL
+        text, interval = engine._parse_and_strip_next("")
+        assert interval is None
+        assert text == ""
 
     def test_case_insensitive(self):
         engine = _make_engine()
-        assert engine._parse_next_interval("[NEXT: 5M]") == 300
+        text, interval = engine._parse_and_strip_next("[NEXT: 5M]")
+        assert interval == 300
+        assert text == ""
 
 
 class TestConversationState:

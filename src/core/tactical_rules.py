@@ -2,10 +2,12 @@
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+import re
+from datetime import datetime, timedelta, timezone
 
 from config.settings import RULES_PATH
 from src.core.prompt_loader import load_prompt
+from src.core.reasoning_tags import strip_think_blocks
 
 logger = logging.getLogger("lapwing.core.tactical_rules")
 
@@ -13,8 +15,9 @@ logger = logging.getLogger("lapwing.core.tactical_rules")
 class TacticalRules:
     """管理从经验中学到的行为规则。"""
 
-    def __init__(self, router):
+    def __init__(self, router, incident_manager=None):
         self._router = router
+        self._incident_manager = incident_manager
         RULES_PATH.parent.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
@@ -58,7 +61,7 @@ class TacticalRules:
                 session_key="system:tactical_rules",
                 origin="core.tactical_rules.analyze",
             )
-            result = result.strip()
+            result = strip_think_blocks(result).strip()
             if not result or result == "（无）" or "不是纠正" in result:
                 return None
             return result
@@ -105,8 +108,80 @@ class TacticalRules:
         user_message: str,
         context: list[dict],
     ) -> str | None:
-        """完整的纠正处理流程：分析 → 生成规则 → 写入。"""
+        """完整的纠正处理流程：分析 → 生成规则 → 写入 → 创建 incident。"""
         rule = await self.analyze_correction(user_message, context)
         if rule:
             await self.add_rule(rule)
+            # 同时创建 incident，以便后续排查和转化为正向知识
+            if self._incident_manager is not None:
+                snippet = "\n".join(
+                    f"{'用户' if m['role'] == 'user' else 'Lapwing'}: "
+                    f"{str(m.get('content', ''))[:200]}"
+                    for m in context[-5:]
+                    if m.get("role") in ("user", "assistant")
+                )
+                inc_id = await self._incident_manager.create(
+                    source="user_correction",
+                    description=f"用户纠正: {rule[:80]}",
+                    context={
+                        "user_message": user_message[:500],
+                        "conversation_snippet": snippet,
+                        "chat_id": chat_id,
+                    },
+                    severity="medium",
+                )
+                if inc_id:
+                    self._incident_manager.link_rule(inc_id, rule)
         return rule
+
+    async def remove_rule(self, rule_text: str) -> bool:
+        """移除包含指定文本的规则行。用于 incident resolved 后清理关联规则。"""
+        if not RULES_PATH.exists():
+            return False
+
+        def _remove():
+            content = RULES_PATH.read_text(encoding="utf-8")
+            lines = content.split("\n")
+            new_lines = [line for line in lines if rule_text not in line]
+            if len(new_lines) < len(lines):
+                RULES_PATH.write_text("\n".join(new_lines), encoding="utf-8")
+                return True
+            return False
+
+        removed = await asyncio.to_thread(_remove)
+        if removed:
+            logger.info("[tactical_rules] 移除规则: %s", rule_text[:60])
+        return removed
+
+    async def cleanup_stale_rules(self, max_age_days: int = 60) -> int:
+        """清理超过 max_age_days 的旧规则。由 memory_maintenance 每日调用。"""
+        if not RULES_PATH.exists():
+            return 0
+
+        cutoff = datetime.now() - timedelta(days=max_age_days)
+        date_pattern = re.compile(r"\[(\d{4}-\d{2}-\d{2})\]")
+
+        def _cleanup():
+            content = RULES_PATH.read_text(encoding="utf-8")
+            lines = content.split("\n")
+            kept = []
+            removed_count = 0
+            for line in lines:
+                match = date_pattern.search(line)
+                if match:
+                    try:
+                        rule_date = datetime.strptime(match.group(1), "%Y-%m-%d")
+                        if rule_date < cutoff:
+                            removed_count += 1
+                            continue
+                    except ValueError:
+                        pass
+                kept.append(line)
+            if removed_count > 0:
+                RULES_PATH.write_text("\n".join(kept), encoding="utf-8")
+            return removed_count
+
+        count = await asyncio.to_thread(_cleanup)
+        if count:
+            logger.info("[tactical_rules] 清理�� %d 条过期规则", count)
+        return count

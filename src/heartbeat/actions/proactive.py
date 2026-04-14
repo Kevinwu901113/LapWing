@@ -40,7 +40,6 @@ class ProactiveMessageAction(HeartbeatAction):
                 period = "晚上"
             else:
                 period = "深夜"
-            time_context = f"现在是台北时间{now.strftime('%H:%M')}（{period}）。注意：说话要符合这个时间段，不要搞错早晚。"
 
             prompt = self._prompt.format(
                 now=f"{now.strftime('%Y-%m-%d %H:%M')} 台北时间（{period}）",
@@ -48,14 +47,17 @@ class ProactiveMessageAction(HeartbeatAction):
                 user_facts_summary=ctx.user_facts_summary,
                 discoveries_summary=discoveries_summary,
             )
-            prompt = f"{time_context}\n\n{prompt}"
 
-            reply = await brain.router.complete(
-                [{"role": "user", "content": prompt}],
-                slot="heartbeat_proactive",
+            reply = await brain.compose_proactive(
+                purpose="主动消息",
+                context_prompt=prompt,
+                sense_context={
+                    "沉默时长": f"{ctx.silence_hours:.1f}小时",
+                    "当前时段": period,
+                    "当前时间": now.strftime("%H:%M"),
+                },
                 max_tokens=200,
-                session_key=f"chat:{ctx.chat_id}",
-                origin="heartbeat.proactive_message",
+                chat_id=ctx.chat_id,
             )
 
             if not reply:
@@ -72,7 +74,7 @@ class ProactiveMessageAction(HeartbeatAction):
 
             await send_fn(reply)
             await brain.memory.append(ctx.chat_id, "assistant", reply)
-            event_bus = brain.__dict__.get("event_bus") if hasattr(brain, "__dict__") else None
+            event_bus = getattr(brain, "event_bus", None)
             if event_bus is not None:
                 await event_bus.publish(
                     "proactive_message",

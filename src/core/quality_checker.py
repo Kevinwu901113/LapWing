@@ -40,8 +40,9 @@ _EVAL_PROMPT = """\
 class ReplyQualityChecker:
     """使用 LLM 评估回复质量，对不达标的样本自动存档。"""
 
-    def __init__(self, router) -> None:
+    def __init__(self, router, incident_manager=None) -> None:
         self._router = router
+        self._incident_manager = incident_manager
 
     async def check(self, context: list[dict], reply: str) -> dict | None:
         """检查回复质量。
@@ -77,6 +78,28 @@ class ReplyQualityChecker:
 
         if parsed and parsed.get("flag"):
             await self._save_sample(ctx_text, reply, parsed.get("reason", "未知"))
+            # 创建 incident 以便后续排查
+            if self._incident_manager is not None:
+                scores = parsed.get("scores", {})
+                min_score = min(scores.values()) if scores else 0
+                severity = "high" if min_score < 2 else "medium"
+                try:
+                    await self._incident_manager.create(
+                        source="quality_check",
+                        description=(
+                            f"回复质量问题: {parsed.get('reason', '未知')}"
+                            f" (维度: {parsed.get('dimension', '?')})"
+                        ),
+                        context={
+                            "quality_scores": scores,
+                            "issues": [parsed.get("dimension", "unknown")],
+                            "original_response": reply[:500],
+                            "reason": parsed.get("reason", ""),
+                        },
+                        severity=severity,
+                    )
+                except Exception:
+                    logger.debug("质量检查创建 incident 失败", exc_info=True)
             return parsed
 
         return None
@@ -100,13 +123,8 @@ class ReplyQualityChecker:
 
 def _parse_json(raw: str) -> dict | None:
     """容错解析 LLM 返回的 JSON。"""
-    text = raw.strip()
-    if text.startswith("```"):
-        text = text.split("\n", 1)[-1]
-    if text.endswith("```"):
-        text = text.rsplit("```", 1)[0]
-    text = text.strip()
-    try:
-        return json.loads(text)
-    except (json.JSONDecodeError, ValueError):
-        return None
+    from src.core.reasoning_tags import strip_think_blocks
+    from src.utils.text import parse_llm_json
+    text = strip_think_blocks(raw)
+    result = parse_llm_json(text)
+    return result if isinstance(result, dict) else None

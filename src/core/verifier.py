@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any
 
 from config.settings import ROOT_DIR
+from src.core.shell_types import VerificationStatus
 from src.tools.code_runner import CodeResult
 
 _VERIFY_CONTENT_LIMIT = 600
@@ -26,7 +27,6 @@ class VerificationResult:
 
 def verify_shell_constraints_status(constraints):
     """返回兼容 shell_policy 的 VerificationStatus。"""
-    from src.core.shell_policy import VerificationStatus
 
     target_directory = constraints.active_directory or constraints.target_directory
     if target_directory is None:
