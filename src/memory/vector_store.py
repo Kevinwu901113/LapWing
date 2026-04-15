@@ -4,8 +4,11 @@ import asyncio
 import hashlib
 import logging
 import re
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 
 try:
     import chromadb
@@ -146,3 +149,251 @@ class VectorStore:
                 logger.debug(f"[vector] chat={chat_id} 无可删除向量记忆集合")
                 return
             raise
+
+
+# ---------------------------------------------------------------------------
+# MemoryVectorStore — 全局单一记忆向量库
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class RecallResult:
+    """recall() 返回的单条记忆检索结果。"""
+    note_id: str
+    file_path: str
+    content: str
+    score: float                  # 综合排序分
+    semantic_similarity: float
+    note_type: str
+    trust: str
+    created_at: str
+    parent_note: str | None
+
+
+class MemoryVectorStore:
+    """记忆向量库。基于 ChromaDB 单一 collection，为 recall() 提供语义检索 + 排序。"""
+
+    COLLECTION_NAME = "lapwing_memory"
+
+    # recall() 排序权重
+    W_SEMANTIC = 0.50
+    W_RECENCY = 0.20
+    W_TRUST = 0.10
+    W_SUMMARY_DEPTH = 0.15
+    W_ACCESS_COUNT = 0.05
+
+    TRUST_SCORES = {"self": 1.0, "verified": 0.8, "inferred": 0.5, "external": 0.2}
+    MAX_PER_CLUSTER = 2  # 同一簇最多保留条数
+
+    def __init__(self, persist_dir: str = "data/chroma"):
+        if chromadb is None:
+            raise RuntimeError("chromadb 未安装，无法启用 MemoryVectorStore")
+
+        db_path = Path(persist_dir)
+        db_path.mkdir(parents=True, exist_ok=True)
+        self._client = chromadb.PersistentClient(path=str(db_path))
+        self.collection = self._client.get_or_create_collection(
+            name=self.COLLECTION_NAME,
+            metadata={"hnsw:space": "cosine"},
+        )
+        self._lock = asyncio.Lock()
+
+    async def add(self, note_id: str, content: str, metadata: dict) -> None:
+        """Upsert 一条笔记到向量库。"""
+        stored_meta = dict(metadata)
+        stored_meta.setdefault("access_count", 0)
+        stored_meta.setdefault("parent_note", "")
+
+        async with self._lock:
+            await asyncio.to_thread(
+                self.collection.upsert,
+                ids=[note_id],
+                documents=[content],
+                metadatas=[stored_meta],
+            )
+        logger.debug(f"[memory_vector] upsert note_id={note_id}")
+
+    async def recall(self, query: str, top_k: int = 10) -> list[RecallResult]:
+        """语义检索 + 综合评分 + 簇去重，返回 top_k 条。"""
+        # 空库保护
+        async with self._lock:
+            count = await asyncio.to_thread(self.collection.count)
+        if count == 0:
+            return []
+
+        n_fetch = min(top_k * 3, 50, count)
+
+        async with self._lock:
+            raw = await asyncio.to_thread(
+                self.collection.query,
+                query_texts=[query],
+                n_results=n_fetch,
+                include=["documents", "metadatas", "distances"],
+            )
+
+        ids = (raw.get("ids") or [[]])[0]
+        documents = (raw.get("documents") or [[]])[0]
+        metadatas = (raw.get("metadatas") or [[]])[0]
+        distances = (raw.get("distances") or [[]])[0]
+
+        now = datetime.now(tz=timezone.utc)
+
+        scored: list[tuple[float, float, str, str, dict]] = []  # (score, sim, id, doc, meta)
+        for idx, doc in enumerate(documents):
+            if not doc:
+                continue
+            meta = metadatas[idx] if idx < len(metadatas) else {}
+            dist = distances[idx] if idx < len(distances) else 1.0
+            note_id = ids[idx] if idx < len(ids) else ""
+
+            # 语义相似度
+            sim = max(0.0, 1.0 - dist)
+
+            # 时间衰减
+            recency = 0.0
+            created_at_str = meta.get("created_at", "")
+            if created_at_str:
+                try:
+                    created_dt = datetime.fromisoformat(created_at_str)
+                    if created_dt.tzinfo is None:
+                        created_dt = created_dt.replace(tzinfo=timezone.utc)
+                    age_days = max(0.0, (now - created_dt).total_seconds() / 86400)
+                    recency = 2 ** (-age_days / 7)
+                except ValueError:
+                    recency = 0.5
+
+            # 信任分
+            trust = meta.get("trust", "inferred")
+            trust_score = self.TRUST_SCORES.get(trust, 0.5)
+
+            # 摘要深度加成
+            note_type = meta.get("note_type", "")
+            summary_boost = 1.0 if note_type == "summary" else 0.5
+
+            # 访问频次归一
+            access_count = int(meta.get("access_count", 0))
+            access_norm = min(access_count / 10.0, 1.0)
+
+            score = (
+                self.W_SEMANTIC * sim
+                + self.W_RECENCY * recency
+                + self.W_TRUST * trust_score
+                + self.W_SUMMARY_DEPTH * summary_boost
+                + self.W_ACCESS_COUNT * access_norm
+            )
+            scored.append((score, sim, note_id, doc, meta))
+
+        # 按分数降序排列
+        scored.sort(key=lambda x: x[0], reverse=True)
+
+        # 簇去重：同簇最多保留 MAX_PER_CLUSTER 条
+        selected: list[tuple[float, float, str, str, dict]] = []
+        cluster_counts: list[int] = []  # 与 selected 等长，记录同簇已选数
+
+        for item in scored:
+            score, sim, note_id, doc, meta = item
+            # 判断是否属于已有某个簇
+            assigned_cluster: int | None = None
+            for ci, sel in enumerate(selected):
+                overlap = self._content_overlap(doc, sel[3])
+                if overlap > 0.7:
+                    assigned_cluster = ci
+                    break
+
+            if assigned_cluster is None:
+                # 新簇
+                selected.append(item)
+                cluster_counts.append(1)
+            elif cluster_counts[assigned_cluster] < self.MAX_PER_CLUSTER:
+                selected.append(item)
+                cluster_counts[assigned_cluster] += 1
+            # 否则该簇已满，跳过
+
+            if len(selected) >= top_k:
+                break
+
+        # 构造返回结果，并增加 access_count
+        results: list[RecallResult] = []
+        for score, sim, note_id, doc, meta in selected:
+            self._increment_access(note_id)
+            results.append(RecallResult(
+                note_id=note_id,
+                file_path=meta.get("file_path", ""),
+                content=doc,
+                score=score,
+                semantic_similarity=sim,
+                note_type=meta.get("note_type", ""),
+                trust=meta.get("trust", ""),
+                created_at=meta.get("created_at", ""),
+                parent_note=meta.get("parent_note") or None,
+            ))
+        return results
+
+    async def remove(self, note_id: str) -> None:
+        """删除指定笔记，找不到时静默忽略。"""
+        try:
+            async with self._lock:
+                await asyncio.to_thread(self.collection.delete, ids=[note_id])
+            logger.debug(f"[memory_vector] removed note_id={note_id}")
+        except Exception as exc:
+            msg = str(exc).lower()
+            if "not found" in msg or "does not exist" in msg:
+                logger.debug(f"[memory_vector] note_id={note_id} 不存在，忽略删除")
+                return
+            raise
+
+    async def rebuild(self, notes: list[dict]) -> None:
+        """全量重建：删除旧 collection，重建后逐条写入。"""
+        async with self._lock:
+            await asyncio.to_thread(
+                self._client.delete_collection, self.COLLECTION_NAME
+            )
+            self.collection = await asyncio.to_thread(
+                self._client.get_or_create_collection,
+                name=self.COLLECTION_NAME,
+                metadata={"hnsw:space": "cosine"},
+            )
+        # 逐条写入（无需额外加锁，rebuild 调用方自行保证独占）
+        for note in notes:
+            meta = dict(note.get("meta", {}))
+            meta.setdefault("access_count", 0)
+            meta.setdefault("parent_note", "")
+            await asyncio.to_thread(
+                self.collection.upsert,
+                ids=[note["note_id"]],
+                documents=[note["content"]],
+                metadatas=[meta],
+            )
+        logger.info(f"[memory_vector] rebuild 完成，共 {len(notes)} 条")
+
+    def _increment_access(self, note_id: str) -> None:
+        """同步方法：将指定笔记的 access_count +1。"""
+        try:
+            result = self.collection.get(ids=[note_id], include=["metadatas"])
+            metas = result.get("metadatas") or []
+            if not metas:
+                return
+            meta = dict(metas[0])
+            meta["access_count"] = int(meta.get("access_count", 0)) + 1
+            self.collection.update(ids=[note_id], metadatas=[meta])
+        except Exception as exc:
+            logger.debug(f"[memory_vector] _increment_access failed for {note_id}: {exc}")
+
+    def _content_overlap(self, a: str, b: str, n: int = 3) -> float:
+        """N-gram 重叠率：|交集| / min(|a_ngrams|, |b_ngrams|)。空串返回 0.0。"""
+        if not a or not b:
+            return 0.0
+        tokens_a = a.lower().split()
+        tokens_b = b.lower().split()
+        if len(tokens_a) < n or len(tokens_b) < n:
+            # 文本过短时退化为词级 Jaccard
+            set_a = set(tokens_a)
+            set_b = set(tokens_b)
+            denom = min(len(set_a), len(set_b))
+            return len(set_a & set_b) / denom if denom else 0.0
+        ngrams_a = {tuple(tokens_a[i:i + n]) for i in range(len(tokens_a) - n + 1)}
+        ngrams_b = {tuple(tokens_b[i:i + n]) for i in range(len(tokens_b) - n + 1)}
+        denom = min(len(ngrams_a), len(ngrams_b))
+        if denom == 0:
+            return 0.0
+        return len(ngrams_a & ngrams_b) / denom
