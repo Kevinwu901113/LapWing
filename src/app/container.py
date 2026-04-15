@@ -9,15 +9,8 @@ from config.settings import (
     BROWSER_ENABLED,
     DATA_DIR,
     DB_PATH,
-    EXPERIENCE_SKILLS_DIR,
-    EXPERIENCE_SKILLS_ENABLED,
     INCIDENT_ENABLED,
-    SKILL_TRACES_DIR,
-    SKILLS_BUNDLED_DIR,
-    SKILLS_ENABLED,
-    SKILLS_EXTRA_DIRS,
-    SKILLS_MANAGED_DIR,
-    SKILLS_WORKSPACE_DIR,
+    PHASE0_MODE,
 )
 from src.api.event_bus import DesktopEventBus
 from src.api.server import LocalApiServer
@@ -28,13 +21,6 @@ from src.core.consciousness import ConsciousnessEngine
 from src.core.heartbeat import HeartbeatEngine
 from src.core.reminder_scheduler import ReminderScheduler
 from src.core.latency_monitor import LatencyMonitor
-from src.heartbeat.actions.autonomous_browsing import AutonomousBrowsingAction
-from src.heartbeat.actions.compaction_check import CompactionCheckAction
-from src.heartbeat.actions.consolidation import MemoryConsolidationAction
-from src.heartbeat.actions.interest_proactive import InterestProactiveAction
-from src.heartbeat.actions.proactive import ProactiveMessageAction
-from src.heartbeat.actions.prompt_evolution import PromptEvolutionAction
-from src.heartbeat.actions.self_reflection import SelfReflectionAction
 
 logger = logging.getLogger("lapwing.app.container")
 
@@ -106,7 +92,7 @@ class AppContainer:
         await self.brain.init_db()
 
         # 浏览器子系统初始化（在依赖装配前启动，因为工具注册需要 browser_manager）
-        if BROWSER_ENABLED:
+        if BROWSER_ENABLED and not PHASE0_MODE:
             await self._init_browser()
 
         await self._configure_brain_dependencies()
@@ -121,7 +107,7 @@ class AppContainer:
 
         await self.prepare()
 
-        if send_fn is not None:
+        if send_fn is not None and not PHASE0_MODE:
             from config.settings import CONSCIOUSNESS_ENABLED, HEARTBEAT_ENABLED
 
             self.reminder_scheduler = ReminderScheduler(
@@ -129,6 +115,7 @@ class AppContainer:
                 send_fn=send_fn,
                 event_bus=self.event_bus,
             )
+            self.reminder_scheduler._brain = self.brain
             self.brain.reminder_scheduler = self.reminder_scheduler
 
             if CONSCIOUSNESS_ENABLED:
@@ -144,6 +131,8 @@ class AppContainer:
                 self.heartbeat = self._build_heartbeat(send_fn)
                 self.heartbeat.start()
                 await self.reminder_scheduler.start()
+        elif PHASE0_MODE:
+            logger.info("Phase 0 模式：跳过意识循环/心跳/提醒调度")
 
         await self.channel_manager.start_all()
 
@@ -193,10 +182,15 @@ class AppContainer:
             except Exception:
                 logger.warning("浏览器关闭异常", exc_info=True)
 
-        if self.brain.interest_tracker:
-            await self.brain.interest_tracker.shutdown()
+        # EmbeddingWorker 后台任务取消
+        import asyncio as _asyncio
+        if hasattr(self, "_embedding_task") and self._embedding_task is not None:
+            self._embedding_task.cancel()
+            try:
+                await self._embedding_task
+            except _asyncio.CancelledError:
+                pass
 
-        await self.brain.fact_extractor.shutdown()
         await self.brain.memory.close()
         from src.logging.event_logger import events, get_event_logger
         events.log("system", "shutdown", message="Lapwing 正在关闭")
@@ -205,35 +199,55 @@ class AppContainer:
         logger.info("应用容器资源清理完成")
 
     async def _configure_brain_dependencies(self) -> None:
+        if PHASE0_MODE:
+            logger.info("Phase 0 模式 (%s)：跳过大部分依赖装配", PHASE0_MODE)
+            return
+
         from src.core.knowledge_manager import KnowledgeManager
-        from src.core.skills import SkillManager
-        from src.core.self_reflection import SelfReflection
-        from src.memory.interest_tracker import InterestTracker
         from src.memory.vector_store import VectorStore
 
         self.brain.knowledge_manager = KnowledgeManager()
         self.brain.vector_store = VectorStore(self._data_dir / "chroma")
-        self.brain.skill_manager = SkillManager(
-            enabled=SKILLS_ENABLED,
-            workspace_dir=Path(SKILLS_WORKSPACE_DIR),
-            managed_dir=Path(SKILLS_MANAGED_DIR),
-            bundled_dir=Path(SKILLS_BUNDLED_DIR),
-            extra_dirs=[Path(item) for item in SKILLS_EXTRA_DIRS],
-        )
-        self.brain.skill_manager.reload()
 
-        self.brain.interest_tracker = InterestTracker(
-            memory=self.brain.memory,
-            router=self.brain.router,
-        )
-        self.brain.self_reflection = SelfReflection(
-            memory=self.brain.memory,
-            router=self.brain.router,
+        # PromptBuilder（Phase 2：4 层）
+        from src.core.prompt_builder import PromptBuilder
+        from config.settings import IDENTITY_DIR
+        self.brain.prompt_builder = PromptBuilder(
+            soul_path=IDENTITY_DIR / "soul.md",
+            constitution_path=IDENTITY_DIR / "constitution.md",
+            voice_path="lapwing_voice",
+            reminder_source=self.brain.memory,
         )
 
-        from src.core.constitution_guard import ConstitutionGuard
-        from src.core.tactical_rules import TacticalRules
-        from src.core.evolution_engine import EvolutionEngine
+        # SoulManager + soul 工具
+        from src.core.soul_manager import SoulManager
+        self._soul_manager = SoulManager(
+            soul_path=IDENTITY_DIR / "soul.md",
+            snapshot_dir=IDENTITY_DIR / "soul_snapshots",
+        )
+        from src.tools.soul_tools import register_soul_tools
+        register_soul_tools(self.brain.tool_registry, self._soul_manager)
+        # 暴露给 API server 使用
+        self.brain._soul_manager_ref = self._soul_manager
+
+        # Phase 3: 记忆树 + 向量库 + 工具
+        from src.memory.note_store import NoteStore
+        from src.memory.vector_store import MemoryVectorStore
+        note_store = NoteStore()  # 默认 data/memory/notes/
+        self.brain._note_store = note_store
+        memory_vector_store = MemoryVectorStore(persist_dir=str(self._data_dir / "chroma_memory"))
+        self.brain._memory_vector_store = memory_vector_store
+
+        # EmbeddingWorker（后台任务）
+        import asyncio
+        from src.memory.embedding_worker import EmbeddingWorker
+        embedding_worker = EmbeddingWorker(note_store, memory_vector_store)
+        self._embedding_task = asyncio.create_task(embedding_worker.run_loop(interval=60))
+
+        # 注册 Phase 3 记忆工具
+        from src.tools.memory_tools_v2 import register_memory_tools_v2
+        register_memory_tools_v2(self.brain.tool_registry)
+        logger.info("Phase 3 记忆系统已装配（NoteStore + MemoryVectorStore + 9 工具）")
 
         # Incident 管理系统（可选）
         if INCIDENT_ENABLED:
@@ -244,62 +258,6 @@ class AppContainer:
             self.brain.incident_manager = self.incident_manager
             self.brain.task_runtime.set_incident_manager(self.incident_manager)
             logger.info("Incident 管理系统已就绪")
-
-        self.brain.constitution_guard = ConstitutionGuard(self.brain.router)
-        self.brain.tactical_rules = TacticalRules(
-            self.brain.router,
-            incident_manager=self.incident_manager,
-        )
-        self.brain.evolution_engine = EvolutionEngine(
-            self.brain.router, self.brain.constitution_guard
-        )
-
-        # 经验技能系统（Lapwing 自身积累的工作经验）
-        if EXPERIENCE_SKILLS_ENABLED:
-            from src.core.experience_skills import ExperienceSkillManager
-            # 将当前注册的工具名传给 ESM，用于条件激活过滤（Pattern 2）
-            available_tools = {
-                tool.name for tool in self.brain.tool_registry.list_tools(include_internal=True)
-            }
-            esm = ExperienceSkillManager(
-                skills_dir=EXPERIENCE_SKILLS_DIR,
-                traces_dir=SKILL_TRACES_DIR,
-                router=self.brain.router,
-                available_tools=available_tools,
-            )
-            esm.ensure_directories()
-            esm.load_index()
-            self.brain.experience_skill_manager = esm
-            logger.info("经验技能系统已就绪（可用工具 %d 个）", len(available_tools))
-
-        # Session 管理系统
-        from config.settings import SESSION_ENABLED
-        if SESSION_ENABLED:
-            from src.core.session_manager import SessionManager
-            sm = SessionManager(memory=self.brain.memory, db=self.brain.memory._db)
-            await sm.init()
-            self.brain.session_manager = sm
-            # 注入到 Compactor 以支持 Session Lineage
-            self.brain.compactor._session_manager = sm
-            logger.info("Session 系统已就绪")
-
-        # 记忆索引（始终启用）
-        from src.memory.memory_index import MemoryIndex
-        self.brain.memory_index = MemoryIndex()
-        self.brain.task_runtime.set_memory_index(self.brain.memory_index)
-        logger.info("记忆索引已就绪（%d 条目）", len(self.brain.memory_index.all_entries()))
-
-        # 自动记忆提取（Wave 1）
-        from config.settings import AUTO_MEMORY_EXTRACT_ENABLED
-        if AUTO_MEMORY_EXTRACT_ENABLED:
-            from src.memory.auto_extractor import AutoMemoryExtractor
-            self.brain.auto_memory_extractor = AutoMemoryExtractor(
-                router=self.brain.router,
-                memory_index=self.brain.memory_index,
-            )
-            logger.info("自动记忆提取已就绪")
-            # 注入到 Compactor 以支持压缩前记忆冲刷
-            self.brain.compactor._auto_memory_extractor = self.brain.auto_memory_extractor
 
         # 任务流编排
         from src.core.task_flow import TaskFlowManager
@@ -357,15 +315,11 @@ class AppContainer:
 
             logger.info("Agent Team 系统已就绪（%d agents）", agent_registry.available_count)
 
-        # 回复质量检查（可选）
-        from config.settings import QUALITY_CHECK_ENABLED
-        if QUALITY_CHECK_ENABLED:
-            from src.core.quality_checker import ReplyQualityChecker
-            self.brain.quality_checker = ReplyQualityChecker(
-                router=self.brain.router,
-                incident_manager=self.incident_manager,
-            )
-            logger.info("回复质量检查已就绪")
+        # 文件快照回滚
+        from src.core.checkpoint_manager import CheckpointManager
+        checkpoint_mgr = CheckpointManager()
+        self.brain.task_runtime.set_checkpoint_manager(checkpoint_mgr)
+        logger.info("文件快照管理器已就绪")
 
         # 中间进度汇报（可选）
         from config.settings import PROGRESS_REPORT_ENABLED
@@ -385,9 +339,8 @@ class AppContainer:
     async def _init_browser(self) -> None:
         """初始化浏览器子系统组件。"""
         from src.core.browser_manager import BrowserManager
-        from src.guards.browser_guard import BrowserGuard
 
-        self._browser_guard = BrowserGuard()
+        self._browser_guard = None  # BrowserGuard 已移除（Phase 1 减法）
         self._browser_manager = BrowserManager()
         await self._browser_manager.start()
 
@@ -426,38 +379,8 @@ class AppContainer:
         logger.info("浏览器子系统已就绪")
 
     def _build_heartbeat(self, send_fn) -> HeartbeatEngine:
-        from src.heartbeat.actions.session_reaper import SessionReaperAction
+        # Phase 1: 心跳 actions 全部移除，Phase 4 会重建意识循环
         heartbeat = HeartbeatEngine(brain=self.brain, send_fn=send_fn)
-        heartbeat.registry.register(CompactionCheckAction())
-        heartbeat.registry.register(ProactiveMessageAction())
-        heartbeat.registry.register(AutonomousBrowsingAction())
-        heartbeat.registry.register(InterestProactiveAction())
-        heartbeat.registry.register(MemoryConsolidationAction())
-        heartbeat.registry.register(SelfReflectionAction())
-        heartbeat.registry.register(PromptEvolutionAction())
-        heartbeat.registry.register(SessionReaperAction())
-        # Wave 1 actions
-        from config.settings import AUTO_MEMORY_EXTRACT_ENABLED
-        if AUTO_MEMORY_EXTRACT_ENABLED:
-            from src.heartbeat.actions.auto_memory import AutoMemoryAction
-            heartbeat.registry.register(AutoMemoryAction())
-
-        # 记忆维护 + 任务通知
-        from src.heartbeat.actions.memory_maintenance import MemoryMaintenanceAction
-        from src.heartbeat.actions.task_notification import TaskNotificationAction
-        heartbeat.registry.register(MemoryMaintenanceAction())
-        heartbeat.registry.register(TaskNotificationAction())
-
-        # 系统健康监控
-        from src.heartbeat.actions.system_health import SystemHealthAction
-        heartbeat.registry.register(SystemHealthAction())
-
-        # 未完成任务恢复
-        from config.settings import TASK_RESUMPTION_ENABLED
-        if TASK_RESUMPTION_ENABLED:
-            from src.heartbeat.actions.task_resumption import TaskResumptionAction
-            heartbeat.registry.register(TaskResumptionAction())
-
         return heartbeat
 
     async def _send_notification_to_owner(self, text: str) -> None:

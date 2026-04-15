@@ -81,9 +81,9 @@ async def test_chat_tools_from_registry():
     tools = runtime.chat_tools(shell_enabled=True)
     names = {item["function"]["name"] for item in tools}
 
-    _memory_crud = {"memory_list", "memory_read", "memory_edit", "memory_delete", "memory_search"}
+    # Phase 3: 记忆工具由 container.py 注册，不在 build_default_tool_registry 中
     _schedule = {"schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"}
-    assert names == {"execute_shell", "read_file", "write_file", "web_search", "web_fetch", "image_search", "memory_note", "get_weather", "send_image", "send_proactive_message"} | _memory_crud | _schedule
+    assert names == {"execute_shell", "read_file", "write_file", "web_search", "web_fetch", "image_search", "get_weather", "send_image", "send_proactive_message"} | _schedule
 
 
 @pytest.mark.asyncio
@@ -93,9 +93,8 @@ async def test_chat_tools_excludes_web_when_disabled():
     tools = runtime.chat_tools(shell_enabled=True, web_enabled=False)
     names = {item["function"]["name"] for item in tools}
 
-    _memory_crud = {"memory_list", "memory_read", "memory_edit", "memory_delete", "memory_search"}
     _schedule = {"schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"}
-    assert names == {"execute_shell", "read_file", "write_file", "memory_note", "get_weather", "send_image", "send_proactive_message"} | _memory_crud | _schedule
+    assert names == {"execute_shell", "read_file", "write_file", "get_weather", "send_image", "send_proactive_message"} | _schedule
 
 
 @pytest.mark.asyncio

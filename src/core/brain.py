@@ -25,7 +25,6 @@ from src.core.shell_policy import (
 )
 from src.core.verifier import verify_shell_constraints_status as verify_constraints
 from src.memory.conversation import ConversationMemory
-from src.memory.fact_extractor import FactExtractor
 from src.logging.event_logger import events
 from src.tools.registry import build_default_tool_registry
 from src.tools.shell_executor import execute as execute_shell
@@ -47,16 +46,8 @@ from config.settings import (
 )
 
 if TYPE_CHECKING:
-    from src.core.skills import SkillDefinition, SkillManager
-    from src.core.experience_skills import ExperienceSkill, ExperienceSkillManager
-    from src.core.trace_recorder import SkillUsageInfo, TraceRecorder
-    from src.memory.interest_tracker import InterestTracker
-    from src.core.self_reflection import SelfReflection
     from src.core.knowledge_manager import KnowledgeManager
     from src.memory.vector_store import VectorStore
-    from src.core.constitution_guard import ConstitutionGuard
-    from src.core.tactical_rules import TacticalRules
-    from src.core.evolution_engine import EvolutionEngine
 
 logger = logging.getLogger("lapwing.core.brain")
 
@@ -105,7 +96,6 @@ class _ThinkCtx:
     effective_user_message: str
     approved_directory: str | None
     early_reply: str | None = None
-    matched_experience_skills: list | None = None  # list[ExperienceSkill]
     session_id: str | None = None
 
 
@@ -116,7 +106,15 @@ class LapwingBrain:
         self.auth_manager = AuthManager()
         self._model_config = model_config
         self.router = LLMRouter(auth_manager=self.auth_manager, model_config=model_config)
-        self.tool_registry = build_default_tool_registry()
+        from config.settings import PHASE0_MODE
+        if PHASE0_MODE == "B":
+            from src.tools.phase0_tools import build_phase0_tool_registry
+            self.tool_registry = build_phase0_tool_registry()
+        elif PHASE0_MODE == "A":
+            from src.tools.registry import ToolRegistry
+            self.tool_registry = ToolRegistry()  # 空注册表 = 0 工具
+        else:
+            self.tool_registry = build_default_tool_registry()
         self.memory = ConversationMemory(db_path)
         from config.settings import TASK_NO_ACTION_BUDGET, TASK_ERROR_BURST_THRESHOLD
         self.task_runtime = TaskRuntime(
@@ -126,29 +124,19 @@ class LapwingBrain:
             no_action_budget=TASK_NO_ACTION_BUDGET,
             error_burst_threshold=TASK_ERROR_BURST_THRESHOLD,
         )
-        self.fact_extractor = FactExtractor(self.memory, self.router)
         from src.memory.compactor import ConversationCompactor
         self.compactor = ConversationCompactor(self.memory, self.router)
-        from src.core.prompt_builder import PromptSnapshotManager
+        from src.core.prompt_builder import PromptSnapshotManager, PromptBuilder
         self._prompt_snapshot = PromptSnapshotManager()
-        self.interest_tracker: InterestTracker | None = None
-        self.self_reflection: SelfReflection | None = None
+        self.prompt_builder: PromptBuilder | None = None  # Set externally (container)
         self.knowledge_manager: KnowledgeManager | None = None
         self.vector_store: VectorStore | None = None
-        self.skill_manager: SkillManager | None = None
-        self.experience_skill_manager: ExperienceSkillManager | None = None
+        self.skill_manager = None  # SkillManager | None — Phase 3 重建
         self.event_bus = None
         self._system_prompt: str | None = None
-        self.constitution_guard: ConstitutionGuard | None = None
-        self.tactical_rules: TacticalRules | None = None
-        self.evolution_engine: EvolutionEngine | None = None
-        self.session_manager = None  # Set externally (SessionManager | None)
-        self.auto_memory_extractor = None  # Set externally (AutoMemoryExtractor | None)
         self.reminder_scheduler = None  # Set externally (ReminderScheduler | None)
         self.channel_manager = None  # Set externally (ChannelManager | None)
-        self.memory_index = None  # Set externally (MemoryIndex | None)
         self.task_flow_manager = None  # Set externally (TaskFlowManager | None)
-        self.quality_checker = None  # Set externally (ReplyQualityChecker | None)
         self.delegation_manager = None  # Set externally (DelegationManager | None)
         self.agent_registry = None  # Set externally (AgentRegistry | None)
         self.agent_dispatcher = None  # Set externally (AgentDispatcher | None)
@@ -165,20 +153,11 @@ class LapwingBrain:
     async def clear_short_term_memory(self, chat_id: str) -> None:
         """仅清除短期对话记忆。"""
         self.task_runtime.clear_chat_state(chat_id)
-        if self.session_manager is not None:
-            active = self.session_manager._get_active(chat_id)
-            if active is not None:
-                await self.session_manager.deactivate(active)
-                await self.memory.clear_session_cache(active.id)
         await self.memory.clear(chat_id)
 
     async def clear_all_memory(self, chat_id: str) -> None:
         """清除指定 chat 的长短期记忆。"""
         self.task_runtime.clear_chat_state(chat_id)
-        await self.fact_extractor.clear_chat_state(chat_id)
-        if self.interest_tracker is not None:
-            await self.interest_tracker.clear_chat_state(chat_id)
-
         await self.memory.clear_chat_all(chat_id)
 
         if self.vector_store is not None:
@@ -191,7 +170,12 @@ class LapwingBrain:
     def system_prompt(self) -> str:
         """懒加载 system prompt（核心人格 soul）。优先从 data/identity/soul.md 加载。"""
         if self._system_prompt is None:
-            if SOUL_PATH.exists():
+            from config.settings import PHASE0_MODE
+            if PHASE0_MODE:
+                from src.core.prompt_builder import build_phase0_prompt
+                self._system_prompt = build_phase0_prompt()
+                logger.info("Phase 0 模式：使用极简 prompt（soul_test + constitution_test + 时间）")
+            elif SOUL_PATH.exists():
                 self._system_prompt = SOUL_PATH.read_text(encoding="utf-8")
                 logger.info(f"已从 {SOUL_PATH} 加载 Lapwing 人格 prompt")
             else:
@@ -213,7 +197,6 @@ class LapwingBrain:
         else:
             self._system_prompt = reload_prompt("lapwing_soul")
         reload_prompt("lapwing_voice")
-        reload_prompt("lapwing_capabilities")
         self._prompt_snapshot.invalidate()
         logger.info("已重新加载所有 prompt 缓存")
 
@@ -272,8 +255,6 @@ class LapwingBrain:
             services["reminder_scheduler"] = self.reminder_scheduler
         if self.channel_manager is not None:
             services["channel_manager"] = self.channel_manager
-        if self.memory_index is not None:
-            services["memory_index"] = self.memory_index
         delegation_manager = getattr(self, "delegation_manager", None)
         if delegation_manager is not None:
             services["delegation_manager"] = delegation_manager
@@ -284,6 +265,14 @@ class LapwingBrain:
         incident_manager = getattr(self, "incident_manager", None)
         if incident_manager is not None:
             services["incident_manager"] = incident_manager
+        # Phase 3 记忆系统
+        note_store = getattr(self, "_note_store", None)
+        if note_store is not None:
+            services["note_store"] = note_store
+        memory_vector_store = getattr(self, "_memory_vector_store", None)
+        if memory_vector_store is not None:
+            services["vector_store"] = memory_vector_store
+        services["conversation_memory"] = self.memory
 
         deps = RuntimeDeps(
             execute_shell=execute_shell,
@@ -309,24 +298,44 @@ class LapwingBrain:
             resumption_context=resumption_context,
         )
 
-    async def _build_system_prompt(self, chat_id: str, user_message: str = "") -> str:
+    async def _build_system_prompt(
+        self,
+        chat_id: str,
+        user_message: str = "",
+        adapter: str = "",
+        user_id: str = "",
+        auth_level: int = 3,
+        group_id: str | None = None,
+    ) -> str:
         """按优先级分层组装 system prompt — delegates to prompt_builder."""
-        from src.core.prompt_builder import build_system_prompt
-        return await build_system_prompt(
-            system_prompt=self.system_prompt,
-            chat_id=chat_id,
-            user_message=user_message,
-            memory=self.memory,
-            vector_store=self.vector_store,
-            knowledge_manager=self.knowledge_manager,
-            skill_manager=self.skill_manager,
-            memory_index=self.memory_index,
-            agent_registry=self.agent_registry,
-        )
+        from config.settings import PHASE0_MODE
+        if PHASE0_MODE:
+            return self.system_prompt
+
+        if self.prompt_builder is not None:
+            # Phase 2：class-based PromptBuilder（4 层）
+            channel = adapter or "desktop"
+            return await self.prompt_builder.build_system_prompt(
+                channel=channel,
+                actor_id=user_id or None,
+                actor_name=None,
+                auth_level=auth_level,
+                group_id=group_id,
+            )
+
+        # fallback：极简 prompt（不应到达，但防御性保留）
+        return self.system_prompt
 
     def _inject_voice_reminder(self, messages: list[dict]) -> None:
-        from src.core.prompt_builder import inject_voice_reminder
-        inject_voice_reminder(messages)
+        from config.settings import PHASE0_MODE
+        if PHASE0_MODE:
+            return  # Phase 0：不注入 voice reminder
+        if self.prompt_builder is not None:
+            self.prompt_builder.inject_voice_reminder(messages)
+        else:
+            # fallback for tests that don't set prompt_builder
+            from src.core.prompt_builder import PromptBuilder
+            PromptBuilder().inject_voice_reminder(messages)
 
     def _schedule_conversation_end(self) -> None:
         """延迟判定对话结束。用户最后一条消息后 N 秒无新消息算结束。"""
@@ -422,10 +431,6 @@ class LapwingBrain:
     ) -> str:
         """执行用户显式技能命令。"""
         await self.memory.append(chat_id, "user", raw_user_message)
-
-        self.fact_extractor.notify(chat_id)
-        if self.interest_tracker is not None:
-            self.interest_tracker.notify(chat_id)
 
         if self.skill_manager is None or not self.skill_manager.enabled:
             reply = "技能系统当前未启用。"
@@ -578,20 +583,17 @@ class LapwingBrain:
         user_message: str,
         send_fn=None,
         images: list[dict] | None = None,
+        adapter: str = "",
+        user_id: str = "",
+        auth_level: int = 3,
+        group_id: str | None = None,
     ) -> "_ThinkCtx":
-        """共享前置逻辑：记忆写入、纠正检测、agent dispatch、context 组装。
+        """共享前置逻辑：记忆写入、trust tagging、context 组装。
 
         send_fn 非空时，immediate_reply / agent_reply 会通过它发送（用于 conversational 模式）。
         返回 _ThinkCtx；若 early_reply 非 None 则表示已完成回复，调用方直接返回该值即可。
         """
-        # Session 解析（启用时）
         session_id = None
-        if self.session_manager is not None:
-            try:
-                session = await self.session_manager.resolve_session(chat_id, user_message)
-                session_id = session.id
-            except Exception as e:
-                logger.warning(f"[{chat_id}] Session resolution failed, using legacy path: {e}")
 
         # 存储文本到记忆（图片不持久化，只在当前 LLM 调用中传递）
         stored_text = user_message
@@ -599,61 +601,54 @@ class LapwingBrain:
             img_tag = f"[用户发送了{len(images)}张图片]" if len(images) > 1 else "[用户发送了图片]"
             stored_text = f"{user_message}\n{img_tag}" if user_message.strip() else img_tag
 
-        if session_id is not None:
-            await self.memory.append_to_session(chat_id, session_id, "user", stored_text)
-        else:
-            await self.memory.append(chat_id, "user", stored_text)
-
-        self.fact_extractor.notify(chat_id)
-        if self.interest_tracker is not None:
-            self.interest_tracker.notify(chat_id)
+        await self.memory.append(chat_id, "user", stored_text)
 
         effective_user_message, approved_directory, immediate_reply = (
             self.task_runtime.resolve_pending_confirmation(chat_id, user_message)
         )
         if immediate_reply is not None:
-            if session_id is not None:
-                await self.memory.append_to_session(chat_id, session_id, "assistant", immediate_reply)
-            else:
-                await self.memory.append(chat_id, "assistant", immediate_reply)
+            await self.memory.append(chat_id, "assistant", immediate_reply)
             if send_fn is not None:
                 await send_fn(immediate_reply)
             return _ThinkCtx(messages=[], effective_user_message=effective_user_message,
                              approved_directory=approved_directory, early_reply=immediate_reply,
                              session_id=session_id)
 
-        # 实时纠正检测：异步触发规则提取，不阻塞主回复流程
-        if self.tactical_rules is not None:
-            if self.tactical_rules.might_be_correction(user_message):
-                if session_id is not None:
-                    history = await self.memory.get_session_messages(session_id)
-                else:
-                    history = await self.memory.get(chat_id)
-                asyncio.create_task(
-                    self.tactical_rules.process_correction(
-                        chat_id, user_message, list(history)
-                    )
-                )
-
         # 压缩 + 组装 messages
         await self.compactor.try_compact(chat_id, session_id=session_id)
-        if session_id is not None:
-            history = await self.memory.get_session_messages(session_id)
-        else:
-            history = await self.memory.get(chat_id)
+        history = await self.memory.get(chat_id)
         recent_messages = self._recent_messages(
             history,
             user_message=effective_user_message,
             original_user_message=user_message,
         )
+
+        # Trust tagging：在消息进入 LLM 上下文时包装（不改变 memory 中的存储）
+        from src.core.trust_tagger import TrustTagger
+        from src.core.vitals import now_taipei
+        now_str = now_taipei().isoformat()
+
+        if auth_level == 3 and adapter in ("qq", "desktop", ""):
+            # OWNER — Kevin
+            for msg in recent_messages:
+                if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+                    msg["content"] = TrustTagger.tag_kevin(
+                        msg["content"], source=adapter or "desktop", timestamp=now_str
+                    )
+        elif adapter == "qq_group":
+            trust = "trusted" if auth_level >= 2 else "guest"
+            for msg in recent_messages:
+                if msg.get("role") == "user" and isinstance(msg.get("content"), str):
+                    msg["content"] = TrustTagger.tag_group(
+                        msg["content"], sender_id=user_id, sender_name="", trust=trust
+                    )
+
         # System prompt 快照：同一 session 内复用冻结的 prompt（prefix cache 优化）
-        cached = self._prompt_snapshot.get(session_id) if session_id else None
-        if cached is not None:
-            system_content = cached
-        else:
-            system_content = await self._build_system_prompt(chat_id, effective_user_message)
-            if session_id:
-                self._prompt_snapshot.freeze(session_id, system_content)
+        system_content = await self._build_system_prompt(
+            chat_id, effective_user_message,
+            adapter=adapter, user_id=user_id,
+            auth_level=auth_level, group_id=group_id,
+        )
 
         messages = [
             {"role": "system", "content": system_content},
@@ -664,44 +659,12 @@ class LapwingBrain:
         if images:
             self._inject_images_into_last_user_message(messages, images)
 
-        # 经验技能检索与注入（Pattern 5：注入为 user message 保护 prefix cache）
-        matched_experience_skills = None
-        if self.experience_skill_manager is not None and effective_user_message:
-            try:
-                matched_experience_skills = await self.experience_skill_manager.retrieve(
-                    effective_user_message
-                )
-                if matched_experience_skills:
-                    from config.settings import EXPERIENCE_SKILLS_MAX_INJECT_TOKENS
-                    injection = self.experience_skill_manager.format_injection(
-                        matched_experience_skills,
-                        max_tokens=EXPERIENCE_SKILLS_MAX_INJECT_TOKENS,
-                    )
-                    if injection:
-                        # 注入为合成 user message（而非追加到 system prompt）
-                        # 这样 system prompt 保持稳定，provider 的 prefix cache 不失效
-                        skill_msg = {
-                            "role": "user",
-                            "content": f"[System Note]\n## 参考经验\n\n{injection}\n[/System Note]",
-                        }
-                        # 插入到用户实际消息之前（messages 末尾是用户消息）
-                        messages.insert(len(messages) - 1, skill_msg)
-                        logger.debug(
-                            "[%s] 注入 %d 个经验技能（user message）: %s",
-                            chat_id,
-                            len(matched_experience_skills),
-                            [s.meta.id for s in matched_experience_skills],
-                        )
-            except Exception as exc:
-                logger.warning("[%s] 经验技能检索失败: %s", chat_id, exc)
-
         self._inject_voice_reminder(messages)
 
         return _ThinkCtx(
             messages=messages,
             effective_user_message=effective_user_message,
             approved_directory=approved_directory,
-            matched_experience_skills=matched_experience_skills,
             session_id=session_id,
         )
 
@@ -712,20 +675,10 @@ class LapwingBrain:
     ) -> "_ThinkCtx":
         """恢复触发专用的 _prepare_think：不写入用户消息，注入恢复上下文到 system prompt。"""
         session_id = None
-        if self.session_manager is not None:
-            try:
-                active = self.session_manager._get_active(chat_id)
-                if active is not None:
-                    session_id = active.id
-            except Exception:
-                pass
 
         # 压缩 + 组装 messages（不追加新的 user 消息）
         await self.compactor.try_compact(chat_id, session_id=session_id)
-        if session_id is not None:
-            history = await self.memory.get_session_messages(session_id)
-        else:
-            history = await self.memory.get(chat_id)
+        history = await self.memory.get(chat_id)
 
         max_messages = MAX_HISTORY_TURNS * 2
         recent_messages = list(history[-max_messages:]) if len(history) > max_messages else list(history)
@@ -794,16 +747,8 @@ class LapwingBrain:
 
             # ── 后处理：reply 已生成，失败不应返回"走神了" ──
             try:
-                if ctx.session_id is not None:
-                    await self.memory.append_to_session(chat_id, ctx.session_id, "assistant", reply)
-                else:
-                    await self.memory.append(chat_id, "assistant", reply)
+                await self.memory.append(chat_id, "assistant", reply)
                 logger.debug(f"[{chat_id}] 回复生成成功，长度: {len(reply)}")
-                duration = time.monotonic() - start_time
-                self._schedule_trace_recording(user_message, reply, ctx.matched_experience_skills, duration)
-                if self.quality_checker is not None:
-                    import asyncio as _asyncio
-                    _asyncio.create_task(self._check_reply_quality(chat_id, ctx.messages, reply))
             except Exception as post_exc:
                 logger.warning(
                     "[brain] 后处理失败（回复已生成，不影响调用方）: %s",
@@ -813,10 +758,7 @@ class LapwingBrain:
 
         except Exception as e:
             logger.error(f"LLM 调用失败: {e}")
-            if ctx.session_id is not None:
-                await self.memory.remove_last_session(ctx.session_id)
-            else:
-                await self.memory.remove_last(chat_id)
+            await self.memory.remove_last(chat_id)
             # 内部调用（意识循环等）不应返回面向用户的 fallback，直接抛出让调用方处理
             if chat_id.startswith("__"):
                 raise
@@ -868,7 +810,10 @@ class LapwingBrain:
                 chat_id, metadata=metadata,
             )
         else:
-            ctx = await self._prepare_think(chat_id, user_message, send_fn=send_fn, images=images)
+            ctx = await self._prepare_think(
+                chat_id, user_message, send_fn=send_fn, images=images,
+                adapter=adapter, user_id=user_id,
+            )
         if ctx.early_reply is not None:
             self._schedule_conversation_end()  # ← ADD THIS
             return ctx.early_reply
@@ -966,21 +911,13 @@ class LapwingBrain:
             memory_text = strip_split_markers(full_reply)
             try:
                 memory_text = "\n\n".join(parts_sent) if parts_sent else memory_text
-                if ctx.session_id is not None:
-                    await self.memory.append_to_session(chat_id, ctx.session_id, "assistant", memory_text)
-                else:
-                    await self.memory.append(chat_id, "assistant", memory_text)
+                await self.memory.append(chat_id, "assistant", memory_text)
                 logger.debug(f"[{chat_id}] 流式回复完成，片段数: {len(parts_sent)}")
                 events.log("conversation", "outgoing",
                     message=memory_text[:500],
                     channel=adapter,
                     chat_id=chat_id,
                 )
-                duration = time.monotonic() - start_time
-                self._schedule_trace_recording(user_message, memory_text, ctx.matched_experience_skills, duration)
-                if self.quality_checker is not None:
-                    import asyncio as _asyncio
-                    _asyncio.create_task(self._check_reply_quality(chat_id, ctx.messages, memory_text))
                 # 背景自动回顾（每 N 轮用户消息后异步执行）
                 if not is_resumption:
                     await self._background_reviewer.maybe_review(
@@ -997,10 +934,7 @@ class LapwingBrain:
 
         except Exception as e:
             logger.error(f"LLM 调用失败（conversational）: {e}")
-            if ctx.session_id is not None:
-                await self.memory.remove_last_session(ctx.session_id)
-            else:
-                await self.memory.remove_last(chat_id)
+            await self.memory.remove_last(chat_id)
             error_msg = "抱歉，我刚才走神了一下。你能再说一次吗？"
             await send_fn(error_msg)
             return error_msg
@@ -1104,61 +1038,3 @@ class LapwingBrain:
 
         return response_text
 
-    def _schedule_trace_recording(
-        self,
-        user_message: str,
-        reply: str,
-        matched_skills: list | None,
-        duration_seconds: float,
-    ) -> None:
-        """异步（非阻塞）记录执行轨迹和更新使用统计。"""
-        if self.experience_skill_manager is None:
-            return
-
-        esm = self.experience_skill_manager
-
-        async def _record() -> None:
-            try:
-                from src.core.trace_recorder import SkillUsageInfo
-
-                skill_usage: SkillUsageInfo | None = None
-                skill_id: str | None = None
-                match_level: str | None = None
-
-                if matched_skills:
-                    # 取第一个匹配技能作为主要技能记录
-                    first = matched_skills[0]
-                    skill_id = first.meta.id
-                    match_level = "quick"  # Phase 1 简化，Phase 2 从 MatchResult 获取
-                    skill_usage = SkillUsageInfo(
-                        id=skill_id,
-                        version=first.meta.version,
-                        match_level=match_level,
-                    )
-                    # 更新技能使用统计
-                    esm.update_skill_stats(skill_id, used=True)
-
-                trace = esm.trace_recorder.build_trace(
-                    user_request=user_message,
-                    output_summary=reply,
-                    duration_seconds=duration_seconds,
-                    skill_used=skill_usage,
-                )
-                esm.trace_recorder.record_trace(trace)
-
-                esm.registry_manager.record_execution(
-                    skill_id=skill_id,
-                    match_level=match_level,
-                    request_summary=user_message[:100],
-                )
-            except Exception as exc:
-                logger.warning("轨迹记录失败: %s", exc)
-
-        asyncio.create_task(_record())
-
-    async def _check_reply_quality(self, chat_id: str, messages: list[dict], reply: str) -> None:
-        """异步回复质量检查（不阻塞主回复路径）。"""
-        try:
-            await self.quality_checker.check(messages, reply)
-        except Exception as e:
-            logger.debug("[%s] 质量检查异常: %s", chat_id, e)

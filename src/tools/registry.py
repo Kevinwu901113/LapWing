@@ -15,7 +15,6 @@ from src.tools.handlers import (
     file_list_directory_tool,
     file_read_segment_tool,
     file_write_tool,
-    memory_note_tool,
     read_file_tool,
     run_python_code_tool,
     verify_code_result_tool,
@@ -185,6 +184,91 @@ def build_default_tool_registry() -> ToolRegistry:
         )
     )
 
+    # ── 后台进程管理 ──
+    from config.settings import SHELL_ENABLED
+    if SHELL_ENABLED:
+        from src.tools.process_tools import PROCESS_EXECUTORS
+        registry.register(ToolSpec(
+            name="process_spawn",
+            description=(
+                "在后台启动一个命令，不阻塞对话。"
+                "适用于长时间运行的任务（测试、编译、服务器）。"
+                "可以设置 watch_patterns 在输出匹配时通知。"
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "要执行的 shell 命令"},
+                    "watch_patterns": {
+                        "type": "array", "items": {"type": "string"},
+                        "description": "监控模式列表。输出包含这些文本时会通知。如 ['FAILED', 'ERROR']",
+                    },
+                    "notify_on_complete": {
+                        "type": "boolean",
+                        "description": "进程完成时是否通知（默认 true）",
+                    },
+                },
+                "required": ["command"],
+            },
+            executor=PROCESS_EXECUTORS["process_spawn"],
+            capability="shell",
+            risk_level="medium",
+        ))
+        registry.register(ToolSpec(
+            name="process_status",
+            description="查询后台进程状态。不传 process_id 则列出所有运行中的进程。",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "process_id": {
+                        "type": "string",
+                        "description": "进程 ID（从 process_spawn 返回值获取）",
+                    },
+                },
+            },
+            executor=PROCESS_EXECUTORS["process_status"],
+            capability="shell",
+            risk_level="low",
+        ))
+        registry.register(ToolSpec(
+            name="process_kill",
+            description="终止一个后台进程。",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "process_id": {
+                        "type": "string",
+                        "description": "要终止的进程 ID",
+                    },
+                },
+                "required": ["process_id"],
+            },
+            executor=PROCESS_EXECUTORS["process_kill"],
+            capability="shell",
+            risk_level="medium",
+        ))
+        registry.register(ToolSpec(
+            name="process_logs",
+            description="查看后台进程的输出日志。",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "process_id": {
+                        "type": "string",
+                        "description": "进程 ID",
+                    },
+                    "tail": {
+                        "type": "integer",
+                        "description": "显示最后多少行（默认 50）",
+                    },
+                },
+                "required": ["process_id"],
+            },
+            executor=PROCESS_EXECUTORS["process_logs"],
+            capability="shell",
+            risk_level="low",
+        ))
+
     registry.register(
         ToolSpec(
             name="web_search",
@@ -319,6 +403,70 @@ def build_default_tool_registry() -> ToolRegistry:
             risk_level="low",
         )
     )
+
+    # ── 经验技能管理 ──
+    from config.settings import EXPERIENCE_SKILLS_ENABLED
+    if EXPERIENCE_SKILLS_ENABLED:
+        from src.tools.experience_skill_tools import EXPERIENCE_SKILL_EXECUTORS
+        registry.register(ToolSpec(
+            name="experience_skill_list",
+            description="列出我积累的所有经验技能——名字和简介。",
+            json_schema={"type": "object", "properties": {}},
+            executor=EXPERIENCE_SKILL_EXECUTORS["experience_skill_list"],
+            capability="skill",
+            risk_level="low",
+        ))
+        registry.register(ToolSpec(
+            name="experience_skill_view",
+            description="查看某个经验技能的完整内容，或其引用文件。",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "name": {"type": "string", "description": "技能名称或 ID"},
+                    "reference": {
+                        "type": "string",
+                        "description": "可选，引用文件的相对路径（如 references/tips.md）",
+                    },
+                },
+                "required": ["name"],
+            },
+            executor=EXPERIENCE_SKILL_EXECUTORS["experience_skill_view"],
+            capability="skill",
+            risk_level="low",
+        ))
+        registry.register(ToolSpec(
+            name="experience_skill_manage",
+            description=(
+                "管理经验技能——创建新技能、修补过时技能、或删除不需要的技能。"
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "action": {
+                        "type": "string",
+                        "enum": ["create", "patch", "delete"],
+                        "description": "操作类型",
+                    },
+                    "name": {"type": "string", "description": "技能名称"},
+                    "content": {
+                        "type": "string",
+                        "description": "create 时必需：完整 SKILL.md 内容（含 frontmatter）",
+                    },
+                    "old_text": {
+                        "type": "string",
+                        "description": "patch 时必需：要替换的旧文本",
+                    },
+                    "new_text": {
+                        "type": "string",
+                        "description": "patch 时必需：替换后的新文本",
+                    },
+                },
+                "required": ["action", "name"],
+            },
+            executor=EXPERIENCE_SKILL_EXECUTORS["experience_skill_manage"],
+            capability="skill",
+            risk_level="medium",
+        ))
 
     registry.register(
         ToolSpec(
@@ -474,35 +622,7 @@ def build_default_tool_registry() -> ToolRegistry:
         )
     )
 
-    registry.register(
-        ToolSpec(
-            name="memory_note",
-            description=(
-                "记下重要的事情。当你觉得对话中有值得记住的信息时使用。"
-                "target='kevin' 记录关于他的事（偏好、经历、重要信息）。"
-                "target='self' 记录你自己的想法和感受。"
-                "不需要每句话都记，只记真正重要的。"
-            ),
-            json_schema={
-                "type": "object",
-                "properties": {
-                    "target": {
-                        "type": "string",
-                        "enum": ["kevin", "self"],
-                        "description": "写入目标：kevin=关于他的事，self=你自己的想法",
-                    },
-                    "content": {
-                        "type": "string",
-                        "description": "要记下的内容，用自然的语言写",
-                    },
-                },
-                "required": ["target", "content"],
-            },
-            executor=memory_note_tool,
-            capability="memory",
-            risk_level="low",
-        )
-    )
+    # memory_note 已被 Phase 3 的 write_note 替代（register_memory_tools_v2）
 
     registry.register(
         ToolSpec(
@@ -524,87 +644,8 @@ def build_default_tool_registry() -> ToolRegistry:
         )
     )
 
-    # ── Memory CRUD（Wave 1）──
-    from config.settings import MEMORY_CRUD_ENABLED, SELF_SCHEDULE_ENABLED
-    if MEMORY_CRUD_ENABLED:
-        from src.tools.memory_crud import MEMORY_CRUD_EXECUTORS
-        registry.register(ToolSpec(
-            name="memory_list",
-            description="列出记忆目录中的所有文件。用于了解自己记住了什么、记忆是怎么组织的。",
-            json_schema={
-                "type": "object",
-                "properties": {
-                    "directory": {
-                        "type": "string",
-                        "description": "要列出的子目录，默认整个记忆目录。例如: 'kevin_fact'",
-                        "default": "",
-                    },
-                },
-            },
-            executor=MEMORY_CRUD_EXECUTORS["memory_list"],
-            capability="memory",
-            risk_level="low",
-        ))
-        registry.register(ToolSpec(
-            name="memory_read",
-            description="读取一个记忆文件的内容（带行号）。用于回顾之前记录的信息、检查记忆是否准确。",
-            json_schema={
-                "type": "object",
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "文件路径（相对于 data/memory/）。例如: 'KEVIN.md' 或 'kevin_fact/preferences.md'",
-                    },
-                },
-                "required": ["path"],
-            },
-            executor=MEMORY_CRUD_EXECUTORS["memory_read"],
-            capability="memory",
-            risk_level="low",
-        ))
-        registry.register(ToolSpec(
-            name="memory_edit",
-            description="编辑记忆文件中的内容（精确查找替换）。用于更新过时的信息、纠正错误。old_text 必须精确匹配。",
-            json_schema={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "文件路径（相对于 data/memory/）"},
-                    "old_text": {"type": "string", "description": "要替换的原文（必须精确匹配）"},
-                    "new_text": {"type": "string", "description": "替换后的新文本"},
-                },
-                "required": ["path", "old_text", "new_text"],
-            },
-            executor=MEMORY_CRUD_EXECUTORS["memory_edit"],
-            capability="memory",
-            risk_level="medium",
-        ))
-        registry.register(ToolSpec(
-            name="memory_delete",
-            description="删除记忆文件或文件中的特定内容。用于清理过时的、错误的记忆。不提供 text_to_remove 则删除整个文件。",
-            json_schema={
-                "type": "object",
-                "properties": {
-                    "path": {"type": "string", "description": "文件路径（相对于 data/memory/）"},
-                    "text_to_remove": {"type": "string", "description": "要从文件中删除的特定文本。不提供则删除整个文件。"},
-                },
-                "required": ["path"],
-            },
-            executor=MEMORY_CRUD_EXECUTORS["memory_delete"],
-            capability="memory",
-            risk_level="medium",
-        ))
-        registry.register(ToolSpec(
-            name="memory_search",
-            description="在所有记忆文件中搜索包含关键词的内容。用于查找之前记录的特定信息。",
-            json_schema={
-                "type": "object",
-                "properties": {"keyword": {"type": "string", "description": "搜索关键词"}},
-                "required": ["keyword"],
-            },
-            executor=MEMORY_CRUD_EXECUTORS["memory_search"],
-            capability="memory",
-            risk_level="low",
-        ))
+    # memory_crud (memory_list/read/edit/delete/search) 已被 Phase 3 工具替代
+    from config.settings import SELF_SCHEDULE_ENABLED
 
     # ── 对话历史全文搜索（FTS5）──
     from src.tools.session_search import session_search_executor
@@ -718,6 +759,14 @@ def build_default_tool_registry() -> ToolRegistry:
                     "interval_minutes": {
                         "type": "integer",
                         "description": "仅 interval 类型：间隔多少分钟。如「每隔2小时」填 120，「每隔30分钟」填 30",
+                    },
+                    "execution_mode": {
+                        "type": "string",
+                        "enum": ["notify", "agent"],
+                        "description": (
+                            "notify=发送提醒文本（默认）; agent=执行任务并发送结果。"
+                            "比如「每天查天气」「查道奇比赛」用 agent，「5分钟后叫我」用 notify。"
+                        ),
                     },
                 },
                 "required": ["content", "trigger_type"],
@@ -848,7 +897,7 @@ def build_default_tool_registry() -> ToolRegistry:
         name="report_incident",
         description=(
             "报告一个你发现的问题或失败。当你注意到自己犯了错、某个工具反复失败、"
-            "或者某个能力有缺陷时使用。不是用来记录普通记忆的——普通记忆用 memory_note。"
+            "或者某个能力有缺陷时使用。不是用来记录普通记忆的——普通记忆用 write_note。"
             "这个工具专门用于你觉得需要调查和修复的问题。"
         ),
         json_schema={
