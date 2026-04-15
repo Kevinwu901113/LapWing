@@ -33,14 +33,15 @@ class ConversationMemory:
     - DB 操作失败只记录日志，不影响当前会话
     """
 
+    ACTIVE_WINDOW_DAYS = 1
+    RECENT_ARCHIVE_DAYS = 7
+
     def __init__(self, db_path: Path):
         self._db_path = db_path
         self._store: dict[str, list[dict]] = {}
         self._session_store: dict[str, list[dict]] = {}  # key = session_id
         self._db: aiosqlite.Connection | None = None
         # Domain repositories (initialized in init_db)
-        self._facts: "UserFactsRepository | None" = None
-        self._discoveries: "DiscoveryRepository | None" = None
         self._todos: "TodoRepository | None" = None
         self._reminders_repo: "ReminderRepository | None" = None
 
@@ -52,12 +53,8 @@ class ConversationMemory:
         await self._create_tables()
         await self._load_recent_history()
         # Initialize domain repositories
-        from src.memory.user_facts import UserFactsRepository
-        from src.memory.discoveries import DiscoveryRepository
         from src.memory.todos import TodoRepository
         from src.memory.reminders import ReminderRepository
-        self._facts = UserFactsRepository(self._db)
-        self._discoveries = DiscoveryRepository(self._db)
         self._todos = TodoRepository(self._db)
         self._reminders_repo = ReminderRepository(self._db)
         logger.info(f"对话记忆已初始化（SQLite 模式），数据库: {self._db_path}")
@@ -187,6 +184,15 @@ class ConversationMemory:
         except Exception:
             pass  # Column already exists
 
+        # Migration: add execution_mode column to reminders if missing
+        try:
+            await self._db.execute(
+                "ALTER TABLE reminders ADD COLUMN execution_mode TEXT DEFAULT 'notify'"
+            )
+            await self._db.commit()
+        except Exception:
+            pass  # Column already exists
+
         # Sessions table
         await self._db.executescript("""
             CREATE TABLE IF NOT EXISTS sessions (
@@ -215,6 +221,18 @@ class ConversationMemory:
             col_name = col.split()[0]
             try:
                 await self._db.execute(f"ALTER TABLE sessions ADD COLUMN {col}")
+                await self._db.commit()
+            except Exception:
+                pass  # Column already exists
+
+        # Phase 1 Migration: conversations 新增 source / trust_level / actor_id
+        for col in (
+            "source TEXT DEFAULT 'qq'",
+            "trust_level INTEGER DEFAULT 3",
+            "actor_id TEXT",
+        ):
+            try:
+                await self._db.execute(f"ALTER TABLE conversations ADD COLUMN {col}")
                 await self._db.commit()
             except Exception:
                 pass  # Column already exists
@@ -412,7 +430,11 @@ class ConversationMemory:
             logger.error(f"获取对话消息失败: {e}")
             return []
 
-    async def append(self, channel_id: str, role: str, content: str, *, channel: str = "qq") -> None:
+    async def append(
+        self, channel_id: str, role: str, content: str, *,
+        channel: str = "qq", source: str = "qq",
+        trust_level: int = 3, actor_id: str | None = None,
+    ) -> None:
         """追加一条消息到对话历史（先写缓存，再持久化）。"""
         if channel_id not in self._store:
             self._store[channel_id] = []
@@ -421,8 +443,8 @@ class ConversationMemory:
         try:
             timestamp = datetime.now(timezone.utc).isoformat()
             cursor = await self._db.execute(
-                "INSERT INTO conversations (chat_id, role, content, timestamp, channel) VALUES (?, ?, ?, ?, ?)",
-                (channel_id, role, content, timestamp, channel),
+                "INSERT INTO conversations (chat_id, role, content, timestamp, channel, source, trust_level, actor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (channel_id, role, content, timestamp, channel, source, trust_level, actor_id),
             )
             await self._db.commit()
             # 同步 FTS 索引
@@ -549,9 +571,6 @@ class ConversationMemory:
         self._store.pop(channel_id, None)
         tables = (
             "conversations",
-            "user_facts",
-            "discoveries",
-            "interest_topics",
             "todos",
             "reminders",
         )
@@ -576,6 +595,42 @@ class ConversationMemory:
         except Exception as e:
             logger.error(f"清除所有记忆失败: {e}")
 
+    async def get_active(self, chat_id: str, limit: int = 30) -> list[dict]:
+        """获取活跃对话（最近 1 天）用于上下文注入，按时间正序返回。"""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=self.ACTIVE_WINDOW_DAYS)).isoformat()
+        try:
+            async with self._db.execute(
+                "SELECT role, content, timestamp FROM conversations "
+                "WHERE chat_id = ? AND timestamp > ? ORDER BY timestamp DESC LIMIT ?",
+                (chat_id, cutoff, limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            return [
+                {"role": row[0], "content": row[1], "timestamp": row[2]}
+                for row in reversed(rows)
+            ]
+        except Exception as e:
+            logger.error(f"get_active 查询失败: {e}")
+            return []
+
+    async def search_deep_archive(self, chat_id: str, query: str, limit: int = 10) -> list[dict]:
+        """在深度归档（7 天前）中按关键词搜索对话，按时间倒序返回。"""
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=self.RECENT_ARCHIVE_DAYS)).isoformat()
+        try:
+            async with self._db.execute(
+                "SELECT role, content, timestamp FROM conversations "
+                "WHERE chat_id = ? AND timestamp < ? AND content LIKE ? ORDER BY timestamp DESC LIMIT ?",
+                (chat_id, cutoff, f"%{query}%", limit),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            return [
+                {"role": row[0], "content": row[1], "timestamp": row[2]}
+                for row in rows
+            ]
+        except Exception as e:
+            logger.error(f"search_deep_archive 查询失败: {e}")
+            return []
+
     async def close(self) -> None:
         """关闭数据库连接。"""
         if self._db:
@@ -584,43 +639,6 @@ class ConversationMemory:
             logger.info("数据库连接已关闭")
 
     # ===== Facade delegation to domain repositories =====
-
-    async def get_user_facts(self, chat_id: str) -> list[dict]:
-        return await self._facts.get_user_facts(chat_id)
-
-    async def set_user_fact(self, chat_id: str, fact_key: str, fact_value: str) -> None:
-        return await self._facts.set_user_fact(chat_id, fact_key, fact_value)
-
-    async def delete_user_fact(self, chat_id: str, fact_key: str) -> bool:
-        return await self._facts.delete_user_fact(chat_id, fact_key)
-
-    async def get_all_chat_ids(self) -> list[str]:
-        return await self._facts.get_all_chat_ids()
-
-    async def get_last_interaction(self, chat_id: str) -> datetime | None:
-        return await self._facts.get_last_interaction(chat_id)
-
-
-    async def add_discovery(self, chat_id: str, source: str, title: str, summary: str, url: str | None = None) -> None:
-        return await self._discoveries.add_discovery(chat_id, source, title, summary, url)
-
-    async def get_unshared_discoveries(self, chat_id: str, limit: int = 5) -> list[dict]:
-        return await self._discoveries.get_unshared_discoveries(chat_id, limit)
-
-    async def mark_discovery_shared(self, discovery_id: int) -> None:
-        return await self._discoveries.mark_discovery_shared(discovery_id)
-
-    async def bump_interest(self, chat_id: str, topic: str, increment: float = 1.0) -> None:
-        return await self._discoveries.bump_interest(chat_id, topic, increment)
-
-    async def get_top_interests(self, chat_id: str, limit: int = 10) -> list[dict]:
-        return await self._discoveries.get_top_interests(chat_id, limit)
-
-    async def get_conversations_for_date(self, chat_id: str, date_str: str) -> list[dict]:
-        return await self._discoveries.get_conversations_for_date(chat_id, date_str)
-
-    async def decay_interests(self, chat_id: str, factor: float = 0.95) -> None:
-        return await self._discoveries.decay_interests(chat_id, factor)
 
     async def add_todo(self, chat_id: str, content: str, due_date: str | None = None) -> int:
         return await self._todos.add_todo(chat_id, content, due_date)
