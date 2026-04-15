@@ -52,3 +52,102 @@ class TestRead:
 
     def test_read_nonexistent(self, note_store):
         assert note_store.read("nonexistent_id") is None
+
+
+class TestEdit:
+    def test_edit_updates_content(self, note_store):
+        written = note_store.write(content="original")
+        result = note_store.edit(written["note_id"], "updated content")
+        assert result["success"] is True
+        read_back = note_store.read(written["note_id"])
+        assert read_back["content"] == "updated content"
+
+    def test_edit_updates_timestamp(self, note_store):
+        written = note_store.write(content="original")
+        read1 = note_store.read(written["note_id"])
+        original_updated = read1["meta"]["updated_at"]
+        import time; time.sleep(0.01)
+        note_store.edit(written["note_id"], "changed")
+        read2 = note_store.read(written["note_id"])
+        assert read2["meta"]["updated_at"] != original_updated
+
+    def test_edit_sets_embedding_pending(self, note_store):
+        written = note_store.write(content="original")
+        note_store.mark_embedded(written["file_path"], "v1")
+        note_store.edit(written["note_id"], "changed")
+        read_back = note_store.read(written["note_id"])
+        assert read_back["meta"]["embedding_version"] == "pending"
+
+    def test_edit_nonexistent(self, note_store):
+        result = note_store.edit("fake_id", "content")
+        assert result["success"] is False
+
+
+class TestListNotes:
+    def test_list_root(self, note_store):
+        note_store.write(content="a")
+        note_store.write(content="b", path="sub")
+        entries = note_store.list_notes()
+        names = [e["name"] for e in entries]
+        assert any(e["type"] == "file" for e in entries)
+        assert "sub" in names
+
+    def test_list_subdir(self, note_store):
+        note_store.write(content="in sub", path="people")
+        entries = note_store.list_notes("people")
+        assert len(entries) == 1
+        assert entries[0]["type"] == "file"
+
+    def test_list_empty(self, note_store):
+        assert note_store.list_notes("nonexistent") == []
+
+
+class TestMove:
+    def test_move_to_new_dir(self, note_store):
+        written = note_store.write(content="movable")
+        result = note_store.move(written["note_id"], "archive")
+        assert result["success"] is True
+        assert "archive" in result["new_path"]
+        assert note_store.read(result["new_path"]) is not None
+
+    def test_move_nonexistent(self, note_store):
+        result = note_store.move("fake_id", "archive")
+        assert result["success"] is False
+
+
+class TestSearchKeyword:
+    def test_keyword_found(self, note_store):
+        note_store.write(content="Kevin likes dark roast coffee")
+        results = note_store.search_keyword("coffee")
+        assert len(results) == 1
+        assert "coffee" in results[0]["snippet"].lower()
+
+    def test_keyword_case_insensitive(self, note_store):
+        note_store.write(content="UPPERCASE WORD")
+        results = note_store.search_keyword("uppercase")
+        assert len(results) == 1
+
+    def test_keyword_not_found(self, note_store):
+        note_store.write(content="something else")
+        assert note_store.search_keyword("nonexistent") == []
+
+    def test_keyword_limit(self, note_store):
+        for i in range(5):
+            note_store.write(content=f"match keyword here {i}")
+        results = note_store.search_keyword("keyword", limit=3)
+        assert len(results) == 3
+
+
+class TestEmbeddingHelpers:
+    def test_get_all_for_embedding(self, note_store):
+        note_store.write(content="pending note")
+        pending = note_store.get_all_for_embedding()
+        assert len(pending) == 1
+        assert pending[0]["meta"]["embedding_version"] == "pending"
+
+    def test_mark_embedded(self, note_store):
+        written = note_store.write(content="to embed")
+        note_store.mark_embedded(written["file_path"], "v1")
+        read_back = note_store.read(written["note_id"])
+        assert read_back["meta"]["embedding_version"] == "v1"
+        assert note_store.get_all_for_embedding() == []
