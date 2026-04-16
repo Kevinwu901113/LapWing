@@ -4,6 +4,9 @@ import type { AgentMessage } from "@/types/tasks-v2";
 import type { PermissionsResponse, PermissionDefaultsResponse } from "@/types/permissions";
 import type { ModelRoutingConfig } from "@/types/models";
 import type { SSEEvent } from "@/types/events";
+import type { NoteTreeEntry, NoteContent, NoteSearchResult } from "@/types/notes";
+import type { IdentityFile, SoulSnapshot, SoulDiff } from "@/types/identity";
+import type { SystemInfo, SystemEvent } from "@/types/system";
 import { getApiBase, getAuthHeaders } from "./api";
 
 async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
@@ -88,19 +91,50 @@ export const getPermissionDefaults = () =>
 
 // ── System v2 ──
 export const getSystemInfo = () =>
-  fetchJson<{
-    uptime_seconds: number;
-    cpu_percent: number;
-    memory: { total: number; available: number; percent: number };
-    disk: { total: number; free: number; percent: number };
-    channels: Record<string, string | boolean>;
-    consciousness?: { current_interval: number | null; idle_streak: number; next_tick_at: string | null };
-  }>("/api/v2/system/info");
+  fetchJson<SystemInfo>("/api/v2/system/info");
 
 export const getSystemEvents = (params?: { event_type?: string; task_id?: string; limit?: number }) => {
   const search = new URLSearchParams();
   if (params?.event_type) search.set("event_type", params.event_type);
   if (params?.task_id) search.set("task_id", params.task_id);
   if (params?.limit) search.set("limit", String(params.limit));
-  return fetchJson<{ events: SSEEvent[] }>(`/api/v2/system/events?${search}`);
+  return fetchJson<{ events: SystemEvent[] }>(`/api/v2/system/events?${search}`);
 };
+
+// ── Notes v2 ──
+export const getNotesTree = (path = "") =>
+  fetchJson<{ path: string; entries: NoteTreeEntry[] }>(`/api/v2/notes/tree?path=${encodeURIComponent(path)}`);
+
+export const getNoteContent = (params: { note_id?: string; path?: string }) => {
+  const search = new URLSearchParams();
+  if (params.note_id) search.set("note_id", params.note_id);
+  if (params.path) search.set("path", params.path);
+  return fetchJson<NoteContent>(`/api/v2/notes/content?${search}`);
+};
+
+export const searchNotes = (q: string, limit = 20) =>
+  fetchJson<{ query: string; results: NoteSearchResult[] }>(`/api/v2/notes/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+
+export const recallNotes = (q: string, topK = 10) =>
+  fetchJson<{ query: string; results: NoteSearchResult[] }>(`/api/v2/notes/recall?q=${encodeURIComponent(q)}&top_k=${topK}`);
+
+// ── Identity v2 ──
+export const getIdentityFile = (filename: string) =>
+  fetchJson<IdentityFile>(`/api/v2/identity/${encodeURIComponent(filename)}`);
+
+export const updateIdentityFile = (filename: string, content: string) =>
+  fetchJson<{ success: boolean; reason?: string }>(`/api/v2/identity/${encodeURIComponent(filename)}`, {
+    method: "PUT",
+    body: JSON.stringify({ content }),
+  });
+
+export const getSoulHistory = () =>
+  fetchJson<{ snapshots: SoulSnapshot[] }>("/api/v2/identity/soul/history");
+
+export const getSoulDiff = (snapshotId: string) =>
+  fetchJson<SoulDiff>(`/api/v2/identity/soul/diff/${encodeURIComponent(snapshotId)}`);
+
+export const rollbackSoul = (snapshotId: string) =>
+  fetchJson<{ success: boolean; reason?: string }>(`/api/v2/identity/soul/rollback/${encodeURIComponent(snapshotId)}`, {
+    method: "POST",
+  });
