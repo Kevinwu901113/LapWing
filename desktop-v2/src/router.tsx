@@ -5,7 +5,7 @@ import SettingsPage from "@/pages/SettingsPage";
 
 // P3-P6 pages — use existing pages as placeholders for now
 import NotesPage from "@/pages/NotesPage";
-import PersonaPage from "@/pages/PersonaPage";
+import IdentityPage from "@/pages/IdentityPage";
 import DashboardPage from "@/pages/DashboardPage";
 
 export const router = createBrowserRouter([
@@ -16,7 +16,7 @@ export const router = createBrowserRouter([
       { index: true, element: <Navigate to="/chat" replace /> },
       { path: "chat", element: <ChatPage /> },
       { path: "notes", element: <NotesPage /> },
-      { path: "identity", element: <PersonaPage /> },
+      { path: "identity", element: <IdentityPage /> },
       { path: "system", element: <DashboardPage /> },
       { path: "settings", element: <SettingsPage /> },
     ],
