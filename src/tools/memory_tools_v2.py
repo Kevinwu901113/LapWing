@@ -314,7 +314,7 @@ async def get_context_executor(req: ToolExecutionRequest, ctx: ToolExecutionCont
     conversation_memory = ctx.services.get("conversation_memory")
     if conversation_memory is not None and ctx.chat_id:
         try:
-            recent_messages = await conversation_memory.search_deep_archive(ctx.chat_id, "", limit=5)
+            recent_messages = await conversation_memory.get_active(ctx.chat_id, limit=5)
         except Exception:
             pass
     sections["recent_messages"] = recent_messages

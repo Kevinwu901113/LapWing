@@ -31,6 +31,9 @@ async def _execute_schedule_task(
     args = request.arguments
     content = str(args.get("content", "")).strip()
     trigger_type = str(args.get("trigger_type", "")).strip()
+    execution_mode = str(args.get("execution_mode", "notify")).strip()
+    if execution_mode not in ("notify", "agent"):
+        execution_mode = "notify"
 
     if not content:
         return ToolExecutionResult(
@@ -136,6 +139,7 @@ async def _execute_schedule_task(
         weekday=weekday,
         time_of_day=time_of_day,
         interval_minutes=interval_minutes,
+        execution_mode=execution_mode,
     )
 
     if not reminder_id:
@@ -154,6 +158,7 @@ async def _execute_schedule_task(
             next_trigger_at=next_trigger,
             recurrence_type=recurrence_type,
             interval_minutes=interval_minutes,
+            execution_mode=execution_mode,
         )
 
     time_desc = _human_readable_time(trigger_type, args, next_trigger)

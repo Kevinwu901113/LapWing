@@ -27,6 +27,7 @@ class ReminderRepository:
         weekday: int | None = None,
         time_of_day: str | None = None,
         interval_minutes: int | None = None,
+        execution_mode: str | None = None,
     ) -> int:
         try:
             normalized_content = str(content).strip()
@@ -62,12 +63,15 @@ class ReminderRepository:
                 if next_dt <= now:
                     next_dt = self._advance_to_future(next_dt, recurrence, now)
 
+            normalized_mode = execution_mode if execution_mode in ("notify", "agent") else "notify"
+
             created_at = now.isoformat()
             cursor = await self._db.execute(
                 """INSERT INTO reminders (
                        chat_id, content, recurrence_type, next_trigger_at,
-                       weekday, time_of_day, interval_minutes, active, created_at
-                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?)""",
+                       weekday, time_of_day, interval_minutes, active, created_at,
+                       execution_mode
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)""",
                 (
                     chat_id,
                     normalized_content,
@@ -77,6 +81,7 @@ class ReminderRepository:
                     normalized_time,
                     normalized_interval,
                     created_at,
+                    normalized_mode,
                 ),
             )
             await self._db.commit()
@@ -90,14 +95,14 @@ class ReminderRepository:
             if include_inactive:
                 query = (
                     "SELECT id, chat_id, content, recurrence_type, next_trigger_at, "
-                    "weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at, interval_minutes "
+                    "weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at, interval_minutes, execution_mode "
                     "FROM reminders WHERE chat_id = ? "
                     "ORDER BY active DESC, next_trigger_at ASC, id ASC"
                 )
             else:
                 query = (
                     "SELECT id, chat_id, content, recurrence_type, next_trigger_at, "
-                    "weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at, interval_minutes "
+                    "weekday, time_of_day, active, created_at, last_triggered_at, cancelled_at, interval_minutes, execution_mode "
                     "FROM reminders WHERE chat_id = ? AND active = 1 "
                     "ORDER BY next_trigger_at ASC, id ASC"
                 )
@@ -323,4 +328,8 @@ class ReminderRepository:
         }
         if len(row) > 11:
             result["interval_minutes"] = row[11]
+        if len(row) > 12:
+            result["execution_mode"] = row[12] or "notify"
+        else:
+            result["execution_mode"] = "notify"
         return result

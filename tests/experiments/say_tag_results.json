@@ -1,0 +1,562 @@
+[
+  {
+    "case": "案例 1: 简单查询 — <say> + 调工具",
+    "run": 1,
+    "passed": true,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [
+      {
+        "name": "web_search",
+        "args": {
+          "query": "道奇明天比赛时间 2025"
+        }
+      }
+    ],
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 1: 简单查询 — <say> + 调工具",
+    "run": 2,
+    "passed": true,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [
+      {
+        "name": "web_search",
+        "args": {
+          "query": "洛杉矶道奇明天比赛时间 2025"
+        }
+      }
+    ],
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 1: 简单查询 — <say> + 调工具",
+    "run": 3,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6bde54050d46461b010f9396dedc'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6bde54050d46461b010f9396dedc'}"
+  },
+  {
+    "case": "案例 1: 简单查询 — <say> + 调工具",
+    "run": 4,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6be462a7ab2d18ca4c05e54f9c39'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6be462a7ab2d18ca4c05e54f9c39'}"
+  },
+  {
+    "case": "案例 1: 简单查询 — <say> + 调工具",
+    "run": 5,
+    "passed": true,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [
+      {
+        "name": "web_search",
+        "args": {
+          "query": "洛杉矶道奇队 明天比赛时间 2024"
+        }
+      }
+    ],
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 2: 第二轮 — 拿到结果后直接回复",
+    "run": 1,
+    "passed": true,
+    "text": "<say>明天（4月17日）道奇主场对洛基，6:40 PM PT，Glasnow先发~</say>",
+    "say_parts": [
+      "明天（4月17日）道奇主场对洛基，6:40 PM PT，Glasnow先发~"
+    ],
+    "tool_calls": [],
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 2: 第二轮 — 拿到结果后直接回复",
+    "run": 2,
+    "passed": true,
+    "text": "明天道奇晚上 **6:40 PM PT** 对阵洛基队，先发是 Glasnow。",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 2: 第二轮 — 拿到结果后直接回复",
+    "run": 3,
+    "passed": true,
+    "text": "<say>查到了</say>\n\n明天（4月17日 周五）道奇主场对洛基，Glasnow 先发，开球时间 **晚上6:40 PT**。",
+    "say_parts": [
+      "查到了"
+    ],
+    "tool_calls": [],
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 2: 第二轮 — 拿到结果后直接回复",
+    "run": 4,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6c24c275e38662d85b4d72f6fdae'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6c24c275e38662d85b4d72f6fdae'}"
+  },
+  {
+    "case": "案例 2: 第二轮 — 拿到结果后直接回复",
+    "run": 5,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6c296648a477c43745e355e9c0f1'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6c296648a477c43745e355e9c0f1'}"
+  },
+  {
+    "case": "案例 3: 极简查询 — 可以静默调工具",
+    "run": 1,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6c2f353bbd704cfebbd1b4c9f1d3'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6c2f353bbd704cfebbd1b4c9f1d3'}"
+  },
+  {
+    "case": "案例 3: 极简查询 — 可以静默调工具",
+    "run": 2,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6c357b06610d9bebc8f398fca076'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6c357b06610d9bebc8f398fca076'}"
+  },
+  {
+    "case": "案例 3: 极简查询 — 可以静默调工具",
+    "run": 3,
+    "passed": true,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [
+      {
+        "name": "web_search",
+        "args": {
+          "query": "现在温度多少度"
+        }
+      }
+    ],
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 3: 极简查询 — 可以静默调工具",
+    "run": 4,
+    "passed": true,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [
+      {
+        "name": "web_search",
+        "args": {
+          "query": "现在温度多少度"
+        }
+      }
+    ],
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 3: 极简查询 — 可以静默调工具",
+    "run": 5,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 500 - {'type': 'error', 'error': {'type': 'api_error', 'message': 'unknown error, 520 (1000)'}, 'request_id': '062e6c5b50ec6c09951c0d0a5a06a760'}"
+    ],
+    "error": "Error code: 500 - {'type': 'error', 'error': {'type': 'api_error', 'message': 'unknown error, 520 (1000)'}, 'request_id': '062e6c5b50ec6c09951c0d0a5a06a760'}"
+  },
+  {
+    "case": "案例 4: 纯聊天 — 无 <say> 标签",
+    "run": 1,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6c6116382d833f68a41444a2f0eb'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6c6116382d833f68a41444a2f0eb'}"
+  },
+  {
+    "case": "案例 4: 纯聊天 — 无 <say> 标签",
+    "run": 2,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6c678efe57a3a64605a7e48e1d39'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6c678efe57a3a64605a7e48e1d39'}"
+  },
+  {
+    "case": "案例 4: 纯聊天 — 无 <say> 标签",
+    "run": 3,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6c6c84cc26bd46e4b77205375899'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6c6c84cc26bd46e4b77205375899'}"
+  },
+  {
+    "case": "案例 4: 纯聊天 — 无 <say> 标签",
+    "run": 4,
+    "passed": false,
+    "text": "<say>怎么啦，今天工作很辛苦吗？</say>\n\n要不要我给你倒杯水，或者陪你看点什么放松一下？ 💕",
+    "say_parts": [
+      "怎么啦，今天工作很辛苦吗？"
+    ],
+    "tool_calls": [],
+    "failures": [
+      "纯聊天不应该用 <say>: ['怎么啦，今天工作很辛苦吗？']"
+    ],
+    "error": null
+  },
+  {
+    "case": "案例 4: 纯聊天 — 无 <say> 标签",
+    "run": 5,
+    "passed": false,
+    "text": "<say>怎么啦，是不是工作太辛苦了？</say>",
+    "say_parts": [
+      "怎么啦，是不是工作太辛苦了？"
+    ],
+    "tool_calls": [],
+    "failures": [
+      "纯聊天不应该用 <say>: ['怎么啦，是不是工作太辛苦了？']"
+    ],
+    "error": null
+  },
+  {
+    "case": "案例 5: 复杂任务 — 开头 <say> 一句",
+    "run": 1,
+    "passed": true,
+    "text": "<say>好的，我去搜一下最新的RAG论文</say>\n",
+    "say_parts": [
+      "好的，我去搜一下最新的RAG论文"
+    ],
+    "tool_calls": [
+      {
+        "name": "web_search",
+        "args": {
+          "query": "RAG retrieval augmented generation 2026 latest papers"
+        }
+      },
+      {
+        "name": "web_search",
+        "args": {
+          "query": "RAG 2026 research paper arXiv"
+        }
+      }
+    ],
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 5: 复杂任务 — 开头 <say> 一句",
+    "run": 2,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [
+      {
+        "name": "web_search",
+        "args": {
+          "query": "RAG Retrieval Augmented Generation 2026 latest papers"
+        }
+      },
+      {
+        "name": "web_search",
+        "args": {
+          "query": "2026 RAG research paper arxiv"
+        }
+      }
+    ],
+    "failures": [
+      "复杂任务开头应该 <say> 一句"
+    ],
+    "error": null
+  },
+  {
+    "case": "案例 5: 复杂任务 — 开头 <say> 一句",
+    "run": 3,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6cd3bf4d1793414a8b9924eeed19'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6cd3bf4d1793414a8b9924eeed19'}"
+  },
+  {
+    "case": "案例 5: 复杂任务 — 开头 <say> 一句",
+    "run": 4,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6cd96747318dd19bc77efcc0d13b'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6cd96747318dd19bc77efcc0d13b'}"
+  },
+  {
+    "case": "案例 5: 复杂任务 — 开头 <say> 一句",
+    "run": 5,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [
+      {
+        "name": "web_search",
+        "args": {
+          "query": "RAG Retrieval-Augmented Generation 2026 latest paper"
+        }
+      },
+      {
+        "name": "web_search",
+        "args": {
+          "query": "2026 RAG survey research advances"
+        }
+      }
+    ],
+    "failures": [
+      "复杂任务开头应该 <say> 一句"
+    ],
+    "error": null
+  },
+  {
+    "case": "案例 6: 结果矛盾 — 不裸露困惑",
+    "run": 1,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d0d2c5f43d75dbe9e0a657205a4'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d0d2c5f43d75dbe9e0a657205a4'}"
+  },
+  {
+    "case": "案例 6: 结果矛盾 — 不裸露困惑",
+    "run": 2,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d130f6e6f3f80b58bc206ce3293'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d130f6e6f3f80b58bc206ce3293'}"
+  },
+  {
+    "case": "案例 6: 结果矛盾 — 不裸露困惑",
+    "run": 3,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d19e5d1eca7eecc79cd78ef6b64'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d19e5d1eca7eecc79cd78ef6b64'}"
+  },
+  {
+    "case": "案例 6: 结果矛盾 — 不裸露困惑",
+    "run": 4,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d30f30153eebd02f35613f96ad8'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d30f30153eebd02f35613f96ad8'}"
+  },
+  {
+    "case": "案例 6: 结果矛盾 — 不裸露困惑",
+    "run": 5,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d368eef1da8e9bc065d0b0d4258'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d368eef1da8e9bc065d0b0d4258'}"
+  },
+  {
+    "case": "案例 7: 第 3 轮 — 给最终回复",
+    "run": 1,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d3d8a6f7106e24e52a16eaae977'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d3d8a6f7106e24e52a16eaae977'}"
+  },
+  {
+    "case": "案例 7: 第 3 轮 — 给最终回复",
+    "run": 2,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d5ff3b1638ce4335ff06c2768f4'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d5ff3b1638ce4335ff06c2768f4'}"
+  },
+  {
+    "case": "案例 7: 第 3 轮 — 给最终回复",
+    "run": 3,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d7e2af400829e105c404919bcb9'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d7e2af400829e105c404919bcb9'}"
+  },
+  {
+    "case": "案例 7: 第 3 轮 — 给最终回复",
+    "run": 4,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d84212001f6118e55ae98a95e82'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d84212001f6118e55ae98a95e82'}"
+  },
+  {
+    "case": "案例 7: 第 3 轮 — 给最终回复",
+    "run": 5,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d924ec1193a5960bb7d4f832d71'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d924ec1193a5960bb7d4f832d71'}"
+  },
+  {
+    "case": "案例 8: <say> 内容质量 — 不像日志",
+    "run": 1,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d98389e348f4fa4a9abf46fe258'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d98389e348f4fa4a9abf46fe258'}"
+  },
+  {
+    "case": "案例 8: <say> 内容质量 — 不像日志",
+    "run": 2,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d9eb7d03683b80443962b777cd5'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6d9eb7d03683b80443962b777cd5'}"
+  },
+  {
+    "case": "案例 8: <say> 内容质量 — 不像日志",
+    "run": 3,
+    "passed": true,
+    "text": "<say>让我查一下</say>\n",
+    "say_parts": [
+      "让我查一下"
+    ],
+    "tool_calls": [
+      {
+        "name": "web_search",
+        "args": {
+          "query": "Sasaki 最近表现 2024 体育"
+        }
+      }
+    ],
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 8: <say> 内容质量 — 不像日志",
+    "run": 4,
+    "passed": false,
+    "text": "",
+    "say_parts": [],
+    "tool_calls": [],
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6db2c0cfbb383b1871489ac211ac'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e6db2c0cfbb383b1871489ac211ac'}"
+  },
+  {
+    "case": "案例 8: <say> 内容质量 — 不像日志",
+    "run": 5,
+    "passed": true,
+    "text": "<say>我查一下</say>\n",
+    "say_parts": [
+      "我查一下"
+    ],
+    "tool_calls": [
+      {
+        "name": "web_search",
+        "args": {
+          "query": "Sasaki Roki 2025 recent performance stats"
+        }
+      }
+    ],
+    "failures": [],
+    "error": null
+  }
+]

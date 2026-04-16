@@ -44,8 +44,9 @@ AUTH_DIR = LAPWING_HOME / "auth"
 AUTH_PROFILES_PATH = AUTH_DIR / "auth-profiles.json"
 API_BOOTSTRAP_TOKEN_PATH = AUTH_DIR / "api-bootstrap-token"
 
-# 加载环境变量
-load_dotenv(CONFIG_DIR / ".env")
+# 加载环境变量（支持 ENV_FILE 覆盖）
+_env_file = os.getenv("ENV_FILE", str(CONFIG_DIR / ".env"))
+load_dotenv(_env_file)
 
 # 网络代理
 SEARCH_PROXY_URL: str = os.getenv("SEARCH_PROXY_URL", "")
@@ -360,6 +361,9 @@ TRUSTED_IDS: set[str] = {
     for item in os.getenv("TRUSTED_IDS", "").split(",")
     if item.strip()
 }
+
+# Phase 0 最小可行测试模式（""=关闭, "A"=纯对话, "B"=加基础工具）
+PHASE0_MODE: str = os.getenv("PHASE0_MODE", "").strip().upper()
 
 # 桌面连接是否默认视为 OWNER（本地连接不做身份验证）
 DESKTOP_DEFAULT_OWNER: bool = os.getenv("DESKTOP_DEFAULT_OWNER", "true").lower() == "true"

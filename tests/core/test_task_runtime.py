@@ -81,9 +81,8 @@ async def test_chat_tools_from_registry():
     tools = runtime.chat_tools(shell_enabled=True)
     names = {item["function"]["name"] for item in tools}
 
-    # Phase 3: 记忆工具由 container.py 注册，不在 build_default_tool_registry 中
-    _schedule = {"schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"}
-    assert names == {"execute_shell", "read_file", "write_file", "web_search", "web_fetch", "image_search", "get_weather", "send_image", "send_proactive_message"} | _schedule
+    # Phase 4: web_search, web_fetch, send_image, send_proactive_message, schedule 工具已移至 personal_tools / container
+    assert names == {"execute_shell", "read_file", "write_file", "image_search", "get_weather"}
 
 
 @pytest.mark.asyncio
@@ -93,8 +92,8 @@ async def test_chat_tools_excludes_web_when_disabled():
     tools = runtime.chat_tools(shell_enabled=True, web_enabled=False)
     names = {item["function"]["name"] for item in tools}
 
-    _schedule = {"schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"}
-    assert names == {"execute_shell", "read_file", "write_file", "get_weather", "send_image", "send_proactive_message"} | _schedule
+    # Phase 4: web_search, web_fetch, send_image, send_proactive_message 已移至 personal_tools
+    assert names == {"execute_shell", "read_file", "write_file", "get_weather"}
 
 
 @pytest.mark.asyncio
@@ -171,7 +170,11 @@ async def test_execute_tool_call_read_file_payload_compatible():
 
 @pytest.mark.asyncio
 async def test_execute_tool_call_web_search_compacts_result_text_for_llm():
-    runtime = TaskRuntime(router=MagicMock(), tool_registry=build_default_tool_registry())
+    registry = build_default_tool_registry()
+    # Phase 4: web_search 现在由 personal_tools 注册
+    from src.tools.personal_tools import register_personal_tools
+    register_personal_tools(registry, {})
+    runtime = TaskRuntime(router=MagicMock(), tool_registry=registry)
     constraints = extract_execution_constraints("搜索资料")
     state = ExecutionSessionState(constraints=constraints)
 
@@ -183,7 +186,7 @@ async def test_execute_tool_call_web_search_compacts_result_text_for_llm():
     )
 
     long_snippet = "s" * 5000
-    with patch("src.tools.handlers.web_search.search", new_callable=AsyncMock) as mock_search:
+    with patch("src.tools.web_search.search", new_callable=AsyncMock) as mock_search:
         mock_search.return_value = [
             {
                 "title": "示例标题",
@@ -195,7 +198,7 @@ async def test_execute_tool_call_web_search_compacts_result_text_for_llm():
             tool_call=ToolCallRequest(
                 id="call_web_1",
                 name="web_search",
-                arguments={"query": "测试", "max_results": 1},
+                arguments={"query": "测试"},
             ),
             state=state,
             deps=deps,
@@ -205,8 +208,8 @@ async def test_execute_tool_call_web_search_compacts_result_text_for_llm():
         )
 
     rendered = json.loads(tool_result_text)
-    # handler 现在将 snippet 截断到 200 字符（轻量化处理）
-    assert len(payload["results"][0]["snippet"]) <= 200
+    # Phase 4: personal_tools 将 snippet 截断到 200 字符 + "…"
+    assert len(payload["results"][0]["snippet"]) <= 210
     assert len(rendered["results"][0]["snippet"]) < len(long_snippet)
 
 
@@ -427,7 +430,11 @@ async def test_complete_chat_status_callback_uses_stage_messages():
 @pytest.mark.asyncio
 async def test_complete_chat_supports_web_tool_call_and_tool_result_roundtrip():
     router = MagicMock()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry(), no_action_budget=0)
+    registry = build_default_tool_registry()
+    # Phase 4: web_search 由 personal_tools 注册
+    from src.tools.personal_tools import register_personal_tools
+    register_personal_tools(registry, {})
+    runtime = TaskRuntime(router=router, tool_registry=registry, no_action_budget=0)
     constraints = extract_execution_constraints("查一下今天A股收盘")
 
     router.complete_with_tools = AsyncMock(
@@ -438,7 +445,7 @@ async def test_complete_chat_supports_web_tool_call_and_tool_result_roundtrip():
                     ToolCallRequest(
                         id="call_web_1",
                         name="web_search",
-                        arguments={"query": "今天 A股 收盘", "max_results": 3},
+                        arguments={"query": "今天 A股 收盘"},
                     ),
                 ],
                 continuation_message={
@@ -463,7 +470,7 @@ async def test_complete_chat_supports_web_tool_call_and_tool_result_roundtrip():
         }
     )
 
-    with patch("src.tools.handlers.web_search.search", new_callable=AsyncMock) as mock_search:
+    with patch("src.tools.web_search.search", new_callable=AsyncMock) as mock_search:
         mock_search.return_value = [
             {
                 "title": "A股收盘快讯",
@@ -486,7 +493,7 @@ async def test_complete_chat_supports_web_tool_call_and_tool_result_roundtrip():
         )
 
     assert result == "我查到了并整理好了来源。"
-    mock_search.assert_awaited_once_with("今天 A股 收盘", max_results=3)
+    mock_search.assert_awaited_once_with("今天 A股 收盘", max_results=5)
     assert router.complete_with_tools.await_count == 2
     second_turn_messages = router.complete_with_tools.await_args_list[1].args[0]
     second_turn_tool_messages = [

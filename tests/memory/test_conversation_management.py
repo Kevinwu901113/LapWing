@@ -14,31 +14,7 @@ async def memory(tmp_path):
     await store.close()
 
 
-@pytest.mark.asyncio
-class TestUserFactsDeletion:
-    async def test_delete_user_fact_success(self, memory):
-        await memory.set_user_fact("c1", "偏好_语言", "中文")
-        deleted = await memory.delete_user_fact("c1", "偏好_语言")
-
-        facts = await memory.get_user_facts("c1")
-        assert deleted is True
-        assert facts == []
-
-    async def test_delete_user_fact_returns_false_when_missing(self, memory):
-        deleted = await memory.delete_user_fact("c1", "不存在")
-        assert deleted is False
-
-    async def test_delete_user_fact_isolated_by_chat_id(self, memory):
-        await memory.set_user_fact("c1", "偏好_语言", "中文")
-        await memory.set_user_fact("c2", "偏好_语言", "英文")
-
-        deleted = await memory.delete_user_fact("c1", "偏好_语言")
-
-        c1_facts = await memory.get_user_facts("c1")
-        c2_facts = await memory.get_user_facts("c2")
-        assert deleted is True
-        assert c1_facts == []
-        assert c2_facts[0]["fact_value"] == "英文"
+# TestUserFactsDeletion removed (Phase 1: user_facts facade removed)
 
 
 @pytest.mark.asyncio
@@ -96,54 +72,7 @@ class TestTodos:
         assert todos == []
 
 
-@pytest.mark.asyncio
-class TestClearMemory:
-    async def test_clear_only_removes_short_term_conversation(self, memory):
-        await memory.append("c1", "user", "你好")
-        await memory.append("c1", "assistant", "你好呀")
-        await memory.set_user_fact("c1", "偏好_语言", "中文")
-        await memory.bump_interest("c1", "Python", 2.0)
-
-        await memory.clear("c1")
-
-        history = await memory.get("c1")
-        facts = await memory.get_user_facts("c1")
-        interests = await memory.get_top_interests("c1")
-        assert history == []
-        assert len(facts) == 1
-        assert len(interests) == 1
-
-    async def test_clear_chat_all_removes_short_and_long_term_memory(self, memory):
-        now = datetime.now(timezone.utc)
-
-        await memory.append("c1", "user", "你好")
-        await memory.set_user_fact("c1", "偏好_语言", "中文")
-        await memory.add_discovery("c1", "test", "标题", "摘要", "https://example.com")
-        await memory.bump_interest("c1", "Python", 2.0)
-        await memory.add_todo("c1", "买牛奶", "2026-03-25")
-        await memory.add_reminder(
-            chat_id="c1",
-            content="起身喝水",
-            recurrence_type="once",
-            next_trigger_at=now + timedelta(minutes=1),
-        )
-
-        await memory.append("c2", "user", "保留我")
-        await memory.set_user_fact("c2", "偏好_语言", "英文")
-        await memory.bump_interest("c2", "摄影", 1.0)
-
-        await memory.clear_chat_all("c1")
-
-        assert await memory.get("c1") == []
-        assert await memory.get_user_facts("c1") == []
-        assert await memory.get_unshared_discoveries("c1") == []
-        assert await memory.get_top_interests("c1") == []
-        assert await memory.list_todos("c1") == []
-        assert await memory.list_reminders("c1", include_inactive=True) == []
-
-        assert len(await memory.get("c2")) == 1
-        assert len(await memory.get_user_facts("c2")) == 1
-        assert len(await memory.get_top_interests("c2")) == 1
+# TestClearMemory removed (Phase 1: user_facts/discoveries/interests facades removed)
 
 
 @pytest.mark.asyncio

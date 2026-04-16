@@ -28,7 +28,8 @@ class TestIdentify:
         with patch("src.core.authority_gate.DESKTOP_DEFAULT_OWNER", False):
             with patch("src.core.authority_gate.OWNER_IDS", set()):
                 with patch("src.core.authority_gate.TRUSTED_IDS", set()):
-                    assert identify("desktop", "123") == AuthLevel.GUEST
+                    # Phase 1: unknown adapter + unknown user → IGNORE
+                    assert identify("desktop", "123") == AuthLevel.IGNORE
 
     def test_owner_by_id_qq_adapter(self):
         with patch("src.core.authority_gate.OWNER_IDS", {"111"}):

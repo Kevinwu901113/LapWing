@@ -17,8 +17,13 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 
-from src.guards.skill_guard import ScanResult
+
+@dataclass
+class ScanResult:
+    passed: bool
+    threats: list[str] = field(default_factory=list)
 
 # 不可见 Unicode 字符检测
 _INVISIBLE_CHARS = re.compile(

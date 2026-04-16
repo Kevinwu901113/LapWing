@@ -1,37 +1,17 @@
-"""System prompt assembly — extracted from brain.py for clarity."""
+"""System prompt assembly — 4-layer PromptBuilder (Phase 2 rewrite)."""
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from zoneinfo import ZoneInfo
 
 from src.core.prompt_loader import load_prompt
-from config.settings import (
-    CHAT_WEB_TOOLS_ENABLED,
-    CONVERSATION_SUMMARIES_DIR,
-    KEVIN_NOTES_PATH,
-    RULES_PATH,
-    SHELL_DEFAULT_CWD,
-    SHELL_ENABLED,
-)
 
 if TYPE_CHECKING:
-    from src.core.knowledge_manager import KnowledgeManager
-    from src.core.skills import SkillManager
+    from src.core.task_model import TaskStore
     from src.memory.conversation import ConversationMemory
-    from src.memory.vector_store import VectorStore
-
-_RELATED_MEMORY_LIMIT = 300
-_SOP_DIR = Path("prompts/sop")
-
-_PERSONA_ANCHOR = (
-    "记住：你是 Lapwing，说话像发微信，短句为主，经常用表情符号。"
-    "不列清单，不用加粗标题，不用括号写动作。"
-    "温暖自然，想撒娇就撒，想吐槽就吐槽。做事时保持人格，不切换成工具模式。"
-    "用过工具查到的信息你就是知道了——不要装作不确定。搜索过程不发出来。"
-    "【必须】回复超过两句话时用 [SPLIT] 分条发送，不要用换行符\\n代替。不分条是违规的。"
-)
 
 
 def _get_period_name(hour: int) -> str:
@@ -69,265 +49,211 @@ class PromptSnapshotManager:
         self._session_id = None
 
 
-async def build_system_prompt(
-    *,
-    system_prompt: str,
-    chat_id: str,
-    user_message: str,
-    memory: "ConversationMemory",
-    vector_store: "VectorStore | None",
-    knowledge_manager: "KnowledgeManager | None",
-    skill_manager: "SkillManager | None",
-    memory_index: "Any | None" = None,
-    agent_registry: "Any | None" = None,
-) -> str:
-    """Assemble layered system prompt from all context sources."""
-    from src.memory.file_memory import read_memory_file, read_recent_summaries
+_PERSONA_ANCHOR = (
+    "记住：你是 Lapwing，说话像发微信，短句为主。"
+    "不列清单，不用加粗标题，不用括号写动作。"
+    "温暖自然，做事时保持人格，不切换成工具模式。"
+    "用过工具查到的信息你就是知道了——不要装作不确定。搜索过程不发出来。"
+    "【必须】回复超过两句话时用 [SPLIT] 分条发送，不要用换行符\\n代替。不分条是违规的。"
+)
 
-    sections: list[str] = []
 
-    # Layer 0: 核心人格
-    sections.append(system_prompt)
+class PromptBuilder:
+    """极简 Prompt 组装。4 层：
 
-    # Layer 0.1: 对话示例
-    try:
-        examples = load_prompt("lapwing_examples")
-        if examples:
-            sections.append(examples)
-    except Exception:
-        pass  # 示例文件不存在时静默跳过
+    1. soul.md（完整注入，包含 Kevin 身份信息）
+    2. constitution.md（完整注入）
+    3. 最小运行时状态（时间、通道、提醒、任务）
+    4. voice.md（depth-0 注入，由 get_voice_reminder / inject_voice_reminder 处理）
+    """
 
-    # Layer 1: 行为规则（从经验中学到的 — 低频变化）
-    rules = await read_memory_file(RULES_PATH, max_chars=800)
-    if rules and "暂无规则" not in rules:
-        sections.append(f"## 你从经验中学到的规则\n\n{rules}")
+    def __init__(
+        self,
+        soul_path: str | Path = "data/identity/soul.md",
+        constitution_path: str | Path = "data/identity/constitution.md",
+        voice_path: str = "lapwing_voice",
+        task_store: "TaskStore | None" = None,
+        reminder_source: "ConversationMemory | None" = None,
+    ):
+        self.soul_path = Path(soul_path)
+        self.constitution_path = Path(constitution_path)
+        self.voice_path = voice_path
+        self.task_store = task_store
+        self.reminder_source = reminder_source
 
-    # Layer 2: 对 Kevin 的了解（文件化记忆 — 低频变化）
-    kevin_notes = await read_memory_file(KEVIN_NOTES_PATH, max_chars=1000)
-    if kevin_notes:
-        sections.append(f"## 你对他的了解\n\n{kevin_notes}")
+    async def build_system_prompt(
+        self,
+        channel: str,
+        actor_id: str | None = None,
+        actor_name: str | None = None,
+        auth_level: int = 3,
+        group_id: str | None = None,
+    ) -> str:
+        """组装 system prompt。
 
-    # Layer 3: 时间感知（粗粒度 — 同一小时内不变，KV-cache 友好）
-    from src.core.vitals import now_taipei, uptime_human, boot_time_taipei
+        channel: "qq" / "qq_group" / "desktop"
+        actor_id: 说话人 ID（群聊时有用）
+        actor_name: 说话人昵称
+        auth_level: 说话人权限级别
+        group_id: 群聊 ID（群聊时有用）
+        """
+        parts = []
 
-    now = now_taipei()
-    yesterday = (now - timedelta(days=1)).strftime('%m月%d日')
-    hour = now.hour
-    weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
-    weekday = weekday_names[now.weekday()]
+        # Layer 1: soul.md
+        soul = self._load_file(self.soul_path)
+        if soul:
+            parts.append(soul)
 
-    period = _get_period_name(hour)
+        # Layer 2: constitution.md
+        constitution = self._load_file(self.constitution_path)
+        if constitution:
+            parts.append(constitution)
 
-    sections.append(
-        f"## 现在\n\n"
-        f"现在是 {now.year}年{now.month}月{now.day}日 {weekday} {period}（约{hour}时）。"
-        f"昨天是{yesterday}。\n"
-        f"你已经醒了 {uptime_human()}（{boot_time_taipei().strftime('%m月%d日 %H:%M')} 启动）。\n"
-        f"当你提到时间时必须基于上面的时间判断。"
-        f"不要凭感觉推测现在几点——看上面写的时间。"
-        f"{period}就是{period}，不要说错。"
-    )
+        # Layer 3: 最小运行时状态
+        runtime_state = await self._build_runtime_state(
+            channel, actor_id, actor_name, auth_level, group_id
+        )
+        parts.append(runtime_state)
 
-    # Layer 3.5: 桌面端环境感知（按 owner_id 隔离）
-    from src.core.vitals import get_desktop_sensing
-    desktop_sensing = get_desktop_sensing(owner_id=chat_id)
-    if desktop_sensing:
-        sections.append(f"## Kevin 的电脑状态\n\n{desktop_sensing['summary']}")
+        return "\n\n---\n\n".join(parts)
 
-    # Layer 3.6: 重启感知（如果刚醒来）
-    from src.core.vitals import is_fresh_boot, get_sleep_summary
-    if is_fresh_boot():
-        sleep_duration = get_sleep_summary()
-        if sleep_duration:
-            sections.append(
-                f"## 刚醒来\n\n"
-                f"你刚刚重启，相当于睡了 {sleep_duration}。"
-                f"你可以自然地表现出刚醒来的状态——"
-                f"不用刻意说'我刚重启'，但可以像刚睡醒一样自然过渡。"
-            )
+    def get_voice_reminder(self) -> str:
+        """voice.md 内容。在 depth-0 注入。"""
+        return load_prompt(self.voice_path)
 
-    # Layer 4: SQLite facts 补充（每次对话可能不同）
-    facts = await memory.get_user_facts(chat_id)
-    if facts:
-        regular_facts = _split_facts(facts)
-        if regular_facts:
-            facts_text = "\n".join(
-                f"- {fact['fact_key']}: {fact['fact_value']}" for fact in regular_facts[:10]
-            )
-            sections.append(
-                "## 补充信息（自动提取）\n\n"
-                f"{facts_text}"
-            )
+    def inject_voice_reminder(self, messages: list[dict]) -> None:
+        """深度注入 voice reminder（+ 对话较长时附加 persona anchor + 时间锚点）。
 
-    # Layer 4.5: 索引化记忆（按重要性排序）
-    if memory_index is not None:
-        top_entries = memory_index.ranked_entries(limit=20)
-        if top_entries:
-            memory_lines = []
-            for entry in top_entries:
-                memory_index.update_referenced(entry["id"])
-                memory_lines.append(f"- [{entry['category']}] {entry['content_preview']}")
-            sections.append(
-                "## 记忆索引（按重要性排序）\n\n"
-                + "\n".join(memory_lines)
-            )
+        - 对话 >= 6 条：voice + anchor + 时间锚点 合并注入在 depth-3
+        - 对话 >= 4 条：仅 voice + 时间锚点 注入在 depth-2
+        - 对话更短：追加到 system prompt
+        """
+        voice_reminder = self.get_voice_reminder()
 
-    # Layer 3: 文件化对话摘要
-    recent_summaries = await read_recent_summaries(CONVERSATION_SUMMARIES_DIR)
-    if recent_summaries:
-        sections.append(f"## 最近的对话\n\n{recent_summaries}")
+        # 粗粒度时间锚点（同一小时内不变 → KV-cache 友好）
+        from src.core.vitals import now_taipei
+        now = now_taipei()
+        period = _get_period_name(now.hour)
+        time_anchor = f"现在是{period}（约{now.hour}时）。说话要符合这个时间段。"
 
-    # Layer 4: 语义检索
-    if user_message and vector_store is not None:
-        import logging
-        logger = logging.getLogger("lapwing.core.prompt_builder")
-        try:
-            hits = await vector_store.search(chat_id, user_message, n_results=2)
-        except Exception as exc:
-            logger.warning("[%s] 检索相关历史记忆失败: %s", chat_id, exc)
+        if len(messages) >= 6:
+            content = f"[System Note]\n{voice_reminder}\n\n{_PERSONA_ANCHOR}\n\n{time_anchor}\n[/System Note]"
+            messages.insert(len(messages) - 2, {"role": "user", "content": content})
+        elif len(messages) >= 4:
+            content = f"[System Note]\n{voice_reminder}\n\n{time_anchor}\n[/System Note]"
+            messages.insert(len(messages) - 2, {"role": "user", "content": content})
         else:
-            related_text = _format_related_history_hits(hits, set())
-            if related_text:
-                sections.append(
-                    "## 相关历史记忆\n\n"
-                    "以下是通过语义检索找到的相关历史片段。"
-                    "仅当它确实能帮助当前回复时再自然引用。\n\n"
-                    f"{related_text}"
-                )
+            messages[0]["content"] = messages[0]["content"] + "\n\n" + voice_reminder
 
-    # Layer 5: 知识笔记
-    if knowledge_manager is not None:
-        notes = knowledge_manager.get_relevant_notes()
-        if notes:
-            notes_text = "\n\n".join(
-                f"### {note['topic']}\n{note['content']}"
-                for note in notes
-            )
-            sections.append(
-                "## 你积累的知识笔记\n\n"
-                f"{notes_text}"
+    async def _build_runtime_state(
+        self, channel, actor_id, actor_name, auth_level, group_id
+    ) -> str:
+        """最小运行时状态。相当于人"知道自己饿了"不需要主动查询。"""
+        now = datetime.now(ZoneInfo("Asia/Taipei"))
+        weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+        weekday = weekday_names[now.weekday()]
+        period = _get_period_name(now.hour)
+        lines = []
+
+        # 当前时间
+        lines.append(
+            f"当前时间：{now.year}年{now.month}月{now.day}日 {weekday} "
+            f"{period}（约{now.hour}时，台北时间）"
+        )
+
+        # 当前通道
+        channel_desc = {
+            "qq": "QQ 私聊（和 Kevin）",
+            "qq_group": f"QQ 群聊（群 {group_id}）",
+            "desktop": "Desktop（面对面）",
+        }
+        lines.append(f"当前通道：{channel_desc.get(channel, channel)}")
+
+        # 当前对话者（群聊时）
+        if channel == "qq_group" and actor_id:
+            level_name = {0: "IGNORE", 1: "GUEST", 2: "TRUSTED", 3: "OWNER"}
+            lines.append(
+                f"当前说话人：{actor_name or '未知'}"
+                f"（{actor_id}，权限：{level_name.get(auth_level, 'UNKNOWN')}）"
             )
 
-    # Layer 6: 技能目录
-    if skill_manager is not None and skill_manager.has_model_visible_skills():
-        skills_catalog = skill_manager.render_catalog_for_prompt()
-        if skills_catalog:
-            sections.append(
-                "## 可用技能目录\n\n"
-                "以下是当前可用的技能，你可以在确实需要时调用 `activate_skill` 按需加载。\n\n"
-                f"{skills_catalog}"
-            )
-
-    # Layer 6.5: 标准操作流程（SOP）
-    if _SOP_DIR.exists():
-        _sop_texts: list[str] = []
-        for _sop_file in sorted(_SOP_DIR.glob("*.md")):
+        # 到期/即将到期的提醒（标题级）
+        if self.reminder_source:
             try:
-                _sop_content = _sop_file.read_text(encoding="utf-8").strip()
-                if _sop_content:
-                    _sop_texts.append(_sop_content)
+                from datetime import timezone
+                now_utc = datetime.now(timezone.utc)
+                due_reminders = await self.reminder_source.get_due_reminders(
+                    chat_id="__all__", now=now_utc, grace_seconds=1800, limit=3
+                )
+                if due_reminders:
+                    reminder_lines = []
+                    for r in due_reminders[:3]:
+                        content = r.get("content", "")
+                        due = r.get("next_trigger_at", "")
+                        reminder_lines.append(f"  - {content}（{due}）")
+                    lines.append("即将到期的提醒：\n" + "\n".join(reminder_lines))
             except Exception:
                 pass
-        if _sop_texts:
-            sections.append("# 标准操作流程\n\n" + "\n\n---\n\n".join(_sop_texts))
 
-    # Layer 6.8: Agent 团队概览
-    if agent_registry is not None:
-        agents_info = agent_registry.list_agents()
-        if agents_info:
-            agent_lines = ["## 你的团队（可用 Agent）", "你可以用 delegate_task 工具将任务委派给它们："]
-            for a in agents_info:
-                status_icon = "[idle]" if a["status"] == "idle" else "[busy]"
-                caps = ", ".join(a["capabilities"]) if a["capabilities"] else "general"
-                agent_lines.append(f"- {status_icon} **{a['name']}**: {caps}")
-            sections.append("\n".join(agent_lines))
+        # 活跃任务标题（仅标题）
+        if self.task_store:
+            try:
+                active_tasks = await self.task_store.list_active()
+                if active_tasks:
+                    task_lines = [f"  - {t.request[:50]}" for t in active_tasks[:5]]
+                    lines.append("正在进行的任务：\n" + "\n".join(task_lines))
+            except Exception:
+                pass
 
-    # Layer 7: 能力描述与工具状态
-    sections.append(load_prompt("lapwing_capabilities"))
+        return "## 当前状态\n\n" + "\n".join(lines)
 
-    if user_message:
-        sections.append(_tool_runtime_instruction())
-
-    # Layer 8: 执行后反思 Nudge（Pattern 4）
-    sections.append(_skill_nudge_instruction())
-
-    return "\n\n".join(sections)
+    @staticmethod
+    def _load_file(path: Path) -> str:
+        """加载文件，找不到返回空字符串。"""
+        try:
+            return path.read_text(encoding="utf-8").strip()
+        except (FileNotFoundError, OSError):
+            return ""
 
 
-def inject_voice_reminder(messages: list[dict]) -> None:
-    """深度注入 voice reminder（+ 对话较长时附加 persona anchor + 时间锚点）。
+# ── Phase 0 极简 prompt（保留兼容） ──────────────────────────────────
 
-    - 对话 >= 6 条：voice + anchor + 时间锚点 合并注入在 depth-3
-    - 对话 >= 4 条：仅 voice + 时间锚点 注入在 depth-2
-    - 对话更短：追加到 system prompt
-    """
-    voice_reminder = load_prompt("lapwing_voice")
-
-    # 粗粒度时间锚点（同一小时内不变 → KV-cache 友好）
+def build_phase0_prompt() -> str:
+    """Phase 0 极简 prompt：只有身份 + 宪法 + 时间。"""
+    from config.settings import IDENTITY_DIR
     from src.core.vitals import now_taipei
+
+    soul_path = IDENTITY_DIR / "soul_test.md"
+    constitution_path = IDENTITY_DIR / "constitution_test.md"
+
+    parts = []
+    for p in (soul_path, constitution_path):
+        try:
+            parts.append(p.read_text(encoding="utf-8").strip())
+        except FileNotFoundError:
+            pass
+
     now = now_taipei()
+    weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
+    weekday = weekday_names[now.weekday()]
     period = _get_period_name(now.hour)
-    time_anchor = f"现在是{period}（约{now.hour}时）。说话要符合这个时间段。"
+    parts.append(
+        f"当前时间：{now.year}年{now.month}月{now.day}日 {weekday} "
+        f"{period}（约{now.hour}时，台北时间）"
+    )
 
-    if len(messages) >= 6:
-        content = f"[System Note]\n{voice_reminder}\n\n{_PERSONA_ANCHOR}\n\n{time_anchor}\n[/System Note]"
-        messages.insert(len(messages) - 2, {"role": "user", "content": content})
-    elif len(messages) >= 4:
-        content = f"[System Note]\n{voice_reminder}\n\n{time_anchor}\n[/System Note]"
-        messages.insert(len(messages) - 2, {"role": "user", "content": content})
-    else:
-        messages[0]["content"] = messages[0]["content"] + "\n\n" + voice_reminder
+    return "\n\n---\n\n".join(parts)
 
 
-def _split_facts(facts: list[dict]) -> list[dict]:
-    return [
-        fact for fact in facts
-        if not str(fact.get("fact_key", "")).startswith("memory_summary_")
-    ]
-
-
-def _truncate_related_memory(text: str) -> str:
-    stripped = text.strip()
-    if len(stripped) <= _RELATED_MEMORY_LIMIT:
-        return stripped
-    return stripped[: _RELATED_MEMORY_LIMIT - 3].rstrip() + "..."
-
-
-def _format_related_history_hits(
-    hits: list[dict],
-    existing_dates: set[str],
-) -> str:
-    lines: list[str] = []
-    for hit in hits:
-        metadata = hit.get("metadata") or {}
-        text = _truncate_related_memory(str(hit.get("text", "")))
-        if not text:
-            continue
-
-        date_str = str(metadata.get("date", "")).strip()
-        if date_str and date_str in existing_dates:
-            continue
-
-        if date_str:
-            lines.append(f"- {date_str}: {text}")
-        else:
-            lines.append(f"- {text}")
-
-    return "\n".join(lines)
-
+# ── 任务系统相关 prompt builders（保留） ───────────────────────────────
 
 def build_progress_prompt(context: dict) -> tuple[str, str]:
-    """构建进度判断的完整 prompt。
-
-    复用 soul + voice + examples 确保进度汇报口吻与正常对话一致。
-
-    Args:
-        context: 来自 progress_reporter.build_progress_context() 的变量
-
-    Returns:
-        (system_text, user_text) 元组
-    """
-    soul = load_prompt("lapwing_soul")
+    """构建进度判断的完整 prompt。"""
+    from config.settings import SOUL_PATH
+    try:
+        soul = SOUL_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        soul = load_prompt("lapwing_soul")
     voice = load_prompt("lapwing_voice")
 
     try:
@@ -348,19 +274,7 @@ def build_progress_prompt(context: dict) -> tuple[str, str]:
 
 
 def build_completion_check_prompt(context: dict) -> tuple[str, str]:
-    """构建任务完成度判断的 prompt。
-
-    Args:
-        context: {
-            "user_request": str,
-            "completed_steps": str,
-            "final_response": str,
-            "termination_reason": str,
-        }
-
-    Returns:
-        (system_text, user_text) 元组
-    """
+    """构建任务完成度判断的 prompt。"""
     system_text = "你是一个任务完成度判断助手。请根据提供的信息判断任务是否完成。"
     template = load_prompt("completion_check")
     user_text = template.format(**context)
@@ -368,25 +282,12 @@ def build_completion_check_prompt(context: dict) -> tuple[str, str]:
 
 
 def build_resumption_prompt(context: dict) -> tuple[str, str]:
-    """构建任务恢复的完整 prompt。
-
-    使用完整人格注入（soul + voice + examples），
-    因为恢复消息是 Lapwing 直接说给用户的话。
-
-    Args:
-        context: {
-            "user_request": str,
-            "completed_steps_summary": str,
-            "partial_result": str,
-            "remaining_description": str,
-            "recent_messages": str,
-            "skip_notice": str,
-        }
-
-    Returns:
-        (system_text, instruction_text) 元组
-    """
-    soul = load_prompt("lapwing_soul")
+    """构建任务恢复的完整 prompt。"""
+    from config.settings import SOUL_PATH
+    try:
+        soul = SOUL_PATH.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        soul = load_prompt("lapwing_soul")
     voice = load_prompt("lapwing_voice")
 
     try:
@@ -404,47 +305,3 @@ def build_resumption_prompt(context: dict) -> tuple[str, str]:
     system_text = "\n\n".join(parts)
 
     return system_text, instruction
-
-
-def _skill_nudge_instruction() -> str:
-    """执行后反思：提示在完成复杂任务后用 trace_mark 标记值得回顾的经历。"""
-    return (
-        "## 执行后反思\n\n"
-        "完成一个需要 3 次以上工具调用的任务后，在回复前快速想一下：\n\n"
-        "1. 这次做的事以前做过类似的吗？\n"
-        "2. 中间有没有走弯路后来纠正了？\n"
-        "3. Kevin 有没有纠正我的做法？\n"
-        "4. 有没有已有的经验其实可以更新？\n\n"
-        "如果有，用 `trace_mark` 工具标记这次经历，附一句简短原因。\n"
-        "不需要当场创建经验笔记——晚上自省的时候我会回来看这些标记。"
-    )
-
-
-def _tool_runtime_instruction() -> str:
-    """返回动态运行时状态说明（工具开关、当前目录等）。"""
-    sections: list[str] = []
-
-    if SHELL_ENABLED:
-        sections.append(
-            "## 本地执行状态\n\n"
-            f"Shell 工具已启用（execute_shell、read_file、write_file）。\n"
-            f"当前工作目录：{SHELL_DEFAULT_CWD}"
-        )
-    else:
-        sections.append(
-            "## 本地执行状态\n\n"
-            "Shell 工具当前已禁用。如果被要求执行命令或修改本地文件，必须明确说明执行功能已关闭，不能编造结果。"
-        )
-
-    if CHAT_WEB_TOOLS_ENABLED:
-        sections.append(
-            "## 联网状态\n\n"
-            "联网工具已启用（web_search、web_fetch）。"
-        )
-    else:
-        sections.append(
-            "## 联网状态\n\n"
-            "联网工具当前已禁用。若被要求查询最新网页信息，需明确说明无法联网检索。"
-        )
-
-    return "\n\n".join(sections)

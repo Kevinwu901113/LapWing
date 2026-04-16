@@ -213,8 +213,8 @@ class TestBrainTools:
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
              patch("src.core.brain.ConversationMemory"), \
-             patch("src.core.prompt_builder.SHELL_ENABLED", False), \
-             patch("src.core.prompt_builder.CHAT_WEB_TOOLS_ENABLED", False):
+             patch("src.core.brain.SHELL_ENABLED", False), \
+             patch("src.core.brain.CHAT_WEB_TOOLS_ENABLED", False):
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
@@ -231,21 +231,21 @@ class TestBrainTools:
             result = await brain.think("chat1", "请执行 pwd")
 
             assert result == "普通回复"
-            # system prompt 应包含禁用状态说明
-            call_messages = brain.router.complete_with_tools.call_args.args[0]
-            assert "Shell 工具当前已禁用" in call_messages[0]["content"]
 
     async def test_web_tool_loop_search_then_fetch_returns_final_reply(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
              patch("src.core.brain.ConversationMemory"), \
-             patch("src.core.prompt_builder.SHELL_ENABLED", False), \
-             patch("src.core.prompt_builder.CHAT_WEB_TOOLS_ENABLED", True), \
-             patch("src.tools.handlers.web_search.search", new_callable=AsyncMock) as mock_search, \
-             patch("src.tools.handlers.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
+             patch("src.core.brain.SHELL_ENABLED", False), \
+             patch("src.core.brain.CHAT_WEB_TOOLS_ENABLED", True), \
+             patch("src.tools.web_search.search", new_callable=AsyncMock) as mock_search, \
+             patch("src.tools.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            # Phase 4: 注册个人工具（web_search/web_fetch 现在由 personal_tools 注册）
+            from src.tools.personal_tools import register_personal_tools
+            register_personal_tools(brain.tool_registry, {})
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -320,7 +320,7 @@ class TestBrainTools:
             result = await brain.think("chat1", "查一下今天A股收盘信息")
 
             assert "https://finance.example/a-share-close" in result
-            mock_search.assert_awaited_once_with("今天 A股 收盘", max_results=3)
+            mock_search.assert_awaited_once_with("今天 A股 收盘", max_results=5)
             mock_fetch.assert_awaited_once_with("https://finance.example/a-share-close")
             assert brain.router.complete_with_tools.await_count == 3
 

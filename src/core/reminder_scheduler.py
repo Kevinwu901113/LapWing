@@ -75,6 +75,7 @@ class ReminderScheduler:
         next_trigger_at: datetime,
         recurrence_type: str,
         interval_minutes: int | None = None,
+        execution_mode: str | None = None,
     ) -> None:
         """schedule_task 工具创建提醒后调用，立即注册调度。
 
@@ -94,10 +95,11 @@ class ReminderScheduler:
             ),
             "recurrence_type": recurrence_type,
             "interval_minutes": interval_minutes,
+            "execution_mode": execution_mode or "notify",
             "active": True,
         }
         self._schedule_reminder(reminder)
-        logger.info("已注册提醒 #%d（%s）到调度器", reminder_id, recurrence_type)
+        logger.info("已注册提醒 #%d（%s, mode=%s）到调度器", reminder_id, recurrence_type, reminder["execution_mode"])
 
     def notify_cancel(self, reminder_id: int) -> None:
         """cancel_scheduled_task 工具取消提醒后调用。"""
@@ -129,6 +131,7 @@ class ReminderScheduler:
         chat_id = str(reminder["chat_id"])
         content = str(reminder.get("content", ""))
         recurrence = str(reminder.get("recurrence_type", "once"))
+        execution_mode = str(reminder.get("execution_mode", "notify") or "notify")
 
         try:
             next_dt = self._parse_dt(reminder["next_trigger_at"])
@@ -160,48 +163,127 @@ class ReminderScheduler:
                     return
                 # 不到 1 分钟过期，正常发送（fall through）
 
-            now = datetime.now(timezone.utc)
-            message = f"⏰ {content}"
-
-            try:
-                await self._send_fn(message)
-            except Exception as send_exc:
-                logger.error("[#%d] 提醒发送失败: %s", rid, send_exc)
-                return
-
-            # 记录到对话历史
-            try:
-                await self._memory.append(chat_id, "assistant", message)
-            except Exception as mem_exc:
-                logger.warning("[#%d] 提醒写入记忆失败: %s", rid, mem_exc)
-
-            # 通知 desktop 端
-            if self._event_bus is not None:
-                try:
-                    await self._event_bus.publish(
-                        "reminder_message",
-                        {"chat_id": chat_id, "text": message},
-                    )
-                except Exception as bus_exc:
-                    logger.warning("[#%d] event_bus 发布失败: %s", rid, bus_exc)
-
-            # 更新 DB（完成或重排下一次）
-            try:
-                await self._memory.complete_or_reschedule_reminder(rid, now=now)
-            except Exception as db_exc:
-                logger.error("[#%d] 提醒状态更新失败: %s", rid, db_exc)
-                return
-
-            logger.info("[%s] 提醒 #%d 已发送: %s", chat_id, rid, content[:50])
-
-            # 循环提醒：重新调度下一次
-            if recurrence != "once":
-                await self._reload_and_reschedule(rid)
+            # 根据 execution_mode 分支
+            if execution_mode == "agent":
+                await self._fire_agent_reminder(rid, chat_id, content, recurrence)
+            else:
+                await self._fire_notify_reminder(rid, chat_id, content, recurrence)
 
         except asyncio.CancelledError:
             pass  # 正常取消，不记日志
         except Exception as exc:
             logger.exception("[#%d] 提醒调度异常: %s", rid, exc)
+
+    async def _fire_notify_reminder(
+        self, rid: int, chat_id: str, content: str, recurrence: str,
+    ) -> None:
+        """notify 模式——发送简单文本提醒。"""
+        now = datetime.now(timezone.utc)
+        message = f"⏰ {content}"
+
+        try:
+            await self._send_fn(message)
+        except Exception as send_exc:
+            logger.error("[#%d] 提醒发送失败: %s", rid, send_exc)
+            return
+
+        # 记录到对话历史
+        try:
+            await self._memory.append(chat_id, "assistant", message)
+        except Exception as mem_exc:
+            logger.warning("[#%d] 提醒写入记忆失败: %s", rid, mem_exc)
+
+        # 通知 desktop 端
+        if self._event_bus is not None:
+            try:
+                await self._event_bus.publish(
+                    "reminder_message",
+                    {"chat_id": chat_id, "text": message},
+                )
+            except Exception as bus_exc:
+                logger.warning("[#%d] event_bus 发布失败: %s", rid, bus_exc)
+
+        # 更新 DB（完成或重排下一次）
+        try:
+            await self._memory.complete_or_reschedule_reminder(rid, now=now)
+        except Exception as db_exc:
+            logger.error("[#%d] 提醒状态更新失败: %s", rid, db_exc)
+            return
+
+        logger.info("[%s] 提醒 #%d 已发送: %s", chat_id, rid, content[:50])
+
+        # 循环提醒：重新调度下一次
+        if recurrence != "once":
+            await self._reload_and_reschedule(rid)
+
+    async def _fire_agent_reminder(
+        self, rid: int, chat_id: str, content: str, recurrence: str,
+    ) -> None:
+        """agent 模式——执行完整 agent 循环，把结果发给用户。"""
+        SILENT_MARKER = "[SILENT]"
+        now = datetime.now(timezone.utc)
+
+        brain = getattr(self, "_brain", None)
+        if brain is None:
+            # 没有 brain 引用，fallback 到 notify 模式
+            logger.warning("[#%d] agent 模式缺少 brain 引用，fallback 到 notify", rid)
+            await self._fire_notify_reminder(rid, chat_id, content, recurrence)
+            return
+
+        try:
+            # 静默 send_fn——agent 循环中间输出不发给用户
+            async def silent_send(text: str):
+                logger.debug("Cron agent 中间输出（不发送）: %s", text[:80])
+
+            result = await brain.think_conversational(
+                chat_id=chat_id,
+                user_message=f"[定时任务] {content}",
+                send_fn=silent_send,
+                adapter="system",
+                user_id="__scheduler__",
+            )
+
+            # 检查结果是否有价值
+            if result and not str(result).strip().startswith(SILENT_MARKER):
+                try:
+                    await self._send_fn(result)
+                except Exception as send_exc:
+                    logger.error("[#%d] Cron agent 结果发送失败: %s", rid, send_exc)
+
+                # 通知 desktop 端
+                if self._event_bus is not None:
+                    try:
+                        await self._event_bus.publish(
+                            "reminder_message",
+                            {"chat_id": chat_id, "text": result},
+                        )
+                    except Exception:
+                        pass
+            else:
+                logger.info(
+                    "Cron agent 输出为 SILENT，不发送: reminder=#%d", rid,
+                )
+        except Exception as e:
+            logger.warning("Cron agent 执行失败: %s", e)
+            # 失败时 fallback 到简单通知
+            try:
+                fallback_msg = f"⏰ {content}\n（自动执行失败，仅提醒）"
+                await self._send_fn(fallback_msg)
+            except Exception:
+                pass
+
+        # 更新 DB（完成或重排下一次）
+        try:
+            await self._memory.complete_or_reschedule_reminder(rid, now=now)
+        except Exception as db_exc:
+            logger.error("[#%d] 提醒状态更新失败: %s", rid, db_exc)
+            return
+
+        logger.info("[%s] Cron agent 提醒 #%d 已执行: %s", chat_id, rid, content[:50])
+
+        # 循环提醒：重新调度下一次
+        if recurrence != "once":
+            await self._reload_and_reschedule(rid)
 
     async def _reload_and_reschedule(self, reminder_id: int) -> None:
         """从 DB 重新读取 reminder 并调度下一次触发。"""

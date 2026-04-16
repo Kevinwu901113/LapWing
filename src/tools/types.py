@@ -53,6 +53,11 @@ class ToolSpec:
     visibility: ToolVisibility = "model"
     risk_level: ToolRiskLevel = "low"
     metadata: dict[str, Any] = field(default_factory=dict)
+    # Phase 4: 工具重铸扩展字段
+    max_result_tokens: int = 2000
+    trust_required: str = "guest"       # 最低信任级别: "guest" / "trusted" / "owner"
+    destructive: bool = False            # 是否不可逆操作
+    owner_confirm: bool = False          # 是否需要 OWNER 确认
 
     def supports_capability(self, capability: str) -> bool:
         all_caps = {self.capability, *self.capabilities}

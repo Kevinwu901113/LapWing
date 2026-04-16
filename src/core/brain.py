@@ -255,12 +255,12 @@ class LapwingBrain:
             services["reminder_scheduler"] = self.reminder_scheduler
         if self.channel_manager is not None:
             services["channel_manager"] = self.channel_manager
-        delegation_manager = getattr(self, "delegation_manager", None)
-        if delegation_manager is not None:
-            services["delegation_manager"] = delegation_manager
-        agent_dispatcher = getattr(self, "agent_dispatcher", None)
-        if agent_dispatcher is not None:
-            services["agent_dispatcher"] = agent_dispatcher
+        agent_registry = getattr(self, "_agent_registry", None)
+        if agent_registry is not None:
+            services["agent_registry"] = agent_registry
+        dispatcher = getattr(self, "_dispatcher_ref", None)
+        if dispatcher is not None:
+            services["dispatcher"] = dispatcher
         services["router"] = self.router
         incident_manager = getattr(self, "incident_manager", None)
         if incident_manager is not None:
@@ -273,6 +273,19 @@ class LapwingBrain:
         if memory_vector_store is not None:
             services["vector_store"] = memory_vector_store
         services["conversation_memory"] = self.memory
+        # Phase 4: DurableScheduler + 个人工具所需服务
+        durable_scheduler = getattr(self, "_durable_scheduler_ref", None)
+        if durable_scheduler is not None:
+            services["durable_scheduler"] = durable_scheduler
+        from config.settings import QQ_KEVIN_ID
+        if QQ_KEVIN_ID:
+            services["owner_qq_id"] = QQ_KEVIN_ID
+        browser_manager = getattr(self, "browser_manager", None)
+        if browser_manager is not None:
+            services["browser_manager"] = browser_manager
+        vlm_client = getattr(self, "_vlm_client_ref", None)
+        if vlm_client is not None:
+            services["vlm"] = vlm_client
 
         deps = RuntimeDeps(
             execute_shell=execute_shell,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
@@ -167,6 +168,47 @@ class ErrorBurstGuard:
         if not self.recent_errors:
             return ""
         return f"最近 {len(self.recent_errors)} 次错误：" + "; ".join(self.recent_errors[-3:])
+
+
+@dataclass
+class ToolLoopContext:
+    """工具循环的运行时上下文，在阶段方法之间传递。"""
+
+    # 输入
+    messages: list[dict[str, Any]]
+    tools: list[dict[str, Any]]
+    constraints: Any  # ExecutionConstraints
+    chat_id: str
+    task_id: str
+    deps: RuntimeDeps
+    profile_obj: Any  # RuntimeProfile
+
+    # 回调
+    status_callback: Any | None
+    event_bus: Any | None
+    on_consent_required: Callable | None
+    on_interim_text: Callable[..., Awaitable[None]] | None
+    on_typing: Callable[[], Awaitable[None]] | None
+    services: dict[str, Any] | None
+    adapter: str
+    user_id: str
+    resumption_context: dict | None
+
+    # 状态对象
+    state: Any  # ExecutionSessionState
+    loop_detection_state: LoopDetectionState | None
+    recovery: LoopRecoveryState
+    no_action_budget: NoActionBudget
+    error_guard: ErrorBurstGuard
+    progress_state: Any | None  # ProgressState | None
+
+    # 运行时累积状态
+    last_payload: dict[str, Any] | None = None
+    final_reply: str | None = None
+    interim_parts: list[str] = field(default_factory=list)
+    simulated_tool_retries: int = 0
+    has_used_tools: bool = False
+    start_time: float = field(default_factory=time.perf_counter)
 
 
 def _refresh_voice_reminder(messages: list[dict]) -> None:

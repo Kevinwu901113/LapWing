@@ -18,6 +18,9 @@ from src.app.task_view import TaskViewStore
 from src.core.brain import LapwingBrain
 from src.core.channel_manager import ChannelManager
 from src.core.consciousness import ConsciousnessEngine
+from src.core.dispatcher import Dispatcher
+from src.core.durable_scheduler import DurableScheduler
+from src.core.event_logger_v2 import EventLogger
 from src.core.heartbeat import HeartbeatEngine
 from src.core.reminder_scheduler import ReminderScheduler
 from src.core.latency_monitor import LatencyMonitor
@@ -72,12 +75,17 @@ class AppContainer:
         self.heartbeat: HeartbeatEngine | None = None
         self.consciousness: ConsciousnessEngine | None = None
         self.reminder_scheduler: ReminderScheduler | None = None
+        self.durable_scheduler: DurableScheduler | None = None
         # 浏览器子系统（可选）
         self._browser_manager = None
         self._credential_vault = None
         self._browser_guard = None
 
         self.incident_manager = None
+
+        # Phase 5: Dispatcher + EventLogger v2（Phase 1 基础设施，现在接入 SSE）
+        self.event_logger_v2: EventLogger | None = None
+        self.dispatcher: Dispatcher | None = None
 
         self._prepared = False
         self._started = False
@@ -90,6 +98,16 @@ class AppContainer:
         init_vitals(self._data_dir)
 
         await self.brain.init_db()
+
+        # Phase 5: EventLogger v2 + Dispatcher 初始化
+        events_db = self._data_dir / "events_v2.db"
+        self.event_logger_v2 = EventLogger(events_db)
+        await self.event_logger_v2.init()
+        self.dispatcher = Dispatcher(self.event_logger_v2)
+        # 注入到 API server（server.start() 时才实际使用）
+        self.api_server._dispatcher = self.dispatcher
+        self.api_server._event_logger_v2 = self.event_logger_v2
+        logger.info("Phase 5: EventLogger v2 + Dispatcher 已初始化")
 
         # 浏览器子系统初始化（在依赖装配前启动，因为工具注册需要 browser_manager）
         if BROWSER_ENABLED and not PHASE0_MODE:
@@ -109,6 +127,7 @@ class AppContainer:
 
         if send_fn is not None and not PHASE0_MODE:
             from config.settings import CONSCIOUSNESS_ENABLED, HEARTBEAT_ENABLED
+            import asyncio as _asyncio
 
             self.reminder_scheduler = ReminderScheduler(
                 memory=self.brain.memory,
@@ -127,10 +146,39 @@ class AppContainer:
                 )
                 self.brain.consciousness_engine = self.consciousness
                 await self.consciousness.start()
+
+                # Phase 4: 连接 DurableScheduler → consciousness urgency queue
+                if self.durable_scheduler is not None:
+                    async def _on_reminder_fired(reminder):
+                        self.consciousness.push_urgency({
+                            "type": "reminder",
+                            "content": reminder.content,
+                            "reminder_id": reminder.reminder_id,
+                        })
+                    self.durable_scheduler.urgency_callback = _on_reminder_fired
+                    self.durable_scheduler.send_fn = send_fn
+                    self.durable_scheduler.brain = self.brain
+                    self._durable_scheduler_task = _asyncio.create_task(
+                        self.durable_scheduler.run_loop(),
+                        name="durable-scheduler",
+                    )
+                    # 更新 PromptBuilder 的 reminder_source
+                    if self.brain.prompt_builder is not None:
+                        self.brain.prompt_builder.reminder_source = self.durable_scheduler
+                    logger.info("DurableScheduler 循环已启动，已连接意识循环 urgency queue")
             elif HEARTBEAT_ENABLED:
                 self.heartbeat = self._build_heartbeat(send_fn)
                 self.heartbeat.start()
                 await self.reminder_scheduler.start()
+
+                # Phase 4: DurableScheduler 在非意识模式下也启动
+                if self.durable_scheduler is not None:
+                    self.durable_scheduler.send_fn = send_fn
+                    self.durable_scheduler.brain = self.brain
+                    self._durable_scheduler_task = _asyncio.create_task(
+                        self.durable_scheduler.run_loop(),
+                        name="durable-scheduler",
+                    )
         elif PHASE0_MODE:
             logger.info("Phase 0 模式：跳过意识循环/心跳/提醒调度")
 
@@ -147,6 +195,19 @@ class AppContainer:
         logger.info("应用容器启动完成")
 
     async def shutdown(self) -> None:
+        import asyncio as _asyncio
+
+        # DurableScheduler shutdown (Phase 4)
+        if self.durable_scheduler is not None:
+            await self.durable_scheduler.stop()
+            if hasattr(self, "_durable_scheduler_task") and self._durable_scheduler_task is not None:
+                self._durable_scheduler_task.cancel()
+                try:
+                    await self._durable_scheduler_task
+                except _asyncio.CancelledError:
+                    pass
+            self.durable_scheduler = None
+
         # Consciousness engine shutdown (must come first — it owns reminder_scheduler)
         if self.consciousness is not None:
             await self.consciousness.stop()
@@ -190,6 +251,10 @@ class AppContainer:
                 await self._embedding_task
             except _asyncio.CancelledError:
                 pass
+
+        # EventLogger v2 关闭
+        if self.event_logger_v2 is not None:
+            await self.event_logger_v2.close()
 
         await self.brain.memory.close()
         from src.logging.event_logger import events, get_event_logger
@@ -266,54 +331,95 @@ class AppContainer:
         if recovered:
             logger.info("恢复了 %d 个未完成任务流", len(recovered))
 
-        # 子 Agent 委托系统（可选）
-        from config.settings import DELEGATION_ENABLED
-        if DELEGATION_ENABLED:
-            from src.core.delegation import DelegationManager
-            self.brain.delegation_manager = DelegationManager(
-                router=self.brain.router,
-                tool_registry=self.brain.tool_registry,
-                event_bus=self.event_bus,
-            )
-            logger.info("子 Agent 委托系统已就绪")
-
-        # Agent Team 系统（可选，新架构）
+        # ── Agent Team 系统（Phase 6） ──────────────────────────────────
         from config.settings import AGENT_TEAM_ENABLED
         if AGENT_TEAM_ENABLED:
-            from src.core.agent_registry import AgentRegistry
-            from src.core.agent_dispatcher import AgentDispatcher
-            agent_registry = AgentRegistry()
-            self.brain.agent_registry = agent_registry
-            from src.api.routes.chat_ws import forward_agent_progress, forward_agent_result
-
-            self.brain.agent_dispatcher = AgentDispatcher(
-                registry=agent_registry,
-                task_runtime=self.brain.task_runtime,
-                on_progress=forward_agent_progress,
-                on_result=forward_agent_result,
+            from src.agents.registry import AgentRegistry
+            from src.agents.team_lead import TeamLead
+            from src.agents.researcher import Researcher
+            from src.agents.coder import Coder
+            from src.tools.agent_tools import register_agent_tools
+            from src.tools.workspace_tools import (
+                ws_file_read_executor,
+                ws_file_write_executor,
+                ws_file_list_executor,
             )
+
+            agent_registry = AgentRegistry()
+
             # 注册具体 Agent
-            from src.agents.researcher import ResearcherAgent
-            from src.core.agent_registry import AgentCapability
-            researcher = ResearcherAgent()
-            agent_registry.register(researcher, [
-                AgentCapability("web_search", "网络搜索", ["web_search"]),
-                AgentCapability("web_fetch", "网页内容抓取", ["web_fetch"]),
-                AgentCapability("summarize", "信息摘要", []),
-                AgentCapability("multi_source_synthesis", "多来源综合", ["web_search", "web_fetch"]),
-            ])
+            agent_registry.register(
+                "team_lead",
+                TeamLead.create(
+                    self.brain.router,
+                    self.brain.tool_registry,
+                    self.dispatcher,
+                ),
+            )
+            agent_registry.register(
+                "researcher",
+                Researcher.create(
+                    self.brain.router,
+                    self.brain.tool_registry,
+                    self.dispatcher,
+                ),
+            )
+            agent_registry.register(
+                "coder",
+                Coder.create(
+                    self.brain.router,
+                    self.brain.tool_registry,
+                    self.dispatcher,
+                ),
+            )
 
-            if getattr(self.brain, "browser_manager", None):
-                from src.agents.browser_agent import BrowserAgent
-                browser_agent = BrowserAgent(self.brain.browser_manager)
-                agent_registry.register(browser_agent, [
-                    AgentCapability("browse_web", "浏览网页", ["browser_open", "browser_screenshot"]),
-                    AgentCapability("screenshot", "页面截图", ["browser_screenshot"]),
-                    AgentCapability("dom_extract", "DOM 内容提取", ["browser_open"]),
-                    AgentCapability("page_interact", "页面交互", ["browser_click", "browser_type"]),
-                ])
+            # 注册 Agent 工具（delegate + delegate_to_agent）
+            register_agent_tools(self.brain.tool_registry)
 
-            logger.info("Agent Team 系统已就绪（%d agents）", agent_registry.available_count)
+            # 注册 workspace 工具（供 Coder 使用，visibility=internal 不暴露给主聊天）
+            from src.tools.types import ToolSpec as _TS
+            self.brain.tool_registry.register(_TS(
+                name="ws_file_read",
+                description="读取工作区文件",
+                json_schema={"type": "object", "properties": {
+                    "path": {"type": "string", "description": "相对路径"},
+                }, "required": ["path"]},
+                executor=ws_file_read_executor,
+                capability="agent",
+                visibility="internal",
+            ))
+            self.brain.tool_registry.register(_TS(
+                name="ws_file_write",
+                description="写入工作区文件",
+                json_schema={"type": "object", "properties": {
+                    "path": {"type": "string", "description": "相对路径"},
+                    "content": {"type": "string", "description": "文件内容"},
+                }, "required": ["path", "content"]},
+                executor=ws_file_write_executor,
+                capability="agent",
+                visibility="internal",
+            ))
+            self.brain.tool_registry.register(_TS(
+                name="ws_file_list",
+                description="列出工作区文件",
+                json_schema={"type": "object", "properties": {
+                    "path": {"type": "string", "description": "相对路径", "default": "."},
+                }, "required": []},
+                executor=ws_file_list_executor,
+                capability="agent",
+                visibility="internal",
+            ))
+
+            # 注入 services
+            self.brain._agent_registry = agent_registry
+            self.brain._dispatcher_ref = self.dispatcher
+
+            # 创建工作区目录
+            from pathlib import Path
+            Path("data/agent_workspace").mkdir(parents=True, exist_ok=True)
+            Path("data/agent_workspace/patches").mkdir(parents=True, exist_ok=True)
+
+            logger.info("Agent Team 系统已就绪（%d agents）", len(agent_registry.list_names()))
 
         # 文件快照回滚
         from src.core.checkpoint_manager import CheckpointManager
@@ -335,6 +441,92 @@ class AppContainer:
             self.brain.pending_task_store = pending_store
             self.brain.task_runtime.set_pending_task_store(pending_store)
             logger.info("未完成任务恢复已就绪")
+
+        # Phase 4: DurableScheduler（初始化但不启动循环——循环在 start() 中启动）
+        self.durable_scheduler = DurableScheduler(
+            db_path=self._db_path,
+        )
+        self.brain._durable_scheduler_ref = self.durable_scheduler
+
+        # Phase 4: 注册个人工具
+        from src.tools.personal_tools import register_personal_tools
+        personal_services = {
+            "channel_manager": self.channel_manager,
+            "scheduler": self.durable_scheduler,
+            "browser_manager": self._browser_manager,
+            "vlm": getattr(self, "_vlm_client", None),
+            "owner_qq_id": getattr(__import__("config.settings", fromlist=["QQ_KEVIN_ID"]), "QQ_KEVIN_ID", ""),
+        }
+        register_personal_tools(self.brain.tool_registry, personal_services)
+        logger.info("Phase 4 个人工具已注册")
+
+        # Phase 4: 注册 DurableScheduler 提醒工具
+        from src.core.durable_scheduler import DURABLE_SCHEDULER_EXECUTORS
+        from src.tools.types import ToolSpec
+        self.brain.tool_registry.register(ToolSpec(
+            name="set_reminder",
+            description=(
+                "设置提醒。指定时间和内容。"
+                "例如：time='2026-04-17 09:00', content='查看邮件'"
+            ),
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "time": {
+                        "type": "string",
+                        "description": "提醒时间，格式 YYYY-MM-DD HH:MM（台北时间）",
+                    },
+                    "content": {
+                        "type": "string",
+                        "description": "提醒内容",
+                    },
+                    "repeat": {
+                        "type": "string",
+                        "enum": ["daily", "weekly", "interval"],
+                        "description": "重复方式（可选）",
+                    },
+                    "interval_minutes": {
+                        "type": "integer",
+                        "description": "仅 interval 类型：间隔分钟数",
+                    },
+                    "execution_mode": {
+                        "type": "string",
+                        "enum": ["notify", "agent"],
+                        "description": "notify=发文字提醒（默认）; agent=执行任务并发送结果",
+                    },
+                },
+                "required": ["time", "content"],
+            },
+            executor=DURABLE_SCHEDULER_EXECUTORS["set_reminder"],
+            capability="schedule",
+            risk_level="medium",
+        ))
+        self.brain.tool_registry.register(ToolSpec(
+            name="view_reminders",
+            description="查看所有未触发的提醒。",
+            json_schema={"type": "object", "properties": {}},
+            executor=DURABLE_SCHEDULER_EXECUTORS["view_reminders"],
+            capability="schedule",
+            risk_level="low",
+        ))
+        self.brain.tool_registry.register(ToolSpec(
+            name="cancel_reminder",
+            description="取消一条提醒。",
+            json_schema={
+                "type": "object",
+                "properties": {
+                    "reminder_id": {
+                        "type": "string",
+                        "description": "提醒 ID（从 view_reminders 获取）",
+                    },
+                },
+                "required": ["reminder_id"],
+            },
+            executor=DURABLE_SCHEDULER_EXECUTORS["cancel_reminder"],
+            capability="schedule",
+            risk_level="medium",
+        ))
+        logger.info("Phase 4 DurableScheduler + 提醒工具已装配")
 
     async def _init_browser(self) -> None:
         """初始化浏览器子系统组件。"""
@@ -374,6 +566,7 @@ class AppContainer:
             from src.core.minimax_vlm import MiniMaxVLM
             self._vlm_client = MiniMaxVLM(api_key=MINIMAX_VLM_API_KEY, api_host=MINIMAX_VLM_HOST)
             self._browser_manager.set_vlm_client(self._vlm_client)
+            self.brain._vlm_client_ref = self._vlm_client
             logger.info("MiniMax VLM 客户端已注入浏览器子系统")
 
         logger.info("浏览器子系统已就绪")

@@ -49,8 +49,6 @@ async def test_start_and_shutdown_calls_lifecycle_components():
     heartbeat.start.assert_called_once()
     heartbeat.shutdown.assert_awaited_once()
     api_server.shutdown.assert_awaited_once()
-    brain.interest_tracker.shutdown.assert_awaited_once()
-    brain.fact_extractor.shutdown.assert_awaited_once()
     brain.memory.close.assert_awaited_once()
 
 

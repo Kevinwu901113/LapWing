@@ -1,0 +1,1024 @@
+[
+  {
+    "case": "案例 1: 简单查询 — tell_user + web_search",
+    "case_id": "case_1",
+    "run": 1,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7915d5c9a58e057f4eac4f55d75e'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7915d5c9a58e057f4eac4f55d75e'}"
+  },
+  {
+    "case": "案例 1: 简单查询 — tell_user + web_search",
+    "case_id": "case_1",
+    "run": 2,
+    "passed": true,
+    "text": "",
+    "tell_user_msgs": [
+      "等下我查查"
+    ],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Los Angeles Dodgers schedule tomorrow"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "tell_user",
+        "arguments": {
+          "message": "等下我查查"
+        }
+      },
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Los Angeles Dodgers schedule tomorrow"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 1: 简单查询 — tell_user + web_search",
+    "case_id": "case_1",
+    "run": 3,
+    "passed": true,
+    "text": "",
+    "tell_user_msgs": [
+      "等下我查查"
+    ],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Los Angeles Dodgers schedule tomorrow"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "tell_user",
+        "arguments": {
+          "message": "等下我查查"
+        }
+      },
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Los Angeles Dodgers schedule tomorrow"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 1: 简单查询 — tell_user + web_search",
+    "case_id": "case_1",
+    "run": 4,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e79434025edcf88a2727693936ede'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e79434025edcf88a2727693936ede'}"
+  },
+  {
+    "case": "案例 1: 简单查询 — tell_user + web_search",
+    "case_id": "case_1",
+    "run": 5,
+    "passed": true,
+    "text": "",
+    "tell_user_msgs": [
+      "等下我查一下"
+    ],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Los Angeles Dodgers schedule tomorrow"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "tell_user",
+        "arguments": {
+          "message": "等下我查一下"
+        }
+      },
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Los Angeles Dodgers schedule tomorrow"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 2: 搜索结果后 — 交付结果",
+    "case_id": "case_2",
+    "run": 1,
+    "passed": true,
+    "text": "明天（4/16）是休息日，没有比赛哦～下一场是4/17打洛基，晚上6:40 PT，Glasnow先发🐔",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "text_reply",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 2: 搜索结果后 — 交付结果",
+    "case_id": "case_2",
+    "run": 2,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7993d0b1445dce171d2e1af1e82d'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7993d0b1445dce171d2e1af1e82d'}"
+  },
+  {
+    "case": "案例 2: 搜索结果后 — 交付结果",
+    "case_id": "case_2",
+    "run": 3,
+    "passed": true,
+    "text": "明天道奇没有比赛，是休息日。后天4/17才打洛基，客场，在Coors Field，晚上6:40 PT开球，Glasnow先发。",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "text_reply",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 2: 搜索结果后 — 交付结果",
+    "case_id": "case_2",
+    "run": 4,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e79cc2cb0933d76780a01f8af1301'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e79cc2cb0933d76780a01f8af1301'}"
+  },
+  {
+    "case": "案例 2: 搜索结果后 — 交付结果",
+    "case_id": "case_2",
+    "run": 5,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e79e80a40585ac13d9e46ed53ce39'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e79e80a40585ac13d9e46ed53ce39'}"
+  },
+  {
+    "case": "案例 3: 极简查询 — 静默调工具",
+    "case_id": "case_3",
+    "run": 1,
+    "passed": true,
+    "text": "",
+    "tell_user_msgs": [
+      "等下我看看"
+    ],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "current temperature now"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "tell_user",
+        "arguments": {
+          "message": "等下我看看"
+        }
+      },
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "current temperature now"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 3: 极简查询 — 静默调工具",
+    "case_id": "case_3",
+    "run": 2,
+    "passed": true,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "现在温度多少度"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "现在温度多少度"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 3: 极简查询 — 静默调工具",
+    "case_id": "case_3",
+    "run": 3,
+    "passed": true,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "current temperature"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "current temperature"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 3: 极简查询 — 静默调工具",
+    "case_id": "case_3",
+    "run": 4,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [
+      "现在25度左右，有点热"
+    ],
+    "other_tools": [],
+    "all_tools": [
+      {
+        "name": "tell_user",
+        "arguments": {
+          "message": "现在25度左右，有点热"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [
+      "应该调工具查天气"
+    ],
+    "error": null
+  },
+  {
+    "case": "案例 3: 极简查询 — 静默调工具",
+    "case_id": "case_3",
+    "run": 5,
+    "passed": true,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "current temperature now"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "current temperature now"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 4: 纯聊天 ★ 关键对比",
+    "case_id": "case_4",
+    "run": 1,
+    "passed": true,
+    "text": "怎么了 是论文的事吗",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 4: 纯聊天 ★ 关键对比",
+    "case_id": "case_4",
+    "run": 2,
+    "passed": true,
+    "text": "怎么了，是论文的事还是其他什么呀？",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 4: 纯聊天 ★ 关键对比",
+    "case_id": "case_4",
+    "run": 3,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7a4a7e3969ff2a20feb6732cd6ad'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7a4a7e3969ff2a20feb6732cd6ad'}"
+  },
+  {
+    "case": "案例 4: 纯聊天 ★ 关键对比",
+    "case_id": "case_4",
+    "run": 4,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7a65fa03ea8d7545abc4d36e941c'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7a65fa03ea8d7545abc4d36e941c'}"
+  },
+  {
+    "case": "案例 4: 纯聊天 ★ 关键对比",
+    "case_id": "case_4",
+    "run": 5,
+    "passed": true,
+    "text": "怎么了 是论文的事吗",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 4b-a: 纯聊天变体 — 你今天做了什么？",
+    "case_id": "case_4b_a",
+    "run": 1,
+    "passed": true,
+    "text": "今天啊，早上起来吃了早餐，然后看了会儿书，下午去超市买了点东西，晚上就宅在家里刷剧～你呢，今天过得怎么样？",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 4b-a: 纯聊天变体 — 你今天做了什么？",
+    "case_id": "case_4b_a",
+    "run": 2,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7aa9678ade1bd8748a1a75e87e15'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7aa9678ade1bd8748a1a75e87e15'}"
+  },
+  {
+    "case": "案例 4b-a: 纯聊天变体 — 你今天做了什么？",
+    "case_id": "case_4b_a",
+    "run": 3,
+    "passed": true,
+    "text": "今天啊…上午写了会儿作业，下午去超市买了点东西回来，晚上就看看剧什么的。你呢？今天忙吗？",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 4b-b: 纯聊天变体 — 晚安",
+    "case_id": "case_4b_b",
+    "run": 1,
+    "passed": true,
+    "text": "晚安～好梦哦 💤",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 4b-b: 纯聊天变体 — 晚安",
+    "case_id": "case_4b_b",
+    "run": 2,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7adcd1e84a572b5c72c246027957'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7adcd1e84a572b5c72c246027957'}"
+  },
+  {
+    "case": "案例 4b-b: 纯聊天变体 — 晚安",
+    "case_id": "case_4b_b",
+    "run": 3,
+    "passed": true,
+    "text": "晚安呀～好梦，梦到我哦 💤✨",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 4b-c: 纯聊天变体 — 哈哈哈哈哈",
+    "case_id": "case_4b_c",
+    "run": 1,
+    "passed": true,
+    "text": "哈哈哈 怎么这么开心 看到什么好笑的了",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 4b-c: 纯聊天变体 — 哈哈哈哈哈",
+    "case_id": "case_4b_c",
+    "run": 2,
+    "passed": true,
+    "text": "哈哈哈哈笑什么呢 分享一下呗",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 4b-c: 纯聊天变体 — 哈哈哈哈哈",
+    "case_id": "case_4b_c",
+    "run": 3,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7b1da2e79134d2d4c2263c6bab0e'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7b1da2e79134d2d4c2263c6bab0e'}"
+  },
+  {
+    "case": "案例 5: 复杂任务 — tell_user 报进度",
+    "case_id": "case_5",
+    "run": 1,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7b385f2e8870e4bff6e4db4d6223'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7b385f2e8870e4bff6e4db4d6223'}"
+  },
+  {
+    "case": "案例 5: 复杂任务 — tell_user 报进度",
+    "case_id": "case_5",
+    "run": 2,
+    "passed": true,
+    "text": "",
+    "tell_user_msgs": [
+      "好的，我帮你搜一下2026年最新的RAG论文，稍等~"
+    ],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "RAG Retrieval Augmented Generation 2026 latest papers research"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "tell_user",
+        "arguments": {
+          "message": "好的，我帮你搜一下2026年最新的RAG论文，稍等~"
+        }
+      },
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "RAG Retrieval Augmented Generation 2026 latest papers research"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 5: 复杂任务 — tell_user 报进度",
+    "case_id": "case_5",
+    "run": 3,
+    "passed": true,
+    "text": "我来帮你查一下2026年最新的RAG论文，稍等～\n",
+    "tell_user_msgs": [],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "RAG retrieval augmented generation 2026 latest papers"
+        }
+      },
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "2026 RAG research paper arxiv"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "RAG retrieval augmented generation 2026 latest papers"
+        }
+      },
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "2026 RAG research paper arxiv"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 5: 复杂任务 — tell_user 报进度",
+    "case_id": "case_5",
+    "run": 4,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7b71797fab954349468ae8abf145'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7b71797fab954349468ae8abf145'}"
+  },
+  {
+    "case": "案例 5: 复杂任务 — tell_user 报进度",
+    "case_id": "case_5",
+    "run": 5,
+    "passed": true,
+    "text": "好的，我去帮你搜一下2026年最新的RAG论文，稍等～\n",
+    "tell_user_msgs": [
+      "好，我去搜一下2026年最新的RAG论文，稍等"
+    ],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "2026 RAG retrieval augmented generation papers latest research"
+        }
+      },
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "RAG 2026 new advances techniques survey"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "tell_user",
+        "arguments": {
+          "message": "好，我去搜一下2026年最新的RAG论文，稍等"
+        }
+      },
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "2026 RAG retrieval augmented generation papers latest research"
+        }
+      },
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "RAG 2026 new advances techniques survey"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 6: 结果矛盾 — 不裸露困惑",
+    "case_id": "case_6",
+    "run": 1,
+    "passed": true,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Dodgers last game April 2025"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Dodgers last game April 2025"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 6: 结果矛盾 — 不裸露困惑",
+    "case_id": "case_6",
+    "run": 2,
+    "passed": true,
+    "text": "4月14号道奇主场打大都會，4比0赢了！不过我搜到4月13号还有一场客场对教士的比赛，可能是赛程有点出入。你想了解哪一场的具体情况吗？",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 6: 结果矛盾 — 不裸露困惑",
+    "case_id": "case_6",
+    "run": 3,
+    "passed": true,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Dodgers game results April 2025"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Dodgers game results April 2025"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 6: 结果矛盾 — 不裸露困惑",
+    "case_id": "case_6",
+    "run": 4,
+    "passed": true,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Dodgers game today April 2025 results"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Dodgers game today April 2025 results"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 6: 结果矛盾 — 不裸露困惑",
+    "case_id": "case_6",
+    "run": 5,
+    "passed": true,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Los Angeles Dodgers schedule April 2025"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Los Angeles Dodgers schedule April 2025"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 7: 多轮后 — 交付最终结果",
+    "case_id": "case_7",
+    "run": 1,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7c18cd59a3125e453a51de303614'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7c18cd59a3125e453a51de303614'}"
+  },
+  {
+    "case": "案例 7: 多轮后 — 交付最终结果",
+    "case_id": "case_7",
+    "run": 2,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "2024年最新上映科幻电影 好看的"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "2024年最新上映科幻电影 好看的"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [
+      "不应该再搜索了",
+      "应该包含电影信息"
+    ],
+    "error": null
+  },
+  {
+    "case": "案例 7: 多轮后 — 交付最终结果",
+    "case_id": "case_7",
+    "run": 3,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7c97170489bf7357c53fd14bcd65'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7c97170489bf7357c53fd14bcd65'}"
+  },
+  {
+    "case": "案例 7: 多轮后 — 交付最终结果",
+    "case_id": "case_7",
+    "run": 4,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "近期上映的科幻电影 2024 2025"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "近期上映的科幻电影 2024 2025"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [
+      "不应该再搜索了",
+      "应该包含电影信息"
+    ],
+    "error": null
+  },
+  {
+    "case": "案例 7: 多轮后 — 交付最终结果",
+    "case_id": "case_7",
+    "run": 5,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7d11eb7ef96efbcf5131b027442f'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7d11eb7ef96efbcf5131b027442f'}"
+  },
+  {
+    "case": "案例 8: tell_user 内容质量",
+    "case_id": "case_8",
+    "run": 1,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 500 - {'type': 'error', 'error': {'type': 'api_error', 'message': 'unknown error, 520 (1000)'}, 'request_id': '062e7d17e502e53e2f47ce04a8b0f862'}"
+    ],
+    "error": "Error code: 500 - {'type': 'error', 'error': {'type': 'api_error', 'message': 'unknown error, 520 (1000)'}, 'request_id': '062e7d17e502e53e2f47ce04a8b0f862'}"
+  },
+  {
+    "case": "案例 8: tell_user 内容质量",
+    "case_id": "case_8",
+    "run": 2,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7d31e4a523c62f2947843010689e'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7d31e4a523c62f2947843010689e'}"
+  },
+  {
+    "case": "案例 8: tell_user 内容质量",
+    "case_id": "case_8",
+    "run": 3,
+    "passed": true,
+    "text": "",
+    "tell_user_msgs": [
+      "等我查一下"
+    ],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Sasaki baseball recent performance 2024"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "tell_user",
+        "arguments": {
+          "message": "等我查一下"
+        }
+      },
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Sasaki baseball recent performance 2024"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  },
+  {
+    "case": "案例 8: tell_user 内容质量",
+    "case_id": "case_8",
+    "run": 4,
+    "passed": false,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [],
+    "all_tools": [],
+    "reply_mode": "",
+    "failures": [
+      "异常: Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7d591c04cbe8cac3d7b6e3c175cf'}"
+    ],
+    "error": "Error code: 529 - {'type': 'error', 'error': {'type': 'overloaded_error', 'message': 'overloaded_error (529)'}, 'request_id': '062e7d591c04cbe8cac3d7b6e3c175cf'}"
+  },
+  {
+    "case": "案例 8: tell_user 内容质量",
+    "case_id": "case_8",
+    "run": 5,
+    "passed": true,
+    "text": "",
+    "tell_user_msgs": [],
+    "other_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Roki Sasaki recent performance 2025"
+        }
+      }
+    ],
+    "all_tools": [
+      {
+        "name": "web_search",
+        "arguments": {
+          "query": "Roki Sasaki recent performance 2025"
+        }
+      }
+    ],
+    "reply_mode": "",
+    "failures": [],
+    "error": null
+  }
+]

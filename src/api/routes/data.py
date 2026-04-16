@@ -9,8 +9,6 @@ from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from src.memory.user_facts import filter_visible_facts
-
 logger = logging.getLogger("lapwing.api.routes.data")
 
 router = APIRouter(tags=["data"])
@@ -18,11 +16,6 @@ router = APIRouter(tags=["data"])
 # 由 server.py init() 注入
 _brain = None
 _journal_dir: Path | None = None
-
-
-class MemoryDeleteRequest(BaseModel):
-    chat_id: str
-    fact_key: str
 
 
 def init(brain, *, journal_dir: Path) -> None:
@@ -78,37 +71,20 @@ async def get_chats():
 
 @router.get("/api/interests")
 async def get_interests(chat_id: str = Query(...)):
-    items = await _brain.memory.get_top_interests(chat_id, limit=10)
-    return {"chat_id": chat_id, "items": items}
+    # Phase 1: interest tracking removed
+    return {"chat_id": chat_id, "items": []}
 
 
 @router.get("/api/memory")
 async def get_memory(chat_id: str = Query(...)):
-    facts = filter_visible_facts(await _brain.memory.get_user_facts(chat_id))
-    items = [
-        {
-            "index": index,
-            "fact_key": fact["fact_key"],
-            "fact_value": fact["fact_value"],
-            "updated_at": fact.get("updated_at"),
-        }
-        for index, fact in enumerate(facts, start=1)
-    ]
-    return {"chat_id": chat_id, "items": items}
-
-
-@router.post("/api/memory/delete")
-async def delete_memory(payload: MemoryDeleteRequest):
-    success = await _brain.memory.delete_user_fact(payload.chat_id, payload.fact_key)
-    return {"success": success}
+    # Phase 1: user_facts removed
+    return {"chat_id": chat_id, "items": []}
 
 
 @router.get("/api/memory/health")
 async def get_memory_health():
-    memory_index = getattr(_brain, "memory_index", None)
-    if memory_index is None:
-        return {"score": 0, "total": 0, "dimensions": {}}
-    return memory_index.health_score()
+    # Phase 1: memory_index removed
+    return {"score": 0, "total": 0, "dimensions": {}}
 
 
 @router.get("/api/task-flows")

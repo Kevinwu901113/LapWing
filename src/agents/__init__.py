@@ -1,1 +1,1 @@
-"""Lapwing 子 Agent 实现。"""
+"""Lapwing Agent Team 实现（Phase 6）。"""

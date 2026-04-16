@@ -102,58 +102,7 @@ class TestSenseLayer:
         assert ctx.top_interests_summary == "- Python 编程（8.5）\n- 机器学习（4.2）"
 
 
-class TestProactiveRuntime:
-    @pytest.fixture
-    def runtime(self, mock_brain):
-        registry = ActionRegistry()
-        sense = SenseLayer(mock_brain.memory)
-        return ProactiveRuntime(
-            brain=mock_brain,
-            send_fn=AsyncMock(),
-            registry=registry,
-            sense=sense,
-        )
-
-    async def test_decide_does_not_corrupt_braces_in_user_facts(self, runtime, mock_brain):
-        ctx = SenseContext(
-            beat_type="fast",
-            now=datetime.now(timezone.utc),
-            last_interaction=None,
-            silence_hours=5.0,
-            user_facts_summary="- test: {not_a_placeholder}",
-            recent_memory_summary="",
-            chat_id="c1",
-            top_interests_summary="（暂无明显兴趣）",
-        )
-        await runtime._decide(ctx, [FakeFastAction()])
-        prompt_content = mock_brain.router.complete_structured.call_args.args[0][0]["content"]
-        assert "{not_a_placeholder}" in prompt_content
-        assert "{{not_a_placeholder}}" not in prompt_content
-
-    async def test_decide_includes_top_interests_in_prompt(self, runtime, mock_brain):
-        ctx = SenseContext(
-            beat_type="fast",
-            now=datetime.now(timezone.utc),
-            last_interaction=None,
-            silence_hours=5.0,
-            user_facts_summary="（暂无已知信息）",
-            recent_memory_summary="",
-            chat_id="c1",
-            top_interests_summary="- Python 编程（8.5）",
-        )
-        await runtime._decide(ctx, [FakeFastAction()])
-        prompt_content = mock_brain.router.complete_structured.call_args.args[0][0]["content"]
-        assert "- Python 编程（8.5）" in prompt_content
-
-    async def test_minute_process_does_not_call_llm_and_executes_always(self, runtime, mock_brain):
-        action = FakeMinuteAlwaysAction()
-        action.execute = AsyncMock()
-        runtime._registry.register(action)
-
-        await runtime.process(chat_id="c1", beat_type="minute")
-
-        action.execute.assert_awaited_once()
-        mock_brain.router.complete_structured.assert_not_called()
+# TestProactiveRuntime removed (Phase 1: heartbeat actions deleted, prompt file removed)
 
 
 class TestHeartbeatEngine:

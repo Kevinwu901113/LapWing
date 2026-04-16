@@ -1,11 +1,10 @@
-"""AuthorityGate — Lapwing 权限认证系统。
+"""AuthorityGate — 四级权限控制。
 
-三级权限模型：
-  OWNER  — Kevin，可以做一切
-  TRUSTED — 信任的朋友，可用普通功能（搜索、聊天等）
-  GUEST  — 群里的其他人，只能聊天
-
-对应 CLAUDE.md §4 的设计。
+Phase 1 重铸版：
+  IGNORE  (0) — 完全忽略（未知来源）
+  GUEST   (1) — 群里的其他人，只能聊天
+  TRUSTED (2) — 信任的朋友，可用普通功能
+  OWNER   (3) — Kevin，可以做一切
 """
 
 from __future__ import annotations
@@ -16,22 +15,14 @@ from config.settings import DESKTOP_DEFAULT_OWNER, OWNER_IDS, TRUSTED_IDS
 
 
 class AuthLevel(IntEnum):
-    GUEST = 0
-    TRUSTED = 1
-    OWNER = 2
+    IGNORE = 0
+    GUEST = 1
+    TRUSTED = 2
+    OWNER = 3
 
 
 def identify(adapter: str, user_id: str) -> AuthLevel:
-    """
-    识别用户权限级别。
-
-    Args:
-        adapter: 消息来源适配器，如 "qq"、"desktop"
-        user_id: 用户 ID 字符串
-
-    Returns:
-        对应的权限级别
-    """
+    """识别用户权限级别。"""
     # 桌面应用本地连接 → 默认 OWNER
     if adapter == "desktop" and DESKTOP_DEFAULT_OWNER:
         return AuthLevel.OWNER
@@ -44,19 +35,25 @@ def identify(adapter: str, user_id: str) -> AuthLevel:
     if uid and uid in TRUSTED_IDS:
         return AuthLevel.TRUSTED
 
-    return AuthLevel.GUEST
+    # QQ 群/私聊中的未知用户
+    if adapter in ("qq", "qq_group"):
+        return AuthLevel.GUEST
+
+    return AuthLevel.IGNORE
 
 
 # 工具名 → 最低所需权限
-# 基于 src/tools/registry.py 中注册的实际工具名
 OPERATION_AUTH: dict[str, AuthLevel] = {
-    # 纯聊天（无工具时）
     "chat": AuthLevel.GUEST,
     # 信息查询类
     "web_search": AuthLevel.TRUSTED,
     "web_fetch": AuthLevel.TRUSTED,
     "file_list_directory": AuthLevel.TRUSTED,
     "activate_skill": AuthLevel.TRUSTED,
+    "get_weather": AuthLevel.GUEST,
+    "image_search": AuthLevel.TRUSTED,
+    "send_image": AuthLevel.TRUSTED,
+    "session_search": AuthLevel.TRUSTED,
     # 文件和系统操作类 → OWNER
     "execute_shell": AuthLevel.OWNER,
     "read_file": AuthLevel.OWNER,
@@ -69,17 +66,25 @@ OPERATION_AUTH: dict[str, AuthLevel] = {
     "verify_code_result": AuthLevel.OWNER,
     "verify_workspace": AuthLevel.OWNER,
     "memory_note": AuthLevel.OWNER,
-    # Memory CRUD（Wave 1）
     "memory_list": AuthLevel.OWNER,
     "memory_read": AuthLevel.OWNER,
     "memory_edit": AuthLevel.OWNER,
     "memory_delete": AuthLevel.OWNER,
     "memory_search": AuthLevel.OWNER,
-    # 自主调度（Wave 1）
     "schedule_task": AuthLevel.OWNER,
     "list_scheduled_tasks": AuthLevel.OWNER,
     "cancel_scheduled_task": AuthLevel.OWNER,
-    # 浏览器操作（全部 OWNER only）
+    "delegate_task": AuthLevel.OWNER,
+    "report_incident": AuthLevel.OWNER,
+    "self_status": AuthLevel.OWNER,
+    "trace_mark": AuthLevel.OWNER,
+    "send_proactive_message": AuthLevel.OWNER,
+    # 后台进程
+    "process_spawn": AuthLevel.OWNER,
+    "process_status": AuthLevel.OWNER,
+    "process_kill": AuthLevel.OWNER,
+    "process_logs": AuthLevel.OWNER,
+    # 浏览器操作
     "browser_open": AuthLevel.OWNER,
     "browser_click": AuthLevel.OWNER,
     "browser_type": AuthLevel.OWNER,
@@ -100,12 +105,10 @@ DEFAULT_AUTH: AuthLevel = AuthLevel.OWNER
 
 
 def authorize(tool_name: str, auth_level: AuthLevel) -> tuple[bool, str]:
-    """
-    检查用户是否有权限使用某个工具。
+    """检查用户是否有权限使用某个工具。"""
+    if auth_level == AuthLevel.IGNORE:
+        return False, "无法识别你的身份。"
 
-    Returns:
-        (是否允许, 拒绝理由)。允许时理由为空字符串。
-    """
     required = OPERATION_AUTH.get(tool_name, DEFAULT_AUTH)
 
     if auth_level >= required:

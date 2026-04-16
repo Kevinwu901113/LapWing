@@ -20,8 +20,6 @@ from src.tools.handlers import (
     verify_code_result_tool,
     verify_workspace_tool,
     weather_tool,
-    web_fetch_tool,
-    web_search_tool,
     write_file_tool,
 )
 from src.tools.skill_tools import skill_list_tool, skill_view_tool
@@ -269,45 +267,7 @@ def build_default_tool_registry() -> ToolRegistry:
             risk_level="low",
         ))
 
-    registry.register(
-        ToolSpec(
-            name="web_search",
-            description="联网搜索网页信息。输入 query，返回标题、链接和摘要结果列表。默认搜索中文内容——query 应该用中文写，除非要搜的内容本身是英文的（如英文论文、英文软件文档）。",
-            json_schema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "搜索关键词或问题"},
-                    "max_results": {
-                        "type": "integer",
-                        "description": "可选，返回结果数量（1-10，默认使用 SEARCH_MAX_RESULTS）",
-                    },
-                },
-                "required": ["query"],
-            },
-            executor=web_search_tool,
-            capability="web",
-            risk_level="medium",
-        )
-    )
-
-    registry.register(
-        ToolSpec(
-            name="web_fetch",
-            description="获取指定 URL 的网页内容。可以附带一个问题，系统会自动提取与问题相关的内容。",
-            json_schema={
-                "type": "object",
-                "properties": {
-                    "url": {"type": "string", "description": "需要抓取的网页 URL（http/https）"},
-                    "question": {"type": "string", "description": "想从这个网页中了解的问题（可选，填写后系统会自动提取相关内容而非返回全文）"},
-                    "max_chars": {"type": "integer", "description": "可选，正文最大字符数（默认 8000）"},
-                },
-                "required": ["url"],
-            },
-            executor=web_fetch_tool,
-            capability="web",
-            risk_level="medium",
-        )
-    )
+    # web_search 和 web_fetch 已由 personal_tools.py 注册（Phase 4）
 
     registry.register(
         ToolSpec(
@@ -645,7 +605,6 @@ def build_default_tool_registry() -> ToolRegistry:
     )
 
     # memory_crud (memory_list/read/edit/delete/search) 已被 Phase 3 工具替代
-    from config.settings import SELF_SCHEDULE_ENABLED
 
     # ── 对话历史全文搜索（FTS5）──
     from src.tools.session_search import session_search_executor
@@ -671,137 +630,12 @@ def build_default_tool_registry() -> ToolRegistry:
         risk_level="low",
     ))
 
-    # ── 子 Agent 委托 ──
-    from config.settings import DELEGATION_ENABLED
-    if DELEGATION_ENABLED:
-        from src.tools.delegation_tool import delegate_task_executor
-        registry.register(ToolSpec(
-            name="delegate_task",
-            description=(
-                "将子任务委派给专项 Agent 执行。用于复杂任务的拆解。"
-                "每个子任务需要清晰的目标和充分的背景信息。最多3个并行。"
-                "可用 Agent：researcher（调研）、coder（编程）、browser（浏览）。"
-            ),
-            json_schema={
-                "type": "object",
-                "properties": {
-                    "tasks": {
-                        "type": "array",
-                        "maxItems": 3,
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "agent": {
-                                    "type": "string",
-                                    "enum": ["researcher", "coder", "browser"],
-                                    "description": "目标 Agent：researcher 调研 / coder 编程 / browser 浏览网页",
-                                },
-                                "goal": {
-                                    "type": "string",
-                                    "description": "任务目标，清晰描述要做什么",
-                                },
-                                "context": {
-                                    "type": "string",
-                                    "description": "必要的背景信息（要充分！Agent 看不到对话上下文）",
-                                },
-                            },
-                            "required": ["agent", "goal", "context"],
-                        },
-                        "description": "任务列表（最多3个并行）",
-                    },
-                },
-                "required": ["tasks"],
-            },
-            executor=delegate_task_executor,
-            capability="delegation",
-            risk_level="medium",
-        ))
+    # delegate_task 已由 personal_tools.py 的 delegate 替代（Phase 4）
 
-    # ── 提醒 / 定时任务 ──
-    if SELF_SCHEDULE_ENABLED:
-        from src.tools.schedule_task import SCHEDULE_EXECUTORS
-        registry.register(ToolSpec(
-            name="schedule_task",
-            description=(
-                "设置提醒或定时任务。"
-                "用户说「5分钟后叫我」「每天早上9点提醒我」「后天下午3点提醒我交文档」时用这个。"
-            ),
-            json_schema={
-                "type": "object",
-                "properties": {
-                    "content": {
-                        "type": "string",
-                        "description": "提醒内容，如「下楼」「查邮件」「交文档初稿」",
-                    },
-                    "trigger_type": {
-                        "type": "string",
-                        "enum": ["delay", "daily", "once", "interval"],
-                        "description": (
-                            "触发方式。"
-                            "delay=N分钟/小时后（一次性），"
-                            "daily=每天固定时间，"
-                            "once=指定日期时间（一次性），"
-                            "interval=每隔N分钟/小时重复"
-                        ),
-                    },
-                    "delay_minutes": {
-                        "type": "integer",
-                        "description": "仅 delay 类型：延迟多少分钟。如「5分钟后」填 5，「2小时后」填 120",
-                    },
-                    "time_of_day": {
-                        "type": "string",
-                        "description": "仅 daily 类型：每天触发时间，HH:MM 格式（24小时制）。如「早上9点」填 09:00",
-                    },
-                    "once_datetime": {
-                        "type": "string",
-                        "description": "仅 once 类型：触发日期时间，YYYY-MM-DD HH:MM 格式。如「明天下午3点」填对应日期",
-                    },
-                    "interval_minutes": {
-                        "type": "integer",
-                        "description": "仅 interval 类型：间隔多少分钟。如「每隔2小时」填 120，「每隔30分钟」填 30",
-                    },
-                    "execution_mode": {
-                        "type": "string",
-                        "enum": ["notify", "agent"],
-                        "description": (
-                            "notify=发送提醒文本（默认）; agent=执行任务并发送结果。"
-                            "比如「每天查天气」「查道奇比赛」用 agent，「5分钟后叫我」用 notify。"
-                        ),
-                    },
-                },
-                "required": ["content", "trigger_type"],
-            },
-            executor=SCHEDULE_EXECUTORS["schedule_task"],
-            capability="schedule",
-            risk_level="medium",
-        ))
-        registry.register(ToolSpec(
-            name="list_scheduled_tasks",
-            description="查看当前所有活跃的提醒和定时任务。",
-            json_schema={"type": "object", "properties": {}},
-            executor=SCHEDULE_EXECUTORS["list_scheduled_tasks"],
-            capability="schedule",
-            risk_level="low",
-        ))
-        registry.register(ToolSpec(
-            name="cancel_scheduled_task",
-            description="取消一个提醒或定时任务。",
-            json_schema={
-                "type": "object",
-                "properties": {
-                    "reminder_id": {
-                        "type": "integer",
-                        "description": "要取消的提醒 ID（从 list_scheduled_tasks 获取）",
-                    },
-                },
-                "required": ["reminder_id"],
-            },
-            executor=SCHEDULE_EXECUTORS["cancel_scheduled_task"],
-            capability="schedule",
-            risk_level="medium",
-        ))
+    # schedule_task / list_scheduled_tasks / cancel_scheduled_task 已由 DurableScheduler 工具替代（Phase 4）
+    # 新工具名: set_reminder / view_reminders / cancel_reminder，在 container.py 中注册
 
-    # ── 图片搜索 ──
+    # ── 图片搜索（保留，personal_tools 未替代） ──
     from src.tools.image_search import IMAGE_SEARCH_EXECUTORS
     registry.register(ToolSpec(
         name="image_search",
@@ -828,54 +662,7 @@ def build_default_tool_registry() -> ToolRegistry:
         risk_level="low",
     ))
 
-    # ── 图片发送 ──
-    from src.tools.send_image import SEND_IMAGE_EXECUTORS
-    registry.register(ToolSpec(
-        name="send_image",
-        description=(
-            "向用户发送一张图片。必须提供 url 或 path 中的至少一个。"
-            "如果要搜索图片，请先使用 image_search 工具获取图片 URL，再用本工具发送。"
-        ),
-        json_schema={
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "图片的 URL 地址（http/https）",
-                },
-                "path": {
-                    "type": "string",
-                    "description": "服务器上图片的绝对路径",
-                },
-                "caption": {
-                    "type": "string",
-                    "description": "图片的说明文字（可选）",
-                },
-            },
-        },
-        executor=SEND_IMAGE_EXECUTORS["send_image"],
-        capability="general",
-        risk_level="low",
-    ))
-
-    from src.tools.handlers import send_proactive_message
-    registry.register(ToolSpec(
-        name="send_proactive_message",
-        description="主动给他发一条消息。只在你真的有话想说的时候用，不要没事就打扰他。",
-        json_schema={
-            "type": "object",
-            "properties": {
-                "message": {
-                    "type": "string",
-                    "description": "你想说的话",
-                }
-            },
-            "required": ["message"],
-        },
-        executor=send_proactive_message,
-        capability="general",
-        risk_level="low",
-    ))
+    # send_image, send_proactive_message 已由 personal_tools.py 注册（Phase 4）
 
     # ── 自我状态 ──
     from src.tools.self_status import SELF_STATUS_EXECUTORS

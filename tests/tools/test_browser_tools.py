@@ -12,7 +12,14 @@ from src.core.browser_manager import (
     PageState,
     TabInfo,
 )
-from src.guards.browser_guard import GuardResult
+from dataclasses import dataclass
+
+
+@dataclass
+class GuardResult:
+    """Stub for deleted browser_guard.GuardResult."""
+    action: str
+    reason: str = ""
 from src.tools.browser_tools import register_browser_tools
 from src.tools.types import (
     ToolExecutionContext,

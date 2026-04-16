@@ -66,7 +66,8 @@ class TestLocalApi:
         assert status_response.json()["chat_count"] == 2
         assert "latency_monitor" in status_response.json()
 
-    async def test_memory_endpoint_filters_summaries(self, mock_brain):
+    async def test_memory_endpoint_returns_empty(self, mock_brain):
+        """Phase 1: user_facts removed, endpoint returns empty list."""
         app = create_app(
             mock_brain,
             DesktopEventBus(),
@@ -79,28 +80,7 @@ class TestLocalApi:
 
         data = response.json()
         assert response.status_code == 200
-        assert data["items"] == [
-            {
-                "index": 1,
-                "fact_key": "偏好_语言",
-                "fact_value": "中文",
-                "updated_at": "2026-03-24",
-            }
-        ]
-
-    async def test_memory_delete_endpoint(self, mock_brain):
-        app = create_app(mock_brain, DesktopEventBus())
-        transport = httpx.ASGITransport(app=app)
-
-        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.post(
-                "/api/memory/delete",
-                json={"chat_id": "c1", "fact_key": "偏好_语言"},
-            )
-
-        assert response.status_code == 200
-        assert response.json()["success"] is True
-        mock_brain.memory.delete_user_fact.assert_awaited_once_with("c1", "偏好_语言")
+        assert data["items"] == []
 
     async def test_learnings_endpoint_returns_files(self, mock_brain, monkeypatch, tmp_path):
         learnings_dir = tmp_path / "learnings"

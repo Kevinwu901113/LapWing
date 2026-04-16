@@ -111,7 +111,7 @@ class TestSearchPreprocessing:
         )
         req = ToolExecutionRequest(name="web_search", arguments={"query": "F1 最近一站"})
 
-        with patch("src.tools.handlers.web_search.search", new_callable=AsyncMock) as mock_search:
+        with patch("src.tools.web_search.search", new_callable=AsyncMock) as mock_search:
             mock_search.return_value = [
                 {"title": "F1结果", "url": "https://f1.com", "snippet": "维斯塔潘赢了"},
             ]
@@ -136,7 +136,7 @@ class TestSearchPreprocessing:
         )
         req = ToolExecutionRequest(name="web_search", arguments={"query": "test"})
 
-        with patch("src.tools.handlers.web_search.search", new_callable=AsyncMock) as mock_search:
+        with patch("src.tools.web_search.search", new_callable=AsyncMock) as mock_search:
             mock_search.return_value = [
                 {"title": "Test", "url": "https://test.com", "snippet": "a" * 500},
             ]
@@ -163,7 +163,7 @@ class TestSearchPreprocessing:
         )
         req = ToolExecutionRequest(name="web_search", arguments={"query": "test"})
 
-        with patch("src.tools.handlers.web_search.search", new_callable=AsyncMock) as mock_search:
+        with patch("src.tools.web_search.search", new_callable=AsyncMock) as mock_search:
             mock_search.return_value = [
                 {"title": "Result 1", "url": "https://r1.com", "snippet": "content"},
             ]
@@ -311,7 +311,7 @@ class TestWebFetchWithQuestion:
             arguments={"url": "https://f1.com/results", "question": "谁赢了上一站F1"},
         )
 
-        with patch("src.tools.handlers.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
+        with patch("src.tools.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = FetchResult(
                 url="https://f1.com/results",
                 title="F1 Results",
@@ -342,7 +342,7 @@ class TestWebFetchWithQuestion:
             arguments={"url": "https://example.com"},
         )
 
-        with patch("src.tools.handlers.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
+        with patch("src.tools.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = FetchResult(
                 url="https://example.com",
                 title="Example",
@@ -376,7 +376,7 @@ class TestWebFetchWithQuestion:
             arguments={"url": "https://example.com", "question": "what is this?"},
         )
 
-        with patch("src.tools.handlers.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
+        with patch("src.tools.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
             mock_fetch.return_value = FetchResult(
                 url="https://example.com",
                 title="Example",
@@ -409,29 +409,4 @@ class TestLoopRecoveryStateTracking:
         assert state.transition_reason == "api_retry"
 
 
-# ── Heartbeat cleanup ─────────────────────────────────────────────────────
-
-
-class TestToolResultCleanup:
-    def test_cleanup_removes_old_files(self):
-        from src.heartbeat.actions.memory_maintenance import MemoryMaintenanceAction
-
-        tmp_dir = tempfile.mkdtemp()
-        try:
-            # Create old and new files
-            old_file = os.path.join(tmp_dir, "old.txt")
-            new_file = os.path.join(tmp_dir, "new.txt")
-            with open(old_file, "w") as f:
-                f.write("old")
-            with open(new_file, "w") as f:
-                f.write("new")
-            # Make old file appear old
-            os.utime(old_file, (0, 0))
-
-            with patch("src.heartbeat.actions.memory_maintenance._TOOL_RESULT_DIR", tmp_dir):
-                MemoryMaintenanceAction._cleanup_tool_results()
-
-            assert not os.path.exists(old_file)
-            assert os.path.exists(new_file)
-        finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+# TestToolResultCleanup removed (Phase 1: memory_maintenance action deleted)

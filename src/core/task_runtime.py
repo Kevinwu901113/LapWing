@@ -37,6 +37,7 @@ from src.core.task_types import (  # noqa: F401
     RuntimeDeps,
     TaskLoopStep,
     TaskLoopResult,
+    ToolLoopContext,
     _refresh_voice_reminder,
 )
 from src.core.llm_exceptions import (
@@ -193,6 +194,9 @@ class TaskRuntime:
     def set_incident_manager(self, manager: Any | None) -> None:
         self._incident_manager = manager
 
+    def set_checkpoint_manager(self, manager: Any | None) -> None:
+        self._checkpoint_manager = manager
+
     # -- 公开属性，供 Agent 使用 --
 
     @property
@@ -307,18 +311,21 @@ class TaskRuntime:
         web_enabled: bool = True,
         skill_activation_enabled: bool = False,
     ) -> list[dict[str, Any]]:
-        """chat 场景工具集：按需暴露 shell / web / activate_skill，memory_note 始终可用。"""
-        tool_names: set[str] = {"memory_note", "get_weather", "send_image", "send_proactive_message"}  # always available
+        """chat 场景工具集：按需暴露 shell / web / activate_skill。
+        Phase 4: 个人工具（send_message, send_image 等）+ 提醒工具始终可用。
+        """
+        tool_names: set[str] = {
+            "get_time", "get_weather",
+            "send_message", "send_image", "view_image",
+            "set_reminder", "view_reminders", "cancel_reminder",
+            "delegate",
+        }
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
         if web_enabled:
-            tool_names.update({"web_search", "web_fetch", "image_search"})
+            tool_names.update({"web_search", "web_fetch", "browse", "image_search"})
         if skill_activation_enabled:
             tool_names.add("activate_skill")
-        if MEMORY_CRUD_ENABLED:
-            tool_names.update({"memory_list", "memory_read", "memory_edit", "memory_delete", "memory_search"})
-        if SELF_SCHEDULE_ENABLED:
-            tool_names.update({"schedule_task", "list_scheduled_tasks", "cancel_scheduled_task"})
         return self._tool_registry.function_tools(
             include_internal=False,
             tool_names=tool_names,
@@ -372,29 +379,21 @@ class TaskRuntime:
         user_id: str = "",
         resumption_context: dict | None = None,
     ) -> str:
-        async def _emit_status(text: str) -> None:
-            if status_callback is None:
-                return
-            try:
-                await status_callback(chat_id, text)
-            except Exception:
-                pass
-
         if not tools:
-            await _emit_status("stage:planning")
+            await self._emit_status(status_callback, chat_id, "stage:planning")
             reply = await self._router.complete(
                 messages,
                 slot="main_conversation",
                 session_key=f"chat:{chat_id}",
                 origin="task_runtime.chat",
             )
-            await _emit_status("stage:finalizing")
+            await self._emit_status(status_callback, chat_id, "stage:finalizing")
             return reply
 
         profile_obj = self._resolve_profile(profile)
         state = ExecutionSessionState(constraints=constraints)
         task_id = f"task_{uuid.uuid4().hex[:12]}"
-        await _emit_status("stage:planning")
+        await self._emit_status(status_callback, chat_id, "stage:planning")
         await self._publish_task_event(
             event_bus,
             "task.started",
@@ -412,19 +411,6 @@ class TaskRuntime:
             text="正在规划执行步骤。",
         )
 
-        last_payload: dict[str, Any] | None = None
-        final_reply: str | None = None
-        interim_parts: list[str] = []  # 收集已通过 on_interim_text 发出的中间文字
-        loop_detection_state = self._new_loop_detection_state()
-        simulated_tool_retries = 0
-        recovery = LoopRecoveryState()
-        no_action_budget = NoActionBudget(
-            default=self._no_action_budget,
-            remaining=self._no_action_budget,
-        )
-        error_guard = ErrorBurstGuard(threshold=self._error_burst_threshold)
-        has_used_tools = False  # budget 仅在 LLM 曾使用工具后才激活
-
         # 进度汇报状态
         progress_state: Any | None = None
         if self._progress_enabled and PROGRESS_REPORT_ENABLED:
@@ -433,553 +419,41 @@ class TaskRuntime:
                 user_request=self._extract_user_request(messages),
             )
 
-        async def _step_runner(round_index: int) -> TaskLoopStep:
-            nonlocal last_payload, final_reply, simulated_tool_retries, has_used_tools
-            recovery.record_transition("tool_turn")
-            round_started_at = time.perf_counter()
-
-            try:
-                turn = await self._router.complete_with_tools(
-                    self._with_shell_state_context(messages, state),
-                    tools=tools,
-                    slot="main_conversation",
-                    session_key=f"chat:{chat_id}",
-                    origin="task_runtime.chat",
-                )
-                recovery.reset_api_errors()
-            except Exception as raw_exc:
-                typed = classify_as_llm_exception(raw_exc)
-                if typed is None:
-                    raise  # 不可恢复的错误
-
-                if isinstance(typed, PromptTooLongError) and recovery.can_reactive_compact():
-                    recovery.reactive_compact_attempts += 1
-                    recovery.record_transition("reactive_compact")
-                    logger.warning(
-                        "[runtime] Prompt too long, reactive compact (attempt %d/%d)",
-                        recovery.reactive_compact_attempts,
-                        recovery.MAX_REACTIVE_COMPACT,
-                    )
-                    _events.log("tool_loop", "reactive_compact",
-                        attempt=recovery.reactive_compact_attempts,
-                    )
-                    self._reactive_compact(messages)
-                    return TaskLoopStep()  # retry
-
-                if isinstance(typed, (APIOverloadError, APITimeoutError, APIConnectionError)):
-                    if recovery.can_retry_api():
-                        recovery.consecutive_api_errors += 1
-                        recovery.record_transition("api_retry")
-                        wait = 2 ** recovery.consecutive_api_errors
-                        logger.warning(
-                            "[runtime] API error (%s), retrying in %ds (attempt %d/%d)",
-                            type(typed).__name__,
-                            wait,
-                            recovery.consecutive_api_errors,
-                            recovery.MAX_CONSECUTIVE_API_ERRORS,
-                        )
-                        _events.log("tool_loop", "api_retry",
-                            error=type(typed).__name__,
-                            attempt=recovery.consecutive_api_errors,
-                            wait_seconds=wait,
-                        )
-                        await asyncio.sleep(wait)
-                        return TaskLoopStep()  # retry
-
-                raise  # 恢复次数耗尽
-
-            # ── 空响应恢复 ──
-            if not turn.tool_calls and not (turn.text or "").strip():
-                if recovery.can_output_recovery():
-                    recovery.max_output_recovery_count += 1
-                    recovery.record_transition("output_recovery")
-                    logger.warning(
-                        "[runtime] Empty response, injecting continue (attempt %d/%d)",
-                        recovery.max_output_recovery_count,
-                        recovery.MAX_OUTPUT_RECOVERY,
-                    )
-                    _events.log("tool_loop", "output_recovery",
-                        attempt=recovery.max_output_recovery_count,
-                    )
-                    messages.append({
-                        "role": "user",
-                        "content": "请继续你刚才的回答。",
-                    })
-                    return TaskLoopStep()  # retry
-
-            if not turn.tool_calls:
-                # ── 模拟工具调用检测 ──
-                model_text = (turn.text or "").strip()
-                if simulated_tool_retries < 1 and model_text:
-                    available_tool_names = [t["function"]["name"] for t in tools]
-                    if self._detect_simulated_tool_call(model_text, available_tool_names):
-                        simulated_tool_retries += 1
-                        logger.info("[runtime] 检测到模拟工具调用，注入提醒（retry %d）", simulated_tool_retries)
-                        _events.log("thinking", "simulated_tool_detected",
-                            content=model_text[:300],
-                            trigger="LLM 在文本中描述了工具调用但未真正调用",
-                        )
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                "[系统提醒] 你刚才在文字中描述了工具调用，但没有真正调用。"
-                                "请直接使用工具，不要用文字描述。"
-                            ),
-                        })
-                        return TaskLoopStep()  # continue loop
-
-                # ── No-Action Budget（仅在 LLM 曾使用工具后激活）──
-                if has_used_tools and no_action_budget.consume():
-                    logger.debug(
-                        "[runtime] No-action budget consumed (remaining=%d), continuing loop",
-                        no_action_budget.remaining,
-                    )
-                    return TaskLoopStep()  # 还有预算，继续循环
-                if has_used_tools and no_action_budget.exhausted:
-                    logger.info(
-                        "No-action budget exhausted after %d consecutive no-action turns",
-                        no_action_budget.default,
-                    )
-                    _events.log("tool_loop", "no_action_budget_exhausted",
-                        budget=no_action_budget.default,
-                    )
-
-                await _emit_status("stage:finalizing")
-                final_text = _sanitize_visible_text(model_text)
-                if final_text and on_interim_text is not None:
-                    try:
-                        await on_interim_text(final_text)
-                        interim_parts.append(final_text)
-                    except Exception:
-                        pass
-                final_reply = await self._finalize_without_tool_calls(
-                    chat_id=chat_id,
-                    task_id=task_id,
-                    state=state,
-                    model_text=turn.text,
-                    last_payload=last_payload,
-                    event_bus=event_bus,
-                    on_consent_required=on_consent_required,
-                )
-                return TaskLoopStep(completed=True, payload=last_payload)
-
-            # LLM 返回了 tool_call — 重置 no-action 预算并标记
-            has_used_tools = True
-            no_action_budget.reset()
-            # 默认静默：只发送 <user_visible> 标签内的内容，防止工具 JSON / 源码泄露
-            interim_text = (turn.text or "").strip()
-            if interim_text:
-                visible_text = _extract_user_visible(interim_text)
-                if visible_text and on_interim_text is not None:
-                    try:
-                        await on_interim_text(visible_text)
-                        interim_parts.append(visible_text)
-                    except Exception:
-                        pass
-                logger.debug(
-                    "Interim text (filtered): visible=%d chars, total=%d chars",
-                    len(visible_text) if visible_text else 0,
-                    len(interim_text),
-                )
-
-            tool_names = [tool_call.name for tool_call in turn.tool_calls]
-            executed_tool_names: list[str] = []
-
-            def _record_round_latency() -> None:
-                names = executed_tool_names if executed_tool_names else tool_names
-                self._record_tool_loop_latency(
-                    round_started_at=round_started_at,
-                    tool_names=names,
-                )
-
-            if len(turn.tool_calls) > 1:
-                logger.info(
-                    "[runtime] 模型返回了 %s 个 tool calls，当前按顺序串行执行。",
-                    len(turn.tool_calls),
-                )
-
-            if turn.continuation_message is not None:
-                messages.append(turn.continuation_message)
-
-            tool_results: list[tuple[ToolCallRequest, str]] = []
-            last_tool_name: str | None = None
-            for tool_index, tool_call in enumerate(turn.tool_calls):
-                await _emit_status(
-                    f"stage:executing:{tool_call.name}:{tool_index + 1}:{len(turn.tool_calls)}"
-                )
-                tool_args_hash = self._tool_args_hash(tool_call.arguments)
-                tool_signature = (tool_call.name, tool_args_hash)
-                generic_repeat_count = self._generic_repeat_count(
-                    loop_detection_state=loop_detection_state,
-                    current_signature=tool_signature,
-                )
-                tool_event_common = {
-                    "tool_name": tool_call.name,
-                    "round": round_index + 1,
-                    "turn_tool_index": tool_index + 1,
-                    "turn_tool_total": len(turn.tool_calls),
-                    "toolCallId": tool_call.id,
-                    "toolName": tool_call.name,
-                    "argsHash": tool_args_hash,
-                }
-                loop_detection_common = {
-                    "loop_detection_detector": "genericRepeat",
-                    "loop_detection_repeat_count": generic_repeat_count,
-                    "loop_detection_warning_threshold": self._loop_detection_config.warning_threshold,
-                    "loop_detection_critical_threshold": self._loop_detection_config.critical_threshold,
-                    "loop_detection_global_circuit_breaker_threshold": (
-                        self._loop_detection_config.global_circuit_breaker_threshold
-                    ),
-                }
-
-                if self._should_emit_generic_repeat_warning(generic_repeat_count):
-                    logger.warning(
-                        (
-                            "[runtime] 检测到 genericRepeat 警告: tool=%s, repeat=%s, "
-                            "warning=%s, critical=%s, global=%s, args_hash=%s"
-                        ),
-                        tool_call.name,
-                        generic_repeat_count,
-                        self._loop_detection_config.warning_threshold,
-                        self._loop_detection_config.critical_threshold,
-                        self._loop_detection_config.global_circuit_breaker_threshold,
-                        tool_args_hash,
-                    )
-                    await self._publish_task_event(
-                        event_bus,
-                        "task.executing",
-                        task_id=task_id,
-                        chat_id=chat_id,
-                        phase="executing",
-                        text=(
-                            "检测到可能无进展的重复调用，继续执行并观察："
-                            f"{tool_call.name}（连续 {generic_repeat_count} 次）"
-                        ),
-                        **tool_event_common,
-                        loop_detection_warning=True,
-                        **loop_detection_common,
-                    )
-
-                if self._should_block_by_global_circuit_breaker(generic_repeat_count):
-                    reason = (
-                        "检测到无进展重复循环（同一工具与参数连续重复），"
-                        "已触发全局断路器，需用户介入（提供新策略/新指令）。"
-                    )
-                    logger.warning(
-                        (
-                            "[runtime] 触发 loop global circuit breaker: tool=%s, repeat=%s, "
-                            "global_threshold=%s, args_hash=%s"
-                        ),
-                        tool_call.name,
-                        generic_repeat_count,
-                        self._loop_detection_config.global_circuit_breaker_threshold,
-                        tool_args_hash,
-                    )
-                    _events.log("thinking", "loop_detected",
-                        content=reason,
-                        trigger=f"工具 {tool_call.name} 连续调用 {generic_repeat_count} 次",
-                    )
-                    state.record_failure(reason, "blocked")
-                    await self._publish_task_event(
-                        event_bus,
-                        "task.blocked",
-                        task_id=task_id,
-                        chat_id=chat_id,
-                        phase="blocked",
-                        text="检测到无进展重复循环，已停止自动执行，等待用户介入。",
-                        reason=reason,
-                        **tool_event_common,
-                        **loop_detection_common,
-                    )
-                    final_reply = (
-                        "检测到无进展重复循环（同一工具与参数连续重复），"
-                        "我已停止当前自动执行，需用户介入。请提供新的策略或更具体的指令后我再继续。"
-                    )
-                    await _emit_status("stage:finalizing")
-                    _record_round_latency()
-                    return TaskLoopStep(completed=True, payload=last_payload)
-
-                # ── ping-pong 检测（A→B→A→B 交替模式）──────────────────────
-                ping_pong_count = self._ping_pong_count(
-                    loop_detection_state=loop_detection_state,
-                    current_signature=tool_signature,
-                )
-                if self._should_emit_ping_pong_warning(ping_pong_count):
-                    logger.warning(
-                        "[runtime] 检测到 pingPong 警告: tool=%s, count=%s, args_hash=%s",
-                        tool_call.name, ping_pong_count, tool_args_hash,
-                    )
-                if self._should_block_by_ping_pong(ping_pong_count):
-                    reason = (
-                        "检测到无进展交替循环（两个工具交替重复调用），"
-                        "已触发断路器，需用户介入（提供新策略/新指令）。"
-                    )
-                    logger.warning(
-                        "[runtime] 触发 pingPong circuit breaker: tool=%s, count=%s",
-                        tool_call.name, ping_pong_count,
-                    )
-                    state.record_failure(reason, "blocked")
-                    await self._publish_task_event(
-                        event_bus,
-                        "task.blocked",
-                        task_id=task_id,
-                        chat_id=chat_id,
-                        phase="blocked",
-                        text="检测到无进展交替循环，已停止自动执行，等待用户介入。",
-                        reason=reason,
-                        **tool_event_common,
-                    )
-                    final_reply = (
-                        "检测到无进展交替循环（两个工具交替重复调用），"
-                        "我已停止当前自动执行，需用户介入。请提供新的策略或更具体的指令后我再继续。"
-                    )
-                    await _emit_status("stage:finalizing")
-                    _record_round_latency()
-                    return TaskLoopStep(completed=True, payload=last_payload)
-
-                # 当前先走串行执行，后续可按 provider 能力升级到并行分发。
-                await self._publish_task_event(
-                    event_bus,
-                    "task.executing",
-                    task_id=task_id,
-                    chat_id=chat_id,
-                    phase="executing",
-                    text=f"正在执行工具：{tool_call.name}",
-                    **tool_event_common,
-                )
-                await self._publish_task_event(
-                    event_bus,
-                    "task.tool_execution_start",
-                    task_id=task_id,
-                    chat_id=chat_id,
-                    phase="executing",
-                    text=f"工具开始执行：{tool_call.name}",
-                    stdoutBytes=0,
-                    stderrBytes=0,
-                    isError=False,
-                    durationMs=0,
-                    **tool_event_common,
-                )
-
-                # 工具执行前触发 typing indicator
-                if on_typing is not None:
-                    try:
-                        await on_typing()
-                    except Exception:
-                        pass
-
-                tool_started_at = time.perf_counter()
-                tool_result_text, payload, execution_success = await self._execute_tool_call(
-                    tool_call=tool_call,
-                    state=state,
-                    deps=deps,
-                    task_id=task_id,
-                    chat_id=chat_id,
-                    event_bus=event_bus,
-                    profile=profile_obj,
-                    services=services,
-                    adapter=adapter,
-                    user_id=user_id,
-                )
-                duration_ms = max(int((time.perf_counter() - tool_started_at) * 1000), 0)
-                _events.log("tool_call", "execute",
-                    tool=tool_call.name,
-                    args=tool_call.arguments,
-                    success=execution_success,
-                    reason=(tool_result_text[:200] if not execution_success else ""),
-                    duration=round(duration_ms / 1000, 2),
-                )
-                stdout_bytes = self._text_utf8_bytes(payload.get("stdout"))
-                stderr_bytes = self._text_utf8_bytes(payload.get("stderr"))
-                is_error = self._tool_execution_is_error(
-                    payload=payload,
-                    execution_success=execution_success,
-                )
-                tool_event_metrics = {
-                    "stdoutBytes": stdout_bytes,
-                    "stderrBytes": stderr_bytes,
-                    "isError": is_error,
-                    "durationMs": duration_ms,
-                }
-                await self._publish_task_event(
-                    event_bus,
-                    "task.tool_execution_update",
-                    task_id=task_id,
-                    chat_id=chat_id,
-                    phase="executing",
-                    text=f"工具执行进度：{tool_call.name}",
-                    **tool_event_common,
-                    **tool_event_metrics,
-                )
-                await self._publish_task_event(
-                    event_bus,
-                    "task.tool_execution_end",
-                    task_id=task_id,
-                    chat_id=chat_id,
-                    phase="executing",
-                    text=f"工具执行结束：{tool_call.name}",
-                    **tool_event_common,
-                    **tool_event_metrics,
-                )
-                # ── Error Burst Guard ──
-                if execution_success:
-                    error_guard.record_success()
-                else:
-                    should_break = error_guard.record_error(
-                        tool_result_text[:200] if tool_result_text else "unknown error"
-                    )
-                    if should_break:
-                        logger.warning(
-                            "[runtime] Error burst guard triggered: %s",
-                            error_guard.summary,
-                        )
-                        _events.log("tool_loop", "error_burst_triggered",
-                            error_count=error_guard.error_count,
-                            summary=error_guard.summary,
-                        )
-                        # 注入错误摘要让 LLM 在下一轮有机会调整策略
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                f"[系统警告] 连续 {error_guard.threshold} 次工具调用失败。"
-                                f"{error_guard.summary}\n"
-                                "请换一种方法或放弃这个子任务。如果继续尝试同样的方法仍然失败，我将终止执行。"
-                            ),
-                        })
-                        # 不直接 break——给 LLM 最后一次机会在下一轮调整
-                        tool_results.append((tool_call, tool_result_text))
-                        executed_tool_names.append(tool_call.name)
-                        _record_round_latency()
-                        return TaskLoopStep(payload=last_payload)
-
-                tool_results.append((tool_call, tool_result_text))
-                executed_tool_names.append(tool_call.name)
-                self._record_tool_signature(
-                    loop_detection_state=loop_detection_state,
-                    signature=tool_signature,
-                )
-                last_payload = payload
-
-                # 记录进度步骤
-                if progress_state is not None:
-                    progress_state.record_step(
-                        tool_name=tool_call.name,
-                        arguments=tool_call.arguments,
-                        result_summary=tool_result_text[:300] if tool_result_text else "",
-                    )
-                last_tool_name = tool_call.name
-                logger.info(
-                    "[runtime] 第 %s 轮完成 tool call %s/%s: %s",
-                    round_index + 1,
-                    tool_index + 1,
-                    len(turn.tool_calls),
-                    tool_call.name,
-                )
-
-                if state.consent_required:
-                    await self._publish_task_event(
-                        event_bus,
-                        "task.blocked",
-                        task_id=task_id,
-                        chat_id=chat_id,
-                        phase="blocked",
-                        text="任务被阻塞，等待用户确认替代路径。",
-                        reason=state.failure_reason or "需要用户确认",
-                        tool_name=tool_call.name,
-                    )
-                    if on_consent_required is not None:
-                        final_reply = on_consent_required(state)
-                    else:
-                        final_reply = state.consent_message()
-                    await _emit_status("stage:finalizing")
-                    _record_round_latency()
-                    return TaskLoopStep(completed=True, payload=last_payload)
-
-                if state.completed:
-                    break
-
-            result_message = self._router.build_tool_result_message(
-                slot="main_conversation",
-                tool_results=tool_results,
-                session_key=f"chat:{chat_id}",
-            )
-            if isinstance(result_message, list):
-                messages.extend(result_message)
-            else:
-                messages.append(result_message)
-
-            if state.completed:
-                await self._publish_task_event(
-                    event_bus,
-                    "task.completed",
-                    task_id=task_id,
-                    chat_id=chat_id,
-                    phase="completed",
-                    text="任务执行并验证完成。",
-                    tool_name=last_tool_name,
-                )
-                final_reply = state.success_message()
-                await _emit_status("stage:finalizing")
-                _record_round_latency()
-                return TaskLoopStep(completed=True, payload=last_payload)
-
-            if last_payload is not None and last_payload.get("blocked"):
-                await self._publish_task_event(
-                    event_bus,
-                    "task.blocked",
-                    task_id=task_id,
-                    chat_id=chat_id,
-                    phase="blocked",
-                    text="命令被拦截，等待后续恢复步骤。",
-                    reason=str(last_payload.get("reason", "命令被拦截。")),
-                    tool_name=last_tool_name,
-                )
-
-            _record_round_latency()
-
-            # ── 进度汇报判断点 ──
-            if progress_state is not None:
-                from src.core.progress_reporter import check_and_report
-                await check_and_report(
-                    state=progress_state,
-                    llm_router=self._router,
-                    on_interim_text=on_interim_text,
-                    messages=messages,
-                )
-
-            # 压缩旧的浏览器 PageState（保留最新完整，旧的只留摘要）
-            self._compress_browser_history(messages)
-            # 重新注入 voice reminder（tool call 循环会让消息越来越长，
-            # 导致 voice reminder 离生成位置越来越远）
-            _refresh_voice_reminder(messages)
-
-            # ── Loop turn 日志 ──
-            result_chars = sum(len(t[1]) for t in tool_results) if tool_results else 0
-            recovery.total_result_chars += result_chars
-            logger.info(
-                "[runtime] Loop turn=%d transition=%s tool_calls=%d result_chars=%d total_chars=%d",
-                recovery.turn_count,
-                recovery.transition_reason,
-                len(executed_tool_names),
-                result_chars,
-                recovery.total_result_chars,
-            )
-            _events.log("tool_loop", "turn_complete",
-                turn=recovery.turn_count,
-                transition=recovery.transition_reason,
-                tool_calls=executed_tool_names,
-                compact_attempts=recovery.reactive_compact_attempts,
-                api_errors=recovery.consecutive_api_errors,
-                result_chars=result_chars,
-            )
-            return TaskLoopStep(payload=last_payload)
+        ctx = ToolLoopContext(
+            messages=messages,
+            tools=tools,
+            constraints=constraints,
+            chat_id=chat_id,
+            task_id=task_id,
+            deps=deps,
+            profile_obj=profile_obj,
+            status_callback=status_callback,
+            event_bus=event_bus,
+            on_consent_required=on_consent_required,
+            on_interim_text=on_interim_text,
+            on_typing=on_typing,
+            services=services,
+            adapter=adapter,
+            user_id=user_id,
+            resumption_context=resumption_context,
+            state=state,
+            loop_detection_state=self._new_loop_detection_state(),
+            recovery=LoopRecoveryState(),
+            no_action_budget=NoActionBudget(
+                default=self._no_action_budget,
+                remaining=self._no_action_budget,
+            ),
+            error_guard=ErrorBurstGuard(threshold=self._error_burst_threshold),
+            progress_state=progress_state,
+        )
 
         loop_result = await self.run_task_loop(
             max_rounds=self._max_tool_rounds,
-            step_runner=_step_runner,
+            step_runner=lambda round_index: self._run_step(ctx, round_index),
         )
 
         # ── Loop 完成摘要日志 ──
+        recovery = ctx.recovery
         logger.info(
             "[runtime] Tool loop completed: turns=%d compact=%d output_recovery=%d "
             "api_retries=%d total_result_chars=%d reason=%s",
@@ -1000,13 +474,13 @@ class TaskRuntime:
         )
 
         # ── 收集已完成步骤（用于完成度检查）──
-        _completed_steps = progress_state.completed_steps if progress_state else []
-        _user_request = progress_state.user_request if progress_state else constraints.original_user_message
+        _completed_steps = ctx.progress_state.completed_steps if ctx.progress_state else []
+        _user_request = ctx.progress_state.user_request if ctx.progress_state else constraints.original_user_message
 
-        if final_reply is not None:
+        if ctx.final_reply is not None:
             # 清理最终回复中可能残留的内部标记
             from src.core.output_sanitizer import sanitize_outgoing
-            final_reply = sanitize_outgoing(final_reply)
+            final_reply = sanitize_outgoing(ctx.final_reply)
             # 循环内提前结束（可能是 circuit breaker），检查是否完成
             if _completed_steps and loop_result.reason in (
                 "max_rounds_exceeded", "",
@@ -1025,7 +499,7 @@ class TaskRuntime:
 
         logger.warning("[runtime] tool call 循环超过上限，返回兜底说明")
 
-        if state.consent_required:
+        if ctx.state.consent_required:
             await self._publish_task_event(
                 event_bus,
                 "task.blocked",
@@ -1033,15 +507,15 @@ class TaskRuntime:
                 chat_id=chat_id,
                 phase="blocked",
                 text="任务被阻塞，等待用户确认替代路径。",
-                reason=state.failure_reason or "需要用户确认",
+                reason=ctx.state.failure_reason or "需要用户确认",
             )
             if on_consent_required is not None:
-                await _emit_status("stage:finalizing")
-                return on_consent_required(state)
-            await _emit_status("stage:finalizing")
-            return state.consent_message()
+                await self._emit_status(status_callback, chat_id, "stage:finalizing")
+                return on_consent_required(ctx.state)
+            await self._emit_status(status_callback, chat_id, "stage:finalizing")
+            return ctx.state.consent_message()
 
-        if state.completed:
+        if ctx.state.completed:
             await self._publish_task_event(
                 event_bus,
                 "task.completed",
@@ -1050,13 +524,13 @@ class TaskRuntime:
                 phase="completed",
                 text="任务执行并验证完成。",
             )
-            await _emit_status("stage:finalizing")
-            return state.success_message()
+            await self._emit_status(status_callback, chat_id, "stage:finalizing")
+            return ctx.state.success_message()
 
         # ── max_rounds_exceeded 路径：触发完成度检查 ──
-        _termination = state.failure_reason or loop_result.reason or "max_rounds_exceeded"
+        _termination = ctx.state.failure_reason or loop_result.reason or "max_rounds_exceeded"
 
-        if state.constraints.is_write_request and state.constraints.objective != "generic":
+        if ctx.state.constraints.is_write_request and ctx.state.constraints.objective != "generic":
             await self._publish_task_event(
                 event_bus,
                 "task.failed",
@@ -1066,8 +540,8 @@ class TaskRuntime:
                 text="任务未完成。",
                 reason=_termination,
             )
-            await _emit_status("stage:finalizing")
-            _reply = state.failure_message()
+            await self._emit_status(status_callback, chat_id, "stage:finalizing")
+            _reply = ctx.state.failure_message()
         else:
             await self._publish_task_event(
                 event_bus,
@@ -1078,7 +552,7 @@ class TaskRuntime:
                 text="任务未在轮次上限内完成，返回兜底结果。",
                 reason="tool 循环超过上限",
             )
-            await _emit_status("stage:finalizing")
+            await self._emit_status(status_callback, chat_id, "stage:finalizing")
             _reply = self.tool_fallback_reply(loop_result.last_payload)
 
         if _completed_steps:
@@ -1094,6 +568,556 @@ class TaskRuntime:
             )
 
         return _reply
+
+    @staticmethod
+    async def _emit_status(status_callback, chat_id: str, text: str) -> None:
+        if status_callback is None:
+            return
+        try:
+            await status_callback(chat_id, text)
+        except Exception:
+            pass
+
+    async def _run_step(self, ctx: ToolLoopContext, round_index: int) -> TaskLoopStep:
+        """单轮工具循环步骤（从 complete_chat._step_runner 提取）。"""
+        ctx.recovery.record_transition("tool_turn")
+        round_started_at = time.perf_counter()
+
+        try:
+            turn = await self._router.complete_with_tools(
+                self._with_shell_state_context(ctx.messages, ctx.state),
+                tools=ctx.tools,
+                slot="main_conversation",
+                session_key=f"chat:{ctx.chat_id}",
+                origin="task_runtime.chat",
+            )
+            ctx.recovery.reset_api_errors()
+        except Exception as raw_exc:
+            typed = classify_as_llm_exception(raw_exc)
+            if typed is None:
+                raise
+
+            if isinstance(typed, PromptTooLongError) and ctx.recovery.can_reactive_compact():
+                ctx.recovery.reactive_compact_attempts += 1
+                ctx.recovery.record_transition("reactive_compact")
+                logger.warning(
+                    "[runtime] Prompt too long, reactive compact (attempt %d/%d)",
+                    ctx.recovery.reactive_compact_attempts,
+                    ctx.recovery.MAX_REACTIVE_COMPACT,
+                )
+                _events.log("tool_loop", "reactive_compact",
+                    attempt=ctx.recovery.reactive_compact_attempts,
+                )
+                self._reactive_compact(ctx.messages)
+                return TaskLoopStep()
+
+            if isinstance(typed, (APIOverloadError, APITimeoutError, APIConnectionError)):
+                if ctx.recovery.can_retry_api():
+                    ctx.recovery.consecutive_api_errors += 1
+                    ctx.recovery.record_transition("api_retry")
+                    wait = 2 ** ctx.recovery.consecutive_api_errors
+                    logger.warning(
+                        "[runtime] API error (%s), retrying in %ds (attempt %d/%d)",
+                        type(typed).__name__,
+                        wait,
+                        ctx.recovery.consecutive_api_errors,
+                        ctx.recovery.MAX_CONSECUTIVE_API_ERRORS,
+                    )
+                    _events.log("tool_loop", "api_retry",
+                        error=type(typed).__name__,
+                        attempt=ctx.recovery.consecutive_api_errors,
+                        wait_seconds=wait,
+                    )
+                    await asyncio.sleep(wait)
+                    return TaskLoopStep()
+
+            raise
+
+        # ── 空响应恢复 ──
+        if not turn.tool_calls and not (turn.text or "").strip():
+            if ctx.recovery.can_output_recovery():
+                ctx.recovery.max_output_recovery_count += 1
+                ctx.recovery.record_transition("output_recovery")
+                logger.warning(
+                    "[runtime] Empty response, injecting continue (attempt %d/%d)",
+                    ctx.recovery.max_output_recovery_count,
+                    ctx.recovery.MAX_OUTPUT_RECOVERY,
+                )
+                _events.log("tool_loop", "output_recovery",
+                    attempt=ctx.recovery.max_output_recovery_count,
+                )
+                ctx.messages.append({
+                    "role": "user",
+                    "content": "请继续你刚才的回答。",
+                })
+                return TaskLoopStep()
+
+        if not turn.tool_calls:
+            # ── 模拟工具调用检测 ──
+            model_text = (turn.text or "").strip()
+            if ctx.simulated_tool_retries < 1 and model_text:
+                available_tool_names = [t["function"]["name"] for t in ctx.tools]
+                if self._detect_simulated_tool_call(model_text, available_tool_names):
+                    ctx.simulated_tool_retries += 1
+                    logger.info("[runtime] 检测到模拟工具调用，注入提醒（retry %d）", ctx.simulated_tool_retries)
+                    _events.log("thinking", "simulated_tool_detected",
+                        content=model_text[:300],
+                        trigger="LLM 在文本中描述了工具调用但未真正调用",
+                    )
+                    ctx.messages.append({
+                        "role": "user",
+                        "content": (
+                            "[系统提醒] 你刚才在文字中描述了工具调用，但没有真正调用。"
+                            "请直接使用工具，不要用文字描述。"
+                        ),
+                    })
+                    return TaskLoopStep()
+
+            # ── No-Action Budget（仅在 LLM 曾使用工具后激活）──
+            if ctx.has_used_tools and ctx.no_action_budget.consume():
+                logger.debug(
+                    "[runtime] No-action budget consumed (remaining=%d), continuing loop",
+                    ctx.no_action_budget.remaining,
+                )
+                return TaskLoopStep()
+            if ctx.has_used_tools and ctx.no_action_budget.exhausted:
+                logger.info(
+                    "No-action budget exhausted after %d consecutive no-action turns",
+                    ctx.no_action_budget.default,
+                )
+                _events.log("tool_loop", "no_action_budget_exhausted",
+                    budget=ctx.no_action_budget.default,
+                )
+
+            await self._emit_status(ctx.status_callback, ctx.chat_id, "stage:finalizing")
+            final_text = _sanitize_visible_text(model_text)
+            if final_text and ctx.on_interim_text is not None:
+                try:
+                    await ctx.on_interim_text(final_text)
+                    ctx.interim_parts.append(final_text)
+                except Exception:
+                    pass
+            ctx.final_reply = await self._finalize_without_tool_calls(
+                chat_id=ctx.chat_id,
+                task_id=ctx.task_id,
+                state=ctx.state,
+                model_text=turn.text,
+                last_payload=ctx.last_payload,
+                event_bus=ctx.event_bus,
+                on_consent_required=ctx.on_consent_required,
+            )
+            return TaskLoopStep(completed=True, payload=ctx.last_payload)
+
+        # LLM 返回了 tool_call — 重置 no-action 预算并标记
+        ctx.has_used_tools = True
+        ctx.no_action_budget.reset()
+        # 默认静默：只发送 <user_visible> 标签内的内容，防止工具 JSON / 源码泄露
+        interim_text = (turn.text or "").strip()
+        if interim_text:
+            visible_text = _extract_user_visible(interim_text)
+            if visible_text and ctx.on_interim_text is not None:
+                try:
+                    await ctx.on_interim_text(visible_text)
+                    ctx.interim_parts.append(visible_text)
+                except Exception:
+                    pass
+            logger.debug(
+                "Interim text (filtered): visible=%d chars, total=%d chars",
+                len(visible_text) if visible_text else 0,
+                len(interim_text),
+            )
+
+        tool_names = [tool_call.name for tool_call in turn.tool_calls]
+        executed_tool_names: list[str] = []
+
+        def _record_round_latency() -> None:
+            names = executed_tool_names if executed_tool_names else tool_names
+            self._record_tool_loop_latency(
+                round_started_at=round_started_at,
+                tool_names=names,
+            )
+
+        if len(turn.tool_calls) > 1:
+            logger.info(
+                "[runtime] 模型返回了 %s 个 tool calls，当前按顺序串行执行。",
+                len(turn.tool_calls),
+            )
+
+        if turn.continuation_message is not None:
+            ctx.messages.append(turn.continuation_message)
+
+        tool_results: list[tuple[ToolCallRequest, str]] = []
+        last_tool_name: str | None = None
+        for tool_index, tool_call in enumerate(turn.tool_calls):
+            await self._emit_status(ctx.status_callback, ctx.chat_id,
+                f"stage:executing:{tool_call.name}:{tool_index + 1}:{len(turn.tool_calls)}"
+            )
+            tool_args_hash = self._tool_args_hash(tool_call.arguments)
+            tool_signature = (tool_call.name, tool_args_hash)
+            generic_repeat_count = self._generic_repeat_count(
+                loop_detection_state=ctx.loop_detection_state,
+                current_signature=tool_signature,
+            )
+            tool_event_common = {
+                "tool_name": tool_call.name,
+                "round": round_index + 1,
+                "turn_tool_index": tool_index + 1,
+                "turn_tool_total": len(turn.tool_calls),
+                "toolCallId": tool_call.id,
+                "toolName": tool_call.name,
+                "argsHash": tool_args_hash,
+            }
+            loop_detection_common = {
+                "loop_detection_detector": "genericRepeat",
+                "loop_detection_repeat_count": generic_repeat_count,
+                "loop_detection_warning_threshold": self._loop_detection_config.warning_threshold,
+                "loop_detection_critical_threshold": self._loop_detection_config.critical_threshold,
+                "loop_detection_global_circuit_breaker_threshold": (
+                    self._loop_detection_config.global_circuit_breaker_threshold
+                ),
+            }
+
+            if self._should_emit_generic_repeat_warning(generic_repeat_count):
+                logger.warning(
+                    (
+                        "[runtime] 检测到 genericRepeat 警告: tool=%s, repeat=%s, "
+                        "warning=%s, critical=%s, global=%s, args_hash=%s"
+                    ),
+                    tool_call.name,
+                    generic_repeat_count,
+                    self._loop_detection_config.warning_threshold,
+                    self._loop_detection_config.critical_threshold,
+                    self._loop_detection_config.global_circuit_breaker_threshold,
+                    tool_args_hash,
+                )
+                await self._publish_task_event(
+                    ctx.event_bus,
+                    "task.executing",
+                    task_id=ctx.task_id,
+                    chat_id=ctx.chat_id,
+                    phase="executing",
+                    text=(
+                        "检测到可能无进展的重复调用，继续执行并观察："
+                        f"{tool_call.name}（连续 {generic_repeat_count} 次）"
+                    ),
+                    **tool_event_common,
+                    loop_detection_warning=True,
+                    **loop_detection_common,
+                )
+
+            if self._should_block_by_global_circuit_breaker(generic_repeat_count):
+                reason = (
+                    "检测到无进展重复循环（同一工具与参数连续重复），"
+                    "已触发全局断路器，需用户介入（提供新策略/新指令）。"
+                )
+                logger.warning(
+                    (
+                        "[runtime] 触发 loop global circuit breaker: tool=%s, repeat=%s, "
+                        "global_threshold=%s, args_hash=%s"
+                    ),
+                    tool_call.name,
+                    generic_repeat_count,
+                    self._loop_detection_config.global_circuit_breaker_threshold,
+                    tool_args_hash,
+                )
+                _events.log("thinking", "loop_detected",
+                    content=reason,
+                    trigger=f"工具 {tool_call.name} 连续调用 {generic_repeat_count} 次",
+                )
+                ctx.state.record_failure(reason, "blocked")
+                await self._publish_task_event(
+                    ctx.event_bus,
+                    "task.blocked",
+                    task_id=ctx.task_id,
+                    chat_id=ctx.chat_id,
+                    phase="blocked",
+                    text="检测到无进展重复循环，已停止自动执行，等待用户介入。",
+                    reason=reason,
+                    **tool_event_common,
+                    **loop_detection_common,
+                )
+                ctx.final_reply = (
+                    "检测到无进展重复循环（同一工具与参数连续重复），"
+                    "我已停止当前自动执行，需用户介入。请提供新的策略或更具体的指令后我再继续。"
+                )
+                await self._emit_status(ctx.status_callback, ctx.chat_id, "stage:finalizing")
+                _record_round_latency()
+                return TaskLoopStep(completed=True, payload=ctx.last_payload)
+
+            # ── ping-pong 检测（A→B→A→B 交替模式）──────────────────────
+            ping_pong_count = self._ping_pong_count(
+                loop_detection_state=ctx.loop_detection_state,
+                current_signature=tool_signature,
+            )
+            if self._should_emit_ping_pong_warning(ping_pong_count):
+                logger.warning(
+                    "[runtime] 检测到 pingPong 警告: tool=%s, count=%s, args_hash=%s",
+                    tool_call.name, ping_pong_count, tool_args_hash,
+                )
+            if self._should_block_by_ping_pong(ping_pong_count):
+                reason = (
+                    "检测到无进展交替循环（两个工具交替重复调用），"
+                    "已触发断路器，需用户介入（提供新策略/新指令）。"
+                )
+                logger.warning(
+                    "[runtime] 触发 pingPong circuit breaker: tool=%s, count=%s",
+                    tool_call.name, ping_pong_count,
+                )
+                ctx.state.record_failure(reason, "blocked")
+                await self._publish_task_event(
+                    ctx.event_bus,
+                    "task.blocked",
+                    task_id=ctx.task_id,
+                    chat_id=ctx.chat_id,
+                    phase="blocked",
+                    text="检测到无进展交替循环，已停止自动执行，等待用户介入。",
+                    reason=reason,
+                    **tool_event_common,
+                )
+                ctx.final_reply = (
+                    "检测到无进展交替循环（两个工具交替重复调用），"
+                    "我已停止当前自动执行，需用户介入。请提供新的策略或更具体的指令后我再继续。"
+                )
+                await self._emit_status(ctx.status_callback, ctx.chat_id, "stage:finalizing")
+                _record_round_latency()
+                return TaskLoopStep(completed=True, payload=ctx.last_payload)
+
+            # 当前先走串行执行，后续可按 provider 能力升级到并行分发。
+            await self._publish_task_event(
+                ctx.event_bus,
+                "task.executing",
+                task_id=ctx.task_id,
+                chat_id=ctx.chat_id,
+                phase="executing",
+                text=f"正在执行工具：{tool_call.name}",
+                **tool_event_common,
+            )
+            await self._publish_task_event(
+                ctx.event_bus,
+                "task.tool_execution_start",
+                task_id=ctx.task_id,
+                chat_id=ctx.chat_id,
+                phase="executing",
+                text=f"工具开始执行：{tool_call.name}",
+                stdoutBytes=0,
+                stderrBytes=0,
+                isError=False,
+                durationMs=0,
+                **tool_event_common,
+            )
+
+            # 工具执行前触发 typing indicator
+            if ctx.on_typing is not None:
+                try:
+                    await ctx.on_typing()
+                except Exception:
+                    pass
+
+            tool_started_at = time.perf_counter()
+            tool_result_text, payload, execution_success = await self._execute_tool_call(
+                tool_call=tool_call,
+                state=ctx.state,
+                deps=ctx.deps,
+                task_id=ctx.task_id,
+                chat_id=ctx.chat_id,
+                event_bus=ctx.event_bus,
+                profile=ctx.profile_obj,
+                services=ctx.services,
+                adapter=ctx.adapter,
+                user_id=ctx.user_id,
+            )
+            duration_ms = max(int((time.perf_counter() - tool_started_at) * 1000), 0)
+            _events.log("tool_call", "execute",
+                tool=tool_call.name,
+                args=tool_call.arguments,
+                success=execution_success,
+                reason=(tool_result_text[:200] if not execution_success else ""),
+                duration=round(duration_ms / 1000, 2),
+            )
+            stdout_bytes = self._text_utf8_bytes(payload.get("stdout"))
+            stderr_bytes = self._text_utf8_bytes(payload.get("stderr"))
+            is_error = self._tool_execution_is_error(
+                payload=payload,
+                execution_success=execution_success,
+            )
+            tool_event_metrics = {
+                "stdoutBytes": stdout_bytes,
+                "stderrBytes": stderr_bytes,
+                "isError": is_error,
+                "durationMs": duration_ms,
+            }
+            await self._publish_task_event(
+                ctx.event_bus,
+                "task.tool_execution_update",
+                task_id=ctx.task_id,
+                chat_id=ctx.chat_id,
+                phase="executing",
+                text=f"工具执行进度：{tool_call.name}",
+                **tool_event_common,
+                **tool_event_metrics,
+            )
+            await self._publish_task_event(
+                ctx.event_bus,
+                "task.tool_execution_end",
+                task_id=ctx.task_id,
+                chat_id=ctx.chat_id,
+                phase="executing",
+                text=f"工具执行结束：{tool_call.name}",
+                **tool_event_common,
+                **tool_event_metrics,
+            )
+            # ── Error Burst Guard ──
+            if execution_success:
+                ctx.error_guard.record_success()
+            else:
+                should_break = ctx.error_guard.record_error(
+                    tool_result_text[:200] if tool_result_text else "unknown error"
+                )
+                if should_break:
+                    logger.warning(
+                        "[runtime] Error burst guard triggered: %s",
+                        ctx.error_guard.summary,
+                    )
+                    _events.log("tool_loop", "error_burst_triggered",
+                        error_count=ctx.error_guard.error_count,
+                        summary=ctx.error_guard.summary,
+                    )
+                    # 注入错误摘要让 LLM 在下一轮有机会调整策略
+                    ctx.messages.append({
+                        "role": "user",
+                        "content": (
+                            f"[系统警告] 连续 {ctx.error_guard.threshold} 次工具调用失败。"
+                            f"{ctx.error_guard.summary}\n"
+                            "请换一种方法或放弃这个子任务。如果继续尝试同样的方法仍然失败，我将终止执行。"
+                        ),
+                    })
+                    # 不直接 break——给 LLM 最后一次机会在下一轮调整
+                    tool_results.append((tool_call, tool_result_text))
+                    executed_tool_names.append(tool_call.name)
+                    _record_round_latency()
+                    return TaskLoopStep(payload=ctx.last_payload)
+
+            tool_results.append((tool_call, tool_result_text))
+            executed_tool_names.append(tool_call.name)
+            self._record_tool_signature(
+                loop_detection_state=ctx.loop_detection_state,
+                signature=tool_signature,
+            )
+            ctx.last_payload = payload
+
+            # 记录进度步骤
+            if ctx.progress_state is not None:
+                ctx.progress_state.record_step(
+                    tool_name=tool_call.name,
+                    arguments=tool_call.arguments,
+                    result_summary=tool_result_text[:300] if tool_result_text else "",
+                )
+            last_tool_name = tool_call.name
+            logger.info(
+                "[runtime] 第 %s 轮完成 tool call %s/%s: %s",
+                round_index + 1,
+                tool_index + 1,
+                len(turn.tool_calls),
+                tool_call.name,
+            )
+
+            if ctx.state.consent_required:
+                await self._publish_task_event(
+                    ctx.event_bus,
+                    "task.blocked",
+                    task_id=ctx.task_id,
+                    chat_id=ctx.chat_id,
+                    phase="blocked",
+                    text="任务被阻塞，等待用户确认替代路径。",
+                    reason=ctx.state.failure_reason or "需要用户确认",
+                    tool_name=tool_call.name,
+                )
+                if ctx.on_consent_required is not None:
+                    ctx.final_reply = ctx.on_consent_required(ctx.state)
+                else:
+                    ctx.final_reply = ctx.state.consent_message()
+                await self._emit_status(ctx.status_callback, ctx.chat_id, "stage:finalizing")
+                _record_round_latency()
+                return TaskLoopStep(completed=True, payload=ctx.last_payload)
+
+            if ctx.state.completed:
+                break
+
+        result_message = self._router.build_tool_result_message(
+            slot="main_conversation",
+            tool_results=tool_results,
+            session_key=f"chat:{ctx.chat_id}",
+        )
+        if isinstance(result_message, list):
+            ctx.messages.extend(result_message)
+        else:
+            ctx.messages.append(result_message)
+
+        if ctx.state.completed:
+            await self._publish_task_event(
+                ctx.event_bus,
+                "task.completed",
+                task_id=ctx.task_id,
+                chat_id=ctx.chat_id,
+                phase="completed",
+                text="任务执行并验证完成。",
+                tool_name=last_tool_name,
+            )
+            ctx.final_reply = ctx.state.success_message()
+            await self._emit_status(ctx.status_callback, ctx.chat_id, "stage:finalizing")
+            _record_round_latency()
+            return TaskLoopStep(completed=True, payload=ctx.last_payload)
+
+        if ctx.last_payload is not None and ctx.last_payload.get("blocked"):
+            await self._publish_task_event(
+                ctx.event_bus,
+                "task.blocked",
+                task_id=ctx.task_id,
+                chat_id=ctx.chat_id,
+                phase="blocked",
+                text="命令被拦截，等待后续恢复步骤。",
+                reason=str(ctx.last_payload.get("reason", "命令被拦截。")),
+                tool_name=last_tool_name,
+            )
+
+        _record_round_latency()
+
+        # ── 进度汇报判断点 ──
+        if ctx.progress_state is not None:
+            from src.core.progress_reporter import check_and_report
+            await check_and_report(
+                state=ctx.progress_state,
+                llm_router=self._router,
+                on_interim_text=ctx.on_interim_text,
+                messages=ctx.messages,
+            )
+
+        # 压缩旧的浏览器 PageState（保留最新完整，旧的只留摘要）
+        self._compress_browser_history(ctx.messages)
+        # 重新注入 voice reminder（tool call 循环会让消息越来越长，
+        # 导致 voice reminder 离生成位置越来越远）
+        _refresh_voice_reminder(ctx.messages)
+
+        # ── Loop turn 日志 ──
+        result_chars = sum(len(t[1]) for t in tool_results) if tool_results else 0
+        ctx.recovery.total_result_chars += result_chars
+        logger.info(
+            "[runtime] Loop turn=%d transition=%s tool_calls=%d result_chars=%d total_chars=%d",
+            ctx.recovery.turn_count,
+            ctx.recovery.transition_reason,
+            len(executed_tool_names),
+            result_chars,
+            ctx.recovery.total_result_chars,
+        )
+        _events.log("tool_loop", "turn_complete",
+            turn=ctx.recovery.turn_count,
+            transition=ctx.recovery.transition_reason,
+            tool_calls=executed_tool_names,
+            compact_attempts=ctx.recovery.reactive_compact_attempts,
+            api_errors=ctx.recovery.consecutive_api_errors,
+            result_chars=result_chars,
+        )
+        return TaskLoopStep(payload=ctx.last_payload)
 
     async def _finalize_without_tool_calls(
         self,
@@ -1274,6 +1298,15 @@ class TaskRuntime:
 
         shell_executor = deps.execute_shell if deps is not None else default_execute_shell
         shell_default_cwd = deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD
+
+        # ── CheckpointManager：文件修改前自动快照 ──────────────────────────────
+        if request.name in (_SHELL_TOOLS | _FILE_WRITE_TOOLS):
+            checkpoint_mgr = getattr(self, "_checkpoint_manager", None)
+            if checkpoint_mgr is not None:
+                try:
+                    checkpoint_mgr.snapshot(workspace_root or str(ROOT_DIR))
+                except Exception as cp_exc:
+                    logger.debug("Checkpoint 快照跳过: %s", cp_exc)
 
         # ── VitalGuard：存活保护检查 ────────────────────────────────────────────
         vg_command = str(request.arguments.get("command", "")).strip()

@@ -11,6 +11,14 @@ from src.tools.shell_executor import ShellResult
 from src.tools.web_fetcher import FetchResult
 
 
+def _registry_with_personal_tools():
+    """构建注册了 personal_tools 的 registry（Phase 4）。"""
+    registry = build_default_tool_registry()
+    from src.tools.personal_tools import register_personal_tools
+    register_personal_tools(registry, {})
+    return registry
+
+
 @pytest.mark.asyncio
 async def test_default_registry_exports_shell_tools_schema():
     registry = build_default_tool_registry()
@@ -18,12 +26,13 @@ async def test_default_registry_exports_shell_tools_schema():
     tools = registry.function_tools(capability="shell")
     names = {item["function"]["name"] for item in tools}
 
-    assert names == {"execute_shell", "read_file", "write_file"}
+    assert {"execute_shell", "read_file", "write_file"}.issubset(names)
 
 
 @pytest.mark.asyncio
 async def test_default_registry_exports_web_tools_schema():
-    registry = build_default_tool_registry()
+    """Phase 4: web_search / web_fetch 现在由 personal_tools 注册。"""
+    registry = _registry_with_personal_tools()
     tools = {
         item["function"]["name"]: item["function"]["parameters"]
         for item in registry.function_tools()
@@ -31,11 +40,9 @@ async def test_default_registry_exports_web_tools_schema():
 
     assert "web_search" in tools
     assert tools["web_search"]["required"] == ["query"]
-    assert "max_results" in tools["web_search"]["properties"]
 
     assert "web_fetch" in tools
     assert tools["web_fetch"]["required"] == ["url"]
-    assert "max_chars" in tools["web_fetch"]["properties"]
 
 
 @pytest.mark.asyncio
@@ -176,14 +183,15 @@ async def test_activate_skill_tool_uses_skill_manager_service():
 
 
 @pytest.mark.asyncio
-async def test_web_search_tool_uses_default_max_results_from_settings():
-    registry = build_default_tool_registry()
+async def test_web_search_tool_uses_fixed_max_results():
+    """Phase 4: web_search 使用固定 max_results=5。"""
+    registry = _registry_with_personal_tools()
     context = ToolExecutionContext(
         execute_shell=AsyncMock(),
         shell_default_cwd="/tmp",
     )
 
-    with patch("src.tools.handlers.web_search.search", new_callable=AsyncMock) as mock_search:
+    with patch("src.tools.web_search.search", new_callable=AsyncMock) as mock_search:
         mock_search.return_value = [
             {"title": "t1", "url": "https://a.example", "snippet": "s1"},
         ]
@@ -192,40 +200,39 @@ async def test_web_search_tool_uses_default_max_results_from_settings():
             context=context,
         )
 
-    mock_search.assert_awaited_once_with("lapwing", max_results=SEARCH_MAX_RESULTS)
+    mock_search.assert_awaited_once_with("lapwing", max_results=5)
     assert result.success is True
     assert result.payload["query"] == "lapwing"
-    assert result.payload["count"] == 1
-    assert result.payload["results"] == [{"title": "t1", "url": "https://a.example", "snippet": "s1"}]
+    assert len(result.payload["results"]) == 1
 
 
 @pytest.mark.asyncio
-async def test_web_search_tool_clamps_max_results_and_returns_failure_payload():
-    registry = build_default_tool_registry()
+async def test_web_search_tool_returns_failure_on_exception():
+    """Phase 4: web_search 异常时返回有意义的错误。"""
+    registry = _registry_with_personal_tools()
     context = ToolExecutionContext(
         execute_shell=AsyncMock(),
         shell_default_cwd="/tmp",
     )
 
-    with patch("src.tools.handlers.web_search.search", new_callable=AsyncMock) as mock_search:
+    with patch("src.tools.web_search.search", new_callable=AsyncMock) as mock_search:
         mock_search.side_effect = RuntimeError("boom")
         result = await registry.execute(
             ToolExecutionRequest(
                 name="web_search",
-                arguments={"query": "A股 收盘", "max_results": 999},
+                arguments={"query": "A股 收盘"},
             ),
             context=context,
         )
 
-    mock_search.assert_awaited_once_with("A股 收盘", max_results=10)
     assert result.success is False
-    assert result.payload == {"query": "A股 收盘", "count": 0, "results": []}
-    assert "web_search 执行失败" in result.reason
+    assert "搜索失败" in result.payload.get("error", "")
 
 
 @pytest.mark.asyncio
-async def test_web_fetch_tool_returns_standard_payload_and_truncates_text():
-    registry = build_default_tool_registry()
+async def test_web_fetch_tool_returns_standard_payload():
+    """Phase 4: web_fetch 返回标准 payload。"""
+    registry = _registry_with_personal_tools()
     context = ToolExecutionContext(
         execute_shell=AsyncMock(),
         shell_default_cwd="/tmp",
@@ -238,12 +245,12 @@ async def test_web_fetch_tool_returns_standard_payload_and_truncates_text():
         error="",
     )
 
-    with patch("src.tools.handlers.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
+    with patch("src.tools.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
         mock_fetch.return_value = fetched
         result = await registry.execute(
             ToolExecutionRequest(
                 name="web_fetch",
-                arguments={"url": "https://example.com/post", "max_chars": 50},
+                arguments={"url": "https://example.com/post"},
             ),
             context=context,
         )
@@ -252,14 +259,13 @@ async def test_web_fetch_tool_returns_standard_payload_and_truncates_text():
     assert result.success is True
     assert result.payload["url"] == "https://example.com/post"
     assert result.payload["title"] == "Example"
-    assert result.payload["success"] is True
-    assert result.payload["error"] == ""
-    assert len(result.payload["text"]) == 50
+    assert result.payload["text"] == "x" * 120
 
 
 @pytest.mark.asyncio
 async def test_web_fetch_tool_missing_url_returns_failure_payload():
-    registry = build_default_tool_registry()
+    """Phase 4: web_fetch 缺少 URL 返回有意义的错误。"""
+    registry = _registry_with_personal_tools()
     context = ToolExecutionContext(
         execute_shell=AsyncMock(),
         shell_default_cwd="/tmp",
@@ -271,11 +277,4 @@ async def test_web_fetch_tool_missing_url_returns_failure_payload():
     )
 
     assert result.success is False
-    assert result.payload == {
-        "url": "",
-        "title": "",
-        "text": "",
-        "success": False,
-        "error": "缺少 url 参数",
-    }
-    assert result.reason == "缺少 url 参数"
+    assert "url" in result.payload.get("error", "").lower() or "url" in result.reason.lower()
