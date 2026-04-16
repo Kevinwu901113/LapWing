@@ -1,11 +1,12 @@
 import { useEffect, useCallback } from "react";
 import { useChatStore } from "@/stores/chat";
 import { useWebSocket } from "@/hooks/useWebSocket";
+import { useTasks } from "@/hooks/useTasks";
 import { getChatHistory } from "@/lib/api";
 import { MessageList } from "@/components/chat/MessageList";
 import { MessageInput } from "@/components/chat/MessageInput";
 import { ChatHeader } from "@/components/chat/ChatHeader";
-import { AgentPanel } from "@/components/chat/AgentPanel";
+import { TaskSidebar } from "@/components/tasks/TaskSidebar";
 
 export default function ChatPage() {
   const wsStatus = useChatStore((s) => s.wsStatus);
@@ -13,7 +14,9 @@ export default function ChatPage() {
   const messages = useChatStore((s) => s.messages);
   const { send } = useWebSocket();
 
-  // Load chat history on mount (only if no messages loaded yet)
+  // Initialize task loading (SSE updates handled globally in AppShell)
+  useTasks();
+
   const loadHistory = useCallback(async () => {
     if (!chatId || messages.length > 0) return;
     try {
@@ -39,8 +42,8 @@ export default function ChatPage() {
         <MessageInput onSend={send} disabled={wsStatus !== "connected"} />
       </div>
 
-      {/* Agent panel (right sidebar) */}
-      <AgentPanel />
+      {/* Task sidebar (right) */}
+      <TaskSidebar />
     </div>
   );
 }
