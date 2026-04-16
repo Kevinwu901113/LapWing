@@ -7,6 +7,7 @@ import SettingsPage from "@/pages/SettingsPage";
 import NotesPage from "@/pages/NotesPage";
 import IdentityPage from "@/pages/IdentityPage";
 import DashboardPage from "@/pages/DashboardPage";
+import StatusDetailPage from "@/pages/StatusDetailPage";
 
 export const router = createBrowserRouter([
   {
@@ -19,6 +20,7 @@ export const router = createBrowserRouter([
       { path: "identity", element: <IdentityPage /> },
       { path: "system", element: <DashboardPage /> },
       { path: "settings", element: <SettingsPage /> },
+      { path: "status", element: <StatusDetailPage /> },
     ],
   },
 ]);

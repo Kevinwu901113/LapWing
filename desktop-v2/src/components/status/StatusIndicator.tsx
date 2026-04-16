@@ -1,3 +1,4 @@
+import { NavLink } from "react-router-dom";
 import { useStatusStore } from "@/stores/status";
 
 const STATUS_CONFIG = {
@@ -12,9 +13,16 @@ export function StatusIndicator() {
   const config = STATUS_CONFIG[state] ?? STATUS_CONFIG.idle;
 
   return (
-    <div className="flex items-center gap-2 px-3 py-2 text-xs text-text-secondary">
+    <NavLink
+      to="/status"
+      className={({ isActive }) =>
+        `flex items-center gap-2 px-3 py-2 text-xs transition-colors ${
+          isActive ? "text-text-accent bg-surface-active" : "text-text-secondary hover:text-text-primary hover:bg-surface-hover"
+        }`
+      }
+    >
       <span className={`w-2 h-2 rounded-full ${config.color}`} />
       <span>{config.label}</span>
-    </div>
+    </NavLink>
   );
 }
