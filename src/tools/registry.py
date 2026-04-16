@@ -630,7 +630,7 @@ def build_default_tool_registry() -> ToolRegistry:
         risk_level="low",
     ))
 
-    # delegate_task 已由 personal_tools.py 的 delegate 替代（Phase 4）
+    # Agent Team 工具（delegate, delegate_to_agent, ws_file_*）由 container.py 注册（Phase 6）
 
     # schedule_task / list_scheduled_tasks / cancel_scheduled_task 已由 DurableScheduler 工具替代（Phase 4）
     # 新工具名: set_reminder / view_reminders / cancel_reminder，在 container.py 中注册
