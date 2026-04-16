@@ -13,7 +13,7 @@ export function getApiBase(): string {
   return "http://127.0.0.1:8765";
 }
 
-function getAuthHeaders(): HeadersInit {
+export function getAuthHeaders(): HeadersInit {
   const token = localStorage.getItem("lapwing_desktop_token");
   if (token) return { Authorization: `Bearer ${token}` };
   return {};
