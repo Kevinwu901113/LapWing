@@ -15,10 +15,7 @@ from config.settings import (
     API_HOST,
     API_PORT,
     API_SESSION_TTL_SECONDS,
-    JOURNAL_DIR,
 )
-from src.core.latency_monitor import LatencyMonitor
-
 logger = logging.getLogger("lapwing.api.server")
 
 _DIST_DIR = Path(__file__).parent.parent.parent / "desktop" / "dist"
@@ -28,7 +25,7 @@ def create_app(
     brain,
     event_bus,
     task_view_store=None,
-    latency_monitor: LatencyMonitor | None = None,
+    latency_monitor=None,
     channel_manager=None,
     dispatcher=None,
     event_logger_v2=None,
@@ -55,21 +52,13 @@ def create_app(
 
     # Mount route modules
     from src.api.routes import auth as _auth_routes
-    from src.api.routes import data as _data_routes
-    from src.api.routes import system as _system_routes
     from src.api.routes import chat_ws as _chat_ws_routes
-    from src.api.routes import logs as _logs_routes
 
     _auth_routes.init(app.state.auth_manager, api_session_ttl=API_SESSION_TTL_SECONDS)
-    _data_routes.init(brain, journal_dir=JOURNAL_DIR)
-    _system_routes.init(brain, event_bus, app)
     _chat_ws_routes.init(brain, channel_manager)
 
     app.include_router(_auth_routes.router)
-    app.include_router(_data_routes.router)
-    app.include_router(_system_routes.router)
     app.include_router(_chat_ws_routes.router)
-    app.include_router(_logs_routes.router)
 
     from src.api.routes import agents as _agents_routes
     _agents_routes.init(brain)
@@ -208,7 +197,7 @@ class LocalApiServer:
         brain,
         event_bus,
         task_view_store=None,
-        latency_monitor: LatencyMonitor | None = None,
+        latency_monitor=None,
         host: str = API_HOST,
         port: int = API_PORT,
         channel_manager=None,

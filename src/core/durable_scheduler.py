@@ -96,6 +96,7 @@ class DurableScheduler:
         urgency_callback=None,
         send_fn=None,
         brain=None,
+        dispatcher=None,
     ) -> None:
         # urgency_callback: async def callback(reminder: Reminder)
         # send_fn: async def send(text: str)
@@ -104,6 +105,7 @@ class DurableScheduler:
         self._urgency_callback = urgency_callback
         self._send_fn = send_fn
         self._brain = brain
+        self.dispatcher = dispatcher
         self._running = False
 
     # ── 公开接口 ────────────────────────────────────────────────────
@@ -303,6 +305,21 @@ class DurableScheduler:
             await db.commit()
 
         logger.info("触发提醒: %s content=%s mode=%s", reminder.reminder_id, reminder.content[:50], reminder.execution_mode)
+
+        if self.dispatcher is not None:
+            try:
+                await self.dispatcher.submit(
+                    "reminder.fired",
+                    payload={
+                        "reminder_id": reminder.reminder_id,
+                        "content": reminder.content[:200],
+                        "execution_mode": reminder.execution_mode,
+                        "due_time": reminder.due_time.isoformat(),
+                    },
+                    actor="lapwing",
+                )
+            except Exception:
+                logger.debug("reminder.fired 事件提交失败", exc_info=True)
 
         # 若为循环提醒，创建下一次
         if reminder.repeat:

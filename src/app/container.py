@@ -9,7 +9,6 @@ from config.settings import (
     BROWSER_ENABLED,
     DATA_DIR,
     DB_PATH,
-    INCIDENT_ENABLED,
     PHASE0_MODE,
 )
 from src.api.event_bus import DesktopEventBus
@@ -21,9 +20,6 @@ from src.core.consciousness import ConsciousnessEngine
 from src.core.dispatcher import Dispatcher
 from src.core.durable_scheduler import DurableScheduler
 from src.core.event_logger_v2 import EventLogger
-from src.core.heartbeat import HeartbeatEngine
-from src.core.reminder_scheduler import ReminderScheduler
-from src.core.latency_monitor import LatencyMonitor
 
 logger = logging.getLogger("lapwing.app.container")
 
@@ -48,15 +44,9 @@ class AppContainer:
         _model_config = ModelConfigManager()
         self.brain = brain or LapwingBrain(db_path=self._db_path, model_config=_model_config)
         self.task_view_store = task_view_store or TaskViewStore()
-        self.latency_monitor = LatencyMonitor()
         self.event_bus = event_bus or DesktopEventBus()
-        if hasattr(self.event_bus, "set_latency_monitor"):
-            self.event_bus.set_latency_monitor(self.latency_monitor)
         self.event_bus.add_listener(self.task_view_store.ingest_event)
         self.brain.event_bus = self.event_bus
-        runtime = getattr(self.brain, "task_runtime", None)
-        if runtime is not None and hasattr(runtime, "set_latency_monitor"):
-            runtime.set_latency_monitor(self.latency_monitor)
 
         from src.adapters.base import ChannelType
         from src.adapters.desktop_adapter import DesktopChannelAdapter
@@ -69,19 +59,14 @@ class AppContainer:
             brain=self.brain,
             event_bus=self.event_bus,
             task_view_store=self.task_view_store,
-            latency_monitor=self.latency_monitor,
             channel_manager=self.channel_manager,
         )
-        self.heartbeat: HeartbeatEngine | None = None
         self.consciousness: ConsciousnessEngine | None = None
-        self.reminder_scheduler: ReminderScheduler | None = None
         self.durable_scheduler: DurableScheduler | None = None
         # 浏览器子系统（可选）
         self._browser_manager = None
         self._credential_vault = None
         self._browser_guard = None
-
-        self.incident_manager = None
 
         # Phase 5: Dispatcher + EventLogger v2（Phase 1 基础设施，现在接入 SSE）
         self.event_logger_v2: EventLogger | None = None
@@ -104,6 +89,8 @@ class AppContainer:
         self.event_logger_v2 = EventLogger(events_db)
         await self.event_logger_v2.init()
         self.dispatcher = Dispatcher(self.event_logger_v2)
+        # 注入到主对话路径（无条件，AGENT_TEAM_ENABLED 与否都要）
+        self.brain._dispatcher_ref = self.dispatcher
         # 注入到 API server（server.start() 时才实际使用）
         self.api_server._dispatcher = self.dispatcher
         self.api_server._event_logger_v2 = self.event_logger_v2
@@ -116,8 +103,6 @@ class AppContainer:
         await self._configure_brain_dependencies()
         self._prepared = True
         logger.info("应用容器依赖装配完成")
-        from src.logging.event_logger import events
-        events.log("system", "startup", message="Lapwing 启动完成")
 
     async def start(self, *, send_fn=None) -> None:
         if self._started:
@@ -126,23 +111,14 @@ class AppContainer:
         await self.prepare()
 
         if send_fn is not None and not PHASE0_MODE:
-            from config.settings import CONSCIOUSNESS_ENABLED, HEARTBEAT_ENABLED
+            from config.settings import CONSCIOUSNESS_ENABLED
             import asyncio as _asyncio
-
-            self.reminder_scheduler = ReminderScheduler(
-                memory=self.brain.memory,
-                send_fn=send_fn,
-                event_bus=self.event_bus,
-            )
-            self.reminder_scheduler._brain = self.brain
-            self.brain.reminder_scheduler = self.reminder_scheduler
 
             if CONSCIOUSNESS_ENABLED:
                 self.consciousness = ConsciousnessEngine(
                     brain=self.brain,
                     send_fn=send_fn,
-                    reminder_scheduler=self.reminder_scheduler,
-                    incident_manager=self.incident_manager,
+                    dispatcher=self.dispatcher,
                 )
                 self.brain.consciousness_engine = self.consciousness
                 await self.consciousness.start()
@@ -166,12 +142,8 @@ class AppContainer:
                     if self.brain.prompt_builder is not None:
                         self.brain.prompt_builder.reminder_source = self.durable_scheduler
                     logger.info("DurableScheduler 循环已启动，已连接意识循环 urgency queue")
-            elif HEARTBEAT_ENABLED:
-                self.heartbeat = self._build_heartbeat(send_fn)
-                self.heartbeat.start()
-                await self.reminder_scheduler.start()
-
-                # Phase 4: DurableScheduler 在非意识模式下也启动
+            else:
+                # DurableScheduler 在非意识模式下也启动
                 if self.durable_scheduler is not None:
                     self.durable_scheduler.send_fn = send_fn
                     self.durable_scheduler.brain = self.brain
@@ -180,15 +152,14 @@ class AppContainer:
                         name="durable-scheduler",
                     )
         elif PHASE0_MODE:
-            logger.info("Phase 0 模式：跳过意识循环/心跳/提醒调度")
+            logger.info("Phase 0 模式：跳过意识循环")
 
         await self.channel_manager.start_all()
 
         await self.api_server.start()
 
-        # 将心跳引擎注入 API 状态，供 /api/heartbeat/status 使用
+        # 将意识引擎注入 API 状态
         if self.api_server._app is not None:
-            self.api_server._app.state.heartbeat = self.heartbeat
             self.api_server._app.state.consciousness = self.consciousness
 
         self._started = True
@@ -208,19 +179,10 @@ class AppContainer:
                     pass
             self.durable_scheduler = None
 
-        # Consciousness engine shutdown (must come first — it owns reminder_scheduler)
+        # Consciousness engine shutdown
         if self.consciousness is not None:
             await self.consciousness.stop()
             self.consciousness = None
-            self.reminder_scheduler = None  # already shut down by consciousness.stop()
-
-        if self.reminder_scheduler is not None:
-            await self.reminder_scheduler.shutdown()
-            self.reminder_scheduler = None
-
-        if self.heartbeat is not None:
-            await self.heartbeat.shutdown()
-            self.heartbeat = None
 
         # API 先停，不再接受新请求
         await self.api_server.shutdown()
@@ -244,7 +206,6 @@ class AppContainer:
                 logger.warning("浏览器关闭异常", exc_info=True)
 
         # EmbeddingWorker 后台任务取消
-        import asyncio as _asyncio
         if hasattr(self, "_embedding_task") and self._embedding_task is not None:
             self._embedding_task.cancel()
             try:
@@ -257,9 +218,6 @@ class AppContainer:
             await self.event_logger_v2.close()
 
         await self.brain.memory.close()
-        from src.logging.event_logger import events, get_event_logger
-        events.log("system", "shutdown", message="Lapwing 正在关闭")
-        get_event_logger().close()
         self._started = False
         logger.info("应用容器资源清理完成")
 
@@ -268,10 +226,8 @@ class AppContainer:
             logger.info("Phase 0 模式 (%s)：跳过大部分依赖装配", PHASE0_MODE)
             return
 
-        from src.core.knowledge_manager import KnowledgeManager
         from src.memory.vector_store import VectorStore
 
-        self.brain.knowledge_manager = KnowledgeManager()
         self.brain.vector_store = VectorStore(self._data_dir / "chroma")
 
         # PromptBuilder（Phase 2：4 层）
@@ -314,23 +270,6 @@ class AppContainer:
         register_memory_tools_v2(self.brain.tool_registry)
         logger.info("Phase 3 记忆系统已装配（NoteStore + MemoryVectorStore + 9 工具）")
 
-        # Incident 管理系统（可选）
-        if INCIDENT_ENABLED:
-            from src.core.incident_manager import IncidentManager
-            self.incident_manager = IncidentManager(
-                send_notification_fn=self._send_notification_to_owner,
-            )
-            self.brain.incident_manager = self.incident_manager
-            self.brain.task_runtime.set_incident_manager(self.incident_manager)
-            logger.info("Incident 管理系统已就绪")
-
-        # 任务流编排
-        from src.core.task_flow import TaskFlowManager
-        self.brain.task_flow_manager = TaskFlowManager()
-        recovered = self.brain.task_flow_manager.load_pending_flows()
-        if recovered:
-            logger.info("恢复了 %d 个未完成任务流", len(recovered))
-
         # ── Agent Team 系统（Phase 6） ──────────────────────────────────
         from config.settings import AGENT_TEAM_ENABLED
         if AGENT_TEAM_ENABLED:
@@ -348,7 +287,6 @@ class AppContainer:
             agent_registry = AgentRegistry()
 
             # services 供 Agent 的 tool loop 传递给 ToolExecutionContext
-            # agent_registry 是同一个引用——创建后注册 agent，运行时已全部就绪
             agent_services = {
                 "agent_registry": agent_registry,
                 "dispatcher": self.dispatcher,
@@ -420,41 +358,19 @@ class AppContainer:
                 visibility="internal",
             ))
 
-            # 注入 services
+            # 注入 services（dispatcher 已在 prepare() 中无条件设置）
             self.brain._agent_registry = agent_registry
-            self.brain._dispatcher_ref = self.dispatcher
 
             # 创建工作区目录
-            from pathlib import Path
             Path("data/agent_workspace").mkdir(parents=True, exist_ok=True)
             Path("data/agent_workspace/patches").mkdir(parents=True, exist_ok=True)
 
             logger.info("Agent Team 系统已就绪（%d agents）", len(agent_registry.list_names()))
 
-        # 文件快照回滚
-        from src.core.checkpoint_manager import CheckpointManager
-        checkpoint_mgr = CheckpointManager()
-        self.brain.task_runtime.set_checkpoint_manager(checkpoint_mgr)
-        logger.info("文件快照管理器已就绪")
-
-        # 中间进度汇报（可选）
-        from config.settings import PROGRESS_REPORT_ENABLED
-        if PROGRESS_REPORT_ENABLED:
-            self.brain.task_runtime.set_progress_enabled(True)
-            logger.info("中间进度汇报已就绪")
-
-        # 未完成任务恢复（可选）
-        from config.settings import TASK_RESUMPTION_ENABLED
-        if TASK_RESUMPTION_ENABLED:
-            from src.core.pending_task import PendingTaskStore
-            pending_store = PendingTaskStore(self._data_dir / "pending_tasks.json")
-            self.brain.pending_task_store = pending_store
-            self.brain.task_runtime.set_pending_task_store(pending_store)
-            logger.info("未完成任务恢复已就绪")
-
         # Phase 4: DurableScheduler（初始化但不启动循环——循环在 start() 中启动）
         self.durable_scheduler = DurableScheduler(
             db_path=self._db_path,
+            dispatcher=self.dispatcher,
         )
         self.brain._durable_scheduler_ref = self.durable_scheduler
 
@@ -580,16 +496,3 @@ class AppContainer:
             logger.info("MiniMax VLM 客户端已注入浏览器子系统")
 
         logger.info("浏览器子系统已就绪")
-
-    def _build_heartbeat(self, send_fn) -> HeartbeatEngine:
-        # Phase 1: 心跳 actions 全部移除，Phase 4 会重建意识循环
-        heartbeat = HeartbeatEngine(brain=self.brain, send_fn=send_fn)
-        return heartbeat
-
-    async def _send_notification_to_owner(self, text: str) -> None:
-        """通过消息通道通知 Kevin。由 IncidentManager 在 wont_fix 时调用。"""
-        try:
-            if self.channel_manager:
-                await self.channel_manager.send_to_owner(text)
-        except Exception:
-            logger.debug("通知 owner 失败", exc_info=True)

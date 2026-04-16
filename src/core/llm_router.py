@@ -6,7 +6,6 @@ import time
 from typing import Any, Awaitable, Callable
 
 from src.auth.service import AuthManager
-from src.logging.event_logger import events as _events
 from src.core.reasoning_tags import strip_internal_thinking_tags
 
 # Re-export types for backward compatibility
@@ -628,11 +627,7 @@ class LLMRouter:
                                 failure_kind,
                             )
                             break
-                        _events.log("system", "llm_error",
-                            message=f"LLM 调用失败: {exc}",
-                            slot=effective_key,
-                            model=self._models.get(effective_key, "?"),
-                        )
+                        logger.warning("LLM 调��失败: %s (slot=%s)", exc, effective_key)
                         raise
 
             if last_exc is not None:
@@ -759,13 +754,7 @@ class LLMRouter:
             origin=origin,
             runner=_runner,
         )
-        _events.log("llm_call", "complete",
-            slot=effective_key,
-            model=self._models.get(effective_key, "?"),
-            duration=round(time.monotonic() - _llm_start, 2),
-            purpose=origin or "unknown",
-            has_tool_calls=False,
-        )
+        logger.debug("LLM call complete")
         return result
 
     async def query_lightweight(self, system: str, user: str, *, slot: str | None = None) -> str:
@@ -959,15 +948,7 @@ class LLMRouter:
             origin=origin,
             runner=_runner,
         )
-        _events.log("llm_call", "complete_with_tools",
-            slot=effective_key,
-            model=self._models.get(effective_key, "?"),
-            duration=round(time.monotonic() - _llm_start, 2),
-            purpose=origin or "unknown",
-            has_tool_calls=bool(result.tool_calls),
-            input_tokens=result.input_tokens,
-            output_tokens=result.output_tokens,
-        )
+        logger.debug("LLM tool call complete")
         return result
 
     async def complete_structured(

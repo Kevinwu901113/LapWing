@@ -25,7 +25,6 @@ from src.core.shell_policy import (
 )
 from src.core.verifier import verify_shell_constraints_status as verify_constraints
 from src.memory.conversation import ConversationMemory
-from src.logging.event_logger import events
 from src.tools.registry import build_default_tool_registry
 from src.tools.shell_executor import execute as execute_shell
 from src.tools.types import ToolExecutionRequest
@@ -46,7 +45,6 @@ from config.settings import (
 )
 
 if TYPE_CHECKING:
-    from src.core.knowledge_manager import KnowledgeManager
     from src.memory.vector_store import VectorStore
 
 logger = logging.getLogger("lapwing.core.brain")
@@ -107,12 +105,9 @@ class LapwingBrain:
         self._model_config = model_config
         self.router = LLMRouter(auth_manager=self.auth_manager, model_config=model_config)
         from config.settings import PHASE0_MODE
-        if PHASE0_MODE == "B":
-            from src.tools.phase0_tools import build_phase0_tool_registry
-            self.tool_registry = build_phase0_tool_registry()
-        elif PHASE0_MODE == "A":
+        if PHASE0_MODE:
             from src.tools.registry import ToolRegistry
-            self.tool_registry = ToolRegistry()  # 空注册表 = 0 工具
+            self.tool_registry = ToolRegistry()  # Phase 0: 空注册表
         else:
             self.tool_registry = build_default_tool_registry()
         self.memory = ConversationMemory(db_path)
@@ -129,22 +124,14 @@ class LapwingBrain:
         from src.core.prompt_builder import PromptSnapshotManager, PromptBuilder
         self._prompt_snapshot = PromptSnapshotManager()
         self.prompt_builder: PromptBuilder | None = None  # Set externally (container)
-        self.knowledge_manager: KnowledgeManager | None = None
         self.vector_store: VectorStore | None = None
         self.skill_manager = None  # SkillManager | None — Phase 3 重建
         self.event_bus = None
         self._system_prompt: str | None = None
         self.reminder_scheduler = None  # Set externally (ReminderScheduler | None)
         self.channel_manager = None  # Set externally (ChannelManager | None)
-        self.task_flow_manager = None  # Set externally (TaskFlowManager | None)
-        self.delegation_manager = None  # Set externally (DelegationManager | None)
-        self.agent_registry = None  # Set externally (AgentRegistry | None)
-        self.agent_dispatcher = None  # Set externally (AgentDispatcher | None)
         self.consciousness_engine = None  # Set externally (ConsciousnessEngine | None)
-        self.pending_task_store = None  # Set externally (PendingTaskStore | None)
         self._conversation_end_task: asyncio.Task | None = None
-        from src.core.background_review import BackgroundReviewer
-        self._background_reviewer = BackgroundReviewer(interval=10)
 
     async def init_db(self) -> None:
         """初始化数据库连接和表结构。"""
@@ -262,9 +249,6 @@ class LapwingBrain:
         if dispatcher is not None:
             services["dispatcher"] = dispatcher
         services["router"] = self.router
-        incident_manager = getattr(self, "incident_manager", None)
-        if incident_manager is not None:
-            services["incident_manager"] = incident_manager
         # Phase 3 记忆系统
         note_store = getattr(self, "_note_store", None)
         if note_store is not None:
@@ -616,11 +600,44 @@ class LapwingBrain:
 
         await self.memory.append(chat_id, "user", stored_text)
 
+        dispatcher = getattr(self, "_dispatcher_ref", None)
+        if dispatcher is not None:
+            try:
+                await dispatcher.submit(
+                    "message.received",
+                    payload={
+                        "chat_id": chat_id,
+                        "content": stored_text[:500],
+                        "has_images": bool(images),
+                        "adapter": adapter,
+                    },
+                    actor=user_id or "user",
+                    source=adapter,
+                    trust_level=("owner" if auth_level == 3 else ("trusted" if auth_level >= 2 else "guest")),
+                )
+            except Exception:
+                logger.debug("message.received 事件提交失败", exc_info=True)
+
         effective_user_message, approved_directory, immediate_reply = (
             self.task_runtime.resolve_pending_confirmation(chat_id, user_message)
         )
         if immediate_reply is not None:
             await self.memory.append(chat_id, "assistant", immediate_reply)
+            if dispatcher is not None:
+                try:
+                    await dispatcher.submit(
+                        "message.sent",
+                        payload={
+                            "chat_id": chat_id,
+                            "content": immediate_reply[:500],
+                            "adapter": adapter,
+                            "reason": "pending_confirmation_resolved",
+                        },
+                        actor="lapwing",
+                        source=adapter,
+                    )
+                except Exception:
+                    logger.debug("message.sent 事件提交失败", exc_info=True)
             if send_fn is not None:
                 await send_fn(immediate_reply)
             return _ThinkCtx(messages=[], effective_user_message=effective_user_message,
@@ -767,6 +784,16 @@ class LapwingBrain:
                     "[brain] 后处理失败（回复已生成，不影响调用方）: %s",
                     post_exc, exc_info=True,
                 )
+            dispatcher = getattr(self, "_dispatcher_ref", None)
+            if dispatcher is not None:
+                try:
+                    await dispatcher.submit(
+                        "message.sent",
+                        payload={"chat_id": chat_id, "content": reply[:500]},
+                        actor="lapwing",
+                    )
+                except Exception:
+                    logger.debug("message.sent 事件提交失败", exc_info=True)
             return reply
 
         except Exception as e:
@@ -810,12 +837,7 @@ class LapwingBrain:
             self.consciousness_engine.on_conversation_start()
 
         if not is_resumption:
-            events.log("conversation", "incoming",
-                message=user_message[:500],
-                channel=adapter,
-                chat_id=chat_id,
-                user_id=user_id,
-            )
+            logger.info("[%s] incoming: %s", chat_id, user_message[:200])
 
         # 恢复触发：不写入用户消息，不走 _prepare_think 中的用户消息写入
         if is_resumption and not user_message:
@@ -926,23 +948,27 @@ class LapwingBrain:
                 memory_text = "\n\n".join(parts_sent) if parts_sent else memory_text
                 await self.memory.append(chat_id, "assistant", memory_text)
                 logger.debug(f"[{chat_id}] 流式回复完成，片段数: {len(parts_sent)}")
-                events.log("conversation", "outgoing",
-                    message=memory_text[:500],
-                    channel=adapter,
-                    chat_id=chat_id,
-                )
-                # 背景自动回顾（每 N 轮用户消息后异步执行）
-                if not is_resumption:
-                    await self._background_reviewer.maybe_review(
-                        router=self.router,
-                        memory=self.memory,
-                        chat_id=chat_id,
-                    )
             except Exception as post_exc:
                 logger.warning(
                     "[brain] 后处理失败（回复已发出，不影响用户）: %s",
                     post_exc, exc_info=True,
                 )
+            dispatcher = getattr(self, "_dispatcher_ref", None)
+            if dispatcher is not None:
+                try:
+                    await dispatcher.submit(
+                        "message.sent",
+                        payload={
+                            "chat_id": chat_id,
+                            "content": memory_text[:500],
+                            "segments": len(parts_sent),
+                            "adapter": adapter,
+                        },
+                        actor="lapwing",
+                        source=adapter,
+                    )
+                except Exception:
+                    logger.debug("message.sent 事件提交失败", exc_info=True)
             return memory_text
 
         except Exception as e:

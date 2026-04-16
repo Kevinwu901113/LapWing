@@ -21,19 +21,9 @@ DB_PATH = DATA_DIR / "lapwing.db"
 # 文件记忆路径
 IDENTITY_DIR = DATA_DIR / "identity"
 MEMORY_DIR = DATA_DIR / "memory"
-EVOLUTION_DIR = DATA_DIR / "evolution"
-JOURNAL_DIR = MEMORY_DIR / "journal"
 CONVERSATION_SUMMARIES_DIR = MEMORY_DIR / "conversations" / "summaries"
-DIAGNOSTICS_DIR = DATA_DIR / "diagnostics"
-DIAGNOSTICS_SAMPLES_DIR = DIAGNOSTICS_DIR / "samples"
 CONSTITUTION_PATH = IDENTITY_DIR / "constitution.md"
 SOUL_PATH = IDENTITY_DIR / "soul.md"
-SELF_NOTES_PATH = MEMORY_DIR / "SELF.md"
-KEVIN_NOTES_PATH = MEMORY_DIR / "KEVIN.md"
-RULES_PATH = EVOLUTION_DIR / "rules.md"
-INTERESTS_PATH = EVOLUTION_DIR / "interests.md"
-CHANGELOG_PATH = EVOLUTION_DIR / "changelog.md"
-SCHEDULED_TASKS_PATH = DATA_DIR / "scheduled_tasks.json"
 
 # Compaction 配置
 COMPACTION_TRIGGER_RATIO = float(os.getenv("COMPACTION_TRIGGER_RATIO", "0.8"))
@@ -139,17 +129,10 @@ FACT_EXTRACT_IDLE_SECONDS: int = int(os.getenv("FACT_EXTRACT_IDLE_SECONDS", "300
 FACT_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("FACT_EXTRACT_TURN_THRESHOLD", "3"))  # 满 N 轮触发提取
 INTEREST_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("INTEREST_EXTRACT_TURN_THRESHOLD", "5"))
 
-# ── Wave 1 功能开关 ──
-MEMORY_CRUD_ENABLED: bool = os.getenv("MEMORY_CRUD_ENABLED", "true").lower() in ("true", "1", "yes")
-AUTO_MEMORY_EXTRACT_ENABLED: bool = os.getenv("AUTO_MEMORY_EXTRACT_ENABLED", "true").lower() in ("true", "1", "yes")
+# ── 功能开关 ──
 MEMORY_GUARD_ENABLED: bool = os.getenv("MEMORY_GUARD_ENABLED", "true").lower() in ("true", "1", "yes")
-DELEGATION_ENABLED: bool = os.getenv("DELEGATION_ENABLED", "true").lower() in ("true", "1", "yes")
 AGENT_TEAM_ENABLED: bool = os.getenv("AGENT_TEAM_ENABLED", "true").lower() in ("true", "1", "yes")
 SELF_SCHEDULE_ENABLED: bool = os.getenv("SELF_SCHEDULE_ENABLED", "true").lower() in ("true", "1", "yes")
-QUALITY_CHECK_ENABLED: bool = os.getenv("QUALITY_CHECK_ENABLED", "true").lower() in ("true", "1", "yes")
-INCIDENT_ENABLED: bool = os.getenv("INCIDENT_ENABLED", "true").lower() in ("true", "1", "yes")
-PROGRESS_REPORT_ENABLED: bool = os.getenv("PROGRESS_REPORT_ENABLED", "true").lower() in ("true", "1", "yes")
-TASK_RESUMPTION_ENABLED: bool = os.getenv("TASK_RESUMPTION_ENABLED", "true").lower() in ("true", "1", "yes")
 MESSAGE_SPLIT_ENABLED: bool = os.getenv("MESSAGE_SPLIT_ENABLED", "true").lower() in ("true", "1", "yes")
 MESSAGE_SPLIT_FALLBACK_NEWLINE: bool = os.getenv("MESSAGE_SPLIT_FALLBACK_NEWLINE", "true").lower() in ("true", "1", "yes")
 MESSAGE_SPLIT_DELAY_BASE: float = float(os.getenv("MESSAGE_SPLIT_DELAY_BASE", "0.8"))
@@ -157,12 +140,6 @@ MESSAGE_SPLIT_DELAY_PER_CHAR: float = float(os.getenv("MESSAGE_SPLIT_DELAY_PER_C
 MESSAGE_SPLIT_DELAY_MAX: float = float(os.getenv("MESSAGE_SPLIT_DELAY_MAX", "2.5"))
 MESSAGE_SPLIT_SINGLE_NL_MIN_LEN: int = int(os.getenv("MESSAGE_SPLIT_SINGLE_NL_MIN_LEN", "80"))
 
-# ── Session 管理 ──
-SESSION_ENABLED: bool = os.getenv("SESSION_ENABLED", "true").lower() in ("true", "1")
-SESSION_TIMEOUT_MINUTES: int = int(os.getenv("SESSION_TIMEOUT_MINUTES", "30"))
-SESSION_DORMANT_TTL_HOURS: float = float(os.getenv("SESSION_DORMANT_TTL_HOURS", "3"))
-SESSION_MIN_MESSAGES_TO_KEEP: int = int(os.getenv("SESSION_MIN_MESSAGES_TO_KEEP", "4"))
-SESSION_MAX_DORMANT_PER_CHAT: int = int(os.getenv("SESSION_MAX_DORMANT_PER_CHAT", "5"))
 
 # 语音转写（Whisper，可选；不填则回退到通用 LLM_* 配置）
 WHISPER_API_KEY: str = os.getenv("WHISPER_API_KEY", "")
@@ -180,8 +157,7 @@ TASK_MAX_TOOL_ROUNDS: int = int(os.getenv("TASK_MAX_TOOL_ROUNDS", "32"))
 TASK_NO_ACTION_BUDGET: int = int(os.getenv("TASK_NO_ACTION_BUDGET", "3"))
 TASK_ERROR_BURST_THRESHOLD: int = int(os.getenv("TASK_ERROR_BURST_THRESHOLD", "3"))
 
-# Skills（AgentSkills / OpenClaw-compatible）
-SKILLS_ENABLED: bool = os.getenv("SKILLS_ENABLED", "true").lower() == "true"
+# Skills（AgentSkills）
 SKILLS_WORKSPACE_DIR: str = os.getenv("SKILLS_WORKSPACE_DIR", str(ROOT_DIR / "skills"))
 SKILLS_MANAGED_DIR: str = os.getenv("SKILLS_MANAGED_DIR", str(Path.home() / ".lapwing" / "skills"))
 SKILLS_BUNDLED_DIR: str = os.getenv("SKILLS_BUNDLED_DIR", str(ROOT_DIR / "bundled_skills"))
@@ -195,12 +171,6 @@ SKILLS_DISPATCH_TOOL_WHITELIST: set[str] = {
     for item in os.getenv("SKILLS_DISPATCH_TOOL_WHITELIST", "execute_shell").split(",")
     if item.strip()
 }
-
-# Experience Skills（Lapwing 自身经验积累系统）
-EXPERIENCE_SKILLS_DIR: Path = ROOT_DIR / "skills"
-SKILL_TRACES_DIR: Path = ROOT_DIR / "skill_traces"
-EXPERIENCE_SKILLS_ENABLED: bool = os.getenv("EXPERIENCE_SKILLS_ENABLED", "true").lower() == "true"
-EXPERIENCE_SKILLS_MAX_INJECT_TOKENS: int = int(os.getenv("EXPERIENCE_SKILLS_MAX_INJECT_TOKENS", "4000"))
 
 # Latency / 体感 SLO（监控+告警）
 TOOL_LOOP_SLO_SHELL_P95_MS: int = int(os.getenv("TOOL_LOOP_SLO_SHELL_P95_MS", "2000"))

@@ -161,6 +161,28 @@ class PromptBuilder:
             f"{period}（约{now.hour}时，台北时间）"
         )
 
+        # 长时间离线提醒：重启后记忆中的时效性信息可能已过期
+        try:
+            from datetime import timezone
+            from src.core.vitals import get_previous_state
+            prev = get_previous_state()
+            if prev:
+                last_active_str = prev.get("last_active")
+                if last_active_str:
+                    last_active_dt = datetime.fromisoformat(last_active_str)
+                    if last_active_dt.tzinfo is None:
+                        last_active_dt = last_active_dt.replace(tzinfo=timezone.utc)
+                    offline_hours = (
+                        datetime.now(timezone.utc) - last_active_dt
+                    ).total_seconds() / 3600
+                    if offline_hours > 4:
+                        lines.append(
+                            f"⚠️ 距上次活跃已过 {offline_hours:.0f} 小时。"
+                            "记忆中的时效性信息（比赛、新闻、天气等）可能已过期，请搜索确认后再回答。"
+                        )
+        except Exception:
+            pass
+
         # 当前通道
         channel_desc = {
             "qq": "QQ 私聊（和 Kevin）",

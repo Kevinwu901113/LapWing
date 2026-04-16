@@ -8,13 +8,12 @@ import pytest
 from src.core.consciousness import ConsciousnessEngine
 
 
-def _make_engine(brain=None, send_fn=None, reminder_scheduler=None):
+def _make_engine(brain=None, send_fn=None):
     brain = brain or MagicMock()
     send_fn = send_fn or AsyncMock()
     return ConsciousnessEngine(
         brain=brain,
         send_fn=send_fn,
-        reminder_scheduler=reminder_scheduler,
     )
 
 
@@ -93,7 +92,7 @@ class TestConsciousnessPrompt:
         engine = _make_engine()
         prompt = await engine._build_consciousness_prompt()
         assert "[NEXT:" in prompt
-        assert "memory_note" in prompt
+        assert "自由时间" in prompt
 
 
 class TestLifecycle:

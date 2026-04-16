@@ -1,4 +1,4 @@
-import type { ServerStatus, SystemStats, ChannelInfo, HeartbeatStatus, ReminderItem, LearningItem, MemoryItem, MemoryHealth, PersonaFile, ChangelogEntry } from "@/types/api";
+import type { ServerStatus, SystemStats, ChannelInfo, HeartbeatStatus, ReminderItem } from "@/types/api";
 
 export function getApiBase(): string {
   if (typeof window !== "undefined") {
@@ -34,47 +34,23 @@ async function fetchJson<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json();
 }
 
-// ── Status ──
-export const getStatus = () => fetchJson<ServerStatus>("/api/status");
-export const getSystemStats = () => fetchJson<SystemStats>("/api/system/stats");
+// ── V2 API ──
 
-// ── Channels ──
-export const getChannels = () => fetchJson<{ platforms: ChannelInfo[] }>("/api/config/platforms");
+// Status
+export const getStatus = () => fetchJson<ServerStatus>("/api/v2/status");
+export const getSystemStats = () => fetchJson<SystemStats>("/api/v2/system/stats");
 
-// ── Heartbeat ──
-export const getHeartbeatStatus = () => fetchJson<HeartbeatStatus>("/api/heartbeat/status");
+// Channels
+export const getChannels = () => fetchJson<{ platforms: ChannelInfo[] }>("/api/v2/system/channels");
 
-// ── Reminders ──
-export const getReminders = (chatId?: string) =>
-  fetchJson<{ reminders: ReminderItem[] }>(`/api/reminders${chatId ? `?chat_id=${chatId}` : ""}`);
-export const deleteReminder = (id: number, chatId: string) =>
-  fetchJson<{ ok: boolean }>(`/api/reminders/${id}?chat_id=${chatId}`, { method: "DELETE" });
+// Heartbeat / Consciousness
+export const getHeartbeatStatus = () => fetchJson<HeartbeatStatus>("/api/v2/system/consciousness");
 
-// ── Memory ──
-export const getMemory = (chatId?: string) =>
-  fetchJson<{ facts: MemoryItem[] }>(`/api/memory${chatId ? `?chat_id=${chatId}` : ""}`);
-export const getMemoryHealth = () => fetchJson<MemoryHealth>("/api/memory/health");
-export const getMemorySummaries = () => fetchJson<{ summaries: string[] }>("/api/memory/summaries");
+// Reminders
+export const getReminders = () =>
+  fetchJson<{ reminders: ReminderItem[] }>("/api/v2/system/reminders");
 
-// ── Learnings ──
-export const getLearnings = () => fetchJson<{ learnings: LearningItem[] }>("/api/learnings");
-
-// ── Interests ──
-export const getInterests = (chatId?: string) =>
-  fetchJson<{ interests: { topic: string; weight: number }[] }>(`/api/interests${chatId ? `?chat_id=${chatId}` : ""}`);
-
-// ── Persona ──
-export const getPersonaFiles = () => fetchJson<{ files: PersonaFile[] }>("/api/persona/files");
-export const updatePersonaFile = (name: string, content: string) =>
-  fetchJson<{ ok: boolean }>(`/api/persona/files/${name}`, {
-    method: "POST",
-    body: JSON.stringify({ content }),
-  });
-export const getChangelog = () => fetchJson<{ entries: ChangelogEntry[] }>("/api/persona/changelog");
-export const reloadPrompt = () => fetchJson<{ ok: boolean }>("/api/reload", { method: "POST" });
-export const triggerEvolve = () => fetchJson<{ ok: boolean }>("/api/evolve", { method: "POST" });
-
-// ── Chat History ──
+// Chat History
 export const getChatHistory = (chatId: string, limit = 50, before?: string) => {
   const params = new URLSearchParams({ chat_id: chatId, limit: String(limit) });
   if (before) params.set("before", before);
@@ -83,15 +59,7 @@ export const getChatHistory = (chatId: string, limit = 50, before?: string) => {
   );
 };
 
-// ── Tasks ──
-export const getTasks = (limit = 20) =>
-  fetchJson<{ tasks: import("@/types/tasks").TaskFlow[] }>(`/api/tasks?limit=${limit}`);
-export const getTaskFlows = () =>
-  fetchJson<{ flows: import("@/types/tasks").TaskFlow[] }>("/api/task-flows");
-export const cancelTaskFlow = (flowId: string) =>
-  fetchJson<{ ok: boolean }>(`/api/task-flows/${flowId}/cancel`, { method: "POST" });
-
-// ── Agents ──
+// Agents
 export const getAgents = () =>
   fetchJson<{ agents: { name: string; status: string; capabilities: string[]; current_command_id: string | null }[] }>("/api/agents");
 export const getActiveTasks = () =>
@@ -99,7 +67,10 @@ export const getActiveTasks = () =>
 export const cancelAgent = (agentName: string) =>
   fetchJson<{ success: boolean; error?: string }>(`/api/agents/${agentName}/cancel`, { method: "POST" });
 
-// ── Auth ──
+// Reload
+export const reloadPrompt = () => fetchJson<{ ok: boolean }>("/api/v2/system/reload", { method: "POST" });
+
+// Auth
 export const createSession = (bootstrapToken: string) =>
   fetchJson<{ ok: boolean }>("/api/auth/session", {
     method: "POST",

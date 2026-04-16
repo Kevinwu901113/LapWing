@@ -25,13 +25,26 @@ from config.settings import (
     CONSCIOUSNESS_MAX_INTERVAL,
     CONSCIOUSNESS_MIN_INTERVAL,
 )
-from src.logging.event_logger import events as _events
 
 if TYPE_CHECKING:
     from src.core.brain import LapwingBrain
-    from src.core.reminder_scheduler import ReminderScheduler
 
 logger = logging.getLogger("lapwing.core.consciousness")
+
+
+# ── SenseContext：维护 action 使用的最小上下文 ──
+
+@dataclass
+class SenseContext:
+    """维护 action 使用的最小上下文（替代旧 heartbeat.SenseContext）。"""
+    beat_type: str
+    now: Any
+    last_interaction: Any
+    silence_hours: float
+    user_facts_summary: str
+    recent_memory_summary: str
+    chat_id: str
+    now_taipei_hour: int
 
 
 @dataclass
@@ -55,13 +68,11 @@ class ConsciousnessEngine:
         self,
         brain: "LapwingBrain",
         send_fn: Callable[..., Awaitable[Any]],
-        reminder_scheduler: "ReminderScheduler | None",
-        incident_manager: Any | None = None,
+        dispatcher=None,
     ) -> None:
         self._brain = brain
         self._send_fn = send_fn
-        self._reminder_scheduler = reminder_scheduler
-        self._incident_manager = incident_manager
+        self._dispatcher = dispatcher
 
         self._task: asyncio.Task | None = None
         self._running = False
@@ -79,7 +90,6 @@ class ConsciousnessEngine:
 
         self._last_hourly_maintenance: float = 0
         self._daily_maintenance_done_today = False
-        self._task_resumption_action: Any | None = None
 
         # Phase 4 新增
         self.urgency_queue: asyncio.Queue = asyncio.Queue()
@@ -93,8 +103,6 @@ class ConsciousnessEngine:
         self._running = True
         self._working_memory_path.parent.mkdir(parents=True, exist_ok=True)
         self._task = asyncio.create_task(self._loop(), name="consciousness-loop")
-        if self._reminder_scheduler:
-            await self._reminder_scheduler.start()
         logger.info("意识循环已启动，初始间隔 %ds", self._next_interval)
 
     async def stop(self) -> None:
@@ -107,8 +115,6 @@ class ConsciousnessEngine:
                 await self._task
             except asyncio.CancelledError:
                 pass
-        if self._reminder_scheduler:
-            await self._reminder_scheduler.shutdown()
         logger.info("意识循环已停止")
 
     # ── 对话状态管理 ──
@@ -172,7 +178,6 @@ class ConsciousnessEngine:
                     continue
 
                 await self._run_maintenance_if_due()
-                await self._run_task_resumption()
 
                 # 取出所有紧急事件
                 urgent_items = self._drain_urgency()
@@ -187,9 +192,23 @@ class ConsciousnessEngine:
                     did_something: bool = await self._thinking_task
                 except asyncio.CancelledError:
                     logger.info("自由思考被中断（用户发消息）")
-                    _events.log("consciousness", "interrupted", reason="用户发消息")
                     await self._save_interrupted_state()
                     did_something = False
+
+                if self._dispatcher is not None:
+                    try:
+                        await self._dispatcher.submit(
+                            "system.heartbeat_tick",
+                            payload={
+                                "did_something": did_something,
+                                "urgent_count": len(urgent_items),
+                                "next_interval_seconds": self._next_interval,
+                                "idle_streak": self.idle_streak,
+                            },
+                            actor="lapwing",
+                        )
+                    except Exception:
+                        logger.debug("heartbeat_tick 事件提交失败", exc_info=True)
 
                 # 根据是否有实质性活动调整退避
                 self._adjust_interval_after_tick(did_something)
@@ -202,15 +221,8 @@ class ConsciousnessEngine:
                 await asyncio.sleep(30)
 
     def _adjust_interval_after_tick(self, did_something: bool) -> None:
-        """根据 tick 结果调整下次间隔（退避 + 活跃重置）。
-        如果 LLM 已通过 [NEXT: Xm] 设置了间隔则跳过退避计算。
-        注意：_think_freely 内部已根据 LLM 指令更新 self._next_interval；
-        此方法仅在 LLM 未给出指令时（退避场景）介入。
-        """
         if did_something:
             self.idle_streak = 0
-            # did_something 时不覆盖 LLM 的 [NEXT] 指令，
-            # 但若间隔过长则归位到 BASE_INTERVAL
             if self._next_interval > self.BASE_INTERVAL:
                 self._next_interval = self.BASE_INTERVAL
         else:
@@ -256,22 +268,11 @@ class ConsciousnessEngine:
             )
             backoff = min(self._next_interval * 2, self.MAX_INTERVAL)
             self._next_interval = max(self.MIN_INTERVAL, backoff)
-            _events.log(
-                "consciousness", "tick_timeout",
-                budget_seconds=self.tick_budget.max_time_seconds,
-                next_interval=self._next_interval,
-            )
             return False
         except Exception as exc:
-            # LLM 调用失败（529 过载等），退避后重试
             backoff = min(self._next_interval * 2, self.MAX_INTERVAL)
             self._next_interval = max(self.MIN_INTERVAL, backoff)
             logger.warning("意识循环 LLM 调用失败，退避 %ds: %s", self._next_interval, exc)
-            _events.log(
-                "consciousness", "tick_failed",
-                error=str(exc)[:200],
-                next_interval=self._next_interval,
-            )
             return False
 
         clean_text, next_interval = self._parse_and_strip_next(response or "")
@@ -286,8 +287,6 @@ class ConsciousnessEngine:
             self._next_interval = self._silence_based_interval()
 
         await self._log_activity(clean_text)
-        # 后处理：resolved incident → experience skill + 清理 linked rule
-        await self._process_resolved_incidents()
 
         # 判断是否有实质性输出（非空回复且非"无事"表达）
         did_something = bool(
@@ -296,13 +295,6 @@ class ConsciousnessEngine:
             and clean_text.strip() not in {"无事", "无事。", "无事，", "nothing"}
         )
 
-        _events.log(
-            "consciousness", "tick_complete",
-            decision=clean_text[:300] if clean_text else "无输出",
-            next_interval=self._next_interval,
-            did_something=did_something,
-            urgent_items_count=len(urgent_items) if urgent_items else 0,
-        )
         logger.info(
             "自由思考完成，下次间隔 %ds，did_something=%s",
             self._next_interval, did_something,
@@ -340,14 +332,6 @@ class ConsciousnessEngine:
             parts.append(working_memory)
             parts.append("")
 
-        # Incident 摘要注入
-        if self._incident_manager is not None:
-            incident_summary = self._incident_manager.format_for_consciousness(limit=5)
-            if incident_summary:
-                parts.append("## 待解决的问题\n")
-                parts.append(incident_summary)
-                parts.append("")
-
         parts.append("## 你可以想想这些方面\n")
         parts.append("- 刚才跟他聊的有没有什么你说错的或者可以做得更好的")
         parts.append("- 你手头有没有没做完的事")
@@ -359,72 +343,15 @@ class ConsciousnessEngine:
         parts.append("")
         parts.append("## 规则\n")
         parts.append("- 你可以使用任何工具来做你想做的事")
-        parts.append("- 如果你做了什么，用 memory_note 记录下来")
-        parts.append("- 如果你想找他说话，调用 send_proactive_message 工具")
+        parts.append("- 如果你做了什么，用 write_note 记录下来")
+        parts.append("- 如果你想找他说话，调用 send_message 工具")
         parts.append("- 如果你想在工作记忆中记录进度，用 write_file 写到 data/consciousness/working_memory.md")
         parts.append("- 什么都不想做也完全可以，回复\"无事\"即可")
         parts.append("- 在回复的最后一行，写上你希望多久后再被叫醒，格式：[NEXT: 数字m] 或 [NEXT: 数字h]")
         parts.append("  例如 [NEXT: 10m] 表示 10 分钟后，[NEXT: 2h] 表示 2 小时后")
         parts.append("  如果你觉得现在该休息了，可以写 [NEXT: 6h] 之类的长间隔")
 
-        # 后台进程事件
-        try:
-            from src.core.process_registry import process_registry
-            process_events = process_registry.check_all()
-            if process_events:
-                import json
-                parts.append("")
-                parts.append("## 后台进程事件\n")
-                parts.append(json.dumps(process_events, ensure_ascii=False))
-                parts.append("有后台进程完成了，考虑是否需要通知用户结果。")
-            active = process_registry.list_active()
-            if active:
-                parts.append("")
-                parts.append(f"当前有 {len(active)} 个后台进程在运行。")
-        except Exception:
-            pass
-
         return "\n".join(parts)
-
-    async def _process_resolved_incidents(self) -> None:
-        """后处理：将新 resolved 的 incident 转化为 experience skill，清理关联规则。"""
-        if self._incident_manager is None:
-            return
-        import json
-        incidents_dir = Path("data/memory/incidents")
-        if not incidents_dir.exists():
-            return
-
-        esm = getattr(self._brain, "experience_skill_manager", None)
-        tactical_rules = getattr(self._brain, "tactical_rules", None)
-
-        for f in incidents_dir.glob("INC-*.json"):
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                if data.get("status") != "resolved":
-                    continue
-                if data.get("_skill_generated"):
-                    continue
-
-                # 生成 experience skill
-                if esm is not None:
-                    try:
-                        await esm.create_from_incident(data)
-                    except Exception:
-                        logger.debug("从 incident 生成 skill 失败", exc_info=True)
-
-                # 清理关联的 tactical rule
-                if tactical_rules is not None and data.get("linked_rule"):
-                    try:
-                        await tactical_rules.remove_rule(data["linked_rule"])
-                    except Exception:
-                        logger.debug("清理关联规则失败", exc_info=True)
-
-                # 标记已处理
-                data["_skill_generated"] = True
-                f.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-            except Exception:
-                continue
 
     # ── 工具方法 ──
 
@@ -472,20 +399,6 @@ class ConsciousnessEngine:
         except Exception:
             pass
 
-    async def _run_task_resumption(self) -> None:
-        """每次 tick 检查是否有未完成任务需要恢复。"""
-        try:
-            from config.settings import TASK_RESUMPTION_ENABLED
-            if not TASK_RESUMPTION_ENABLED:
-                return
-            if self._task_resumption_action is None:
-                from src.heartbeat.actions.task_resumption import TaskResumptionAction
-                self._task_resumption_action = TaskResumptionAction()
-            ctx = self._build_maintenance_context("minute")
-            await self._task_resumption_action.execute(ctx, self._brain, self._send_fn)
-        except Exception as exc:
-            logger.debug("任务恢复检查失败: %s", exc)
-
     # ── 定时维护 ──
 
     async def _run_maintenance_if_due(self) -> None:
@@ -501,18 +414,15 @@ class ConsciousnessEngine:
             self._daily_maintenance_done_today = False
 
     async def _run_hourly_maintenance(self) -> None:
-        """每小时维护：会话清理、任务通知、自主浏览、自动记忆提取。"""
+        """每小时维护：会话清理、任务通知、自主浏览。"""
         try:
-            from config.settings import AUTO_MEMORY_EXTRACT_ENABLED, BROWSE_ENABLED, BROWSER_ENABLED
+            from config.settings import BROWSE_ENABLED, BROWSER_ENABLED
             from src.heartbeat.actions.session_reaper import SessionReaperAction
             from src.heartbeat.actions.task_notification import TaskNotificationAction
             action_classes = [SessionReaperAction, TaskNotificationAction]
             if BROWSE_ENABLED and BROWSER_ENABLED:
                 from src.heartbeat.actions.autonomous_browsing import AutonomousBrowsingAction
                 action_classes.append(AutonomousBrowsingAction)
-            if AUTO_MEMORY_EXTRACT_ENABLED:
-                from src.heartbeat.actions.auto_memory import AutoMemoryAction
-                action_classes.append(AutoMemoryAction)
             for ActionCls in action_classes:
                 action = ActionCls()
                 try:
@@ -527,7 +437,7 @@ class ConsciousnessEngine:
             logger.debug("每小时维护加载失败", exc_info=True)
 
     async def _run_daily_maintenance(self) -> None:
-        """每日 3AM 维护：记忆整理、索引优化、压缩检查、自省、事件日志清理。"""
+        """每日 3AM 维护：记忆整理、索引优化、压缩检查、自省。"""
         try:
             from src.heartbeat.actions.consolidation import MemoryConsolidationAction
             from src.heartbeat.actions.memory_maintenance import MemoryMaintenanceAction
@@ -546,16 +456,8 @@ class ConsciousnessEngine:
         except Exception:
             logger.debug("每日维护加载失败", exc_info=True)
 
-        # 清理过期事件日志
-        try:
-            from src.logging.event_logger import get_event_logger
-            get_event_logger().cleanup_old_events()
-        except Exception:
-            logger.debug("事件日志清理失败", exc_info=True)
-
     def _build_maintenance_context(self, beat_type: str):
         """构建最小 SenseContext 供维护 action 使用。"""
-        from src.core.heartbeat import SenseContext
         from src.core.vitals import now_taipei
         now = now_taipei()
         return SenseContext(

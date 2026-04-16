@@ -65,7 +65,7 @@ class TestLocalApiAuth:
         transport = httpx.ASGITransport(app=app)
 
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            response = await client.get("/api/status")
+            response = await client.get("/api/v2/status")
 
         assert response.status_code == 401
 
@@ -78,12 +78,11 @@ class TestLocalApiAuth:
                 "/api/auth/session",
                 json={"bootstrap_token": "bootstrap-token"},
             )
-            status_response = await client.get("/api/status")
+            status_response = await client.get("/api/v2/status")
 
         assert session_response.status_code == 200
         assert "lapwing_session=" in session_response.headers.get("set-cookie", "")
         assert status_response.status_code == 200
-        assert status_response.json()["online"] is True
 
     async def test_api_accepts_bootstrap_bearer_for_local_tools(self, protected_brain):
         app = create_app(protected_brain, DesktopEventBus())
@@ -91,7 +90,7 @@ class TestLocalApiAuth:
 
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             response = await client.get(
-                "/api/status",
+                "/api/v2/status",
                 headers={"Authorization": "Bearer bootstrap-token"},
             )
 

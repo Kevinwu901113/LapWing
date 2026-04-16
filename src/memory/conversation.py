@@ -52,11 +52,6 @@ class ConversationMemory:
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._create_tables()
         await self._load_recent_history()
-        # Initialize domain repositories
-        from src.memory.todos import TodoRepository
-        from src.memory.reminders import ReminderRepository
-        self._todos = TodoRepository(self._db)
-        self._reminders_repo = ReminderRepository(self._db)
         logger.info(f"对话记忆已初始化（SQLite 模式），数据库: {self._db_path}")
 
     async def _create_tables(self) -> None:

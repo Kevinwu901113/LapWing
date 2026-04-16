@@ -16,10 +16,7 @@ import uuid
 from typing import Any, Awaitable, Callable
 
 from config.settings import (
-    MEMORY_CRUD_ENABLED,
-    PROGRESS_REPORT_ENABLED,
     ROOT_DIR,
-    SELF_SCHEDULE_ENABLED,
     SHELL_DEFAULT_CWD,
     TASK_ERROR_BURST_THRESHOLD,
     TASK_MAX_TOOL_ROUNDS,
@@ -66,7 +63,6 @@ from src.core.vital_guard import (
     check_file_target,
     extract_vital_shell_targets,
 )
-from src.logging.event_logger import events as _events
 from src.tools.registry import ToolRegistry, build_default_tool_registry
 from src.tools.shell_executor import ShellResult, execute as default_execute_shell
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult
@@ -172,9 +168,6 @@ class TaskRuntime:
         self._no_action_budget = no_action_budget if no_action_budget is not None else _cfg.TASK_NO_ACTION_BUDGET
         self._error_burst_threshold = error_burst_threshold if error_burst_threshold is not None else _cfg.TASK_ERROR_BURST_THRESHOLD
         self._memory_index: Any | None = None
-        self._progress_enabled: bool = False
-        self._pending_task_store: Any | None = None
-        self._incident_manager: Any | None = None
 
     def set_browser_guard(self, browser_guard: Any | None) -> None:
         self._browser_guard = browser_guard
@@ -184,15 +177,6 @@ class TaskRuntime:
 
     def set_memory_index(self, memory_index: Any | None) -> None:
         self._memory_index = memory_index
-
-    def set_pending_task_store(self, store: Any | None) -> None:
-        self._pending_task_store = store
-
-    def set_progress_enabled(self, enabled: bool) -> None:
-        self._progress_enabled = enabled
-
-    def set_incident_manager(self, manager: Any | None) -> None:
-        self._incident_manager = manager
 
     def set_checkpoint_manager(self, manager: Any | None) -> None:
         self._checkpoint_manager = manager
@@ -411,14 +395,6 @@ class TaskRuntime:
             text="正在规划执行步骤。",
         )
 
-        # 进度汇报状态
-        progress_state: Any | None = None
-        if self._progress_enabled and PROGRESS_REPORT_ENABLED:
-            from src.core.progress_reporter import ProgressState
-            progress_state = ProgressState(
-                user_request=self._extract_user_request(messages),
-            )
-
         ctx = ToolLoopContext(
             messages=messages,
             tools=tools,
@@ -444,7 +420,7 @@ class TaskRuntime:
                 remaining=self._no_action_budget,
             ),
             error_guard=ErrorBurstGuard(threshold=self._error_burst_threshold),
-            progress_state=progress_state,
+            progress_state=None,
         )
 
         loop_result = await self.run_task_loop(
@@ -464,37 +440,10 @@ class TaskRuntime:
             recovery.total_result_chars,
             loop_result.reason or "normal",
         )
-        _events.log("tool_loop", "complete",
-            turns=recovery.turn_count,
-            compact_attempts=recovery.reactive_compact_attempts,
-            output_recoveries=recovery.max_output_recovery_count,
-            api_retries=recovery.consecutive_api_errors,
-            total_result_chars=recovery.total_result_chars,
-            reason=loop_result.reason or "normal",
-        )
-
-        # ── 收集已完成步骤（用于完成度检查）──
-        _completed_steps = ctx.progress_state.completed_steps if ctx.progress_state else []
-        _user_request = ctx.progress_state.user_request if ctx.progress_state else constraints.original_user_message
-
         if ctx.final_reply is not None:
             # 清理最终回复中可能残留的内部标记
             from src.core.output_sanitizer import sanitize_outgoing
             final_reply = sanitize_outgoing(ctx.final_reply)
-            # 循环内提前结束（可能是 circuit breaker），检查是否完成
-            if _completed_steps and loop_result.reason in (
-                "max_rounds_exceeded", "",
-            ):
-                self._fire_completion_check(
-                    user_request=_user_request,
-                    completed_steps=_completed_steps,
-                    final_response=final_reply,
-                    termination_reason=loop_result.reason or "loop_stopped",
-                    chat_id=chat_id,
-                    user_id=user_id,
-                    adapter=adapter,
-                    resumption_context=resumption_context,
-                )
             return final_reply
 
         logger.warning("[runtime] tool call 循环超过上限，返回兜底说明")
@@ -555,18 +504,6 @@ class TaskRuntime:
             await self._emit_status(status_callback, chat_id, "stage:finalizing")
             _reply = self.tool_fallback_reply(loop_result.last_payload)
 
-        if _completed_steps:
-            self._fire_completion_check(
-                user_request=_user_request,
-                completed_steps=_completed_steps,
-                final_response=_reply,
-                termination_reason=_termination,
-                chat_id=chat_id,
-                user_id=user_id,
-                adapter=adapter,
-                resumption_context=resumption_context,
-            )
-
         return _reply
 
     @staticmethod
@@ -605,9 +542,6 @@ class TaskRuntime:
                     ctx.recovery.reactive_compact_attempts,
                     ctx.recovery.MAX_REACTIVE_COMPACT,
                 )
-                _events.log("tool_loop", "reactive_compact",
-                    attempt=ctx.recovery.reactive_compact_attempts,
-                )
                 self._reactive_compact(ctx.messages)
                 return TaskLoopStep()
 
@@ -622,11 +556,6 @@ class TaskRuntime:
                         wait,
                         ctx.recovery.consecutive_api_errors,
                         ctx.recovery.MAX_CONSECUTIVE_API_ERRORS,
-                    )
-                    _events.log("tool_loop", "api_retry",
-                        error=type(typed).__name__,
-                        attempt=ctx.recovery.consecutive_api_errors,
-                        wait_seconds=wait,
                     )
                     await asyncio.sleep(wait)
                     return TaskLoopStep()
@@ -643,9 +572,6 @@ class TaskRuntime:
                     ctx.recovery.max_output_recovery_count,
                     ctx.recovery.MAX_OUTPUT_RECOVERY,
                 )
-                _events.log("tool_loop", "output_recovery",
-                    attempt=ctx.recovery.max_output_recovery_count,
-                )
                 ctx.messages.append({
                     "role": "user",
                     "content": "请继续你刚才的回答。",
@@ -660,10 +586,6 @@ class TaskRuntime:
                 if self._detect_simulated_tool_call(model_text, available_tool_names):
                     ctx.simulated_tool_retries += 1
                     logger.info("[runtime] 检测到模拟工具调用，注入提醒（retry %d）", ctx.simulated_tool_retries)
-                    _events.log("thinking", "simulated_tool_detected",
-                        content=model_text[:300],
-                        trigger="LLM 在文本中描述了工具调用但未真正调用",
-                    )
                     ctx.messages.append({
                         "role": "user",
                         "content": (
@@ -685,10 +607,6 @@ class TaskRuntime:
                     "No-action budget exhausted after %d consecutive no-action turns",
                     ctx.no_action_budget.default,
                 )
-                _events.log("tool_loop", "no_action_budget_exhausted",
-                    budget=ctx.no_action_budget.default,
-                )
-
             await self._emit_status(ctx.status_callback, ctx.chat_id, "stage:finalizing")
             final_text = _sanitize_visible_text(model_text)
             if final_text and ctx.on_interim_text is not None:
@@ -820,10 +738,6 @@ class TaskRuntime:
                     self._loop_detection_config.global_circuit_breaker_threshold,
                     tool_args_hash,
                 )
-                _events.log("thinking", "loop_detected",
-                    content=reason,
-                    trigger=f"工具 {tool_call.name} 连续调用 {generic_repeat_count} 次",
-                )
                 ctx.state.record_failure(reason, "blocked")
                 await self._publish_task_event(
                     ctx.event_bus,
@@ -927,12 +841,9 @@ class TaskRuntime:
                 user_id=ctx.user_id,
             )
             duration_ms = max(int((time.perf_counter() - tool_started_at) * 1000), 0)
-            _events.log("tool_call", "execute",
-                tool=tool_call.name,
-                args=tool_call.arguments,
-                success=execution_success,
-                reason=(tool_result_text[:200] if not execution_success else ""),
-                duration=round(duration_ms / 1000, 2),
+            logger.debug(
+                "tool_call execute: tool=%s success=%s duration=%.2fs",
+                tool_call.name, execution_success, duration_ms / 1000,
             )
             stdout_bytes = self._text_utf8_bytes(payload.get("stdout"))
             stderr_bytes = self._text_utf8_bytes(payload.get("stderr"))
@@ -978,10 +889,6 @@ class TaskRuntime:
                         "[runtime] Error burst guard triggered: %s",
                         ctx.error_guard.summary,
                     )
-                    _events.log("tool_loop", "error_burst_triggered",
-                        error_count=ctx.error_guard.error_count,
-                        summary=ctx.error_guard.summary,
-                    )
                     # 注入错误摘要让 LLM 在下一轮有机会调整策略
                     ctx.messages.append({
                         "role": "user",
@@ -1005,13 +912,6 @@ class TaskRuntime:
             )
             ctx.last_payload = payload
 
-            # 记录进度步骤
-            if ctx.progress_state is not None:
-                ctx.progress_state.record_step(
-                    tool_name=tool_call.name,
-                    arguments=tool_call.arguments,
-                    result_summary=tool_result_text[:300] if tool_result_text else "",
-                )
             last_tool_name = tool_call.name
             logger.info(
                 "[runtime] 第 %s 轮完成 tool call %s/%s: %s",
@@ -1082,16 +982,6 @@ class TaskRuntime:
 
         _record_round_latency()
 
-        # ── 进度汇报判断点 ──
-        if ctx.progress_state is not None:
-            from src.core.progress_reporter import check_and_report
-            await check_and_report(
-                state=ctx.progress_state,
-                llm_router=self._router,
-                on_interim_text=ctx.on_interim_text,
-                messages=ctx.messages,
-            )
-
         # 压缩旧的浏览器 PageState（保留最新完整，旧的只留摘要）
         self._compress_browser_history(ctx.messages)
         # 重新注入 voice reminder（tool call 循环会让消息越来越长，
@@ -1108,14 +998,6 @@ class TaskRuntime:
             len(executed_tool_names),
             result_chars,
             ctx.recovery.total_result_chars,
-        )
-        _events.log("tool_loop", "turn_complete",
-            turn=ctx.recovery.turn_count,
-            transition=ctx.recovery.transition_reason,
-            tool_calls=executed_tool_names,
-            compact_attempts=ctx.recovery.reactive_compact_attempts,
-            api_errors=ctx.recovery.consecutive_api_errors,
-            result_chars=result_chars,
         )
         return TaskLoopStep(payload=ctx.last_payload)
 
@@ -1545,6 +1427,23 @@ class TaskRuntime:
         adapter: str = "",
         user_id: str = "",
     ) -> tuple[str, dict[str, Any], bool]:
+        dispatcher = (services or {}).get("dispatcher")
+        if dispatcher is not None:
+            try:
+                preview = json.dumps(tool_call.arguments, ensure_ascii=False)[:500]
+                await dispatcher.submit(
+                    "tool.called",
+                    payload={
+                        "tool": tool_call.name,
+                        "arguments_preview": preview,
+                        "chat_id": chat_id,
+                    },
+                    actor="lapwing",
+                    task_id=task_id,
+                )
+            except Exception:
+                logger.debug("tool.called 事件提交失败", exc_info=True)
+
         execution = await self.execute_tool(
             request=ToolExecutionRequest(name=tool_call.name, arguments=tool_call.arguments),
             profile=profile,
@@ -1558,10 +1457,6 @@ class TaskRuntime:
             user_id=user_id,
         )
 
-        # Incident 采集：工具执行失败时创建 incident
-        if not execution.success and self._incident_manager is not None:
-            self._maybe_create_tool_incident(tool_call, execution, chat_id)
-
         # P0: 大结果存磁盘，只留预览
         execution = self._budget_tool_result(tool_call.name, execution)
         payload = execution.payload
@@ -1569,36 +1464,24 @@ class TaskRuntime:
             tool_name=tool_call.name,
             payload=payload,
         )
+
+        if dispatcher is not None:
+            try:
+                await dispatcher.submit(
+                    "tool.result",
+                    payload={
+                        "tool": tool_call.name,
+                        "success": execution.success,
+                        "reason": (execution.reason or "")[:200],
+                        "chat_id": chat_id,
+                    },
+                    actor="lapwing",
+                    task_id=task_id,
+                )
+            except Exception:
+                logger.debug("tool.result 事件提交失败", exc_info=True)
+
         return tool_result_text, payload, execution.success
-
-    def _maybe_create_tool_incident(
-        self,
-        tool_call: ToolCallRequest,
-        execution: ToolExecutionResult,
-        chat_id: str,
-    ) -> None:
-        """工具失败时异步创建 incident（fire-and-forget）。"""
-        from src.core.incident_filter import should_create_incident, tool_failure_severity
-
-        should, error_type = should_create_incident(tool_call.name, execution)
-        if not should:
-            return
-
-        asyncio.create_task(
-            self._incident_manager.create(
-                source="tool_failure",
-                description=f"工具 {tool_call.name} 执行失败: {execution.reason[:100]}",
-                context={
-                    "tool_name": tool_call.name,
-                    "arguments": tool_call.arguments,
-                    "error_type": error_type,
-                    "error_message": execution.reason[:500],
-                    "chat_id": chat_id,
-                },
-                severity=tool_failure_severity(error_type),
-                related_tool=tool_call.name,
-            )
-        )
 
     def _format_tool_result_for_llm(
         self,
@@ -1823,19 +1706,6 @@ class TaskRuntime:
                     break
             msg["content"] = f"[已浏览] {title}" if title else "[已浏览]"
 
-    @staticmethod
-    def _extract_user_request(messages: list[dict]) -> str:
-        """从 messages 中提取用户的原始请求（最后一条 user 消息）。"""
-        for msg in reversed(messages):
-            if msg.get("role") == "user":
-                content = msg.get("content", "")
-                if isinstance(content, str):
-                    return content[:500]
-                if isinstance(content, list):
-                    text_parts = [p.get("text", "") for p in content if isinstance(p, dict) and p.get("type") == "text"]
-                    return " ".join(text_parts)[:500]
-        return ""
-
     def _detect_simulated_tool_call(self, text: str | None, available_tools: list[str]) -> bool:
         """检测 LLM 是否在文本中描述了工具调用而没有真正调用。"""
         if not text or not available_tools:
@@ -1937,156 +1807,3 @@ class TaskRuntime:
         except Exception as exc:
             logger.warning("[runtime] 发布任务事件失败: %s", exc)
 
-    # ── 未完成任务检测 ──
-
-    def _fire_completion_check(
-        self,
-        *,
-        user_request: str,
-        completed_steps: list[dict],
-        final_response: str,
-        termination_reason: str,
-        chat_id: str,
-        user_id: str,
-        adapter: str,
-        resumption_context: dict | None = None,
-    ) -> None:
-        """异步触发任务完成度检查（非阻塞）。"""
-        import asyncio
-        asyncio.create_task(
-            self._check_task_completion(
-                user_request=user_request,
-                completed_steps=completed_steps,
-                final_response=final_response,
-                termination_reason=termination_reason,
-                chat_id=chat_id,
-                user_id=user_id,
-                adapter=adapter,
-                resumption_context=resumption_context,
-            )
-        )
-
-    async def _check_task_completion(
-        self,
-        *,
-        user_request: str,
-        completed_steps: list[dict],
-        final_response: str,
-        termination_reason: str,
-        chat_id: str,
-        user_id: str,
-        adapter: str,
-        resumption_context: dict | None = None,
-    ) -> None:
-        """LLM 判断任务完成度，未完成则创建 PendingTask。"""
-        if self._pending_task_store is None:
-            return
-
-        # 快速跳过：没有工具调用步骤
-        if not completed_steps:
-            return
-        # 快速跳过：只有 1 步且正常结束
-        if len(completed_steps) <= 1 and termination_reason == "normal":
-            return
-
-        try:
-            from src.core.prompt_builder import build_completion_check_prompt
-
-            steps_text = ""
-            for i, step in enumerate(completed_steps[-8:], 1):
-                tool = step.get("tool", "?")
-                args = step.get("args_brief", "")
-                result = step.get("result_brief", "")[:200]
-                steps_text += f"第{i}步：调用 {tool}（{args}）\n  结果：{result}\n\n"
-
-            context = {
-                "user_request": user_request,
-                "completed_steps": steps_text,
-                "final_response": final_response[:500],
-                "termination_reason": termination_reason,
-            }
-            system_text, user_text = build_completion_check_prompt(context)
-            raw = await self._router.query_lightweight(
-                system=system_text,
-                user=user_text,
-                slot="lightweight_judgment",
-            )
-            result = self._parse_completion_result(raw)
-
-            if result["completed"] or not result["worth_retrying"]:
-                return
-
-            # 跨代际追踪
-            from src.core.pending_task import MAX_TOTAL_RESUMPTIONS
-            if resumption_context:
-                original_id = resumption_context.get("original_task_id", "")
-                total_count = resumption_context.get("total_resumption_count", 0) + 1
-                if total_count >= MAX_TOTAL_RESUMPTIONS:
-                    logger.info(
-                        "Task has been resumed %d times (max %d), giving up",
-                        total_count, MAX_TOTAL_RESUMPTIONS,
-                    )
-                    return
-            else:
-                original_id = ""
-                total_count = 0
-
-            from src.core.pending_task import PendingTask
-            task_id = f"pt-{int(time.time() * 1000)}"
-            task = PendingTask(
-                task_id=task_id,
-                chat_id=chat_id,
-                user_id=user_id,
-                adapter=adapter,
-                user_request=user_request,
-                completed_steps=completed_steps[-5:],
-                partial_result=final_response[:500],
-                remaining_description=result.get("remaining", ""),
-                termination_reason=termination_reason,
-                original_task_id=original_id or task_id,
-                total_resumption_count=total_count,
-            )
-            self._pending_task_store.save(task)
-            logger.info(
-                "Created PendingTask %s for chat %s: %s",
-                task_id, chat_id, user_request[:60],
-            )
-
-        except Exception as exc:
-            logger.warning("Task completion check failed (non-fatal): %s", exc)
-
-    @staticmethod
-    def _parse_completion_result(raw: str) -> dict:
-        """解析 LLM 返回的完成度判断 JSON。"""
-        import re as _re
-        from src.core.reasoning_tags import strip_think_blocks
-
-        raw = strip_think_blocks(raw)
-
-        # 策略 1：从 markdown code block 提取
-        match = _re.search(r"```(?:json)?\s*(.*?)\s*```", raw, _re.DOTALL)
-        text = match.group(1) if match else None
-
-        # 策略 2：从文本中找第一个 {...} 块
-        if text is None:
-            brace_match = _re.search(r"\{[^{}]*\}", raw, _re.DOTALL)
-            text = brace_match.group(0) if brace_match else raw.strip()
-
-        try:
-            result = json.loads(text)
-            # 必须是 dict，裸字符串/数字/数组都不行
-            if not isinstance(result, dict):
-                logger.warning(
-                    "完成度判断结果不是 JSON 对象 (got %s): %s",
-                    type(result).__name__, text[:200],
-                )
-                return {"completed": False, "worth_retrying": True, "remaining": "解析失败，建议重试"}
-
-            return {
-                "completed": bool(result.get("completed", False)),
-                "worth_retrying": bool(result.get("worth_retrying", True)),
-                "remaining": str(result.get("remaining", "")),
-            }
-        except (json.JSONDecodeError, ValueError):
-            logger.warning("无法解析完成度判断结果: %s", raw[:200])
-            return {"completed": False, "worth_retrying": True, "remaining": "解析失败，建议重试"}

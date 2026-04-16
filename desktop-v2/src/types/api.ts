@@ -32,35 +32,3 @@ export interface ReminderItem {
   trigger_at: string;
   status: string;
 }
-
-export interface LearningItem {
-  filename: string;
-  date: string;
-  preview: string;
-}
-
-export interface MemoryItem {
-  id: number;
-  key: string;
-  value: string;
-  source: string;
-  created_at: string;
-}
-
-export interface MemoryHealth {
-  total_entries: number;
-  journal_count: number;
-  knowledge_count: number;
-  health_score: number;
-}
-
-export interface PersonaFile {
-  name: string;
-  content: string;
-  readonly: boolean;
-}
-
-export interface ChangelogEntry {
-  timestamp: string;
-  changes: string;
-}

@@ -110,13 +110,6 @@ def strip_internal_thinking_tags(text: str) -> str:
     if not in_thinking:
         parts.append(text[last_index:])
 
-    # 记录思考内容到事件日志
-    if thinking_parts:
-        from src.logging.event_logger import events
-        thinking_content = "\n".join(thinking_parts)
-        events.log("thinking", "internal_reasoning",
-            content=thinking_content[:1000],
-        )
 
     return "".join(parts)
 

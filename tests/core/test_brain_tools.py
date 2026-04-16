@@ -222,11 +222,8 @@ class TestBrainTools:
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
             brain.memory.remove_last = AsyncMock()
-            brain.router.complete_with_tools = AsyncMock(
-                return_value=SimpleNamespace(text="普通回复", tool_calls=[], continuation_message=None)
-            )
-            brain.fact_extractor = MagicMock()
-            brain.fact_extractor.notify = MagicMock()
+            brain.compactor.try_compact = AsyncMock()
+            brain.task_runtime.complete_chat = AsyncMock(return_value="普通回复")
 
             result = await brain.think("chat1", "请执行 pwd")
 

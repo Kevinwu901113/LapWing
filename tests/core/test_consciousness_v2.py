@@ -15,8 +15,6 @@ def engine():
     eng = ConsciousnessEngine(
         brain=mock_brain,
         send_fn=AsyncMock(),
-        reminder_scheduler=None,
-        incident_manager=None,
     )
     return eng
 

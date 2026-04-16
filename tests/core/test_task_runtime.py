@@ -81,8 +81,8 @@ async def test_chat_tools_from_registry():
     tools = runtime.chat_tools(shell_enabled=True)
     names = {item["function"]["name"] for item in tools}
 
-    # Phase 4: web_search, web_fetch, send_image, send_proactive_message, schedule 工具已移至 personal_tools / container
-    assert names == {"execute_shell", "read_file", "write_file", "image_search", "get_weather"}
+    # Phase 8: most tools removed from registry; only shell tools remain
+    assert names == {"execute_shell", "read_file", "write_file"}
 
 
 @pytest.mark.asyncio
@@ -92,8 +92,8 @@ async def test_chat_tools_excludes_web_when_disabled():
     tools = runtime.chat_tools(shell_enabled=True, web_enabled=False)
     names = {item["function"]["name"] for item in tools}
 
-    # Phase 4: web_search, web_fetch, send_image, send_proactive_message 已移至 personal_tools
-    assert names == {"execute_shell", "read_file", "write_file", "get_weather"}
+    # Phase 8: most tools removed from registry; only shell tools remain
+    assert names == {"execute_shell", "read_file", "write_file"}
 
 
 @pytest.mark.asyncio
