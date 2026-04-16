@@ -26,11 +26,13 @@ class BaseAgent:
         llm_router: "LLMRouter",
         tool_registry: "ToolRegistry",
         dispatcher: "Dispatcher",
+        services: dict[str, Any] | None = None,
     ):
         self.spec = spec
         self.llm_router = llm_router
         self.tool_registry = tool_registry
         self.dispatcher = dispatcher
+        self._services = services or {}
 
     async def execute(self, message: AgentMessage) -> AgentResult:
         """执行任务：独立 tool loop。"""
@@ -160,12 +162,12 @@ Task ID: {message.task_id}
             user_id=f"agent:{self.spec.name}",
             auth_level=1,  # TRUSTED
             chat_id=f"agent-{message.task_id}",
-            services={},
+            services=self._services,
         )
 
         req = ToolExecutionRequest(name=tool_call.name, arguments=tool_call.arguments)
         try:
-            result = await self.tool_registry.execute(req, ctx)
+            result = await self.tool_registry.execute(req, context=ctx)
             return json.dumps(result.payload, ensure_ascii=False, default=str)
         except Exception as exc:
             logger.exception("Agent '%s' tool '%s' failed", self.spec.name, tool_call.name)

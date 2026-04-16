@@ -54,6 +54,7 @@ class TeamLead(BaseAgent):
         llm_router: "LLMRouter",
         tool_registry: "ToolRegistry",
         dispatcher: "Dispatcher",
+        services: dict | None = None,
     ) -> "TeamLead":
         spec = AgentSpec(
             name="team_lead",
@@ -65,4 +66,4 @@ class TeamLead(BaseAgent):
             max_tokens=20000,
             timeout_seconds=300,
         )
-        return cls(spec, llm_router, tool_registry, dispatcher)
+        return cls(spec, llm_router, tool_registry, dispatcher, services)

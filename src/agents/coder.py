@@ -47,6 +47,7 @@ class Coder(BaseAgent):
         llm_router: "LLMRouter",
         tool_registry: "ToolRegistry",
         dispatcher: "Dispatcher",
+        services: dict | None = None,
     ) -> "Coder":
         spec = AgentSpec(
             name="coder",
@@ -58,4 +59,4 @@ class Coder(BaseAgent):
             max_tokens=50000,
             timeout_seconds=600,
         )
-        return cls(spec, llm_router, tool_registry, dispatcher)
+        return cls(spec, llm_router, tool_registry, dispatcher, services)

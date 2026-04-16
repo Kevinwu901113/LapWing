@@ -347,6 +347,13 @@ class AppContainer:
 
             agent_registry = AgentRegistry()
 
+            # services 供 Agent 的 tool loop 传递给 ToolExecutionContext
+            # agent_registry 是同一个引用——创建后注册 agent，运行时已全部就绪
+            agent_services = {
+                "agent_registry": agent_registry,
+                "dispatcher": self.dispatcher,
+            }
+
             # 注册具体 Agent
             agent_registry.register(
                 "team_lead",
@@ -354,6 +361,7 @@ class AppContainer:
                     self.brain.router,
                     self.brain.tool_registry,
                     self.dispatcher,
+                    services=agent_services,
                 ),
             )
             agent_registry.register(
@@ -362,6 +370,7 @@ class AppContainer:
                     self.brain.router,
                     self.brain.tool_registry,
                     self.dispatcher,
+                    services=agent_services,
                 ),
             )
             agent_registry.register(
@@ -370,6 +379,7 @@ class AppContainer:
                     self.brain.router,
                     self.brain.tool_registry,
                     self.dispatcher,
+                    services=agent_services,
                 ),
             )
 
