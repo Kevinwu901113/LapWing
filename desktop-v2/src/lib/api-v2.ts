@@ -3,7 +3,6 @@ import type { TaskV2 } from "@/types/tasks-v2";
 import type { AgentMessage } from "@/types/tasks-v2";
 import type { PermissionsResponse, PermissionDefaultsResponse } from "@/types/permissions";
 import type { ModelRoutingConfig } from "@/types/models";
-import type { SSEEvent } from "@/types/events";
 import type { NoteTreeEntry, NoteContent, NoteSearchResult } from "@/types/notes";
 import type { IdentityFile, SoulSnapshot, SoulDiff } from "@/types/identity";
 import type { SystemInfo, SystemEvent } from "@/types/system";
