@@ -2,7 +2,6 @@ import { useState } from "react";
 import { ChevronLeft, ChevronRight, ListTodo } from "lucide-react";
 import { useTasksStore } from "@/stores/tasks";
 import { TaskCard } from "./TaskCard";
-import type { TaskV2 } from "@/types/tasks-v2";
 
 export function TaskSidebar() {
   const [collapsed, setCollapsed] = useState(false);
