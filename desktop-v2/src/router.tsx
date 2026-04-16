@@ -6,7 +6,7 @@ import SettingsPage from "@/pages/SettingsPage";
 // P3-P6 pages — use existing pages as placeholders for now
 import NotesPage from "@/pages/NotesPage";
 import IdentityPage from "@/pages/IdentityPage";
-import DashboardPage from "@/pages/DashboardPage";
+import SystemPage from "@/pages/SystemPage";
 import StatusDetailPage from "@/pages/StatusDetailPage";
 
 export const router = createBrowserRouter([
@@ -18,7 +18,7 @@ export const router = createBrowserRouter([
       { path: "chat", element: <ChatPage /> },
       { path: "notes", element: <NotesPage /> },
       { path: "identity", element: <IdentityPage /> },
-      { path: "system", element: <DashboardPage /> },
+      { path: "system", element: <SystemPage /> },
       { path: "settings", element: <SettingsPage /> },
       { path: "status", element: <StatusDetailPage /> },
     ],
