@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import subprocess
 from pathlib import Path
 
 from config.settings import (
@@ -20,8 +22,25 @@ from src.core.consciousness import ConsciousnessEngine
 from src.core.dispatcher import Dispatcher
 from src.core.durable_scheduler import DurableScheduler
 from src.core.event_logger_v2 import EventLogger
+from src.logging.state_mutation_log import MutationType, StateMutationLog
 
 logger = logging.getLogger("lapwing.app.container")
+
+
+def _resolve_git_commit() -> str:
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=Path(__file__).resolve().parent.parent.parent,
+            capture_output=True,
+            text=True,
+            timeout=1.5,
+        )
+        if result.returncode == 0:
+            return result.stdout.strip()
+    except Exception:
+        pass
+    return "unknown"
 
 
 class AppContainer:
@@ -72,6 +91,9 @@ class AppContainer:
         self.event_logger_v2: EventLogger | None = None
         self.dispatcher: Dispatcher | None = None
 
+        # v2.0 Step 1: StateMutationLog — durable append-only log of state mutations
+        self.mutation_log: StateMutationLog | None = None
+
         self._prepared = False
         self._started = False
 
@@ -95,6 +117,17 @@ class AppContainer:
         self.api_server._dispatcher = self.dispatcher
         self.api_server._event_logger_v2 = self.event_logger_v2
         logger.info("Phase 5: EventLogger v2 + Dispatcher 已初始化")
+
+        # v2.0 Step 1: StateMutationLog — separate SQLite log for LLM/tool/iteration
+        # mutations, independent from the legacy events_v2.db (which is scheduled
+        # for archival in Step 1g). See Blueprint v2.0 §2.1.
+        mutation_db = self._data_dir / "mutation_log.db"
+        mutation_logs_dir = self._data_dir / "logs"
+        self.mutation_log = StateMutationLog(mutation_db, logs_dir=mutation_logs_dir)
+        await self.mutation_log.init()
+        self.brain._mutation_log_ref = self.mutation_log
+        self.brain.router.set_mutation_log(self.mutation_log)
+        logger.info("StateMutationLog 已初始化：%s", mutation_db)
 
         # 浏览器子系统初始化（在依赖装配前启动，因为工具注册需要 browser_manager）
         if BROWSER_ENABLED and not PHASE0_MODE:
@@ -162,6 +195,20 @@ class AppContainer:
         if self.api_server._app is not None:
             self.api_server._app.state.consciousness = self.consciousness
 
+        if self.mutation_log is not None:
+            try:
+                await self.mutation_log.record(
+                    MutationType.SYSTEM_STARTED,
+                    {
+                        "pid": os.getpid(),
+                        "git_commit": _resolve_git_commit(),
+                        "phase0_mode": PHASE0_MODE,
+                        "reason": "normal_start",
+                    },
+                )
+            except Exception:
+                logger.warning("SYSTEM_STARTED mutation record failed", exc_info=True)
+
         self._started = True
         logger.info("应用容器启动完成")
 
@@ -216,6 +263,21 @@ class AppContainer:
         # EventLogger v2 关闭
         if self.event_logger_v2 is not None:
             await self.event_logger_v2.close()
+
+        # v2.0 Step 1: 写入 SYSTEM_STOPPED 并关闭 mutation_log
+        if self.mutation_log is not None:
+            try:
+                await self.mutation_log.record(
+                    MutationType.SYSTEM_STOPPED,
+                    {"pid": os.getpid(), "reason": "normal_shutdown"},
+                )
+            except Exception:
+                logger.warning("SYSTEM_STOPPED mutation record failed", exc_info=True)
+            try:
+                await self.mutation_log.close()
+            except Exception:
+                logger.warning("mutation_log close failed", exc_info=True)
+            self.mutation_log = None
 
         await self.brain.memory.close()
         self._started = False

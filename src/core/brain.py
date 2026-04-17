@@ -248,6 +248,9 @@ class LapwingBrain:
         dispatcher = getattr(self, "_dispatcher_ref", None)
         if dispatcher is not None:
             services["dispatcher"] = dispatcher
+        mutation_log = getattr(self, "_mutation_log_ref", None)
+        if mutation_log is not None:
+            services["mutation_log"] = mutation_log
         services["router"] = self.router
         # Phase 3 记忆系统
         note_store = getattr(self, "_note_store", None)
