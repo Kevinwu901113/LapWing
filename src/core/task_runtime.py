@@ -29,6 +29,8 @@ from src.logging.state_mutation_log import (
     current_chat_id,
     current_iteration_id,
     current_llm_request_id,
+    iteration_context,
+    new_iteration_id,
 )
 
 # Re-export types for backward compatibility
@@ -385,6 +387,97 @@ class TaskRuntime:
         user_id: str = "",
         resumption_context: dict | None = None,
     ) -> str:
+        mutation_log: StateMutationLog | None = (services or {}).get("mutation_log")
+        iteration_id = new_iteration_id()
+        iter_start_mono = time.monotonic()
+        end_reason = "completed"
+
+        if mutation_log is not None:
+            try:
+                await mutation_log.record(
+                    MutationType.ITERATION_STARTED,
+                    {
+                        "iteration_id": iteration_id,
+                        "trigger_type": "user_message" if adapter else "internal",
+                        "trigger_detail": {
+                            "adapter": adapter,
+                            "user_id": user_id,
+                            "chat_id": chat_id,
+                            "has_resumption_context": resumption_context is not None,
+                        },
+                    },
+                    iteration_id=iteration_id,
+                    chat_id=chat_id,
+                )
+            except Exception:
+                logger.warning("ITERATION_STARTED mutation record failed", exc_info=True)
+
+        try:
+            with iteration_context(iteration_id, chat_id=chat_id):
+                return await self._complete_chat_body(
+                    chat_id=chat_id,
+                    messages=messages,
+                    constraints=constraints,
+                    tools=tools,
+                    deps=deps,
+                    status_callback=status_callback,
+                    event_bus=event_bus,
+                    on_consent_required=on_consent_required,
+                    services=services,
+                    profile=profile,
+                    on_interim_text=on_interim_text,
+                    on_typing=on_typing,
+                    adapter=adapter,
+                    user_id=user_id,
+                    resumption_context=resumption_context,
+                )
+        except Exception:
+            end_reason = "error"
+            raise
+        finally:
+            duration_ms = (time.monotonic() - iter_start_mono) * 1000
+            if mutation_log is not None:
+                try:
+                    rows = await mutation_log.query_by_iteration(iteration_id)
+                    llm_calls = sum(1 for r in rows if r.event_type == MutationType.LLM_REQUEST.value)
+                    tool_calls = sum(1 for r in rows if r.event_type == MutationType.TOOL_CALLED.value)
+                    await mutation_log.record(
+                        MutationType.ITERATION_ENDED,
+                        {
+                            "iteration_id": iteration_id,
+                            "duration_ms": duration_ms,
+                            "end_reason": end_reason,
+                            "llm_calls_count": llm_calls,
+                            "tool_calls_count": tool_calls,
+                        },
+                        iteration_id=iteration_id,
+                        chat_id=chat_id,
+                    )
+                except Exception:
+                    logger.warning("ITERATION_ENDED mutation record failed", exc_info=True)
+
+    async def _complete_chat_body(
+        self,
+        *,
+        chat_id: str,
+        messages: list[dict[str, Any]],
+        constraints: ExecutionConstraints,
+        tools: list[dict[str, Any]],
+        deps: RuntimeDeps,
+        status_callback=None,
+        event_bus=None,
+        on_consent_required: Callable[[ExecutionSessionState], str] | None = None,
+        services: dict[str, Any] | None = None,
+        profile: str | RuntimeProfile = "chat_shell",
+        on_interim_text: Callable[..., "Awaitable[None]"] | None = None,
+        on_typing: Callable[[], "Awaitable[None]"] | None = None,
+        adapter: str = "",
+        user_id: str = "",
+        resumption_context: dict | None = None,
+    ) -> str:
+        """Original complete_chat body. Wrapped by complete_chat() which binds
+        the iteration context and records ITERATION_STARTED / ITERATION_ENDED.
+        """
         if not tools:
             await self._emit_status(status_callback, chat_id, "stage:planning")
             reply = await self._router.complete(
