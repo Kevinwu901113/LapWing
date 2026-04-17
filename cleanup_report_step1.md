@@ -57,8 +57,12 @@ Inline deletions (within files that remain):
 
 ## 3. Data Archival
 
-- `data/events_v2.db` (430 KB, 534 events) →
-  `~/lapwing-backups/pre_step1_20260417_234006/archived/events_v2.db`
+- `data/events_v2.db` (430 KB, **534 events** — frozen at pre-Step-1 count)
+  moved to `~/lapwing-backups/pre_step1_20260417_234006/archived/events_v2.db`.
+  Current `ls data/events_v2.db*` shows the file is **gone from `data/`**.
+- Baseline `/tmp/pre_step1_event_count.txt` reads `534`; reopening the archived
+  DB shows the same 534 rows. The DB is no longer written to — no code path
+  references it.
 - Full `data/` snapshot (minus `data/browser/profile/` which contains root-owned
   blob_storage) → `~/lapwing-backups/pre_step1_20260417_234006/data/`
 - `git_commit.txt`, `git_branch.txt`, `manifest.txt` in the backup root for
@@ -207,7 +211,29 @@ addressed by the listed future Step. Each has a grep-greppable marker.
 
 ---
 
-## 9. Outstanding Questions for Kevin
+## 9. Desktop Compatibility Verification
+
+Every endpoint the desktop-v2 frontend consumes, plus what it looked for:
+
+| Endpoint / stream                     | Desktop usage                                | Step 1 behaviour                          | Status        |
+|---------------------------------------|----------------------------------------------|-------------------------------------------|---------------|
+| `GET /api/v2/events` (SSE)            | `useSSEv2.ts` live event stream              | Still streams via Dispatcher. **Removed**: `Last-Event-ID` replay (no persistent source). Live events unchanged. | ⚠️ Minor regression: missed events during disconnect can no longer be replayed. Debt §7.1. |
+| `GET /api/v2/system/info`             | `getSystemInfo()` in `lib/api-v2.ts`         | Untouched. Same response shape.           | ✅ No change  |
+| `GET /api/v2/system/events`           | `getSystemEvents()` in `lib/api-v2.ts`       | Now reads `mutation_log.db`. Field shape preserved: `event_id` (stringified int), `event_type` (MutationType value), `timestamp` (ISO UTC), `actor` (constant `"system"`), `task_id` (extracted from payload, may be None), `payload`. | ✅ Shape compatible. Actor is now constant; old distinctions ("lapwing" vs "team_lead") are gone.  |
+| `GET /api/v2/tasks` / `/{id}`         | `getTasks()` / `getTask()` in `lib/api-v2.ts` | Untouched. Reads `task_view_store` as before. | ✅ No change |
+| `GET /api/v2/tasks/{id}/messages`     | `getTaskMessages()` in `lib/api-v2.ts`       | **Returns empty list**. Agent history lookup deferred to Step 6. | ⚠️ Visible regression: agent messages panel empty until Step 6. Debt §7.3. |
+| Desktop `agent.task_*` SSE dispatch   | `useSSEv2.ts` type-switch                    | Events still emitted by `agent_tools.py` via Dispatcher when `AGENT_TEAM_ENABLED=true`. | ✅ No change (agent team off in practice) |
+| Desktop `message.*` / `heartbeat_tick`/`reminder.fired` SSE | various UI hooks     | Events still emitted via Dispatcher. Not durable. | ✅ No change |
+
+Desktop compile will not break; behavioural changes are:
+1. On SSE reconnect, any events that fired during the disconnect are lost (no replay). Debt §7.1.
+2. The "task messages" panel is empty until Step 6. Debt §7.3.
+
+No other desktop calls were touched.
+
+---
+
+## 10. Outstanding Questions for Kevin
 
 None as of this writing. Execution followed the decisions in
 Kevin's 2026-04-18 directive verbatim.
