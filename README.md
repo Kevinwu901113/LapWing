@@ -121,7 +121,6 @@ Brain._complete_chat()
 | `constitution_guard.py` | 111 | 宪法保护。验证人格 diff 不违反不可变条款 |
 | `experience_skills.py` | 672 | 经验技能检索。从历史对话中提炼操作经验，语义检索注入 prompt |
 | `tactical_rules.py` | 106 | 纠错规则提取。从用户修正中学习行为规则 |
-| `quality_checker.py` | 112 | 回复质量检查。异步评估回复质量 |
 | `self_reflection.py` | 74 | 自省能力 |
 | `knowledge_manager.py` | 107 | 外部知识文件读取 |
 
@@ -468,7 +467,6 @@ class RuntimeProfile:                  # 工具剖面 (src/core/runtime_profiles
 | `memory_index` | `MemoryIndex` | 始终 | 记忆索引 |
 | `auto_memory_extractor` | `AutoMemoryExtractor` | `AUTO_MEMORY_EXTRACT_ENABLED` | 自动记忆提取 |
 | `task_flow_manager` | `TaskFlowManager` | 始终 | 任务流 |
-| `quality_checker` | `ReplyQualityChecker` | `QUALITY_CHECK_ENABLED` | 回复质量检查 |
 | `browser_manager` | `BrowserManager` | `BROWSER_ENABLED` | 浏览器控制 |
 
 ---
@@ -560,7 +558,6 @@ AUTO_MEMORY_EXTRACT_ENABLED   — 自动记忆提取
 SELF_SCHEDULE_ENABLED         — 自调度工具
 SESSION_ENABLED               — 会话分段
 EXPERIENCE_SKILLS_ENABLED     — 经验技能系统
-QUALITY_CHECK_ENABLED         — 回复质量检查
 QQ_ENABLED                    — QQ 通道
 BROWSER_ENABLED               — 浏览器子系统（25+ BROWSER_* 子配置）
 BROWSE_ENABLED                — 自主浏览（心跳动作）

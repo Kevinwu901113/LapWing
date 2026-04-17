@@ -385,7 +385,6 @@ class TaskRuntime:
         on_typing: Callable[[], "Awaitable[None]"] | None = None,
         adapter: str = "",
         user_id: str = "",
-        resumption_context: dict | None = None,
     ) -> str:
         mutation_log: StateMutationLog | None = (services or {}).get("mutation_log")
         iteration_id = new_iteration_id()
@@ -403,7 +402,6 @@ class TaskRuntime:
                             "adapter": adapter,
                             "user_id": user_id,
                             "chat_id": chat_id,
-                            "has_resumption_context": resumption_context is not None,
                         },
                     },
                     iteration_id=iteration_id,
@@ -429,7 +427,6 @@ class TaskRuntime:
                     on_typing=on_typing,
                     adapter=adapter,
                     user_id=user_id,
-                    resumption_context=resumption_context,
                 )
         except Exception:
             end_reason = "error"
@@ -473,7 +470,6 @@ class TaskRuntime:
         on_typing: Callable[[], "Awaitable[None]"] | None = None,
         adapter: str = "",
         user_id: str = "",
-        resumption_context: dict | None = None,
     ) -> str:
         """Original complete_chat body. Wrapped by complete_chat() which binds
         the iteration context and records ITERATION_STARTED / ITERATION_ENDED.
@@ -526,7 +522,6 @@ class TaskRuntime:
             services=services,
             adapter=adapter,
             user_id=user_id,
-            resumption_context=resumption_context,
             state=state,
             loop_detection_state=self._new_loop_detection_state(),
             recovery=LoopRecoveryState(),
@@ -535,7 +530,6 @@ class TaskRuntime:
                 remaining=self._no_action_budget,
             ),
             error_guard=ErrorBurstGuard(threshold=self._error_burst_threshold),
-            progress_state=None,
         )
 
         loop_result = await self.run_task_loop(

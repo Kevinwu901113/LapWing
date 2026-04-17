@@ -224,7 +224,6 @@ class LapwingBrain:
         on_typing=None,
         adapter: str = "",
         user_id: str = "",
-        resumption_context: dict | None = None,
     ) -> str:
         constraints = extract_execution_constraints(
             user_message,
@@ -298,7 +297,6 @@ class LapwingBrain:
             on_typing=on_typing,
             adapter=adapter,
             user_id=user_id,
-            resumption_context=resumption_context,
         )
 
     async def _build_system_prompt(
@@ -704,57 +702,6 @@ class LapwingBrain:
             session_id=session_id,
         )
 
-    async def _prepare_think_for_resumption(
-        self,
-        chat_id: str,
-        metadata: dict,
-    ) -> "_ThinkCtx":
-        """恢复触发专用的 _prepare_think：不写入用户消息，注入恢复上下文到 system prompt。"""
-        session_id = None
-
-        # 压缩 + 组装 messages（不追加新的 user 消息）
-        await self.compactor.try_compact(chat_id, session_id=session_id)
-        history = await self.memory.get(chat_id)
-
-        max_messages = MAX_HISTORY_TURNS * 2
-        recent_messages = list(history[-max_messages:]) if len(history) > max_messages else list(history)
-
-        # System prompt
-        cached = self._prompt_snapshot.get(session_id) if session_id else None
-        if cached is not None:
-            system_content = cached
-        else:
-            system_content = await self._build_system_prompt(chat_id)
-            if session_id:
-                self._prompt_snapshot.freeze(session_id, system_content)
-
-        # 注入恢复上下文到 system prompt
-        resumption_context = metadata.get("resumption_context", {})
-        if resumption_context:
-            user_req = resumption_context.get("user_request", "")
-            remaining = resumption_context.get("remaining_description", "")
-            system_content += (
-                "\n\n## 恢复上下文\n\n"
-                f"你刚才主动告诉 Kevin 要继续完成之前没做完的事。"
-                f"他之前让你做的是：{user_req}。"
-                f"还差的部分大概是：{remaining}。"
-                f"现在继续做就好。"
-            )
-
-        messages = [
-            {"role": "system", "content": system_content},
-            *recent_messages,
-        ]
-
-        self._inject_voice_reminder(messages)
-
-        return _ThinkCtx(
-            messages=messages,
-            effective_user_message="",
-            approved_directory=None,
-            session_id=session_id,
-        )
-
     async def think(self, chat_id: str, user_message: str, status_callback=None) -> str:
         """处理用户消息，返回 Lapwing 的回复。
 
@@ -830,31 +777,21 @@ class LapwingBrain:
             send_fn: 发送一条消息给用户的异步回调
             typing_fn: 发送 typing indicator 的异步回调
             status_callback: 桌面端状态回调（透传给 task_runtime）
-            metadata: 额外元数据（如 task_resumption 恢复触发信息）
+            metadata: 额外元数据（保留给调用方扩展；Step 1 起不再承载任何分支逻辑）
             images: 图片列表，每个元素为 {"base64": str, "media_type": str} 或 {"url": str}
 
         Returns:
             完整回复文本（所有中间文字 + 最终文字拼接），用于记录到记忆
         """
-        is_resumption = metadata is not None and metadata.get("source") == "task_resumption"
-
-        # 通知意识引擎：对话开始（恢复触发不算用户对话）
-        if self.consciousness_engine is not None and not is_resumption:
+        if self.consciousness_engine is not None:
             self.consciousness_engine.on_conversation_start()
 
-        if not is_resumption:
-            logger.info("[%s] incoming: %s", chat_id, user_message[:200])
+        logger.info("[%s] incoming: %s", chat_id, user_message[:200])
 
-        # 恢复触发：不写入用户消息，不走 _prepare_think 中的用户消息写入
-        if is_resumption and not user_message:
-            ctx = await self._prepare_think_for_resumption(
-                chat_id, metadata=metadata,
-            )
-        else:
-            ctx = await self._prepare_think(
-                chat_id, user_message, send_fn=send_fn, images=images,
-                adapter=adapter, user_id=user_id,
-            )
+        ctx = await self._prepare_think(
+            chat_id, user_message, send_fn=send_fn, images=images,
+            adapter=adapter, user_id=user_id,
+        )
         if ctx.early_reply is not None:
             self._schedule_conversation_end()  # ← ADD THIS
             return ctx.early_reply
@@ -919,8 +856,6 @@ class LapwingBrain:
                 except Exception:
                     pass
 
-        resumption_context = metadata.get("resumption_context") if metadata else None
-
         start_time = time.monotonic()
         try:
             full_reply = await self._complete_chat(
@@ -934,7 +869,6 @@ class LapwingBrain:
                 on_typing=on_typing,
                 adapter=adapter,
                 user_id=user_id,
-                resumption_context=resumption_context,
             )
             full_reply = strip_internal_thinking_tags(full_reply)
 

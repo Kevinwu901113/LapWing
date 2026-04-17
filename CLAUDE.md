@@ -63,9 +63,11 @@ User message (any channel)
       → PromptBuilder.build_system_prompt() (8 layers: soul → rules → time → memory → facts → vectors → summaries → voice)
       → ExperienceSkillManager.retrieve() (inject relevant past experience)
   → Brain._complete_chat()
-      → TaskRuntime.complete_chat() (tool loop, max TASK_MAX_TOOL_ROUNDS rounds)
-          → LLMRouter.tool_turn() → VitalGuard → AuthorityGate → ToolRegistry.execute()
-      → QualityChecker (async post-reply)
+      → TaskRuntime.complete_chat() (tool loop, max TASK_MAX_TOOL_ROUNDS rounds;
+        wrapped by iteration_context → StateMutationLog ITERATION_STARTED/ENDED)
+          → LLMRouter._tracked_call (records LLM_REQUEST/LLM_RESPONSE)
+          → VitalGuard → AuthorityGate → ToolRegistry.execute()
+            (records TOOL_CALLED/TOOL_RESULT)
 ```
 
 There is NO agent dispatch layer. All capabilities are tool schemas. The LLM decides
@@ -115,8 +117,10 @@ src/
   app/           — Application bootstrap: AppContainer (DI root), TelegramApp
   auth/          — Auth management (OAuth, API keys, desktop tokens)
   core/          — Core logic (brain, llm_router, task_runtime, prompt_builder,
-                   heartbeat, evolution, delegation, session, skills, quality_checker,
+                   heartbeat, evolution, delegation, session, skills, dispatcher,
                    browser_manager, vitals, runtime_profiles, credential_vault)
+  logging/       — StateMutationLog (durable append-only log of LLM/tool/iteration
+                   mutations; see Blueprint v2.0 §2)
   guards/        — Safety guards (memory_guard, skill_guard, browser_guard)
   heartbeat/     — Periodic background actions (actions/ subdirectory, 12 action files)
   memory/        — Conversation memory, facts, interests, vector store, auto-extraction,
@@ -156,7 +160,7 @@ tests/           — Mirrors src/ structure (~75 test files)
 - **Config**: All config via env vars in `config/.env`, loaded in `config/settings.py`.
   Feature flags use `FEATURE_ENABLED` pattern (e.g., `MEMORY_CRUD_ENABLED`,
   `DELEGATION_ENABLED`, `SKILLS_ENABLED`, `SHELL_ENABLED`, `SESSION_ENABLED`,
-  `QUALITY_CHECK_ENABLED`, `LOOP_DETECTION_ENABLED`, `CHAT_WEB_TOOLS_ENABLED`,
+  `LOOP_DETECTION_ENABLED`, `CHAT_WEB_TOOLS_ENABLED`,
   `AUTO_MEMORY_EXTRACT_ENABLED`, `SELF_SCHEDULE_ENABLED`, `MESSAGE_SPLIT_ENABLED`,
   `BROWSER_ENABLED`, `BROWSE_ENABLED`).
 - **Logging**: Dual logger setup in `main.py` — `lapwing` project logger + separate root
