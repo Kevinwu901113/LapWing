@@ -122,13 +122,13 @@ class TestE2ERealDelegation:
     """
 
     async def test_real_chain_lapwing_to_researcher(self):
-        """delegate → TeamLead → delegate_to_agent → Researcher → web_search → 结果。"""
+        """delegate → TeamLead → delegate_to_agent → Researcher → research → 结果。"""
         from src.tools.agent_tools import delegate_to_agent_executor
         from src.tools.registry import ToolRegistry
 
         dispatcher = _make_dispatcher()
 
-        # ── 构建真实 ToolRegistry，注册 delegate_to_agent 和 web_search ──
+        # ── 构建真实 ToolRegistry，注册 delegate_to_agent 和 research ──
         real_registry = ToolRegistry()
 
         # delegate_to_agent 工具（Team Lead 会调用这个）
@@ -148,27 +148,31 @@ class TestE2ERealDelegation:
             risk_level="low",
         ))
 
-        # web_search 工具（Researcher 会调用这个）—— executor 返回假搜索结果
-        async def fake_web_search(req, ctx):
+        # research 工具（Researcher 会调用这个）—— executor 返回假研究结果
+        async def fake_research(req, ctx):
             return ToolExecutionResult(
                 success=True,
                 payload={
-                    "results": [
-                        {"title": "RAG Paper 2025", "url": "https://arxiv.org/abs/2025.12345",
-                         "snippet": "RAG is a retrieval augmented generation technique."},
-                    ],
+                    "answer": "RAG 是检索增强生成技术。",
+                    "evidence": [{
+                        "source_url": "https://arxiv.org/abs/2025.12345",
+                        "source_name": "RAG Paper 2025",
+                        "quote": "RAG is a retrieval augmented generation technique.",
+                    }],
+                    "confidence": "high",
+                    "unclear": "",
                 },
             )
 
         real_registry.register(ToolSpec(
-            name="web_search",
-            description="搜索网页",
+            name="research",
+            description="回答需要查找信息的问题",
             json_schema={
                 "type": "object",
-                "properties": {"query": {"type": "string"}},
-                "required": ["query"],
+                "properties": {"question": {"type": "string"}},
+                "required": ["question"],
             },
-            executor=fake_web_search,
+            executor=fake_research,
             capability="web",
             risk_level="low",
         ))
@@ -183,7 +187,7 @@ class TestE2ERealDelegation:
         # ── Mock LLM router ──
         # 调用顺序：
         #   1. Team Lead round 1 → 调用 delegate_to_agent(researcher, "...")
-        #   2. Researcher round 1 → 调用 web_search(query="RAG")
+        #   2. Researcher round 1 → 调用 research(question="RAG 最新论文")
         #   3. Researcher round 2 → 返回最终文本（无 tool_calls）
         #   4. Team Lead round 2 → 返回汇总文本（无 tool_calls）
         router = MagicMock()
@@ -200,8 +204,8 @@ class TestE2ERealDelegation:
         researcher_round1 = ToolTurnResult(
             text="",
             tool_calls=[ToolCallRequest(
-                id="r1", name="web_search",
-                arguments={"query": "RAG 最新论文"},
+                id="r1", name="research",
+                arguments={"question": "RAG 最新论文"},
             )],
             continuation_message={"role": "assistant", "content": ""},
         )

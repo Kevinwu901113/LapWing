@@ -18,8 +18,8 @@ class TestResearcherCreate:
         router, registry, dispatcher = _make_deps()
         r = Researcher.create(router, registry, dispatcher)
         assert r.spec.name == "researcher"
-        assert "web_search" in r.spec.tools
-        assert "web_fetch" in r.spec.tools
+        assert "research" in r.spec.tools
+        assert "browse" in r.spec.tools
         assert r.spec.model_slot == "agent_execution"
 
     def test_system_prompt_mentions_sources(self):
