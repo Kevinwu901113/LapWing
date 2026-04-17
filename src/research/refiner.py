@@ -7,7 +7,7 @@ import logging
 import re
 from typing import Any
 
-from src.research.prompts import REFINE_PROMPT
+from src.research.prompts import REFINE_PROMPT, REFINE_PROMPT_TEXT_FALLBACK
 from src.research.types import Evidence, ResearchResult
 
 logger = logging.getLogger("lapwing.research.refiner")
@@ -19,9 +19,43 @@ _FALLBACK_QUOTE_MAX = 300
 
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*\n(.*?)\n```\s*$", re.DOTALL)
 
+_RESULT_TOOL_NAME = "submit_research_result"
+_RESULT_TOOL_DESCRIPTION = "提交研究综合结果。answer 是给用户看的答案；evidence 是带出处的关键引文；confidence 是高/中/低；unclear 是不确定或矛盾的地方。"
+_RESULT_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "answer": {
+            "type": "string",
+            "description": "综合答案（50-200 字），只用 sources 里出现过的事实。",
+        },
+        "evidence": {
+            "type": "array",
+            "description": "支撑 answer 的关键引文，每条标注 URL。",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "source_url": {"type": "string"},
+                    "source_name": {"type": "string"},
+                    "quote": {"type": "string", "description": "从原文截取的关键句"},
+                },
+                "required": ["source_url", "source_name", "quote"],
+            },
+        },
+        "confidence": {
+            "type": "string",
+            "enum": ["high", "medium", "low"],
+        },
+        "unclear": {
+            "type": "string",
+            "description": "矛盾、歧义、缺失的细节写在这里；没有就空字符串。",
+        },
+    },
+    "required": ["answer", "confidence"],
+}
+
 
 class Refiner:
-    """用 router.complete(purpose='tool') 综合多源结果。"""
+    """优先用 router.complete_structured 获取强制结构化的 dict；失败回退到文本 JSON 解析。"""
 
     def __init__(self, llm_router: Any) -> None:
         self.llm_router = llm_router
@@ -33,26 +67,44 @@ class Refiner:
                 confidence="low",
             )
 
-        prompt = REFINE_PROMPT.format(
-            question=question,
-            sources=self._format_sources(sources),
-        )
-        messages = [{"role": "user", "content": prompt}]
+        sources_text = self._format_sources(sources)
 
+        # 主路径：强制 tool call，直接拿 dict
+        try:
+            parsed = await self.llm_router.complete_structured(
+                messages=[{
+                    "role": "user",
+                    "content": REFINE_PROMPT.format(question=question, sources=sources_text),
+                }],
+                result_schema=_RESULT_SCHEMA,
+                result_tool_name=_RESULT_TOOL_NAME,
+                result_tool_description=_RESULT_TOOL_DESCRIPTION,
+                purpose="tool",
+                max_tokens=_MAX_TOKENS,
+            )
+            return self._result_from_parsed(parsed)
+        except Exception as exc:
+            logger.warning("Refiner complete_structured 失败，回退到文本 JSON 模式: %s", exc)
+
+        # Fallback 1：文本 JSON 解析
         try:
             response = await self.llm_router.complete(
-                messages=messages,
+                messages=[{
+                    "role": "user",
+                    "content": REFINE_PROMPT_TEXT_FALLBACK.format(question=question, sources=sources_text),
+                }],
                 purpose="tool",
                 max_tokens=_MAX_TOKENS,
             )
         except Exception as exc:
-            logger.error("Refine LLM 调用失败: %s", exc)
+            logger.error("Refine text fallback 也失败: %s", exc)
             return self._fallback_from_first_source(
                 sources, unclear=f"精炼失败（{exc}），返回原始摘要"
             )
 
         try:
             parsed = self._parse_json(response or "")
+            return self._result_from_parsed(parsed)
         except Exception as exc:
             logger.warning("Refiner JSON 解析失败: %s | response=%r", exc, (response or "")[:300])
             return ResearchResult(
@@ -61,8 +113,6 @@ class Refiner:
                 confidence="low",
                 unclear="精炼结果无法解析为结构化数据",
             )
-
-        return self._result_from_parsed(parsed)
 
     @staticmethod
     def _format_sources(sources: list[dict[str, Any]]) -> str:
