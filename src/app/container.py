@@ -21,7 +21,6 @@ from src.core.channel_manager import ChannelManager
 from src.core.consciousness import ConsciousnessEngine
 from src.core.dispatcher import Dispatcher
 from src.core.durable_scheduler import DurableScheduler
-from src.core.event_logger_v2 import EventLogger
 from src.logging.state_mutation_log import MutationType, StateMutationLog
 
 logger = logging.getLogger("lapwing.app.container")
@@ -87,8 +86,8 @@ class AppContainer:
         self._credential_vault = None
         self._browser_guard = None
 
-        # Phase 5: Dispatcher + EventLogger v2（Phase 1 基础设施，现在接入 SSE）
-        self.event_logger_v2: EventLogger | None = None
+        # Dispatcher — 内存 pub/sub 总线，给桌面端 SSE 和子系统实时广播用
+        # (v2.0 Step 1: EventLogger/events_v2.db 持久化职责已移交给 StateMutationLog)
         self.dispatcher: Dispatcher | None = None
 
         # v2.0 Step 1: StateMutationLog — durable append-only log of state mutations
@@ -106,17 +105,13 @@ class AppContainer:
 
         await self.brain.init_db()
 
-        # Phase 5: EventLogger v2 + Dispatcher 初始化
-        events_db = self._data_dir / "events_v2.db"
-        self.event_logger_v2 = EventLogger(events_db)
-        await self.event_logger_v2.init()
-        self.dispatcher = Dispatcher(self.event_logger_v2)
+        # Dispatcher — 纯内存 pub/sub 总线（SSE 广播、子系统信号）
+        self.dispatcher = Dispatcher()
         # 注入到主对话路径（无条件，AGENT_TEAM_ENABLED 与否都要）
         self.brain._dispatcher_ref = self.dispatcher
         # 注入到 API server（server.start() 时才实际使用）
         self.api_server._dispatcher = self.dispatcher
-        self.api_server._event_logger_v2 = self.event_logger_v2
-        logger.info("Phase 5: EventLogger v2 + Dispatcher 已初始化")
+        logger.info("Dispatcher pub/sub 已初始化")
 
         # v2.0 Step 1: StateMutationLog — separate SQLite log for LLM/tool/iteration
         # mutations, independent from the legacy events_v2.db (which is scheduled
@@ -259,10 +254,6 @@ class AppContainer:
                 await self._embedding_task
             except _asyncio.CancelledError:
                 pass
-
-        # EventLogger v2 关闭
-        if self.event_logger_v2 is not None:
-            await self.event_logger_v2.close()
 
         # v2.0 Step 1: 写入 SYSTEM_STOPPED 并关闭 mutation_log
         if self.mutation_log is not None:

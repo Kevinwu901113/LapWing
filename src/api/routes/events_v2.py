@@ -1,6 +1,10 @@
-"""SSE 事件推送 — Phase 5。
+"""SSE 事件推送 — 桌面端实时事件流。
 
-基于 Dispatcher 全局订阅，支持 Last-Event-ID 断线重连。
+事件来源：:class:`src.core.dispatcher.Dispatcher` 的 ``subscribe_all``
+回调。v2.0 Step 1 之前本路由同时做"断线重连 + 历史回放"，依赖
+``EventLogger.query(after_event_id=...)``。Step 1 中 EventLogger 被撤除，
+这条回放通道也随之失效——Step 2/4 会在 StateMutationLog 的派生
+事件流上恢复。参见 cleanup_report_step1.md 的 Step 2 TODO。
 """
 
 import asyncio
@@ -15,52 +19,39 @@ logger = logging.getLogger("lapwing.api.routes.events_v2")
 router = APIRouter(prefix="/api/v2", tags=["events-v2"])
 
 _dispatcher = None
-_event_logger = None
 
 
-def init(dispatcher=None, event_logger=None) -> None:
-    global _dispatcher, _event_logger
+def init(dispatcher=None) -> None:
+    global _dispatcher
     _dispatcher = dispatcher
-    _event_logger = event_logger
 
 
 def _format_sse(event) -> str:
     """格式化为 SSE 消息。"""
-    data = json.dumps({
-        "event_id": event.event_id,
-        "event_type": event.event_type,
-        "timestamp": event.timestamp.isoformat(),
-        "actor": event.actor,
-        "task_id": event.task_id,
-        "payload": event.payload,
-    }, ensure_ascii=False)
-
+    data = json.dumps(
+        {
+            "event_id": event.event_id,
+            "event_type": event.event_type,
+            "timestamp": event.timestamp.isoformat(),
+            "actor": event.actor,
+            "task_id": event.task_id,
+            "payload": event.payload,
+        },
+        ensure_ascii=False,
+    )
     return f"id: {event.event_id}\nevent: {event.event_type}\ndata: {data}\n\n"
 
 
 @router.get("/events")
 async def event_stream(request: Request):
+    """SSE 事件流。推送通过 Dispatcher 提交的所有事件。
+
+    Last-Event-ID 断线重连不再支持（EventLogger 已撤除）。客户端仍可
+    传入该 header，服务端会忽略并只推送新事件。
     """
-    SSE 事件流。推送通过 Dispatcher 提交的所有事件。
-    支持断线重连（通过 Last-Event-ID header）。
-    """
-    last_event_id = request.headers.get("Last-Event-ID")
 
     async def event_generator():
-        # 如果有 Last-Event-ID，先回放错过的事件
-        if last_event_id and _event_logger is not None:
-            try:
-                missed = await _event_logger.query(
-                    after_event_id=last_event_id, limit=100
-                )
-                for event in missed:
-                    yield _format_sse(event)
-            except Exception as exc:
-                logger.warning("SSE 回放失败: %s", exc)
-
-        # 订阅新事件
         if _dispatcher is None:
-            # 没有 Dispatcher，仅发 keep-alive
             while True:
                 if await request.is_disconnected():
                     break
@@ -75,7 +66,6 @@ async def event_stream(request: Request):
             while True:
                 if await request.is_disconnected():
                     break
-
                 try:
                     event = await asyncio.wait_for(queue.get(), timeout=30)
                     yield _format_sse(event)

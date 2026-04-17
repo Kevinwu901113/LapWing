@@ -28,7 +28,6 @@ def create_app(
     latency_monitor=None,
     channel_manager=None,
     dispatcher=None,
-    event_logger_v2=None,
 ) -> FastAPI:
     if latency_monitor is not None and hasattr(event_bus, "set_latency_monitor"):
         event_bus.set_latency_monitor(latency_monitor)
@@ -92,10 +91,10 @@ def create_app(
     _status_v2_routes.init(brain, app)
     app.include_router(_status_v2_routes.router)
 
-    _tasks_v2_routes.init(task_view_store, event_logger_v2)
+    _tasks_v2_routes.init(task_view_store)
     app.include_router(_tasks_v2_routes.router)
 
-    _system_v2_routes.init(brain, app, event_logger_v2)
+    _system_v2_routes.init(brain, app)
     app.include_router(_system_v2_routes.router)
 
     _model_config_for_v2 = getattr(brain, "_model_config", None)
@@ -107,7 +106,7 @@ def create_app(
     _permissions_v2_routes.init(_data_dir_for_perms)
     app.include_router(_permissions_v2_routes.router)
 
-    _events_v2_routes.init(dispatcher, event_logger_v2)
+    _events_v2_routes.init(dispatcher)
     app.include_router(_events_v2_routes.router)
 
     # 浏览器子系统路由（可选，仅在 BROWSER_ENABLED 时挂载）
@@ -202,7 +201,6 @@ class LocalApiServer:
         port: int = API_PORT,
         channel_manager=None,
         dispatcher=None,
-        event_logger_v2=None,
     ) -> None:
         self._brain = brain
         self._event_bus = event_bus
@@ -212,7 +210,6 @@ class LocalApiServer:
         self._port = port
         self._channel_manager = channel_manager
         self._dispatcher = dispatcher
-        self._event_logger_v2 = event_logger_v2
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None
         self._app: FastAPI | None = None
@@ -228,7 +225,6 @@ class LocalApiServer:
             self._latency_monitor,
             channel_manager=self._channel_manager,
             dispatcher=self._dispatcher,
-            event_logger_v2=self._event_logger_v2,
         )
         self._app = app
         config = uvicorn.Config(

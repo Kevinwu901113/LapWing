@@ -1,6 +1,10 @@
-"""系统信息 REST API — Phase 5。
+"""系统信息 REST API — 桌面端状态面板。
 
-系统资源、uptime、意识循环状态、通道状态、事件日志查询。
+v2.0 Step 1 起，``/events`` 端点改为查询 StateMutationLog.mutation_log.db
+而不是已撤除的 events_v2.db。响应字段保持兼容：
+``event_id`` / ``event_type`` / ``timestamp`` / ``actor`` / ``task_id`` /
+``payload``。``actor`` 在新表里没有对应列，返回固定占位 ``"system"``；
+``task_id`` 在 payload 里可能存在，由 payload 抽取；若无则返回 None。
 """
 
 import asyncio
@@ -15,14 +19,20 @@ router = APIRouter(prefix="/api/v2/system", tags=["system-v2"])
 
 _brain = None
 _app = None
-_event_logger = None
 
 
-def init(brain, app, event_logger=None) -> None:
-    global _brain, _app, _event_logger
+def init(brain, app) -> None:
+    global _brain, _app
     _brain = brain
     _app = app
-    _event_logger = event_logger
+
+
+def _mutation_log():
+    app = _app
+    if app is None:
+        return None
+    brain = getattr(app.state, "brain", None)
+    return getattr(brain, "_mutation_log_ref", None)
 
 
 @router.get("/info")
@@ -88,28 +98,53 @@ async def get_system_info():
 @router.get("/events")
 async def query_events(
     event_type: str = Query(None, description="事件类型过滤"),
-    task_id: str = Query(None, description="任务 ID 过滤"),
+    task_id: str = Query(None, description="任务 ID 过滤（从 payload.task_id 提取）"),
     limit: int = Query(100, ge=1, le=1000),
 ):
-    """事件日志查询。"""
-    if _event_logger is None:
+    """事件日志查询。
+
+    v2.0 Step 1 起：从 StateMutationLog.mutation_log.db 读取。
+    ``task_id`` 过滤在后端做 payload 后置过滤（新 schema 里 task_id
+    不是顶层列），仅用于桌面端兼容。
+    """
+    from src.logging.state_mutation_log import MutationType
+
+    log = _mutation_log()
+    if log is None:
         return {"events": []}
 
-    events = await _event_logger.query(
-        event_type=event_type,
-        task_id=task_id,
-        limit=limit,
-    )
+    # Map the query-string event_type to a MutationType member; if the caller
+    # passes a name we don't recognise (or omits it), query by window and
+    # filter afterwards.
+    try:
+        mtype = MutationType(event_type) if event_type else None
+    except ValueError:
+        mtype = None
+
+    if mtype is not None:
+        rows = await log.query_by_type(mtype, limit=limit)
+    else:
+        import time as _time
+        rows = await log.query_by_window(0.0, _time.time() + 1, limit=limit)
+
+    def _filter(mutation) -> bool:
+        if task_id is not None and mutation.payload.get("task_id") != task_id:
+            return False
+        if event_type and not mtype and mutation.event_type != event_type:
+            return False
+        return True
+
+    filtered = [m for m in rows if _filter(m)]
     return {
         "events": [
             {
-                "event_id": e.event_id,
-                "timestamp": e.timestamp.isoformat(),
-                "event_type": e.event_type,
-                "actor": e.actor,
-                "task_id": e.task_id,
-                "payload": e.payload,
+                "event_id": str(m.id),
+                "timestamp": datetime.fromtimestamp(m.timestamp, tz=timezone.utc).isoformat(),
+                "event_type": m.event_type,
+                "actor": "system",
+                "task_id": m.payload.get("task_id"),
+                "payload": m.payload,
             }
-            for e in events
+            for m in filtered
         ]
     }

@@ -151,7 +151,7 @@ def _strip_simulated_tool_calls(text: str) -> str:
 
 
 def _truncate_result(payload: Any, max_chars: int = 800) -> str:
-    """将工具结果 payload 序列化并截断，供 events_v2 审计使用。"""
+    """将工具结果 payload 序列化并截断，供 dispatcher SSE 广播使用（预览，非持久化）。"""
     if payload is None:
         return ""
     if isinstance(payload, str):
