@@ -14,6 +14,8 @@ an unknown type — this is intentional (see blueprint §2.2).
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 import json
 import logging
 import time
@@ -22,11 +24,48 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from enum import Enum
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import aiosqlite
 
 logger = logging.getLogger("lapwing.logging.state_mutation_log")
+
+
+# ContextVars propagate iteration_id / chat_id implicitly through async calls,
+# so callers don't have to thread them through every method signature.
+_current_iteration_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "lapwing_iteration_id", default=None
+)
+_current_chat_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "lapwing_chat_id", default=None
+)
+
+
+def current_iteration_id() -> str | None:
+    return _current_iteration_id.get()
+
+
+def current_chat_id() -> str | None:
+    return _current_chat_id.get()
+
+
+@contextlib.contextmanager
+def iteration_context(
+    iteration_id: str | None,
+    chat_id: str | None = None,
+) -> Iterator[None]:
+    """Bind iteration_id / chat_id to the current async context for its duration.
+
+    The body may contain ``await`` — contextvars propagate automatically through
+    awaits within the same Task.
+    """
+    t_iter = _current_iteration_id.set(iteration_id)
+    t_chat = _current_chat_id.set(chat_id)
+    try:
+        yield
+    finally:
+        _current_iteration_id.reset(t_iter)
+        _current_chat_id.reset(t_chat)
 
 
 class MutationType(str, Enum):

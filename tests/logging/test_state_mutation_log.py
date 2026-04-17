@@ -18,6 +18,9 @@ import pytest
 from src.logging.state_mutation_log import (
     MutationType,
     StateMutationLog,
+    current_chat_id,
+    current_iteration_id,
+    iteration_context,
     new_iteration_id,
     new_request_id,
 )
@@ -225,6 +228,40 @@ class TestConcurrentWrites:
         # Every idx accounted for
         seen_idx = {row.payload["idx"] for row in rows}
         assert seen_idx == set(range(N))
+
+
+class TestContextVars:
+    async def test_defaults_are_none(self):
+        assert current_iteration_id() is None
+        assert current_chat_id() is None
+
+    async def test_iteration_context_binds_and_unbinds(self):
+        assert current_iteration_id() is None
+        with iteration_context("iter-1", chat_id="chat-99"):
+            assert current_iteration_id() == "iter-1"
+            assert current_chat_id() == "chat-99"
+        assert current_iteration_id() is None
+        assert current_chat_id() is None
+
+    async def test_context_propagates_through_await(self):
+        captured = {}
+
+        async def inner():
+            await asyncio.sleep(0)
+            captured["iid"] = current_iteration_id()
+            captured["cid"] = current_chat_id()
+
+        with iteration_context("iter-x", chat_id="chat-y"):
+            await inner()
+
+        assert captured == {"iid": "iter-x", "cid": "chat-y"}
+
+    async def test_nested_contexts_restore(self):
+        with iteration_context("outer"):
+            assert current_iteration_id() == "outer"
+            with iteration_context("inner"):
+                assert current_iteration_id() == "inner"
+            assert current_iteration_id() == "outer"
 
 
 class TestInvalidState:

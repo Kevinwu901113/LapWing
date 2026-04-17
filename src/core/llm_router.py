@@ -7,6 +7,13 @@ from typing import Any, Awaitable, Callable
 
 from src.auth.service import AuthManager
 from src.core.reasoning_tags import strip_internal_thinking_tags
+from src.logging.state_mutation_log import (
+    MutationType,
+    StateMutationLog,
+    current_chat_id,
+    current_iteration_id,
+    new_request_id,
+)
 
 # Re-export types for backward compatibility
 from src.core.llm_types import ToolCallRequest, ToolTurnResult, ModelOption  # noqa: F401
@@ -139,6 +146,117 @@ async def _collect_codex_stream(client, payload: dict) -> tuple[str, list[dict],
     return "".join(text_parts), output_items, response_meta
 
 
+def _mut_content_blocks_from_anthropic(response: Any) -> list[dict[str, Any]]:
+    """Extract typed content_blocks from an Anthropic response for mutation_log."""
+    if response is None:
+        return []
+    blocks: list[dict[str, Any]] = []
+    for block in getattr(response, "content", None) or []:
+        btype = getattr(block, "type", None)
+        if btype == "thinking":
+            blocks.append(
+                {
+                    "type": "thinking",
+                    "content": getattr(block, "thinking", None)
+                    or getattr(block, "text", None)
+                    or "",
+                    "signature": getattr(block, "signature", None),
+                }
+            )
+        elif btype == "text":
+            blocks.append({"type": "text", "content": getattr(block, "text", "") or ""})
+        elif btype == "tool_use":
+            raw_input = getattr(block, "input", None) or {}
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": getattr(block, "id", None),
+                    "name": getattr(block, "name", None),
+                    "input": dict(raw_input) if isinstance(raw_input, dict) else raw_input,
+                }
+            )
+        else:
+            blocks.append({"type": btype or "unknown"})
+    return blocks
+
+
+def _mut_content_blocks_from_openai(response: Any) -> list[dict[str, Any]]:
+    if response is None or not getattr(response, "choices", None):
+        return []
+    msg = response.choices[0].message
+    blocks: list[dict[str, Any]] = []
+    content = getattr(msg, "content", None) or ""
+    if content:
+        blocks.append({"type": "text", "content": content})
+    for tc in getattr(msg, "tool_calls", None) or []:
+        fn = getattr(tc, "function", None)
+        blocks.append(
+            {
+                "type": "tool_use",
+                "id": getattr(tc, "id", None),
+                "name": getattr(fn, "name", None),
+                "input": _safe_parse_json(getattr(fn, "arguments", "") or ""),
+            }
+        )
+    return blocks
+
+
+def _mut_content_blocks_from_codex(value: Any) -> list[dict[str, Any]]:
+    """Codex returns (text, output_items, meta). Map to content_blocks."""
+    if value is None:
+        return []
+    try:
+        text, output_items, _meta = value
+    except (TypeError, ValueError):
+        return []
+    blocks: list[dict[str, Any]] = []
+    if text:
+        blocks.append({"type": "text", "content": text})
+    for item in output_items or []:
+        if item.get("type") == "function_call":
+            blocks.append(
+                {
+                    "type": "tool_use",
+                    "id": item.get("call_id") or item.get("id"),
+                    "name": item.get("name"),
+                    "input": _safe_parse_json(item.get("arguments", "") or ""),
+                }
+            )
+    return blocks
+
+
+def _mut_stop_reason(response: Any, protocol: str) -> str | None:
+    if response is None:
+        return None
+    if protocol == "anthropic":
+        return getattr(response, "stop_reason", None)
+    if protocol == "openai":
+        choices = getattr(response, "choices", None)
+        if not choices:
+            return None
+        return getattr(choices[0], "finish_reason", None)
+    if protocol == "codex_oauth":
+        return "stream_end"
+    return None
+
+
+def _mut_usage_dict(response: Any, protocol: str) -> dict[str, int | None]:
+    if response is None or protocol == "codex_oauth":
+        return {"input_tokens": None, "output_tokens": None}
+    input_t, output_t = _extract_usage(response)
+    return {"input_tokens": input_t, "output_tokens": output_t}
+
+
+def _mut_content_blocks(response: Any, protocol: str) -> list[dict[str, Any]]:
+    if protocol == "anthropic":
+        return _mut_content_blocks_from_anthropic(response)
+    if protocol == "openai":
+        return _mut_content_blocks_from_openai(response)
+    if protocol == "codex_oauth":
+        return _mut_content_blocks_from_codex(response)
+    return []
+
+
 class LLMRouter:
     """按 purpose 路由到对应 LLM client。"""
 
@@ -146,9 +264,12 @@ class LLMRouter:
         self,
         auth_manager: AuthManager | None = None,
         model_config=None,
+        *,
+        mutation_log: StateMutationLog | None = None,
     ) -> None:
         self._auth_manager = auth_manager or AuthManager()
         self._model_config = model_config
+        self._mutation_log = mutation_log
         self._clients: dict[str, Any] = {}
         self._models: dict[str, str] = {}
         self._api_types: dict[str, str] = {}
@@ -163,6 +284,15 @@ class LLMRouter:
         self._model_provider_map: dict[str, Any] = {}  # model_id → ProviderInfo
         self._setup_routing()
         self._setup_model_options()
+
+    def set_mutation_log(self, mutation_log: StateMutationLog | None) -> None:
+        """Install the mutation log after construction.
+
+        Allows :class:`AppContainer` to wire the log once it's built, without
+        forcing mutation_log to be a __init__ argument in the many test
+        sites that construct LLMRouter with no args.
+        """
+        self._mutation_log = mutation_log
 
     def _setup_routing(self) -> None:
         """Load routing config from ModelConfigManager or fall back to .env."""
@@ -633,6 +763,129 @@ class LLMRouter:
             if last_exc is not None:
                 raise last_exc
 
+    async def _tracked_call(
+        self,
+        protocol: str,
+        request_snapshot: dict[str, Any],
+        call_fn: Callable[[], Awaitable[Any]],
+    ) -> Any:
+        """Execute an LLM API call, emitting LLM_REQUEST + LLM_RESPONSE mutations.
+
+        ``protocol`` is one of ``"anthropic"``, ``"openai"``, ``"codex_oauth"``.
+        ``request_snapshot`` contains the full observable request (model,
+        base_url, purpose, messages, system, tools, max_tokens, temperature).
+        ``call_fn`` returns an awaitable producing the raw API response
+        (or codex tuple). Failures in logging never abort the underlying call.
+        """
+        if self._mutation_log is None:
+            return await call_fn()
+
+        request_id = new_request_id()
+        iid = current_iteration_id()
+        cid = current_chat_id()
+
+        try:
+            await self._mutation_log.record(
+                MutationType.LLM_REQUEST,
+                {"request_id": request_id, "protocol": protocol, **request_snapshot},
+                iteration_id=iid,
+                chat_id=cid,
+            )
+        except Exception:
+            logger.warning(
+                "LLM_REQUEST mutation record failed; continuing call",
+                exc_info=True,
+            )
+
+        start_mono = time.monotonic()
+        response: Any = None
+        error: str | None = None
+        try:
+            response = await call_fn()
+            return response
+        except Exception as exc:
+            error = f"{type(exc).__name__}: {exc}"
+            raise
+        finally:
+            latency_ms = (time.monotonic() - start_mono) * 1000
+            try:
+                await self._mutation_log.record(
+                    MutationType.LLM_RESPONSE,
+                    {
+                        "request_id": request_id,
+                        "latency_ms": latency_ms,
+                        "stop_reason": _mut_stop_reason(response, protocol),
+                        "content_blocks": _mut_content_blocks(response, protocol),
+                        "usage": _mut_usage_dict(response, protocol),
+                        "error": error,
+                    },
+                    iteration_id=iid,
+                    chat_id=cid,
+                )
+            except Exception:
+                logger.warning("LLM_RESPONSE mutation record failed", exc_info=True)
+
+    def _anthropic_request_snapshot(
+        self,
+        *,
+        effective_key: str,
+        model: str,
+        request_kwargs: dict[str, Any],
+        origin: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "model_slot": effective_key,
+            "model_name": model,
+            "base_url": self._base_urls.get(effective_key, ""),
+            "purpose": origin or "",
+            "messages": request_kwargs.get("messages"),
+            "system": request_kwargs.get("system"),
+            "tools": request_kwargs.get("tools"),
+            "tool_choice": request_kwargs.get("tool_choice"),
+            "max_tokens": request_kwargs.get("max_tokens"),
+            "temperature": request_kwargs.get("temperature"),
+        }
+
+    def _openai_request_snapshot(
+        self,
+        *,
+        effective_key: str,
+        model: str,
+        request_kwargs: dict[str, Any],
+        origin: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "model_slot": effective_key,
+            "model_name": model,
+            "base_url": self._base_urls.get(effective_key, ""),
+            "purpose": origin or "",
+            "messages": request_kwargs.get("messages"),
+            "tools": request_kwargs.get("tools"),
+            "tool_choice": request_kwargs.get("tool_choice"),
+            "max_tokens": request_kwargs.get("max_tokens"),
+            "temperature": request_kwargs.get("temperature"),
+        }
+
+    def _codex_request_snapshot(
+        self,
+        *,
+        effective_key: str,
+        model: str,
+        payload: dict[str, Any],
+        origin: str | None,
+    ) -> dict[str, Any]:
+        return {
+            "model_slot": effective_key,
+            "model_name": model,
+            "base_url": self._base_urls.get(effective_key, ""),
+            "purpose": origin or "",
+            "input": payload.get("input"),
+            "instructions": payload.get("instructions"),
+            "tools": payload.get("tools"),
+            "tool_choice": payload.get("tool_choice"),
+            "reasoning": payload.get("reasoning"),
+        }
+
     async def complete(
         self,
         messages: list[dict],
@@ -660,7 +913,13 @@ class LLMRouter:
                 }
                 self._inject_codex_params(payload, effective_key)
                 payload = _sanitize_codex_payload(payload)
-                text, _, _ = await _collect_codex_stream(client, payload)
+                text, _, _ = await self._tracked_call(
+                    "codex_oauth",
+                    self._codex_request_snapshot(
+                        effective_key=effective_key, model=model, payload=payload, origin=origin
+                    ),
+                    lambda: _collect_codex_stream(client, payload),
+                )
                 return strip_internal_thinking_tags(text).strip()
 
             if api_type == "anthropic":
@@ -685,7 +944,14 @@ class LLMRouter:
                 if _is_native_anthropic(base_url):
                     _mark_last_user_message_cache(anthropic_messages)
 
-                response = await client.messages.create(**request_kwargs)
+                response = await self._tracked_call(
+                    "anthropic",
+                    self._anthropic_request_snapshot(
+                        effective_key=effective_key, model=model,
+                        request_kwargs=request_kwargs, origin=origin,
+                    ),
+                    lambda: client.messages.create(**request_kwargs),
+                )
                 text = _extract_anthropic_text(response)
                 if text:
                     return text
@@ -699,7 +965,15 @@ class LLMRouter:
                         )
                         retry_kwargs = dict(request_kwargs)
                         retry_kwargs["max_tokens"] = retry_max_tokens
-                        retry_response = await client.messages.create(**retry_kwargs)
+                        retry_response = await self._tracked_call(
+                            "anthropic",
+                            self._anthropic_request_snapshot(
+                                effective_key=effective_key, model=model,
+                                request_kwargs=retry_kwargs,
+                                origin=(origin or "") + "/thinking_retry",
+                            ),
+                            lambda: client.messages.create(**retry_kwargs),
+                        )
                         return _extract_anthropic_text(retry_response)
 
                 return text
@@ -710,7 +984,14 @@ class LLMRouter:
                 "messages": messages,
             }
             self._debug_log_request("complete", effective_key, request_kwargs)
-            response = await client.chat.completions.create(**request_kwargs)
+            response = await self._tracked_call(
+                "openai",
+                self._openai_request_snapshot(
+                    effective_key=effective_key, model=model,
+                    request_kwargs=request_kwargs, origin=origin,
+                ),
+                lambda: client.chat.completions.create(**request_kwargs),
+            )
             if not response.choices:
                 return ""
             content = response.choices[0].message.content or ""
@@ -739,7 +1020,15 @@ class LLMRouter:
                         ],
                     }
                     self._debug_log_request("complete/thinking_retry", effective_key, retry_kwargs)
-                    retry_response = await client.chat.completions.create(**retry_kwargs)
+                    retry_response = await self._tracked_call(
+                        "openai",
+                        self._openai_request_snapshot(
+                            effective_key=effective_key, model=model,
+                            request_kwargs=retry_kwargs,
+                            origin=(origin or "") + "/thinking_retry",
+                        ),
+                        lambda: client.chat.completions.create(**retry_kwargs),
+                    )
                     if retry_response.choices:
                         content = retry_response.choices[0].message.content or ""
                         stripped = strip_internal_thinking_tags(content).strip()
@@ -814,7 +1103,13 @@ class LLMRouter:
                 }
                 self._inject_codex_params(payload, effective_key)
                 payload = _sanitize_codex_payload(payload)
-                text, output_items, _response_meta = await _collect_codex_stream(client, payload)
+                text, output_items, _response_meta = await self._tracked_call(
+                    "codex_oauth",
+                    self._codex_request_snapshot(
+                        effective_key=effective_key, model=model, payload=payload, origin=origin
+                    ),
+                    lambda: _collect_codex_stream(client, payload),
+                )
                 tool_calls, raw_tool_calls = _extract_responses_api_tool_calls(output_items)
                 continuation_message = None
                 if tool_calls:
@@ -860,7 +1155,14 @@ class LLMRouter:
                 if _is_native_anthropic(base_url):
                     _mark_last_user_message_cache(anthropic_messages)
 
-                response = await client.messages.create(**request_kwargs)
+                response = await self._tracked_call(
+                    "anthropic",
+                    self._anthropic_request_snapshot(
+                        effective_key=effective_key, model=model,
+                        request_kwargs=request_kwargs, origin=origin,
+                    ),
+                    lambda: client.messages.create(**request_kwargs),
+                )
                 tool_calls = _extract_anthropic_tool_calls(response)
                 text = _extract_anthropic_text(response)
 
@@ -874,7 +1176,15 @@ class LLMRouter:
                     )
                     retry_kwargs = dict(request_kwargs)
                     retry_kwargs["max_tokens"] = retry_max_tokens
-                    response = await client.messages.create(**retry_kwargs)
+                    response = await self._tracked_call(
+                        "anthropic",
+                        self._anthropic_request_snapshot(
+                            effective_key=effective_key, model=model,
+                            request_kwargs=retry_kwargs,
+                            origin=(origin or "") + "/thinking_retry",
+                        ),
+                        lambda: client.messages.create(**retry_kwargs),
+                    )
                     tool_calls = _extract_anthropic_tool_calls(response)
                     text = _extract_anthropic_text(response)
 
@@ -911,7 +1221,14 @@ class LLMRouter:
                 "parallel_tool_calls": False,
             }
             self._debug_log_request("complete_with_tools", effective_key, request_kwargs)
-            response = await client.chat.completions.create(**request_kwargs)
+            response = await self._tracked_call(
+                "openai",
+                self._openai_request_snapshot(
+                    effective_key=effective_key, model=model,
+                    request_kwargs=request_kwargs, origin=origin,
+                ),
+                lambda: client.chat.completions.create(**request_kwargs),
+            )
             if not response.choices:
                 return ToolTurnResult(text="", tool_calls=[], continuation_message=None)
             message = response.choices[0].message
@@ -1036,7 +1353,14 @@ class LLMRouter:
                 if system is not None:
                     request_kwargs["system"] = system
 
-                response = await client.messages.create(**request_kwargs)
+                response = await self._tracked_call(
+                    "anthropic",
+                    self._anthropic_request_snapshot(
+                        effective_key=effective_key, model=model,
+                        request_kwargs=request_kwargs, origin=origin,
+                    ),
+                    lambda: client.messages.create(**request_kwargs),
+                )
                 tool_calls = _extract_anthropic_tool_calls(response)
                 if not tool_calls:
                     raise ValueError("Anthropic 未返回 tool call")
@@ -1055,7 +1379,13 @@ class LLMRouter:
                 }
                 self._inject_codex_params(payload, effective_key)
                 payload = _sanitize_codex_payload(payload)
-                text, output_items, _ = await _collect_codex_stream(client, payload)
+                text, output_items, _ = await self._tracked_call(
+                    "codex_oauth",
+                    self._codex_request_snapshot(
+                        effective_key=effective_key, model=model, payload=payload, origin=origin
+                    ),
+                    lambda: _collect_codex_stream(client, payload),
+                )
                 tool_calls, _ = _extract_responses_api_tool_calls(output_items)
                 if tool_calls:
                     return tool_calls[0].arguments
@@ -1075,7 +1405,14 @@ class LLMRouter:
                 },
             }
             self._debug_log_request("complete_structured", effective_key, request_kwargs)
-            response = await client.chat.completions.create(**request_kwargs)
+            response = await self._tracked_call(
+                "openai",
+                self._openai_request_snapshot(
+                    effective_key=effective_key, model=model,
+                    request_kwargs=request_kwargs, origin=origin,
+                ),
+                lambda: client.chat.completions.create(**request_kwargs),
+            )
 
             if not response.choices:
                 raise ValueError("OpenAI-compatible 未返回 choices")
