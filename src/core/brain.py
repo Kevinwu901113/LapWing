@@ -977,7 +977,7 @@ class LapwingBrain:
         except Exception as e:
             logger.error(f"LLM 调用失败（conversational）: {e}")
             await self.memory.remove_last(chat_id)
-            error_msg = "抱歉，我刚才走神了一下。你能再说一次吗？"
+            error_msg = f"LLM 调用失败：{e}"
             await send_fn(error_msg)
             return error_msg
         finally:
