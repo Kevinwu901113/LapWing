@@ -39,6 +39,12 @@ _current_iteration_id: contextvars.ContextVar[str | None] = contextvars.ContextV
 _current_chat_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "lapwing_chat_id", default=None
 )
+# Most recent LLM request_id in the current context — used by tool-call
+# records to set ``parent_llm_response_id`` (plan §2.3). Updated inside
+# ``LLMRouter._tracked_call``.
+_last_llm_request_id: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "lapwing_last_llm_request_id", default=None
+)
 
 
 def current_iteration_id() -> str | None:
@@ -47,6 +53,14 @@ def current_iteration_id() -> str | None:
 
 def current_chat_id() -> str | None:
     return _current_chat_id.get()
+
+
+def current_llm_request_id() -> str | None:
+    return _last_llm_request_id.get()
+
+
+def set_last_llm_request_id(request_id: str | None) -> None:
+    _last_llm_request_id.set(request_id)
 
 
 @contextlib.contextmanager

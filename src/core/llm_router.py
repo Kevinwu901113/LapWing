@@ -13,6 +13,7 @@ from src.logging.state_mutation_log import (
     current_chat_id,
     current_iteration_id,
     new_request_id,
+    set_last_llm_request_id,
 )
 
 # Re-export types for backward compatibility
@@ -791,6 +792,9 @@ class LLMRouter:
                 iteration_id=iid,
                 chat_id=cid,
             )
+            # Tool calls spawned by the upcoming response can now claim this
+            # request_id as their parent in TOOL_CALLED mutations.
+            set_last_llm_request_id(request_id)
         except Exception:
             logger.warning(
                 "LLM_REQUEST mutation record failed; continuing call",

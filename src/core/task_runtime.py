@@ -23,6 +23,13 @@ from config.settings import (
     TASK_NO_ACTION_BUDGET,
 )
 from src.core.llm_router import ToolCallRequest
+from src.logging.state_mutation_log import (
+    MutationType,
+    StateMutationLog,
+    current_chat_id,
+    current_iteration_id,
+    current_llm_request_id,
+)
 
 # Re-export types for backward compatibility
 from src.core.task_types import (  # noqa: F401
@@ -1443,6 +1450,9 @@ class TaskRuntime:
         user_id: str = "",
     ) -> tuple[str, dict[str, Any], bool]:
         dispatcher = (services or {}).get("dispatcher")
+        mutation_log: StateMutationLog | None = (services or {}).get("mutation_log")
+        iteration_id = current_iteration_id()
+
         if dispatcher is not None:
             try:
                 preview = json.dumps(tool_call.arguments, ensure_ascii=False)[:500]
@@ -1459,6 +1469,29 @@ class TaskRuntime:
             except Exception:
                 logger.debug("tool.called 事件提交失败", exc_info=True)
 
+        # Mutation log records the durable, un-truncated picture of the call.
+        # Dispatcher above is separately responsible for the live UI stream.
+        if mutation_log is not None:
+            try:
+                await mutation_log.record(
+                    MutationType.TOOL_CALLED,
+                    {
+                        "tool_name": tool_call.name,
+                        "tool_call_id": getattr(tool_call, "id", None),
+                        "arguments": tool_call.arguments,
+                        "called_from_iteration": iteration_id,
+                        "parent_llm_request_id": current_llm_request_id(),
+                        "task_id": task_id,
+                        "adapter": adapter,
+                        "user_id": user_id,
+                    },
+                    iteration_id=iteration_id,
+                    chat_id=current_chat_id() or chat_id,
+                )
+            except Exception:
+                logger.warning("TOOL_CALLED mutation record failed", exc_info=True)
+
+        tool_start_mono = time.monotonic()
         execution = await self.execute_tool(
             request=ToolExecutionRequest(name=tool_call.name, arguments=tool_call.arguments),
             profile=profile,
@@ -1471,6 +1504,7 @@ class TaskRuntime:
             adapter=adapter,
             user_id=user_id,
         )
+        elapsed_ms = (time.monotonic() - tool_start_mono) * 1000
 
         # P0: 大结果存磁盘，只留预览
         execution = self._budget_tool_result(tool_call.name, execution)
@@ -1496,6 +1530,25 @@ class TaskRuntime:
                 )
             except Exception:
                 logger.debug("tool.result 事件提交失败", exc_info=True)
+
+        if mutation_log is not None:
+            try:
+                await mutation_log.record(
+                    MutationType.TOOL_RESULT,
+                    {
+                        "tool_call_id": getattr(tool_call, "id", None),
+                        "tool_name": tool_call.name,
+                        "success": execution.success,
+                        "payload": payload,
+                        "reason": execution.reason or "",
+                        "elapsed_ms": elapsed_ms,
+                        "is_error": not execution.success,
+                    },
+                    iteration_id=iteration_id,
+                    chat_id=current_chat_id() or chat_id,
+                )
+            except Exception:
+                logger.warning("TOOL_RESULT mutation record failed", exc_info=True)
 
         return tool_result_text, payload, execution.success
 
