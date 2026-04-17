@@ -293,6 +293,7 @@ TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
 SEARCH_PROVIDER: str = os.getenv("SEARCH_PROVIDER", "auto").strip().lower()  # "auto" | "tavily" | "ddg"
 TAVILY_SEARCH_DEPTH: str = os.getenv("TAVILY_SEARCH_DEPTH", "basic").strip().lower()  # "basic" | "advanced"
 TAVILY_COUNTRY: str = os.getenv("TAVILY_COUNTRY", "china").strip().lower()  # Tavily 要完整英文国名，如 "china"
+BOCHA_API_KEY: str = os.getenv("BOCHA_API_KEY", "")  # 博查 (Bocha AI) Web Search，国内来源
 WEB_FETCH_MAX_CHARS: int = int(os.getenv("WEB_FETCH_MAX_CHARS", "8000"))
 SEARCH_CACHE_TTL_SECONDS: int = int(os.getenv("SEARCH_CACHE_TTL_SECONDS", "300"))
 

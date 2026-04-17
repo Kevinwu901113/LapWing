@@ -386,6 +386,26 @@ class AppContainer:
         register_personal_tools(self.brain.tool_registry, personal_services)
         logger.info("Phase 4 个人工具已注册")
 
+        # Research 子系统：search + fetch + refine 封装成 research(question)
+        from config.settings import BOCHA_API_KEY, TAVILY_API_KEY, TAVILY_COUNTRY
+        from src.research.backends.bocha import BochaBackend
+        from src.research.backends.tavily import TavilyBackend
+        from src.research.engine import ResearchEngine
+        from src.research.fetcher import SmartFetcher
+        from src.research.refiner import Refiner
+        from src.research.scope_router import ScopeRouter
+        from src.tools.research_tool import register_research_tool
+
+        self.brain._research_engine = ResearchEngine(
+            scope_router=ScopeRouter(),
+            tavily_backend=TavilyBackend(api_key=TAVILY_API_KEY, country=TAVILY_COUNTRY),
+            bocha_backend=BochaBackend(api_key=BOCHA_API_KEY),
+            fetcher=SmartFetcher(browser_manager=self._browser_manager),
+            refiner=Refiner(llm_router=self.brain.router),
+        )
+        register_research_tool(self.brain.tool_registry)
+        logger.info("Research 子系统已装配（research 工具 + ResearchEngine）")
+
         # Phase 4: 注册 DurableScheduler 提醒工具
         from src.core.durable_scheduler import DURABLE_SCHEDULER_EXECUTORS
         from src.tools.types import ToolSpec

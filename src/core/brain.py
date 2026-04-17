@@ -270,6 +270,9 @@ class LapwingBrain:
         vlm_client = getattr(self, "_vlm_client_ref", None)
         if vlm_client is not None:
             services["vlm"] = vlm_client
+        research_engine = getattr(self, "_research_engine", None)
+        if research_engine is not None:
+            services["research_engine"] = research_engine
 
         deps = RuntimeDeps(
             execute_shell=execute_shell,
