@@ -15,6 +15,7 @@ from config.settings import (
     SEARCH_PROVIDER,
     SEARCH_PROXY_URL,
     TAVILY_API_KEY,
+    TAVILY_COUNTRY,
     TAVILY_SEARCH_DEPTH,
 )
 
@@ -214,7 +215,7 @@ def _sync_tavily_search(query: str, max_results: int) -> list[dict[str, Any]]:
         query=query,
         max_results=max_results,
         search_depth=TAVILY_SEARCH_DEPTH,
-        country="cn",
+        country=TAVILY_COUNTRY,
     )
 
     results: list[dict[str, Any]] = []

@@ -142,6 +142,22 @@ def _strip_simulated_tool_calls(text: str) -> str:
     return text.strip()
 
 
+def _truncate_result(payload: Any, max_chars: int = 800) -> str:
+    """将工具结果 payload 序列化并截断，供 events_v2 审计使用。"""
+    if payload is None:
+        return ""
+    if isinstance(payload, str):
+        text = payload
+    else:
+        try:
+            text = json.dumps(payload, ensure_ascii=False, default=str)
+        except Exception:
+            text = str(payload)
+    if len(text) > max_chars:
+        return text[:max_chars] + "...（截断）"
+    return text
+
+
 class TaskRuntime:
     """负责执行工具轮次、统一工具执行和任务级事件发布。"""
 
@@ -1474,6 +1490,7 @@ class TaskRuntime:
                         "success": execution.success,
                         "reason": (execution.reason or "")[:200],
                         "chat_id": chat_id,
+                        "result_preview": _truncate_result(payload, max_chars=800),
                     },
                     actor="lapwing",
                     task_id=task_id,

@@ -98,6 +98,7 @@ class BaseAgent:
                 output = await self._execute_tool(tc, message)
                 tool_results.append((tc, output))
 
+                preview = output if len(output) <= 800 else output[:800] + "...（截断）"
                 await self.dispatcher.submit(
                     event_type="agent.tool_called",
                     actor=self.spec.name,
@@ -106,6 +107,7 @@ class BaseAgent:
                         "tool": tc.name,
                         "arguments": tc.arguments,
                         "success": True,
+                        "result_preview": preview,
                     },
                 )
 
