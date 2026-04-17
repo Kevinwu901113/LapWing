@@ -351,13 +351,14 @@ class TestBrowse:
         """有 VLM 时走 screenshot+vlm 路径。"""
         from src.tools.personal_tools import _browse
 
+        tab_info = MagicMock(tab_id="tab-1")
         mock_bm = MagicMock()
-        mock_bm.open_tab = AsyncMock(return_value="tab-1")
-        mock_bm.take_screenshot = AsyncMock(return_value=b"screenshot_data")
+        mock_bm.new_tab = AsyncMock(return_value=tab_info)
+        mock_bm.screenshot = AsyncMock(return_value="/tmp/shot.png")
         mock_bm.close_tab = AsyncMock()
 
         mock_vlm = MagicMock()
-        mock_vlm.describe = AsyncMock(return_value="一个示例网页，显示了标题和内容。")
+        mock_vlm.understand_image = AsyncMock(return_value="一个示例网页，显示了标题和内容。")
 
         ctx = _make_ctx(services={"browser_manager": mock_bm, "vlm": mock_vlm})
         req = ToolExecutionRequest(name="browse", arguments={"url": "https://example.com"})
@@ -366,7 +367,11 @@ class TestBrowse:
         assert result.success is True
         assert result.payload["method"] == "screenshot+vlm"
         assert "description" in result.payload
-        mock_bm.open_tab.assert_awaited_once_with("https://example.com")
+        mock_bm.new_tab.assert_awaited_once_with("https://example.com")
+        mock_bm.screenshot.assert_awaited_once_with(tab_id="tab-1")
+        mock_vlm.understand_image.assert_awaited_once()
+        kw = mock_vlm.understand_image.call_args.kwargs
+        assert kw["image_source"] == "/tmp/shot.png"
         mock_bm.close_tab.assert_awaited_once_with("tab-1")
 
     async def test_success_without_vlm_fallback(self):
@@ -376,8 +381,9 @@ class TestBrowse:
         mock_page_state = MagicMock()
         mock_page_state.to_llm_text = MagicMock(return_value="页面文本内容")
 
+        tab_info = MagicMock(tab_id="tab-2")
         mock_bm = MagicMock()
-        mock_bm.open_tab = AsyncMock(return_value="tab-2")
+        mock_bm.new_tab = AsyncMock(return_value=tab_info)
         mock_bm.get_page_state = AsyncMock(return_value=mock_page_state)
         mock_bm.close_tab = AsyncMock()
 
@@ -388,14 +394,16 @@ class TestBrowse:
         assert result.success is True
         assert result.payload["method"] == "text_fallback"
         assert result.payload["text"] == "页面文本内容"
+        mock_bm.get_page_state.assert_awaited_once_with(tab_id="tab-2")
 
     async def test_tab_closed_on_error(self):
         """即使浏览过程出错，标签页也会被关闭。"""
         from src.tools.personal_tools import _browse
 
+        tab_info = MagicMock(tab_id="tab-err")
         mock_bm = MagicMock()
-        mock_bm.open_tab = AsyncMock(return_value="tab-err")
-        mock_bm.take_screenshot = AsyncMock(side_effect=RuntimeError("截图失败"))
+        mock_bm.new_tab = AsyncMock(return_value=tab_info)
+        mock_bm.screenshot = AsyncMock(side_effect=RuntimeError("截图失败"))
         mock_bm.close_tab = AsyncMock()
 
         mock_vlm = MagicMock()

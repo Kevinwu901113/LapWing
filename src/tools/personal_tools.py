@@ -382,15 +382,16 @@ async def _browse(
 
     try:
         # 打开页面
-        tab_id = await browser_manager.open_tab(url)
+        tab_info = await browser_manager.new_tab(url)
+        tab_id = tab_info.tab_id
         logger.info("[browse] 打开标签页 tab_id=%s url=%s", tab_id, url)
 
         if vlm is not None:
-            # 截图 → VLM 描述
-            screenshot_data = await browser_manager.take_screenshot(tab_id)
-            description = await vlm.describe(
-                screenshot_data,
+            # 截图 → VLM 描述（VLM 接收图片文件路径）
+            screenshot_path = await browser_manager.screenshot(tab_id=tab_id)
+            description = await vlm.understand_image(
                 prompt="描述这张网页截图的内容，包括页面标题、主要信息和关键内容。",
+                image_source=screenshot_path,
             )
             if len(description) > _BROWSE_DESC_MAX_CHARS:
                 description = description[:_BROWSE_DESC_MAX_CHARS] + "…（已截断）"
@@ -401,7 +402,7 @@ async def _browse(
             }
         else:
             # 回退：提取页面文本
-            page_state = await browser_manager.get_page_state(tab_id)
+            page_state = await browser_manager.get_page_state(tab_id=tab_id)
             text = page_state.to_llm_text() if hasattr(page_state, "to_llm_text") else str(page_state)
             if len(text) > _BROWSE_TEXT_FALLBACK_MAX:
                 text = text[:_BROWSE_TEXT_FALLBACK_MAX] + "…（已截断）"
