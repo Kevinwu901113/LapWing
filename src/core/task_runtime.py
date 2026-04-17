@@ -32,6 +32,7 @@ from src.logging.state_mutation_log import (
     iteration_context,
     new_iteration_id,
 )
+from src.logging.hallucination_patch import check_and_record as _check_hallucination
 
 # Re-export types for backward compatibility
 from src.core.task_types import (  # noqa: F401
@@ -412,7 +413,7 @@ class TaskRuntime:
 
         try:
             with iteration_context(iteration_id, chat_id=chat_id):
-                return await self._complete_chat_body(
+                reply = await self._complete_chat_body(
                     chat_id=chat_id,
                     messages=messages,
                     constraints=constraints,
@@ -428,6 +429,10 @@ class TaskRuntime:
                     adapter=adapter,
                     user_id=user_id,
                 )
+                # TEMPORARY — Step 1 → Step 5 hallucination observation patch.
+                # See src/logging/hallucination_patch.py docstring for removal plan.
+                await _check_hallucination(reply, mutation_log)
+                return reply
         except Exception:
             end_reason = "error"
             raise
