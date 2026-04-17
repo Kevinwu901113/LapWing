@@ -4,11 +4,9 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from config.settings import SEARCH_MAX_RESULTS
 from src.tools.registry import build_default_tool_registry
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest
 from src.tools.shell_executor import ShellResult
-from src.tools.web_fetcher import FetchResult
 
 
 def _registry_with_personal_tools():
@@ -30,19 +28,16 @@ async def test_default_registry_exports_shell_tools_schema():
 
 
 @pytest.mark.asyncio
-async def test_default_registry_exports_web_tools_schema():
-    """Phase 4: web_search / web_fetch 现在由 personal_tools 注册。"""
+async def test_default_registry_exports_browse_schema():
+    """personal_tools 注册的 browse 工具暴露在默认 registry 中。"""
     registry = _registry_with_personal_tools()
     tools = {
         item["function"]["name"]: item["function"]["parameters"]
         for item in registry.function_tools()
     }
 
-    assert "web_search" in tools
-    assert tools["web_search"]["required"] == ["query"]
-
-    assert "web_fetch" in tools
-    assert tools["web_fetch"]["required"] == ["url"]
+    assert "browse" in tools
+    assert tools["browse"]["required"] == ["url"]
 
 
 @pytest.mark.asyncio
@@ -182,99 +177,3 @@ async def test_activate_skill_tool_uses_skill_manager_service():
     assert result.payload["resources"] == ["scripts/run.sh"]
 
 
-@pytest.mark.asyncio
-async def test_web_search_tool_uses_fixed_max_results():
-    """Phase 4: web_search 使用固定 max_results=5。"""
-    registry = _registry_with_personal_tools()
-    context = ToolExecutionContext(
-        execute_shell=AsyncMock(),
-        shell_default_cwd="/tmp",
-    )
-
-    with patch("src.tools.web_search.search", new_callable=AsyncMock) as mock_search:
-        mock_search.return_value = [
-            {"title": "t1", "url": "https://a.example", "snippet": "s1"},
-        ]
-        result = await registry.execute(
-            ToolExecutionRequest(name="web_search", arguments={"query": "lapwing"}),
-            context=context,
-        )
-
-    mock_search.assert_awaited_once_with("lapwing", max_results=5)
-    assert result.success is True
-    assert result.payload["query"] == "lapwing"
-    assert len(result.payload["results"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_web_search_tool_returns_failure_on_exception():
-    """Phase 4: web_search 异常时返回有意义的错误。"""
-    registry = _registry_with_personal_tools()
-    context = ToolExecutionContext(
-        execute_shell=AsyncMock(),
-        shell_default_cwd="/tmp",
-    )
-
-    with patch("src.tools.web_search.search", new_callable=AsyncMock) as mock_search:
-        mock_search.side_effect = RuntimeError("boom")
-        result = await registry.execute(
-            ToolExecutionRequest(
-                name="web_search",
-                arguments={"query": "A股 收盘"},
-            ),
-            context=context,
-        )
-
-    assert result.success is False
-    assert "搜索失败" in result.payload.get("error", "")
-
-
-@pytest.mark.asyncio
-async def test_web_fetch_tool_returns_standard_payload():
-    """Phase 4: web_fetch 返回标准 payload。"""
-    registry = _registry_with_personal_tools()
-    context = ToolExecutionContext(
-        execute_shell=AsyncMock(),
-        shell_default_cwd="/tmp",
-    )
-    fetched = FetchResult(
-        url="https://example.com/post",
-        title="Example",
-        text="x" * 120,
-        success=True,
-        error="",
-    )
-
-    with patch("src.tools.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
-        mock_fetch.return_value = fetched
-        result = await registry.execute(
-            ToolExecutionRequest(
-                name="web_fetch",
-                arguments={"url": "https://example.com/post"},
-            ),
-            context=context,
-        )
-
-    mock_fetch.assert_awaited_once_with("https://example.com/post")
-    assert result.success is True
-    assert result.payload["url"] == "https://example.com/post"
-    assert result.payload["title"] == "Example"
-    assert result.payload["text"] == "x" * 120
-
-
-@pytest.mark.asyncio
-async def test_web_fetch_tool_missing_url_returns_failure_payload():
-    """Phase 4: web_fetch 缺少 URL 返回有意义的错误。"""
-    registry = _registry_with_personal_tools()
-    context = ToolExecutionContext(
-        execute_shell=AsyncMock(),
-        shell_default_cwd="/tmp",
-    )
-
-    result = await registry.execute(
-        ToolExecutionRequest(name="web_fetch", arguments={}),
-        context=context,
-    )
-
-    assert result.success is False
-    assert "url" in result.payload.get("error", "").lower() or "url" in result.reason.lower()

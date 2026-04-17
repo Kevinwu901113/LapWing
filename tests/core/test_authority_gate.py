@@ -73,16 +73,12 @@ class TestAuthorize:
         allowed, _ = authorize("read_file", AuthLevel.OWNER)
         assert allowed
 
-    def test_owner_can_web_search(self):
-        allowed, _ = authorize("web_search", AuthLevel.OWNER)
+    def test_owner_can_research(self):
+        allowed, _ = authorize("research", AuthLevel.OWNER)
         assert allowed
 
-    def test_trusted_can_web_search(self):
-        allowed, _ = authorize("web_search", AuthLevel.TRUSTED)
-        assert allowed
-
-    def test_trusted_can_web_fetch(self):
-        allowed, _ = authorize("web_fetch", AuthLevel.TRUSTED)
+    def test_trusted_can_research(self):
+        allowed, _ = authorize("research", AuthLevel.TRUSTED)
         assert allowed
 
     def test_trusted_can_file_list(self):
@@ -107,8 +103,8 @@ class TestAuthorize:
         allowed, _ = authorize("memory_note", AuthLevel.TRUSTED)
         assert not allowed
 
-    def test_guest_cannot_web_search(self):
-        allowed, reason = authorize("web_search", AuthLevel.GUEST)
+    def test_guest_cannot_research(self):
+        allowed, reason = authorize("research", AuthLevel.GUEST)
         assert not allowed
         assert reason  # 有拒绝理由
 
@@ -126,7 +122,7 @@ class TestAuthorize:
     def test_deny_reason_is_chinese(self):
         """拒绝理由应为中文。"""
         _, reason_owner_required = authorize("execute_shell", AuthLevel.GUEST)
-        _, reason_trusted_required = authorize("web_search", AuthLevel.GUEST)
+        _, reason_trusted_required = authorize("research", AuthLevel.GUEST)
         # 检查包含中文字符
         assert any("\u4e00" <= c <= "\u9fff" for c in reason_owner_required)
         assert any("\u4e00" <= c <= "\u9fff" for c in reason_trusted_required)
@@ -147,7 +143,7 @@ class TestOperationAuthTable:
 
     def test_info_tools_require_at_most_trusted(self):
         """信息查询工具不应需要 OWNER 权限。"""
-        info_tools = ["web_search", "web_fetch", "file_list_directory"]
+        info_tools = ["research", "file_list_directory"]
         for tool in info_tools:
             level = OPERATION_AUTH.get(tool)
             assert level is not None

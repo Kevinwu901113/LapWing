@@ -296,164 +296,7 @@ class TestViewImage:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. web_search
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-class TestWebSearch:
-
-    async def test_success_returns_results(self):
-        """正常搜索返回结果列表，受 max 5 限制，snippet 截断。"""
-        from src.tools.personal_tools import _web_search, _SEARCH_SNIPPET_MAX
-
-        mock_results = [
-            {"title": f"Title {i}", "url": f"https://example.com/{i}", "snippet": "x" * 300}
-            for i in range(7)  # 7 条，应只取 5
-        ]
-
-        ctx = _make_ctx()
-        req = ToolExecutionRequest(name="web_search", arguments={"query": "python"})
-
-        with patch("src.tools.web_search.search", new=AsyncMock(return_value=mock_results)):
-            result = await _web_search(req, ctx)
-
-        assert result.success is True
-        assert len(result.payload["results"]) == 5
-        # snippet 应被截断
-        for item in result.payload["results"]:
-            assert len(item["snippet"]) <= _SEARCH_SNIPPET_MAX + 5  # 加上省略号
-
-    async def test_empty_query_returns_error(self):
-        """空 query 返回错误。"""
-        from src.tools.personal_tools import _web_search
-
-        ctx = _make_ctx()
-        req = ToolExecutionRequest(name="web_search", arguments={"query": ""})
-        result = await _web_search(req, ctx)
-
-        assert result.success is False
-        assert "query" in result.payload["error"]
-
-    async def test_search_exception_returns_error(self):
-        """搜索抛异常时返回有意义的错误。"""
-        from src.tools.personal_tools import _web_search
-
-        ctx = _make_ctx()
-        req = ToolExecutionRequest(name="web_search", arguments={"query": "test"})
-
-        with patch("src.tools.web_search.search", new=AsyncMock(side_effect=RuntimeError("API error"))):
-            result = await _web_search(req, ctx)
-
-        assert result.success is False
-        assert "API error" in result.payload["error"]
-
-    async def test_empty_results(self):
-        """搜索结果为空返回 '没有找到相关结果'。"""
-        from src.tools.personal_tools import _web_search
-
-        ctx = _make_ctx()
-        req = ToolExecutionRequest(name="web_search", arguments={"query": "nonexistent"})
-
-        with patch("src.tools.web_search.search", new=AsyncMock(return_value=[])):
-            result = await _web_search(req, ctx)
-
-        assert result.success is False
-        assert "没有找到相关结果" in result.payload["error"]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. web_fetch
-# ─────────────────────────────────────────────────────────────────────────────
-
-
-@pytest.mark.asyncio
-class TestWebFetch:
-
-    async def test_success_returns_content(self):
-        """正常抓取返回标题和文本。"""
-        from src.tools.personal_tools import _web_fetch
-        from src.tools.web_fetcher import FetchResult
-
-        mock_result = FetchResult(
-            url="https://example.com",
-            title="Example",
-            text="Hello World",
-            success=True,
-            error="",
-        )
-
-        ctx = _make_ctx()
-        req = ToolExecutionRequest(name="web_fetch", arguments={"url": "https://example.com"})
-
-        with patch("src.tools.web_fetcher.fetch", new=AsyncMock(return_value=mock_result)):
-            result = await _web_fetch(req, ctx)
-
-        assert result.success is True
-        assert result.payload["title"] == "Example"
-        assert result.payload["text"] == "Hello World"
-        assert "truncation_note" not in result.payload
-
-    async def test_empty_url_returns_error(self):
-        """空 url 返回错误。"""
-        from src.tools.personal_tools import _web_fetch
-
-        ctx = _make_ctx()
-        req = ToolExecutionRequest(name="web_fetch", arguments={"url": ""})
-        result = await _web_fetch(req, ctx)
-
-        assert result.success is False
-        assert "url" in result.payload["error"]
-
-    async def test_long_content_truncated(self):
-        """超过 3000 字的内容被截断并附上 truncation_note。"""
-        from src.tools.personal_tools import _web_fetch, _WEB_FETCH_MAX_CHARS
-        from src.tools.web_fetcher import FetchResult
-
-        long_text = "A" * 5000
-        mock_result = FetchResult(
-            url="https://example.com/long",
-            title="Long Page",
-            text=long_text,
-            success=True,
-            error="",
-        )
-
-        ctx = _make_ctx()
-        req = ToolExecutionRequest(name="web_fetch", arguments={"url": "https://example.com/long"})
-
-        with patch("src.tools.web_fetcher.fetch", new=AsyncMock(return_value=mock_result)):
-            result = await _web_fetch(req, ctx)
-
-        assert result.success is True
-        assert len(result.payload["text"]) == _WEB_FETCH_MAX_CHARS
-        assert "truncation_note" in result.payload
-
-    async def test_fetch_failure_propagated(self):
-        """抓取失败时 success=False。"""
-        from src.tools.personal_tools import _web_fetch
-        from src.tools.web_fetcher import FetchResult
-
-        mock_result = FetchResult(
-            url="https://example.com/404",
-            title="",
-            text="",
-            success=False,
-            error="404 Not Found",
-        )
-
-        ctx = _make_ctx()
-        req = ToolExecutionRequest(name="web_fetch", arguments={"url": "https://example.com/404"})
-
-        with patch("src.tools.web_fetcher.fetch", new=AsyncMock(return_value=mock_result)):
-            result = await _web_fetch(req, ctx)
-
-        assert result.success is False
-        assert "404" in result.payload["error"]
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 7. browse
+# 5. browse (web_search/web_fetch removed — use research tool instead)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
@@ -580,14 +423,14 @@ class TestBrowse:
 
 class TestRegisterPersonalTools:
 
-    def test_registers_7_tools(self):
-        """register_personal_tools 注册 7 个工具。"""
+    def test_registers_5_tools(self):
+        """register_personal_tools 注册 5 个工具。"""
         from src.tools.personal_tools import register_personal_tools
 
         mock_registry = MagicMock()
         register_personal_tools(mock_registry, services={})
 
-        assert mock_registry.register.call_count == 7
+        assert mock_registry.register.call_count == 5
 
     def test_registered_tool_names(self):
         """验证注册的工具名称列表。"""
@@ -600,7 +443,6 @@ class TestRegisterPersonalTools:
         register_personal_tools(mock_registry, services={})
 
         expected_names = {
-            "get_time", "send_message", "send_image", "view_image",
-            "web_search", "web_fetch", "browse",
+            "get_time", "send_message", "send_image", "view_image", "browse",
         }
         assert set(registered) == expected_names

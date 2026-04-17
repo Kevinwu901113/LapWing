@@ -168,51 +168,6 @@ async def test_execute_tool_call_read_file_payload_compatible():
     mock_execute_shell.assert_awaited_once_with("cat /tmp/a.txt")
 
 
-@pytest.mark.asyncio
-async def test_execute_tool_call_web_search_compacts_result_text_for_llm():
-    registry = build_default_tool_registry()
-    # Phase 4: web_search 现在由 personal_tools 注册
-    from src.tools.personal_tools import register_personal_tools
-    register_personal_tools(registry, {})
-    runtime = TaskRuntime(router=MagicMock(), tool_registry=registry)
-    constraints = extract_execution_constraints("搜索资料")
-    state = ExecutionSessionState(constraints=constraints)
-
-    deps = RuntimeDeps(
-        execute_shell=AsyncMock(),
-        policy=_make_policy(AsyncMock()),
-        shell_default_cwd="/tmp",
-        shell_allow_sudo=True,
-    )
-
-    long_snippet = "s" * 5000
-    with patch("src.tools.web_search.search", new_callable=AsyncMock) as mock_search:
-        mock_search.return_value = [
-            {
-                "title": "示例标题",
-                "url": "https://example.com/post",
-                "snippet": long_snippet,
-            }
-        ]
-        tool_result_text, payload, _ = await runtime._execute_tool_call(
-            tool_call=ToolCallRequest(
-                id="call_web_1",
-                name="web_search",
-                arguments={"query": "测试"},
-            ),
-            state=state,
-            deps=deps,
-            task_id="task_1",
-            chat_id="chat_1",
-            event_bus=None,
-        )
-
-    rendered = json.loads(tool_result_text)
-    # Phase 4: personal_tools 将 snippet 截断到 200 字符 + "…"
-    assert len(payload["results"][0]["snippet"]) <= 210
-    assert len(rendered["results"][0]["snippet"]) < len(long_snippet)
-
-
 def test_format_tool_result_for_llm_truncates_oversized_payload():
     runtime = TaskRuntime(router=MagicMock(), tool_registry=build_default_tool_registry())
     text = runtime._format_tool_result_for_llm(
@@ -429,11 +384,15 @@ async def test_complete_chat_status_callback_uses_stage_messages():
 
 @pytest.mark.asyncio
 async def test_complete_chat_supports_web_tool_call_and_tool_result_roundtrip():
+    """research 工具一轮调用 + tool_result 回传 + 第二轮收尾。"""
+    from src.research.types import ResearchResult
+    from src.tools.research_tool import register_research_tool
+
     router = MagicMock()
     registry = build_default_tool_registry()
-    # Phase 4: web_search 由 personal_tools 注册
     from src.tools.personal_tools import register_personal_tools
     register_personal_tools(registry, {})
+    register_research_tool(registry)
     runtime = TaskRuntime(router=router, tool_registry=registry, no_action_budget=0)
     constraints = extract_execution_constraints("查一下今天A股收盘")
 
@@ -443,15 +402,15 @@ async def test_complete_chat_supports_web_tool_call_and_tool_result_roundtrip():
                 text="",
                 tool_calls=[
                     ToolCallRequest(
-                        id="call_web_1",
-                        name="web_search",
-                        arguments={"query": "今天 A股 收盘"},
+                        id="call_research_1",
+                        name="research",
+                        arguments={"question": "今天 A股 收盘"},
                     ),
                 ],
                 continuation_message={
                     "role": "assistant",
                     "content": "",
-                    "tool_calls": [{"id": "call_web_1"}],
+                    "tool_calls": [{"id": "call_research_1"}],
                 },
             ),
             SimpleNamespace(
@@ -464,42 +423,40 @@ async def test_complete_chat_supports_web_tool_call_and_tool_result_roundtrip():
     router.build_tool_result_message = MagicMock(
         return_value={
             "role": "tool",
-            "tool_call_id": "call_web_1",
-            "name": "web_search",
-            "content": '{"count": 1}',
+            "tool_call_id": "call_research_1",
+            "name": "research",
+            "content": '{"answer": "上证收涨"}',
         }
     )
 
-    with patch("src.tools.web_search.search", new_callable=AsyncMock) as mock_search:
-        mock_search.return_value = [
-            {
-                "title": "A股收盘快讯",
-                "url": "https://finance.example/a-share-close",
-                "snippet": "上证指数收盘上涨。",
-            }
-        ]
-        result = await runtime.complete_chat(
-            chat_id="chat_1",
-            messages=[{"role": "user", "content": "查一下今天A股收盘"}],
-            constraints=constraints,
-            tools=runtime.chat_tools(shell_enabled=False, web_enabled=True),
-            deps=RuntimeDeps(
-                execute_shell=AsyncMock(),
-                policy=_make_policy(AsyncMock()),
-                shell_default_cwd="/tmp",
-                shell_allow_sudo=True,
-            ),
-            event_bus=None,
-        )
+    fake_engine = MagicMock()
+    fake_engine.research = AsyncMock(return_value=ResearchResult(
+        answer="上证指数收涨。",
+        confidence="high",
+    ))
+    result = await runtime.complete_chat(
+        chat_id="chat_1",
+        messages=[{"role": "user", "content": "查一下今天A股收盘"}],
+        constraints=constraints,
+        tools=runtime.chat_tools(shell_enabled=False, web_enabled=True),
+        deps=RuntimeDeps(
+            execute_shell=AsyncMock(),
+            policy=_make_policy(AsyncMock()),
+            shell_default_cwd="/tmp",
+            shell_allow_sudo=True,
+        ),
+        event_bus=None,
+        services={"research_engine": fake_engine},
+    )
 
     assert result == "我查到了并整理好了来源。"
-    mock_search.assert_awaited_once_with("今天 A股 收盘", max_results=5)
+    fake_engine.research.assert_awaited_once_with("今天 A股 收盘", scope="auto")
     assert router.complete_with_tools.await_count == 2
     second_turn_messages = router.complete_with_tools.await_args_list[1].args[0]
     second_turn_tool_messages = [
         message for message in second_turn_messages if message.get("role") == "tool"
     ]
-    assert [item["tool_call_id"] for item in second_turn_tool_messages] == ["call_web_1"]
+    assert [item["tool_call_id"] for item in second_turn_tool_messages] == ["call_research_1"]
 
 
 @pytest.mark.asyncio

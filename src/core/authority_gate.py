@@ -46,8 +46,7 @@ def identify(adapter: str, user_id: str) -> AuthLevel:
 OPERATION_AUTH: dict[str, AuthLevel] = {
     "chat": AuthLevel.GUEST,
     # 信息查询类
-    "web_search": AuthLevel.TRUSTED,
-    "web_fetch": AuthLevel.TRUSTED,
+    "research": AuthLevel.TRUSTED,
     "file_list_directory": AuthLevel.TRUSTED,
     "activate_skill": AuthLevel.TRUSTED,
     "get_weather": AuthLevel.GUEST,

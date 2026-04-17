@@ -9,7 +9,6 @@ import pytest
 
 from src.core.shell_policy import PendingShellConfirmation, VerificationStatus
 from src.tools.shell_executor import ShellResult
-from src.tools.web_fetcher import FetchResult
 
 
 def _tool_turn(
@@ -229,20 +228,31 @@ class TestBrainTools:
 
             assert result == "普通回复"
 
-    async def test_web_tool_loop_search_then_fetch_returns_final_reply(self):
+    async def test_research_tool_loop_returns_final_reply(self):
+        """research 工具一轮调用 + 第二轮收尾。"""
+        from src.research.types import ResearchResult
+
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
              patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.SHELL_ENABLED", False), \
-             patch("src.core.brain.CHAT_WEB_TOOLS_ENABLED", True), \
-             patch("src.tools.web_search.search", new_callable=AsyncMock) as mock_search, \
-             patch("src.tools.web_fetcher.fetch", new_callable=AsyncMock) as mock_fetch:
+             patch("src.core.brain.CHAT_WEB_TOOLS_ENABLED", True):
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
-            # Phase 4: 注册个人工具（web_search/web_fetch 现在由 personal_tools 注册）
             from src.tools.personal_tools import register_personal_tools
+            from src.tools.research_tool import register_research_tool
             register_personal_tools(brain.tool_registry, {})
+            register_research_tool(brain.tool_registry)
+
+            fake_engine = MagicMock()
+            fake_engine.research = AsyncMock(return_value=ResearchResult(
+                answer="上证指数收于 3200 点。",
+                confidence="high",
+                search_backend_used=["bocha"],
+            ))
+            brain._research_engine = fake_engine
+
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -250,76 +260,39 @@ class TestBrainTools:
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
 
-            mock_search.return_value = [
-                {
-                    "title": "A股收盘快讯",
-                    "url": "https://finance.example/a-share-close",
-                    "snippet": "上证指数今日收盘上涨。",
-                }
-            ]
-            mock_fetch.return_value = FetchResult(
-                url="https://finance.example/a-share-close",
-                title="A股收盘快讯",
-                text="上证指数收于 3200 点，沪深两市成交额放大。",
-                success=True,
-                error="",
-            )
             brain.router.complete_with_tools = AsyncMock(
                 side_effect=[
                     _tool_turn(
                         tool_calls=[
                             SimpleNamespace(
-                                id="call_web_1",
-                                name="web_search",
-                                arguments={"query": "今天 A股 收盘", "max_results": 3},
+                                id="call_r_1",
+                                name="research",
+                                arguments={"question": "今天 A 股收盘"},
                             )
                         ],
                         continuation_message={
                             "role": "assistant",
                             "content": "",
-                            "tool_calls": [{"id": "call_web_1"}],
+                            "tool_calls": [{"id": "call_r_1"}],
                         },
                     ),
-                    _tool_turn(
-                        tool_calls=[
-                            SimpleNamespace(
-                                id="call_web_2",
-                                name="web_fetch",
-                                arguments={"url": "https://finance.example/a-share-close"},
-                            )
-                        ],
-                        continuation_message={
-                            "role": "assistant",
-                            "content": "",
-                            "tool_calls": [{"id": "call_web_2"}],
-                        },
-                    ),
-                    _tool_turn(text="今天A股已收盘，来源：https://finance.example/a-share-close"),
+                    _tool_turn(text="上证收涨，收于 3200 点。"),
                 ]
             )
             brain.router.build_tool_result_message = MagicMock(
-                side_effect=[
-                    {
-                        "role": "tool",
-                        "tool_call_id": "call_web_1",
-                        "name": "web_search",
-                        "content": "{}",
-                    },
-                    {
-                        "role": "tool",
-                        "tool_call_id": "call_web_2",
-                        "name": "web_fetch",
-                        "content": "{}",
-                    },
-                ]
+                return_value={
+                    "role": "tool",
+                    "tool_call_id": "call_r_1",
+                    "name": "research",
+                    "content": "{}",
+                }
             )
 
             result = await brain.think("chat1", "查一下今天A股收盘信息")
 
-            assert "https://finance.example/a-share-close" in result
-            mock_search.assert_awaited_once_with("今天 A股 收盘", max_results=5)
-            mock_fetch.assert_awaited_once_with("https://finance.example/a-share-close")
-            assert brain.router.complete_with_tools.await_count == 3
+            assert "3200" in result
+            fake_engine.research.assert_awaited_once_with("今天 A 股收盘", scope="auto")
+            assert brain.router.complete_with_tools.await_count == 2
 
     async def test_blocked_shell_result_returns_non_fabricated_fallback(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \

@@ -72,7 +72,6 @@ logger = logging.getLogger("lapwing.core.task_runtime")
 
 _MAX_TOOL_ROUNDS = TASK_MAX_TOOL_ROUNDS
 _TOOL_RESULT_MAX_CHARS = 12000
-_WEB_SEARCH_SNIPPET_MAX_CHARS = 280
 
 # ── Tool result budgeting ────────────────────────────────────────────────────
 TOOL_RESULT_BUDGET_MAX_CHARS = 50_000
@@ -323,7 +322,7 @@ class TaskRuntime:
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
         if web_enabled:
-            tool_names.update({"web_search", "web_fetch", "browse", "image_search"})
+            tool_names.update({"research", "browse", "image_search"})
         if skill_activation_enabled:
             tool_names.add("activate_skill")
         return self._tool_registry.function_tools(
@@ -1507,11 +1506,7 @@ class TaskRuntime:
         payload: dict[str, Any],
     ) -> str:
         """将工具结果转换为传回模型的文本，并在必要时裁剪。"""
-        normalized_payload: dict[str, Any] = payload
-        if tool_name == "web_search":
-            normalized_payload = self._compact_web_search_payload(payload)
-
-        rendered = json.dumps(normalized_payload, ensure_ascii=False)
+        rendered = json.dumps(payload, ensure_ascii=False)
         if len(rendered) <= _TOOL_RESULT_MAX_CHARS:
             return rendered
 
@@ -1521,39 +1516,6 @@ class TaskRuntime:
         preview_budget = max(0, _TOOL_RESULT_MAX_CHARS - 60)
         preview = rendered[:preview_budget]
         return preview + "\n\n（结果太长，只显示了一部分。如果需要更多内容可以再查一次。）"
-
-    def _compact_web_search_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """压缩 web_search 输出，优先保留标题/URL/摘要。"""
-        results = payload.get("results")
-        if not isinstance(results, list):
-            return payload
-
-        compact_results: list[dict[str, Any]] = []
-        for item in results:
-            if not isinstance(item, dict):
-                continue
-            snippet = str(item.get("snippet", ""))
-            if len(snippet) > _WEB_SEARCH_SNIPPET_MAX_CHARS:
-                snippet = snippet[:_WEB_SEARCH_SNIPPET_MAX_CHARS] + "..."
-            entry: dict[str, Any] = {
-                "title": str(item.get("title", "")),
-                "url": str(item.get("url", "")),
-                "snippet": snippet,
-            }
-            if item.get("published_date"):
-                entry["published_date"] = item["published_date"]
-            if item.get("relevance_score") is not None:
-                entry["relevance_score"] = item["relevance_score"]
-            compact_results.append(entry)
-
-        compact_payload: dict[str, Any] = {
-            "query": str(payload.get("query", "")),
-            "count": len(compact_results),
-            "results": compact_results,
-        }
-        if "_system_hint" in payload:
-            compact_payload["_system_hint"] = payload["_system_hint"]
-        return compact_payload
 
     def _new_loop_detection_state(self) -> LoopDetectionState:
         return LoopDetectionState(

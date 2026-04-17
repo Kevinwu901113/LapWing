@@ -39,8 +39,8 @@ class TestAuthorize:
         allowed, reason = authorize("execute_shell", AuthLevel.GUEST)
         assert not allowed
 
-    def test_trusted_can_search(self):
-        allowed, reason = authorize("web_search", AuthLevel.TRUSTED)
+    def test_trusted_can_research(self):
+        allowed, reason = authorize("research", AuthLevel.TRUSTED)
         assert allowed
 
     def test_guest_can_chat(self):

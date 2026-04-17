@@ -117,7 +117,7 @@ def register_browser_tools(
                 "打开一个网页，可以看到完整的页面内容和所有可交互元素"
                 "（按钮、输入框等）。适合需要操作页面（点击、填表、登录）"
                 "或查看 JavaScript 动态渲染内容的场景。"
-                "注意：比 web_fetch 慢，不需要交互时优先用 web_fetch。\n\n"
+                "注意：比 research 慢；只需要查找信息时优先用 research。\n\n"
                 "重要提示：\n"
                 "1. 使用 [编号] 引用元素，如 browser_click(element=\"[3]\")\n"
                 "2. 每次操作后会返回新的页面状态，元素编号会重新分配\n"

@@ -282,130 +282,6 @@ async def _view_image(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 5. web_search
-# ─────────────────────────────────────────────────────────────────────────────
-
-_SEARCH_MAX_RESULTS = 5
-_SEARCH_SNIPPET_MAX = 200
-
-
-async def _web_search(
-    req: ToolExecutionRequest,
-    ctx: ToolExecutionContext,
-) -> ToolExecutionResult:
-    """联网搜索，返回前 5 条结果，每条摘要不超过 200 字。"""
-    from src.tools.web_search import search as tavily_search
-
-    query = str(req.arguments.get("query", "")).strip()
-    if not query:
-        return ToolExecutionResult(
-            success=False,
-            payload={"error": "缺少 query 参数"},
-            reason="missing query",
-        )
-
-    try:
-        raw_results = await tavily_search(query, max_results=_SEARCH_MAX_RESULTS)
-    except Exception as exc:
-        logger.warning("[web_search] 搜索异常: %s", exc)
-        return ToolExecutionResult(
-            success=False,
-            payload={"error": f"搜索失败：{exc}。可以换个关键词试试。"},
-            reason=str(exc),
-        )
-
-    if not raw_results:
-        return ToolExecutionResult(
-            success=False,
-            payload={"error": "没有找到相关结果。可以换个关键词试试。"},
-            reason="no_results",
-        )
-
-    # 结果体积控制：摘要截断
-    results = []
-    for item in raw_results[:_SEARCH_MAX_RESULTS]:
-        snippet = item.get("snippet") or item.get("content", "")
-        if len(snippet) > _SEARCH_SNIPPET_MAX:
-            snippet = snippet[:_SEARCH_SNIPPET_MAX] + "…"
-        entry: dict[str, Any] = {
-            "title": item.get("title", ""),
-            "url": item.get("url", ""),
-            "snippet": snippet,
-        }
-        if item.get("published_date"):
-            entry["published_date"] = item["published_date"]
-        results.append(entry)
-
-    return ToolExecutionResult(
-        success=True,
-        payload={"query": query, "results": results},
-    )
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# 6. web_fetch
-# ─────────────────────────────────────────────────────────────────────────────
-
-_WEB_FETCH_MAX_CHARS = 3000
-_WEB_FETCH_TRUNCATION_NOTE = "内容较长，已截断。如需查看完整页面，可以用 browse 工具。"
-
-
-async def _web_fetch(
-    req: ToolExecutionRequest,
-    ctx: ToolExecutionContext,
-) -> ToolExecutionResult:
-    """抓取网页正文，返回纯文本。可提供 question 聚焦抓取目标。"""
-    from src.tools.web_fetcher import fetch as fetch_url
-
-    url = str(req.arguments.get("url", "")).strip()
-    question = str(req.arguments.get("question", "")).strip()
-
-    if not url:
-        return ToolExecutionResult(
-            success=False,
-            payload={"error": "缺少 url 参数"},
-            reason="missing url",
-        )
-
-    try:
-        result = await fetch_url(url)
-    except Exception as exc:
-        logger.warning("[web_fetch] 抓取异常 url=%s: %s", url, exc)
-        return ToolExecutionResult(
-            success=False,
-            payload={"error": f"抓取失败：{exc}"},
-            reason=str(exc),
-        )
-
-    if not result.success:
-        return ToolExecutionResult(
-            success=False,
-            payload={"error": f"抓取失败：{result.error}", "url": result.url},
-            reason=result.error,
-        )
-
-    text = result.text
-    truncated = False
-    if len(text) > _WEB_FETCH_MAX_CHARS:
-        text = text[:_WEB_FETCH_MAX_CHARS]
-        truncated = True
-
-    payload: dict[str, Any] = {
-        "url": result.url,
-        "title": result.title,
-        "text": text,
-    }
-    if truncated:
-        payload["truncation_note"] = _WEB_FETCH_TRUNCATION_NOTE
-    if result.published_date:
-        payload["published_date"] = result.published_date
-    if question:
-        payload["question"] = question
-
-    return ToolExecutionResult(success=True, payload=payload)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # browse 安全检查辅助函数
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -497,7 +373,7 @@ async def _browse(
     if browser_manager is None:
         return ToolExecutionResult(
             success=False,
-            payload={"error": "浏览器不可用。可以用 web_fetch 抓取文本内容。"},
+            payload={"error": "浏览器不可用。改用 research 工具回答问题。"},
             reason="browser_unavailable",
         )
 
@@ -659,57 +535,11 @@ def register_personal_tools(registry: Any, services: dict[str, Any]) -> None:
     ))
 
     registry.register(ToolSpec(
-        name="web_search",
-        description="联网搜索，返回最多 5 条结果（标题、URL、摘要）。",
-        json_schema={
-            "type": "object",
-            "properties": {
-                "query": {
-                    "type": "string",
-                    "description": "搜索关键词或问题",
-                },
-            },
-            "required": ["query"],
-        },
-        executor=_web_search,
-        capability="web",
-        risk_level="low",
-        max_result_tokens=600,
-    ))
-
-    registry.register(ToolSpec(
-        name="web_fetch",
-        description=(
-            "抓取指定网页的正文文本（最多 3000 字）。"
-            "可提供 question 参数聚焦感兴趣的内容。"
-            "需要完整交互的页面请用 browse 工具。"
-        ),
-        json_schema={
-            "type": "object",
-            "properties": {
-                "url": {
-                    "type": "string",
-                    "description": "要抓取的网页 URL",
-                },
-                "question": {
-                    "type": "string",
-                    "description": "希望从页面中获取的具体信息（可选）",
-                },
-            },
-            "required": ["url"],
-        },
-        executor=_web_fetch,
-        capability="web",
-        risk_level="low",
-        max_result_tokens=800,
-    ))
-
-    registry.register(ToolSpec(
         name="browse",
         description=(
-            "打开网页、截图并用视觉模型描述页面内容，然后自动关闭标签页。"
-            "适合需要「看」页面的场景（图表、视觉布局等）。"
-            "纯文本内容优先用 web_fetch，速度更快。"
+            "你想亲自看看一个网页长什么样时用这个。会打开页面、截图、描述。\n"
+            "注意：大多数问题用 research 更合适——它会自动搜索、阅读、综合答案。\n"
+            "只有当 research 查不到、或你想看页面的视觉布局时才用 browse。"
         ),
         json_schema={
             "type": "object",
@@ -727,4 +557,4 @@ def register_personal_tools(registry: Any, services: dict[str, Any]) -> None:
         max_result_tokens=500,
     ))
 
-    logger.info("[personal_tools] 已注册 7 个个人工具")
+    logger.info("[personal_tools] 已注册 5 个个人工具")
