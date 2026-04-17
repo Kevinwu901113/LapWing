@@ -6,6 +6,7 @@ import asyncio
 import logging
 import re
 from typing import Any
+from urllib.parse import urlparse
 
 import httpx
 
@@ -30,6 +31,56 @@ _STYLE_RE = re.compile(r"<style[^>]*>.*?</style>", re.DOTALL | re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")
 _WHITESPACE_RE = re.compile(r"\s+")
 
+# 视频/音频/二进制媒体域名 — 文本抓取毫无价值，跳过避免 SPA 抓取卡死。
+_BLACKLIST_DOMAINS = (
+    "youtube.com", "youtu.be",
+    "vimeo.com",
+    "tiktok.com",
+    "twitch.tv",
+    "douyin.com",
+    "open.spotify.com",
+    "music.apple.com",
+)
+# B 站视频页（视频播放页）单独处理，避免误伤文章/专栏页。
+_BLACKLIST_PATH_PREFIXES = (
+    ("bilibili.com", "/video/"),
+    ("www.bilibili.com", "/video/"),
+    ("b23.tv", "/"),
+)
+# 二进制媒体后缀
+_BLACKLIST_SUFFIXES = (
+    ".mp4", ".mov", ".webm", ".m4v", ".mkv", ".avi",
+    ".mp3", ".m4a", ".wav", ".flac", ".aac", ".ogg",
+    ".jpg", ".jpeg", ".png", ".gif", ".webp", ".svg",
+    ".pdf", ".zip", ".tar", ".gz", ".7z", ".dmg", ".iso", ".exe",
+)
+
+
+def _is_blacklisted(url: str) -> bool:
+    """判断 URL 是否属于不抓取的视频/音频/二进制资源。"""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    host = (parsed.hostname or "").lower()
+    path = (parsed.path or "").lower()
+    if not host:
+        return False
+
+    for domain in _BLACKLIST_DOMAINS:
+        if host == domain or host.endswith("." + domain):
+            return True
+
+    for prefix_host, prefix_path in _BLACKLIST_PATH_PREFIXES:
+        if (host == prefix_host or host.endswith("." + prefix_host)) and path.startswith(prefix_path):
+            return True
+
+    for suffix in _BLACKLIST_SUFFIXES:
+        if path.endswith(suffix):
+            return True
+
+    return False
+
 
 class SmartFetcher:
     """带 fallback 的网页抓取器。
@@ -48,6 +99,9 @@ class SmartFetcher:
         self.browser_manager = browser_manager
 
     async def fetch(self, url: str) -> str | None:
+        if _is_blacklisted(url):
+            logger.info("fetcher: skip blacklisted url %s", url)
+            return None
         try:
             return await asyncio.wait_for(
                 self._fetch_inner(url),

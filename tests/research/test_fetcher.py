@@ -151,6 +151,49 @@ async def test_browser_fetch_hard_timeout(monkeypatch):
     assert text == "Sign in Log in Menu Home Cookie"
 
 
+@pytest.mark.parametrize("url", [
+    "https://www.youtube.com/watch?v=abc",
+    "https://youtu.be/xyz",
+    "https://m.youtube.com/watch?v=q",
+    "https://vimeo.com/12345",
+    "https://www.tiktok.com/@x/video/1",
+    "https://www.twitch.tv/streamer",
+    "https://www.bilibili.com/video/BV1Xy4y1k7Bs",
+    "https://b23.tv/abc",
+    "https://example.com/file.mp4",
+    "https://example.com/photo.JPG",
+    "https://example.com/doc.pdf",
+    "https://cdn.example.com/song.mp3",
+])
+async def test_blacklisted_urls_short_circuit(url):
+    """黑名单域名/后缀直接返回 None，不发起 httpx 请求。"""
+    bm = _make_browser_manager()
+    fetcher = SmartFetcher(browser_manager=bm)
+    with patch("httpx.AsyncClient") as mock_client:
+        text = await fetcher.fetch(url)
+    assert text is None
+    mock_client.assert_not_called()
+    bm.new_tab.assert_not_called()
+
+
+@pytest.mark.parametrize("url", [
+    "https://www.bilibili.com/read/cv12345",   # B 站专栏（不在黑名单）
+    "https://space.bilibili.com/123",            # B 站个人空间
+    "https://example.com/article.html",
+    "https://news.example.com/",
+    "https://en.wikipedia.org/wiki/Foo",
+])
+async def test_non_blacklisted_urls_pass_through(url):
+    """非黑名单 URL 正常走 httpx 流程。"""
+    html = "<html><body>" + ("article body. " * 500) + "</body></html>"
+    ctx = _mock_httpx_response(html)
+    with patch("httpx.AsyncClient", return_value=ctx):
+        fetcher = SmartFetcher(browser_manager=None)
+        text = await fetcher.fetch(url)
+    assert text is not None
+    assert "article body" in text
+
+
 async def test_overall_fetch_timeout(monkeypatch):
     """整体 fetch 超过 _FETCH_OVERALL_TIMEOUT 时返回 None。"""
     import asyncio as _asyncio
