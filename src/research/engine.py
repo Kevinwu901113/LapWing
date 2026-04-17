@@ -13,6 +13,7 @@ logger = logging.getLogger("lapwing.research.engine")
 _TOP_K_FETCH = 3
 _MAX_CONTENT_PER_SOURCE = 5000
 _RESULTS_PER_BACKEND = 5
+_RESEARCH_OVERALL_TIMEOUT = 30.0  # 整个 research(question) 的硬上限
 
 
 class ResearchEngine:
@@ -33,6 +34,23 @@ class ResearchEngine:
         self.refiner = refiner
 
     async def research(self, question: str, scope: str = "auto") -> ResearchResult:
+        try:
+            return await asyncio.wait_for(
+                self._research_inner(question, scope),
+                timeout=_RESEARCH_OVERALL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "research overall timeout %ds: question=%r",
+                int(_RESEARCH_OVERALL_TIMEOUT), question[:100],
+            )
+            return ResearchResult(
+                answer=f"查询超时，没能在 {int(_RESEARCH_OVERALL_TIMEOUT)} 秒内完成。",
+                confidence="low",
+                unclear="查询超时",
+            )
+
+    async def _research_inner(self, question: str, scope: str) -> ResearchResult:
         if scope == "auto":
             scope = await self.scope_router.decide(question)
 

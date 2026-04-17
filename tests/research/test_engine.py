@@ -165,3 +165,39 @@ async def test_result_carries_backends_used():
     result = await engine.research("q")
     assert result.search_backend_used == ["bocha"]
     assert result.confidence == "high"
+
+
+async def test_overall_research_timeout(monkeypatch):
+    """research() 超过 _RESEARCH_OVERALL_TIMEOUT 时返回 low-confidence 超时结果。"""
+    import asyncio as _asyncio
+    from src.research import engine as engine_module
+
+    monkeypatch.setattr(engine_module, "_RESEARCH_OVERALL_TIMEOUT", 0.3)
+
+    scope_router = MagicMock()
+    scope_router.decide = AsyncMock(return_value="global")
+    tavily = MagicMock()
+
+    async def hang_search(*args, **kwargs):
+        await _asyncio.sleep(5.0)
+        return []
+
+    tavily.search = AsyncMock(side_effect=hang_search)
+    bocha = MagicMock()
+    bocha.search = AsyncMock(return_value=[])
+    fetcher = MagicMock()
+    fetcher.fetch = AsyncMock(return_value=None)
+    refiner = MagicMock()
+    refiner.refine = AsyncMock(return_value=ResearchResult(answer="x"))
+
+    eng = engine_module.ResearchEngine(
+        scope_router=scope_router,
+        tavily_backend=tavily,
+        bocha_backend=bocha,
+        fetcher=fetcher,
+        refiner=refiner,
+    )
+    result = await eng.research("q")
+    assert result.confidence == "low"
+    assert "查询超时" in result.answer
+    assert result.unclear == "查询超时"

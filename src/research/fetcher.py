@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import Any
@@ -19,6 +20,11 @@ _SPA_NAV_KEYWORDS = (
 )
 _SPA_NAV_HIT_THRESHOLD = 3
 
+# 超时预算（秒）
+_FETCH_OVERALL_TIMEOUT = 15.0    # httpx + browser 合计上限
+_BROWSER_FETCH_TIMEOUT = 8.0     # 浏览器降级单次上限
+_BROWSER_CLOSE_TIMEOUT = 3.0     # close_tab 清理上限
+
 _SCRIPT_RE = re.compile(r"<script[^>]*>.*?</script>", re.DOTALL | re.IGNORECASE)
 _STYLE_RE = re.compile(r"<style[^>]*>.*?</style>", re.DOTALL | re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]+>")
@@ -32,12 +38,26 @@ class SmartFetcher:
       1. httpx GET 拿 HTML → 提取正文
       2. 文本太短或像 SPA 外壳 → 用 browser_manager 重新打开（执行 JS 后取文本）
       3. 都失败 → 返回 None
+
+    超时保护：
+      - fetch() 整体最多 15s（httpx + browser）
+      - _browser_fetch() 单次最多 8s
     """
 
     def __init__(self, browser_manager: Any | None = None) -> None:
         self.browser_manager = browser_manager
 
     async def fetch(self, url: str) -> str | None:
+        try:
+            return await asyncio.wait_for(
+                self._fetch_inner(url),
+                timeout=_FETCH_OVERALL_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            logger.warning("fetch overall timeout %ds: %s", int(_FETCH_OVERALL_TIMEOUT), url)
+            return None
+
+    async def _fetch_inner(self, url: str) -> str | None:
         text = await self._httpx_fetch(url)
 
         if text and len(text) >= _SPA_INDICATOR_THRESHOLD and not self._looks_like_spa(text):
@@ -85,15 +105,30 @@ class SmartFetcher:
         return hits >= _SPA_NAV_HIT_THRESHOLD
 
     async def _browser_fetch(self, url: str) -> str | None:
-        tab_info = await self.browser_manager.new_tab(url)
-        tab_id = tab_info.tab_id
+        """浏览器降级。硬超时 _BROWSER_FETCH_TIMEOUT 秒。"""
+        tab_id_box: dict[str, str] = {}
+
+        async def _work() -> str | None:
+            tab_info = await self.browser_manager.new_tab(url)
+            tab_id_box["id"] = tab_info.tab_id
+            return await self.browser_manager.get_page_text(tab_id=tab_info.tab_id)
+
         try:
-            text = await self.browser_manager.get_page_text(tab_id=tab_id)
-            if text:
-                return _WHITESPACE_RE.sub(" ", text).strip()
-            return None
+            text = await asyncio.wait_for(_work(), timeout=_BROWSER_FETCH_TIMEOUT)
+        except asyncio.TimeoutError:
+            logger.warning("browser fetch timeout %ds: %s", int(_BROWSER_FETCH_TIMEOUT), url)
+            text = None
         finally:
-            try:
-                await self.browser_manager.close_tab(tab_id)
-            except Exception as exc:
-                logger.debug("close_tab 异常 %s: %s", tab_id, exc)
+            tab_id = tab_id_box.get("id")
+            if tab_id is not None:
+                try:
+                    await asyncio.wait_for(
+                        self.browser_manager.close_tab(tab_id),
+                        timeout=_BROWSER_CLOSE_TIMEOUT,
+                    )
+                except Exception as exc:
+                    logger.debug("close_tab 异常 %s: %s", tab_id, exc)
+
+        if text:
+            return _WHITESPACE_RE.sub(" ", text).strip()
+        return None

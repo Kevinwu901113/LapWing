@@ -119,3 +119,56 @@ async def test_browser_close_tab_failure_does_not_propagate():
         text = await fetcher.fetch("https://example.com")
     assert text is not None
     assert "good content" in text
+
+
+async def test_browser_fetch_hard_timeout(monkeypatch):
+    """浏览器降级超过 _BROWSER_FETCH_TIMEOUT 时直接返回 None，而不是阻塞。"""
+    import asyncio as _asyncio
+    from src.research import fetcher as fetcher_module
+
+    monkeypatch.setattr(fetcher_module, "_BROWSER_FETCH_TIMEOUT", 0.2)
+
+    spa_shell = "<html><body>Sign in Log in Menu Home Cookie</body></html>"
+    ctx = _mock_httpx_response(spa_shell)
+
+    bm = MagicMock()
+    tab_info = MagicMock()
+    tab_info.tab_id = "stuck-tab"
+
+    async def hang_new_tab(url):
+        await _asyncio.sleep(5.0)  # 模拟真实浏览器卡住
+        return tab_info
+
+    bm.new_tab = AsyncMock(side_effect=hang_new_tab)
+    bm.get_page_text = AsyncMock(return_value="never reached")
+    bm.close_tab = AsyncMock()
+
+    with patch("httpx.AsyncClient", return_value=ctx):
+        fetcher = SmartFetcher(browser_manager=bm)
+        text = await fetcher.fetch("https://stuck.example.com")
+    # SPA shell 触发 browser fallback，但 browser 卡住，超时返回 None，
+    # 此时返回原 SPA 文本（也很短）
+    assert text == "Sign in Log in Menu Home Cookie"
+
+
+async def test_overall_fetch_timeout(monkeypatch):
+    """整体 fetch 超过 _FETCH_OVERALL_TIMEOUT 时返回 None。"""
+    import asyncio as _asyncio
+    from src.research import fetcher as fetcher_module
+
+    monkeypatch.setattr(fetcher_module, "_FETCH_OVERALL_TIMEOUT", 0.3)
+
+    async def hang_get(url):
+        await _asyncio.sleep(5.0)
+        return MagicMock(text="never", raise_for_status=MagicMock())
+
+    client = AsyncMock()
+    client.get.side_effect = hang_get
+    ctx = MagicMock()
+    ctx.__aenter__ = AsyncMock(return_value=client)
+    ctx.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("httpx.AsyncClient", return_value=ctx):
+        fetcher = SmartFetcher(browser_manager=None)
+        text = await fetcher.fetch("https://hung.example.com")
+    assert text is None
