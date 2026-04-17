@@ -323,7 +323,7 @@ class TaskRuntime:
         Phase 4: 个人工具（send_message, send_image 等）+ 提醒工具始终可用。
         """
         tool_names: set[str] = {
-            "get_time", "get_weather",
+            "get_time",
             "send_message", "send_image", "view_image",
             "set_reminder", "view_reminders", "cancel_reminder",
             "delegate",
@@ -331,7 +331,7 @@ class TaskRuntime:
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
         if web_enabled:
-            tool_names.update({"research", "browse", "image_search"})
+            tool_names.update({"research", "browse"})
         if skill_activation_enabled:
             tool_names.add("activate_skill")
         return self._tool_registry.function_tools(

@@ -25,6 +25,29 @@ from src.tools.registry import build_default_tool_registry
 from src.tools.shell_executor import ShellResult
 
 
+def _chat_ready_registry():
+    """See tests/core/test_task_runtime.py — registers the full chat surface."""
+    from src.tools.personal_tools import register_personal_tools
+    from src.tools.research_tool import register_research_tool
+    from src.tools.agent_tools import register_agent_tools
+    from src.core.durable_scheduler import DURABLE_SCHEDULER_EXECUTORS
+    from src.tools.types import ToolSpec
+
+    registry = build_default_tool_registry()
+    register_personal_tools(registry, {})
+    register_research_tool(registry)
+    register_agent_tools(registry)
+    for name in ("set_reminder", "view_reminders", "cancel_reminder"):
+        registry.register(ToolSpec(
+            name=name,
+            description="reminder tool",
+            json_schema={"type": "object", "properties": {}},
+            executor=DURABLE_SCHEDULER_EXECUTORS[name],
+            capability="schedule",
+        ))
+    return registry
+
+
 @pytest.fixture(autouse=True)
 def _disable_no_action_budget():
     """禁用 NoActionBudget 避免测试需要多轮文本响应"""
@@ -126,7 +149,7 @@ def _make_router():
 async def test_interim_text_with_user_visible_tag_sent():
     """中间轮次有 <user_visible> 标签 → on_interim_text 只收到标签内容"""
     router = _make_router()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry())
+    runtime = TaskRuntime(router=router, tool_registry=_chat_ready_registry())
 
     router.complete_with_tools = AsyncMock(side_effect=[
         SimpleNamespace(
@@ -161,7 +184,7 @@ async def test_interim_text_with_user_visible_tag_sent():
 async def test_interim_text_without_tag_not_sent():
     """中间轮次没有 <user_visible> 标签 → on_interim_text 不被调用（中间轮次部分）"""
     router = _make_router()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry())
+    runtime = TaskRuntime(router=router, tool_registry=_chat_ready_registry())
 
     router.complete_with_tools = AsyncMock(side_effect=[
         SimpleNamespace(
@@ -194,7 +217,7 @@ async def test_interim_text_without_tag_not_sent():
 async def test_interim_empty_visible_tag_not_sent():
     """中间轮次有标签但内容为空 → on_interim_text 不被调用（中间轮次部分）"""
     router = _make_router()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry())
+    runtime = TaskRuntime(router=router, tool_registry=_chat_ready_registry())
 
     router.complete_with_tools = AsyncMock(side_effect=[
         SimpleNamespace(
@@ -226,7 +249,7 @@ async def test_interim_empty_visible_tag_not_sent():
 async def test_final_reply_strips_user_visible_tags():
     """最终回复中残留的 <user_visible> 标签被清理"""
     router = _make_router()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry())
+    runtime = TaskRuntime(router=router, tool_registry=_chat_ready_registry())
 
     router.complete_with_tools = AsyncMock(side_effect=[
         SimpleNamespace(

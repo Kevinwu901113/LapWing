@@ -74,26 +74,74 @@ def _loop_config(
     )
 
 
+def _chat_ready_registry():
+    """Register the full chat tool surface that chat_tools() references.
+
+    Step 1i: chat_tools() now raises if any whitelisted name isn't registered
+    (see ToolRegistry.list_tools). AppContainer sets this up in production;
+    tests must do the equivalent to exercise chat_tools.
+    """
+    from src.tools.registry import build_default_tool_registry
+    from src.tools.personal_tools import register_personal_tools
+    from src.tools.research_tool import register_research_tool
+    from src.tools.agent_tools import register_agent_tools
+    from src.core.durable_scheduler import DURABLE_SCHEDULER_EXECUTORS
+    from src.tools.types import ToolSpec
+
+    registry = build_default_tool_registry()
+    register_personal_tools(registry, {})
+    register_research_tool(registry)
+    register_agent_tools(registry)
+    for name in ("set_reminder", "view_reminders", "cancel_reminder"):
+        registry.register(ToolSpec(
+            name=name,
+            description="reminder tool",
+            json_schema={"type": "object", "properties": {}},
+            executor=DURABLE_SCHEDULER_EXECUTORS[name],
+            capability="schedule",
+        ))
+    return registry
+
+
 @pytest.mark.asyncio
 async def test_chat_tools_from_registry():
-    runtime = TaskRuntime(router=MagicMock(), tool_registry=build_default_tool_registry())
+    runtime = TaskRuntime(router=MagicMock(), tool_registry=_chat_ready_registry())
 
     tools = runtime.chat_tools(shell_enabled=True)
     names = {item["function"]["name"] for item in tools}
 
-    # Phase 8: most tools removed from registry; only shell tools remain
-    assert names == {"execute_shell", "read_file", "write_file"}
+    # Shell + personal + reminder + web tools all exposed
+    assert {"execute_shell", "read_file", "write_file"}.issubset(names)
+    assert {"get_time", "send_message", "send_image", "view_image"}.issubset(names)
+    assert {"set_reminder", "view_reminders", "cancel_reminder"}.issubset(names)
+    assert {"research", "browse", "delegate"}.issubset(names)
+    # `get_weather` + `image_search` are gone from the whitelist (Step 1i)
+    assert "get_weather" not in names
+    assert "image_search" not in names
 
 
 @pytest.mark.asyncio
 async def test_chat_tools_excludes_web_when_disabled():
-    runtime = TaskRuntime(router=MagicMock(), tool_registry=build_default_tool_registry())
+    runtime = TaskRuntime(router=MagicMock(), tool_registry=_chat_ready_registry())
 
     tools = runtime.chat_tools(shell_enabled=True, web_enabled=False)
     names = {item["function"]["name"] for item in tools}
 
-    # Phase 8: most tools removed from registry; only shell tools remain
-    assert names == {"execute_shell", "read_file", "write_file"}
+    assert "research" not in names
+    assert "browse" not in names
+    # Non-web tools still present
+    assert "execute_shell" in names
+    assert "send_message" in names
+
+
+@pytest.mark.asyncio
+async def test_chat_tools_raises_when_whitelisted_tool_not_registered():
+    """Step 1i: silent skip is forbidden; an unregistered whitelist entry raises."""
+    from src.tools.registry import ToolNotRegisteredError, build_default_tool_registry
+
+    runtime = TaskRuntime(router=MagicMock(), tool_registry=build_default_tool_registry())
+    with pytest.raises(ToolNotRegisteredError):
+        runtime.chat_tools(shell_enabled=False, web_enabled=False)
 
 
 @pytest.mark.asyncio
@@ -233,7 +281,7 @@ async def test_execute_shell_triggers_verifying_event_and_completion():
 @pytest.mark.asyncio
 async def test_complete_chat_executes_multiple_tool_calls_in_one_turn_serially():
     router = MagicMock()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry(), no_action_budget=0)
+    runtime = TaskRuntime(router=router, tool_registry=_chat_ready_registry(), no_action_budget=0)
     constraints = extract_execution_constraints("看看当前目录和用户")
 
     router.complete_with_tools = AsyncMock(
@@ -321,7 +369,7 @@ async def test_complete_chat_executes_multiple_tool_calls_in_one_turn_serially()
 @pytest.mark.asyncio
 async def test_complete_chat_status_callback_uses_stage_messages():
     router = MagicMock()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry(), no_action_budget=0)
+    runtime = TaskRuntime(router=router, tool_registry=_chat_ready_registry(), no_action_budget=0)
     constraints = extract_execution_constraints("看看当前目录")
 
     router.complete_with_tools = AsyncMock(
@@ -389,10 +437,7 @@ async def test_complete_chat_supports_web_tool_call_and_tool_result_roundtrip():
     from src.tools.research_tool import register_research_tool
 
     router = MagicMock()
-    registry = build_default_tool_registry()
-    from src.tools.personal_tools import register_personal_tools
-    register_personal_tools(registry, {})
-    register_research_tool(registry)
+    registry = _chat_ready_registry()
     runtime = TaskRuntime(router=router, tool_registry=registry, no_action_budget=0)
     constraints = extract_execution_constraints("查一下今天A股收盘")
 
@@ -462,7 +507,7 @@ async def test_complete_chat_supports_web_tool_call_and_tool_result_roundtrip():
 @pytest.mark.asyncio
 async def test_complete_chat_emits_tool_execution_events_for_successful_call():
     router = MagicMock()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry(), no_action_budget=0)
+    runtime = TaskRuntime(router=router, tool_registry=_chat_ready_registry(), no_action_budget=0)
     constraints = extract_execution_constraints("看看当前目录")
 
     router.complete_with_tools = AsyncMock(
@@ -543,7 +588,7 @@ async def test_complete_chat_emits_tool_execution_events_for_successful_call():
 @pytest.mark.asyncio
 async def test_complete_chat_emits_tool_execution_error_metrics_on_failure():
     router = MagicMock()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry(), no_action_budget=0)
+    runtime = TaskRuntime(router=router, tool_registry=_chat_ready_registry(), no_action_budget=0)
     constraints = extract_execution_constraints("执行失败命令")
 
     router.complete_with_tools = AsyncMock(
@@ -619,7 +664,7 @@ async def test_complete_chat_emits_tool_execution_error_metrics_on_failure():
 @pytest.mark.asyncio
 async def test_complete_chat_emits_tool_execution_events_for_each_tool_call():
     router = MagicMock()
-    runtime = TaskRuntime(router=router, tool_registry=build_default_tool_registry(), no_action_budget=0)
+    runtime = TaskRuntime(router=router, tool_registry=_chat_ready_registry(), no_action_budget=0)
     constraints = extract_execution_constraints("看看当前目录和用户")
 
     router.complete_with_tools = AsyncMock(
@@ -713,7 +758,7 @@ async def test_loop_detection_generic_repeat_warns_without_blocking():
     router = MagicMock()
     runtime = TaskRuntime(
         router=router,
-        tool_registry=build_default_tool_registry(),
+        tool_registry=_chat_ready_registry(),
         loop_detection_config=_loop_config(
             enabled=True,
             history_size=10,
@@ -807,7 +852,7 @@ async def test_loop_detection_global_breaker_blocks_before_executing_threshold_c
     router = MagicMock()
     runtime = TaskRuntime(
         router=router,
-        tool_registry=build_default_tool_registry(),
+        tool_registry=_chat_ready_registry(),
         loop_detection_config=_loop_config(
             enabled=True,
             history_size=10,
@@ -915,7 +960,7 @@ async def test_loop_detection_non_consecutive_repeat_resets_counter():
     router = MagicMock()
     runtime = TaskRuntime(
         router=router,
-        tool_registry=build_default_tool_registry(),
+        tool_registry=_chat_ready_registry(),
         loop_detection_config=_loop_config(
             enabled=True,
             history_size=10,
@@ -1024,7 +1069,7 @@ async def test_loop_detection_disabled_does_not_warn_or_block():
     router = MagicMock()
     runtime = TaskRuntime(
         router=router,
-        tool_registry=build_default_tool_registry(),
+        tool_registry=_chat_ready_registry(),
         loop_detection_config=_loop_config(
             enabled=False,
             history_size=10,
@@ -1128,7 +1173,7 @@ async def test_complete_chat_records_tool_loop_round_latency():
     latency_monitor = MagicMock()
     runtime = TaskRuntime(
         router=router,
-        tool_registry=build_default_tool_registry(),
+        tool_registry=_chat_ready_registry(),
         latency_monitor=latency_monitor,
     )
     constraints = extract_execution_constraints("看看当前目录")
