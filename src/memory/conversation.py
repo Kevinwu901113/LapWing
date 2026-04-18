@@ -454,24 +454,6 @@ class ConversationMemory:
             logger.error(f"get_active 查询失败: {e}")
             return []
 
-    async def search_deep_archive(self, chat_id: str, query: str, limit: int = 10) -> list[dict]:
-        """在深度归档（7 天前）中按关键词搜索对话，按时间倒序返回。"""
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=self.RECENT_ARCHIVE_DAYS)).isoformat()
-        try:
-            async with self._db.execute(
-                "SELECT role, content, timestamp FROM conversations "
-                "WHERE chat_id = ? AND timestamp < ? AND content LIKE ? ORDER BY timestamp DESC LIMIT ?",
-                (chat_id, cutoff, f"%{query}%", limit),
-            ) as cursor:
-                rows = await cursor.fetchall()
-            return [
-                {"role": row[0], "content": row[1], "timestamp": row[2]}
-                for row in rows
-            ]
-        except Exception as e:
-            logger.error(f"search_deep_archive 查询失败: {e}")
-            return []
-
     async def close(self) -> None:
         """关闭数据库连接。"""
         if self._db:

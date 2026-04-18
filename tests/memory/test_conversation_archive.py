@@ -50,16 +50,3 @@ class TestArchiveTiers:
         results = await memory.get_active("chat1", limit=5)
         assert len(results) == 5
 
-    async def test_search_deep_archive_keyword(self, memory):
-        """Keyword search in deep archive (>7 days)."""
-        old_ts = (datetime.now(timezone.utc) - timedelta(days=14)).isoformat()
-        await _legacy_insert(
-            memory, "chat1", "user", "ancient conversation about dragons", ts=old_ts,
-        )
-        results = await memory.search_deep_archive("chat1", "dragons", limit=10)
-        assert len(results) >= 1
-        assert any("dragons" in r.get("content", "") for r in results)
-
-    async def test_search_deep_archive_no_match(self, memory):
-        results = await memory.search_deep_archive("chat1", "nonexistent_xyz", limit=10)
-        assert results == []
