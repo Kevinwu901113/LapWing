@@ -4,7 +4,7 @@
 **Baseline tag**: `pre_recast_v2_step2` → `0e782e4` (Step 1 merge commit)
 **Date range**: 2026-04-18
 **Pre-step-2 baseline**: 920 tests (Step 1 complete, `recast_v2_step1_complete`)
-**Final test count**: **1033** pass (net +113 vs. pre-branch 920)
+**Final test count**: **1036** pass (net +116 vs. pre-branch 920)
 
 Blueprint v2.0 Step 2 executed per Kevin's 2026-04-18 brief + in-flight
 scope revision (§"Scope 修订"): ConversationMemory is no longer deleted
