@@ -324,6 +324,57 @@ async def get_inner_state():
     }
 
 
+@router.get("/summaries")
+async def get_summaries(
+    limit: int = Query(20, ge=1, le=100),
+    before_date: str | None = Query(None),
+):
+    dir_path = _resolved_summaries_dir()
+    if dir_path is None or not dir_path.exists():
+        return {"items": [], "next_before_date": None, "total": 0}
+
+    # Walk all summaries (cheap — O(files), files remain small).
+    all_items: list[dict] = []
+    for path in dir_path.iterdir():
+        if not path.is_file():
+            continue
+        m = _SUMMARY_FILENAME_RE.match(path.name)
+        if not m:
+            continue
+        date_str = m.group(1)
+        if before_date is not None and date_str >= before_date:
+            continue
+        try:
+            dt = datetime.strptime(
+                f"{date_str}_{m.group(2)}{m.group(3)}{m.group(4)}",
+                "%Y-%m-%d_%H%M%S",
+            ).replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        try:
+            content = path.read_text(encoding="utf-8")
+        except Exception:
+            continue
+        all_items.append({
+            "date": date_str,
+            "timestamp": dt.timestamp(),
+            "file_name": path.name,
+            "content": content,
+            "char_count": len(content),
+        })
+
+    all_items.sort(key=lambda i: i["timestamp"], reverse=True)
+    page = all_items[:limit]
+    next_before = page[-1]["date"] if len(all_items) > len(page) else None
+
+    # total = count of everything that matches before_date filter (or all if unset)
+    total_count = sum(
+        1 for p in dir_path.iterdir()
+        if p.is_file() and _SUMMARY_FILENAME_RE.match(p.name)
+    )
+    return {"items": page, "next_before_date": next_before, "total": total_count}
+
+
 @router.get("/ping")
 async def ping():
     """Smoke endpoint used by tests to verify routing."""

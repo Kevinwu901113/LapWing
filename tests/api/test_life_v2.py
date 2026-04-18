@@ -488,3 +488,52 @@ class TestLifeV2InnerState:
         async with client:
             resp = await client.get("/api/v2/life/inner-state")
         assert resp.json()["has_recent"] is False
+
+
+@pytest.mark.asyncio
+class TestLifeV2SummariesEndpoint:
+    async def test_basic_pagination(self, client, tmp_path, monkeypatch):
+        summaries = tmp_path / "summaries"
+        summaries.mkdir(exist_ok=True)
+        for name in ("2026-04-18_100000.md", "2026-04-17_090000.md", "2026-04-16_080000.md"):
+            _write_summary(summaries, name, body="body")
+
+        from src.api.routes import life_v2
+        monkeypatch.setattr(life_v2, "_summaries_dir_override", summaries)
+
+        async with client:
+            resp = await client.get("/api/v2/life/summaries", params={"limit": 2})
+
+        data = resp.json()
+        assert data["total"] == 3
+        assert len(data["items"]) == 2
+        assert data["items"][0]["date"] == "2026-04-18"
+        assert data["items"][1]["date"] == "2026-04-17"
+        assert data["next_before_date"] == "2026-04-17"
+
+    async def test_before_date(self, client, tmp_path, monkeypatch):
+        summaries = tmp_path / "summaries"
+        summaries.mkdir(exist_ok=True)
+        for name in ("2026-04-18_100000.md", "2026-04-17_090000.md", "2026-04-16_080000.md"):
+            _write_summary(summaries, name)
+        from src.api.routes import life_v2
+        monkeypatch.setattr(life_v2, "_summaries_dir_override", summaries)
+
+        async with client:
+            resp = await client.get(
+                "/api/v2/life/summaries",
+                params={"limit": 5, "before_date": "2026-04-18"},
+            )
+
+        dates = [i["date"] for i in resp.json()["items"]]
+        assert dates == ["2026-04-17", "2026-04-16"]
+
+    async def test_empty_dir(self, client, tmp_path, monkeypatch):
+        summaries = tmp_path / "summaries"
+        summaries.mkdir(exist_ok=True)
+        from src.api.routes import life_v2
+        monkeypatch.setattr(life_v2, "_summaries_dir_override", summaries)
+
+        async with client:
+            resp = await client.get("/api/v2/life/summaries")
+        assert resp.json() == {"items": [], "next_before_date": None, "total": 0}
