@@ -95,3 +95,77 @@ queue itself is a thin asyncio.PriorityQueue wrapper — no I/O, no
 state — so building it in `__init__` is safe and avoids ordering
 gymnastics.
 *Carryover*: closed.
+
+---
+
+## D-6: trajectory schema migration — `source_chat_id` becomes nullable
+
+*Made at*: M3 (sentinel removal)
+*Choice*: Migrated `trajectory.source_chat_id` from `TEXT NOT NULL` to
+`TEXT` (nullable) via in-place SQLite table-rebuild. New inner-thought
+writes use NULL; legacy `'__inner__'` rows stay put. Migration is
+idempotent (checks for the NOT NULL constraint string in
+`sqlite_master.sql` before running).
+*Why*: The spec demanded `source_chat_id = None` for new inner
+writes — the old NOT NULL constraint blocked that. Alternatives
+considered:
+  (a) keep `'__inner__'` literal — rejected: violates spec wording.
+  (b) use empty string `''` — rejected: looks like a real chat ID;
+      future code might split on it; the spec wanted NULL.
+  (c) full schema migration — chosen. The recreate-table dance is
+      the standard SQLite idiom for dropping NOT NULL.
+The same change required: `relevant_to_chat(include_inner=True)` now
+identifies inner thoughts by `entry_type = 'inner_thought'` rather
+than the legacy `source_chat_id = '__inner__'` filter, so it matches
+both pre- and post-migration rows.
+*Carryover*: closed.
+
+---
+
+## D-7: ConsciousnessEngine kept alive in maintenance-only mode through M3
+
+*Made at*: M3.d (consciousness migration audit)
+*Choice*: Production constructs `ConsciousnessEngine(thinking_disabled=True)`.
+Inner thinking is gone (InnerTickScheduler handles it), but the
+engine's `_run_maintenance_if_due` continues to fire hourly /daily
+maintenance actions (SessionReaper, MemoryConsolidation, etc.).
+*Why*: Maintenance actions do real work (DB cleanup, browsing,
+memory consolidation) — they can't just disappear. Migrating them
+into a dedicated `MaintenanceTimer` is mechanical but adds another
+component to design, document, and test. Tightening Step 4's scope
+to "ticks unified" rather than "ticks unified + maintenance unified"
+keeps M3 reviewable. M7 must close this before deleting
+consciousness.py — see `step4_consciousness_migration.md` for the
+full feature ledger.
+*Carryover*: **closed in M7**. Built `src/core/maintenance_timer.py`
+(`MaintenanceTimer` class), wired into `AppContainer.start()` /
+`shutdown()`. Hourly + daily action classes are now invoked from
+`_run_hourly` / `_run_daily` on the timer instead of the engine.
+`consciousness.py` is deleted.
+
+---
+
+## D-8: legacy `chat_id == "__inner__"` branch in `_mirror_to_trajectory`
+
+*Made at*: M3.e
+*Choice*: `conversation._mirror_to_trajectory` keeps the
+`chat_id == "__inner__"` check that routes legacy callers (only
+`consciousness.py._think_freely` at this point) to
+INNER_THOUGHT with `source_chat_id = '__inner__'`. New callers must
+use `is_inner=True`, which writes `source_chat_id = NULL`.
+*Why*: Tests (`test_migrate_to_trajectory.py`, `test_life_v2.py`,
+`test_trajectory_store.py`) directly exercise the legacy literal,
+and `consciousness.py._think_freely` is still in the file (just not
+called in production). Cleaning the branch now would break those
+tests; cleaning when M7 removes consciousness.py keeps things
+reviewable.
+*Carryover*: **closed in M7**. Branch removed from
+`_mirror_to_trajectory`. Tests in
+`tests/memory/test_conversation_dual_write.py::TestInnerTickRemap`
+and
+`tests/integration/test_step2_trajectory_integration.py::TestInnerTickRemap`
+updated to call `memory.append(..., is_inner=True)` and assert
+`source_chat_id is None`. Migration / life_v2 fixtures still write
+the literal `'__inner__'` directly into the trajectory table because
+they exercise the legacy reader path — preserved intentionally to
+keep the schema-migration safety net.

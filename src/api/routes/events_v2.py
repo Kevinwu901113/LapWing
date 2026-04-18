@@ -1,10 +1,14 @@
 """SSE 事件推送 — 桌面端实时事件流。
 
-事件来源：:class:`src.core.dispatcher.Dispatcher` 的 ``subscribe_all``
-回调。v2.0 Step 1 之前本路由同时做"断线重连 + 历史回放"，依赖
-``EventLogger.query(after_event_id=...)``。Step 1 中 EventLogger 被撤除，
-这条回放通道也随之失效——Step 2/4 会在 StateMutationLog 的派生
-事件流上恢复。参见 cleanup_report_step1.md 的 Step 2 TODO。
+事件来源：v2.0 Step 4 M5 起改为订阅 :class:`StateMutationLog`。先前
+（Step 1-3 转型期）路由订阅的是 :class:`Dispatcher`，但 dispatcher 的
+``message.*`` 事件本来就是 mutation_log 信息的二级镜像；改为直接订阅
+``mutation_log`` 让 SSE 与持久化记录的真值保持一致，省掉了
+"dispatcher 不发某事件就丢" 的盲区。
+
+断线重连仍未实现（EventLogger 已撤除）。客户端可以传 Last-Event-ID，
+服务端忽略并只推送新事件。Step 5+ 会用 mutation_log 的
+``after_id`` 查询补回 history-replay。
 """
 
 import asyncio
@@ -18,40 +22,55 @@ logger = logging.getLogger("lapwing.api.routes.events_v2")
 
 router = APIRouter(prefix="/api/v2", tags=["events-v2"])
 
-_dispatcher = None
+# Set by server.py init() at FastAPI app construction time.
+# Step 4 M5: SSE no longer subscribes to dispatcher — it taps the
+# mutation_log directly. The dispatcher reference is kept around as
+# None so the function signature stays compatible during the M5 transition;
+# call sites can drop it once Step 5 lands.
+_mutation_log = None
 
 
-def init(dispatcher=None) -> None:
-    global _dispatcher
-    _dispatcher = dispatcher
+def init(mutation_log=None) -> None:
+    global _mutation_log
+    _mutation_log = mutation_log
 
 
-def _format_sse(event) -> str:
-    """格式化为 SSE 消息。"""
+def _format_sse_mutation(mutation) -> str:
+    """Format a ``Mutation`` row as an SSE message.
+
+    Field shape preserved for backwards compatibility with the desktop
+    client: ``event_id`` (mutation row id), ``event_type``, ``timestamp``
+    (ISO 8601), ``payload``. ``actor`` / ``task_id`` are no longer part
+    of the payload — clients that depended on them must derive the same
+    info from ``payload`` (most events embed it there).
+    """
+    from datetime import datetime, timezone
+
+    ts_iso = datetime.fromtimestamp(mutation.timestamp, tz=timezone.utc).isoformat()
     data = json.dumps(
         {
-            "event_id": event.event_id,
-            "event_type": event.event_type,
-            "timestamp": event.timestamp.isoformat(),
-            "actor": event.actor,
-            "task_id": event.task_id,
-            "payload": event.payload,
+            "event_id": mutation.id,
+            "event_type": mutation.event_type,
+            "timestamp": ts_iso,
+            "iteration_id": mutation.iteration_id,
+            "chat_id": mutation.chat_id,
+            "payload": mutation.payload,
         },
         ensure_ascii=False,
     )
-    return f"id: {event.event_id}\nevent: {event.event_type}\ndata: {data}\n\n"
+    return (
+        f"id: {mutation.id}\n"
+        f"event: {mutation.event_type}\n"
+        f"data: {data}\n\n"
+    )
 
 
 @router.get("/events")
 async def event_stream(request: Request):
-    """SSE 事件流。推送通过 Dispatcher 提交的所有事件。
-
-    Last-Event-ID 断线重连不再支持（EventLogger 已撤除）。客户端仍可
-    传入该 header，服务端会忽略并只推送新事件。
-    """
+    """SSE 事件流 — 来自 StateMutationLog 的所有 mutation。"""
 
     async def event_generator():
-        if _dispatcher is None:
+        if _mutation_log is None:
             while True:
                 if await request.is_disconnected():
                     break
@@ -60,19 +79,29 @@ async def event_stream(request: Request):
             return
 
         queue: asyncio.Queue = asyncio.Queue(maxsize=500)
-        _dispatcher.subscribe_all(queue)
+
+        def _on_mutation(mutation):
+            try:
+                queue.put_nowait(mutation)
+            except asyncio.QueueFull:
+                # Slow client — drop the event. SSE-without-replay is
+                # already best-effort; logging keeps the loss visible
+                # without blocking the writer.
+                logger.warning("SSE queue full — dropping mutation %d", mutation.id)
+
+        _mutation_log.subscribe(_on_mutation)
 
         try:
             while True:
                 if await request.is_disconnected():
                     break
                 try:
-                    event = await asyncio.wait_for(queue.get(), timeout=30)
-                    yield _format_sse(event)
+                    mutation = await asyncio.wait_for(queue.get(), timeout=30)
+                    yield _format_sse_mutation(mutation)
                 except asyncio.TimeoutError:
                     yield ": keepalive\n\n"
         finally:
-            _dispatcher.unsubscribe_all(queue)
+            _mutation_log.unsubscribe(_on_mutation)
 
     return StreamingResponse(
         event_generator(),

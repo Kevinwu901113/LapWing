@@ -182,18 +182,22 @@ class TestFailureIsolation:
 
 
 class TestInnerTickRemap:
-    """Step 2i: consciousness now uses chat_id='__inner__' (the same string
-    trajectory uses as source_chat_id for inner-tick rows). The legacy
-    '__consciousness__' literal survives only in migration data + comments.
-    """
+    """Step 4 M3: brain.think_inner writes inner thoughts via
+    ``memory.append(..., is_inner=True)``. The previous ``chat_id ==
+    "__inner__"`` sentinel branch was removed in M7 along with
+    consciousness.py — the only way to mark a row as INNER_THOUGHT now
+    is the explicit ``is_inner`` flag, and the row's source_chat_id is
+    NULL (not the legacy literal)."""
 
     async def test_inner_assistant_becomes_inner_thought_lapwing(
         self, memory, trajectory
     ):
-        await memory.append("__inner__", "assistant", "pondering")
+        await memory.append(
+            "_inner_tick", "assistant", "pondering", is_inner=True,
+        )
         row = (await trajectory.recent(1))[0]
         assert row.entry_type == TrajectoryEntryType.INNER_THOUGHT.value
-        assert row.source_chat_id == "__inner__"
+        assert row.source_chat_id is None
         assert row.actor == "lapwing"
         assert row.content["text"] == "pondering"
         assert row.content["trigger_type"] == "live_dual_write"
@@ -201,15 +205,18 @@ class TestInnerTickRemap:
     async def test_inner_user_becomes_inner_thought_system(
         self, memory, trajectory
     ):
-        await memory.append("__inner__", "user", "tick prompt")
+        await memory.append(
+            "_inner_tick", "user", "tick prompt", is_inner=True,
+        )
         row = (await trajectory.recent(1))[0]
         assert row.entry_type == TrajectoryEntryType.INNER_THOUGHT.value
-        assert row.source_chat_id == "__inner__"
+        assert row.source_chat_id is None
         assert row.actor == "system"
 
-    async def test_real_chat_unaffected_by_consciousness_branch(
+    async def test_real_chat_unaffected_by_inner_branch(
         self, memory, trajectory
     ):
+        # No is_inner flag → standard USER_MESSAGE write.
         await memory.append("919231551", "user", "real user message")
         row = (await trajectory.recent(1))[0]
         assert row.entry_type == TrajectoryEntryType.USER_MESSAGE.value

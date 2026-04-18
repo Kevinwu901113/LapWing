@@ -53,6 +53,12 @@ class AttentionState:
     last_interaction_at: float
     last_action_at: float
     mode: str
+    # Step 4 M6: a "session" is the continuous attention window from the
+    # moment Lapwing pivots from idle into conversation until silence
+    # ends it. Stored on AttentionState because the boundary IS the
+    # attention transition — there's no separate "sessions" subsystem
+    # any more (the SQL table was dropped in Step 2j).
+    session_started_at: float | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -61,16 +67,19 @@ class AttentionState:
             "last_interaction_at": self.last_interaction_at,
             "last_action_at": self.last_action_at,
             "mode": self.mode,
+            "session_started_at": self.session_started_at,
         }
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any]) -> "AttentionState":
+        ssa = payload.get("session_started_at")
         return cls(
             current_conversation=payload.get("current_conversation"),
             current_action=payload.get("current_action"),
             last_interaction_at=float(payload.get("last_interaction_at", 0.0)),
             last_action_at=float(payload.get("last_action_at", 0.0)),
             mode=str(payload.get("mode", "idle")),
+            session_started_at=float(ssa) if ssa is not None else None,
         )
 
 
@@ -99,6 +108,7 @@ class AttentionManager:
             last_interaction_at=now,
             last_action_at=now,
             mode="idle",
+            session_started_at=None,
         )
 
     async def initialize(self) -> None:
@@ -175,6 +185,18 @@ class AttentionManager:
             if not changes:
                 return old
 
+            # Step 4 M6: implicit session-start when attention pivots from
+            # idle → conversing. The session ends only via end_session()
+            # (so silence-detection logic stays in one place).
+            new_mode = changes.get("mode", old.mode)
+            if (
+                old.mode == "idle"
+                and new_mode == "conversing"
+                and old.session_started_at is None
+            ):
+                changes["session_started_at"] = now
+                changed_fields.append("session_started_at")
+
             new = replace(old, **changes)
             self._state = new
 
@@ -194,4 +216,56 @@ class AttentionManager:
                     "ATTENTION_CHANGED mutation emit failed", exc_info=True
                 )
 
+            return new
+
+    # ── Session window (Step 4 M6) ──────────────────────────────────
+
+    @property
+    def current_session_start(self) -> float | None:
+        """Unix timestamp when the current session began, or None if idle.
+
+        Synchronous projection of ``self._state.session_started_at`` —
+        StateSerializer reads this on every prompt render.
+        """
+        return self._state.session_started_at
+
+    def is_in_session(self) -> bool:
+        return self._state.session_started_at is not None
+
+    async def end_session(self) -> AttentionState:
+        """Close the current session window.
+
+        Sets ``session_started_at = None`` and ``mode = "idle"`` in one
+        atomic update, emitting an ATTENTION_CHANGED mutation that
+        carries the session boundary.
+        """
+        async with self._lock:
+            old = self._state
+            if old.session_started_at is None and old.mode == "idle":
+                return old
+            now = time.time()
+            new = replace(
+                old,
+                session_started_at=None,
+                mode="idle",
+                last_interaction_at=now,
+            )
+            self._state = new
+            try:
+                await self._mutation_log.record(
+                    MutationType.ATTENTION_CHANGED,
+                    {
+                        "old": old.to_payload(),
+                        "new": new.to_payload(),
+                        "changed_fields": ["session_started_at", "mode", "last_interaction_at"],
+                        "session_boundary": "ended",
+                    },
+                    iteration_id=current_iteration_id(),
+                    chat_id=new.current_conversation,
+                )
+            except Exception:
+                logger.warning(
+                    "session-end ATTENTION_CHANGED mutation emit failed",
+                    exc_info=True,
+                )
             return new

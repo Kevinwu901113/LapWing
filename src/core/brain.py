@@ -137,7 +137,9 @@ class LapwingBrain:
         self._system_prompt: str | None = None
         self.reminder_scheduler = None  # Set externally (ReminderScheduler | None)
         self.channel_manager = None  # Set externally (ChannelManager | None)
-        self.consciousness_engine = None  # Set externally (ConsciousnessEngine | None)
+        # Step 4 M7: ConsciousnessEngine retired. InnerTickScheduler owns
+        # inner thinking; MaintenanceTimer owns periodic actions.
+        self.inner_tick_scheduler = None  # Set externally — Step 4 M3
         self.attention_manager = None  # Set externally (AttentionManager | None) — v2.0 Step 2
         self.trajectory_store = None  # Set externally (TrajectoryStore | None) — v2.0 Step 2f
         self._conversation_end_task: asyncio.Task | None = None
@@ -404,8 +406,16 @@ class LapwingBrain:
         return [{"role": "system", "content": system_content}, *rendered]
 
     def _schedule_conversation_end(self) -> None:
-        """延迟判定对话结束。用户最后一条消息后 N 秒无新消息算结束。"""
-        if self.consciousness_engine is None:
+        """延迟判定对话结束。用户最后一条消息后 N 秒无新消息算结束。
+
+        Step 4 M6: closes the AttentionManager session window and
+        notifies the InnerTickScheduler so inner ticks resume on the
+        post-chat schedule.
+        """
+        if (
+            self.inner_tick_scheduler is None
+            and self.attention_manager is None
+        ):
             return
         if self._conversation_end_task is not None:
             self._conversation_end_task.cancel()
@@ -414,8 +424,13 @@ class LapwingBrain:
 
         async def _delayed_end():
             await asyncio.sleep(CONSCIOUSNESS_CONVERSATION_END_DELAY)
-            if self.consciousness_engine is not None:
-                self.consciousness_engine.on_conversation_end()
+            if self.inner_tick_scheduler is not None:
+                self.inner_tick_scheduler.note_conversation_end()
+            if self.attention_manager is not None:
+                try:
+                    await self.attention_manager.end_session()
+                except Exception:
+                    logger.warning("attention_manager.end_session failed", exc_info=True)
 
         self._conversation_end_task = asyncio.create_task(_delayed_end())
 
@@ -658,44 +673,16 @@ class LapwingBrain:
 
         await self.memory.append(chat_id, "user", stored_text)
 
-        dispatcher = getattr(self, "_dispatcher_ref", None)
-        if dispatcher is not None:
-            try:
-                await dispatcher.submit(
-                    "message.received",
-                    payload={
-                        "chat_id": chat_id,
-                        "content": stored_text[:500],
-                        "has_images": bool(images),
-                        "adapter": adapter,
-                    },
-                    actor=user_id or "user",
-                    source=adapter,
-                    trust_level=("owner" if auth_level == 3 else ("trusted" if auth_level >= 2 else "guest")),
-                )
-            except Exception:
-                logger.debug("message.received 事件提交失败", exc_info=True)
+        # Step 4 M5: dispatcher emits for message.received / message.sent
+        # used to feed SSE; SSE now subscribes to StateMutationLog (which
+        # already records TRAJECTORY_APPENDED for both directions). No
+        # other consumers — the emits have been removed.
 
         effective_user_message, approved_directory, immediate_reply = (
             self.task_runtime.resolve_pending_confirmation(chat_id, user_message)
         )
         if immediate_reply is not None:
             await self.memory.append(chat_id, "assistant", immediate_reply)
-            if dispatcher is not None:
-                try:
-                    await dispatcher.submit(
-                        "message.sent",
-                        payload={
-                            "chat_id": chat_id,
-                            "content": immediate_reply[:500],
-                            "adapter": adapter,
-                            "reason": "pending_confirmation_resolved",
-                        },
-                        actor="lapwing",
-                        source=adapter,
-                    )
-                except Exception:
-                    logger.debug("message.sent 事件提交失败", exc_info=True)
             if send_fn is not None:
                 await send_fn(immediate_reply)
             return _ThinkCtx(messages=[], effective_user_message=effective_user_message,
@@ -784,16 +771,8 @@ class LapwingBrain:
                     "[brain] 后处理失败（回复已生成，不影响调用方）: %s",
                     post_exc, exc_info=True,
                 )
-            dispatcher = getattr(self, "_dispatcher_ref", None)
-            if dispatcher is not None:
-                try:
-                    await dispatcher.submit(
-                        "message.sent",
-                        payload={"chat_id": chat_id, "content": reply[:500]},
-                        actor="lapwing",
-                    )
-                except Exception:
-                    logger.debug("message.sent 事件提交失败", exc_info=True)
+            # Step 4 M5: message.sent dispatcher emit removed — SSE now
+            # reads TRAJECTORY_APPENDED from StateMutationLog directly.
             return reply
 
         except Exception as e:
@@ -803,6 +782,106 @@ class LapwingBrain:
             if chat_id.startswith("__"):
                 raise
             return f"出错了：{e}"
+
+    async def think_inner(
+        self,
+        *,
+        urgent_items: list[dict] | None = None,
+        timeout_seconds: int = 120,
+    ) -> tuple[str, int | None, bool]:
+        """One self-initiated thinking pulse — no external user message.
+
+        Step 4 M3 entry point. Builds the inner-tick prompt (urgency-
+        block + working-memory + reflection prompts), runs the standard
+        tool loop, writes both prompt and reply to trajectory as
+        ``INNER_THOUGHT`` with ``source_chat_id = NULL`` (no
+        ``__inner__`` sentinel), and parses ``[NEXT: Xm]`` from the
+        reply so the scheduler can pick the next interval.
+
+        ``urgent_items`` shape: ``[{"type": str, "content": str}, ...]``
+        — drained by MainLoop from ``InnerTickScheduler.urgency_queue``.
+
+        Returns ``(reply_text, llm_next_interval_seconds, did_something)``.
+        ``did_something=False`` when the LLM returned the canonical
+        "no action" string (so the scheduler can apply idle backoff).
+        """
+        from src.core.inner_tick_scheduler import (
+            build_inner_prompt,
+            is_inner_did_nothing,
+            parse_next_interval,
+        )
+
+        inner_prompt = build_inner_prompt(urgent_items)
+
+        # Internal session key for TaskRuntime / memory cache. Never
+        # written as source_chat_id — trajectory rows go in with NULL.
+        # The leading underscore keeps it cleanly distinct from real
+        # adapter chat_ids without re-introducing the ``__inner__``
+        # sentinel literal.
+        session_key = "_inner_tick"
+
+        await self.memory.append(
+            session_key, "user", inner_prompt, is_inner=True,
+        )
+
+        history = await self._load_history(session_key)
+        recent = self._recent_messages(
+            history,
+            user_message=inner_prompt,
+            original_user_message=inner_prompt,
+        )
+        messages = await self._render_messages(
+            session_key, recent, inner=True,
+        )
+
+        try:
+            reply = await asyncio.wait_for(
+                self._complete_chat(
+                    session_key,
+                    messages,
+                    inner_prompt,
+                    include_skill_activation_tool=self._skill_activation_tool_enabled(),
+                ),
+                timeout=timeout_seconds,
+            )
+        except asyncio.CancelledError:
+            # Step 4 M4: OWNER preempt cancelled the inner tick.
+            await self._persist_interrupted(
+                chat_id=session_key,
+                partial_text="",  # complete_chat is synchronous wrt streaming for inner ticks
+                reason="owner_message_preempt",
+                kind="inner",
+            )
+            raise
+        except asyncio.TimeoutError:
+            logger.warning(
+                "think_inner timed out after %ds — letting scheduler back off",
+                timeout_seconds,
+            )
+            return "", None, False
+        except Exception:
+            logger.exception("think_inner LLM call failed")
+            return "", None, False
+
+        reply = strip_internal_thinking_tags(reply or "")
+
+        try:
+            await self.memory.append(
+                session_key, "assistant", reply, is_inner=True,
+            )
+        except Exception:
+            logger.warning(
+                "think_inner reply persistence failed (reply already returned)",
+                exc_info=True,
+            )
+
+        clean_text, next_interval = parse_next_interval(reply)
+        did_something = bool(
+            clean_text.strip()
+            and not is_inner_did_nothing(clean_text)
+        )
+
+        return clean_text, next_interval, did_something
 
     async def think_conversational(
         self,
@@ -830,8 +909,8 @@ class LapwingBrain:
         Returns:
             完整回复文本（所有中间文字 + 最终文字拼接），用于记录到记忆
         """
-        if self.consciousness_engine is not None:
-            self.consciousness_engine.on_conversation_start()
+        if self.inner_tick_scheduler is not None:
+            self.inner_tick_scheduler.note_conversation_start()
 
         # v2.0 Step 2: focus moves to this conversation at the entry point.
         # Other call sites (inner loop, action start) get wired in Step 3/4.
@@ -947,24 +1026,22 @@ class LapwingBrain:
                     "[brain] 后处理失败（回复已发出，不影响用户）: %s",
                     post_exc, exc_info=True,
                 )
-            dispatcher = getattr(self, "_dispatcher_ref", None)
-            if dispatcher is not None:
-                try:
-                    await dispatcher.submit(
-                        "message.sent",
-                        payload={
-                            "chat_id": chat_id,
-                            "content": memory_text[:500],
-                            "segments": len(parts_sent),
-                            "adapter": adapter,
-                        },
-                        actor="lapwing",
-                        source=adapter,
-                    )
-                except Exception:
-                    logger.debug("message.sent 事件提交失败", exc_info=True)
+            # Step 4 M5: message.sent dispatcher emit removed — see M5.c.
             return memory_text
 
+        except asyncio.CancelledError:
+            # Step 4 M4: OWNER preempt cancelled the in-flight call.
+            # Persist whatever was already streamed so the trajectory
+            # carries a record of "started, but didn't finish".
+            partial = "\n\n".join(parts_sent) if parts_sent else ""
+            await self._persist_interrupted(
+                chat_id=chat_id,
+                partial_text=partial,
+                reason="owner_message_preempt",
+                adapter=adapter,
+                kind="conversational",
+            )
+            raise
         except Exception as e:
             logger.error(f"LLM 调用失败（conversational）: {e}")
             await self.memory.remove_last(chat_id)
@@ -973,6 +1050,48 @@ class LapwingBrain:
             return error_msg
         finally:
             self._schedule_conversation_end()
+
+    async def _persist_interrupted(
+        self,
+        *,
+        chat_id: str,
+        partial_text: str,
+        reason: str,
+        adapter: str = "",
+        kind: str = "conversational",
+    ) -> None:
+        """Write an INTERRUPTED trajectory entry for a cancelled handler.
+
+        Step 4 M4. Best-effort; never re-raises (the cancellation must
+        propagate). The entry carries the partial text we managed to
+        stream/produce, so observers can see what got cut off.
+        """
+        if self.trajectory_store is None:
+            return
+        try:
+            from src.core.trajectory_store import TrajectoryEntryType
+
+            payload: dict[str, Any] = {
+                "text": partial_text,
+                "reason": reason,
+                "kind": kind,  # "conversational" | "inner"
+                "partial_chars": len(partial_text),
+            }
+            if adapter:
+                payload["adapter"] = adapter
+
+            source_chat_id = None if kind == "inner" else chat_id
+            await self.trajectory_store.append(
+                TrajectoryEntryType.INTERRUPTED,
+                source_chat_id,
+                "lapwing",
+                payload,
+            )
+        except Exception:
+            logger.warning(
+                "INTERRUPTED trajectory write failed for %s (kind=%s)",
+                chat_id, kind, exc_info=True,
+            )
 
     async def compose_proactive(
         self,

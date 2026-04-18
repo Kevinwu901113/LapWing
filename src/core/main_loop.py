@@ -25,11 +25,18 @@ import asyncio
 import logging
 from typing import TYPE_CHECKING
 
-from src.core.events import Event, InnerTickEvent, MessageEvent, SystemEvent
+from src.core.events import (
+    PRIORITY_OWNER_MESSAGE,
+    Event,
+    InnerTickEvent,
+    MessageEvent,
+    SystemEvent,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - type-only imports
     from src.core.brain import LapwingBrain
     from src.core.event_queue import EventQueue
+    from src.core.inner_tick_scheduler import InnerTickScheduler
 
 logger = logging.getLogger("lapwing.main_loop")
 
@@ -46,18 +53,26 @@ class MainLoop:
     constructed and exercised without wiring AppContainer.
     """
 
+    # How often the OWNER-preempt watcher checks the queue. 50 ms keeps
+    # interrupt latency well under perceptual threshold without burning
+    # measurable CPU on an idle loop.
+    OWNER_WATCHER_POLL_SECONDS = 0.05
+
     def __init__(
         self,
         queue: "EventQueue",
         brain: "LapwingBrain | None" = None,
+        inner_tick_scheduler: "InnerTickScheduler | None" = None,
     ) -> None:
         self._queue = queue
         self._brain = brain
+        self._scheduler = inner_tick_scheduler
         self._alive = False
         self._current_task: asyncio.Task | None = None
         # M4 will read this to decide whether a cancellation was
         # pre-emptive (set True) versus a normal task completion.
         self._cancel_requested = False
+        self._owner_watcher_task: asyncio.Task | None = None
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -65,6 +80,13 @@ class MainLoop:
         """Consume the queue until ``stop()`` is called."""
         self._alive = True
         logger.info("MainLoop started")
+        # Step 4 M4: spawn a concurrent watcher that cancels the in-flight
+        # handler the moment an OWNER message lands in the queue. Without
+        # it the run loop is blocked awaiting the handler and only sees
+        # the new event after the handler completes.
+        self._owner_watcher_task = asyncio.create_task(
+            self._owner_preempt_watcher(), name="lapwing-owner-watcher",
+        )
         try:
             while self._alive:
                 event = await self._queue.get()
@@ -73,6 +95,13 @@ class MainLoop:
                     break
                 await self._dispatch(event)
         finally:
+            if self._owner_watcher_task is not None:
+                self._owner_watcher_task.cancel()
+                try:
+                    await self._owner_watcher_task
+                except asyncio.CancelledError:
+                    pass
+                self._owner_watcher_task = None
             await self._cancel_in_flight("loop_shutdown")
             logger.info("MainLoop stopped")
 
@@ -81,10 +110,51 @@ class MainLoop:
         self._alive = False
         await self._cancel_in_flight("loop_shutdown")
 
+    async def _owner_preempt_watcher(self) -> None:
+        """Concurrent observer: cancel ``_current_task`` when OWNER queues.
+
+        Run as a separate asyncio task alongside the dispatch loop. The
+        only state it touches is ``_current_task`` (cancel) and the
+        queue (read-only ``has_owner_message`` peek), so it never races
+        with the dispatcher's own bookkeeping.
+
+        When it fires, the OWNER message stays in the queue — the next
+        ``queue.get()`` in the run loop pops it, ``_dispatch`` sees the
+        OWNER priority, and the regular handler path runs.
+        """
+        try:
+            while self._alive:
+                await asyncio.sleep(self.OWNER_WATCHER_POLL_SECONDS)
+                task = self._current_task
+                if task is None or task.done():
+                    continue
+                if not self._queue.has_owner_message():
+                    continue
+                logger.info("OWNER message detected — preempting in-flight handler")
+                await self._cancel_in_flight("owner_message_preempt")
+        except asyncio.CancelledError:
+            pass
+
     # ── Dispatch ─────────────────────────────────────────────────────
 
     async def _dispatch(self, event: Event) -> None:
-        """Route ``event`` to the handler that matches its kind."""
+        """Route ``event`` to the handler that matches its kind.
+
+        OWNER messages (``priority == PRIORITY_OWNER_MESSAGE``) preempt
+        any in-flight handler before the OWNER's own dispatch begins —
+        this is Step 4 M4's "instant interrupt" guarantee. The cancelled
+        handler's brain side persists whatever partial output it had as
+        an INTERRUPTED trajectory entry, then re-raises CancelledError;
+        we swallow that here (the partial is already saved) and proceed
+        to the OWNER dispatch.
+        """
+        if (
+            event.priority == PRIORITY_OWNER_MESSAGE
+            and self._current_task is not None
+            and not self._current_task.done()
+        ):
+            await self._interrupt_current(reason="owner_message_preempt")
+
         try:
             if isinstance(event, MessageEvent):
                 await self._handle_message(event)
@@ -95,11 +165,21 @@ class MainLoop:
             else:
                 logger.warning("Unknown event kind: %s", event.kind)
         except asyncio.CancelledError:
-            # M4 will surface partial output here. M1 just logs.
+            # The handler cancelled itself (preempt or shutdown). Brain
+            # side already persisted partial output; nothing more to do.
             logger.info("Handler cancelled while dispatching %s", event.kind)
-            raise
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("Handler crashed for %s: %s", event.kind, exc)
+
+    async def _interrupt_current(self, reason: str) -> None:
+        """Preempt the in-flight handler, marking the cancellation as requested.
+
+        Wrapper around ``_cancel_in_flight`` that records ``reason`` for
+        observability and the cancellation flag for any handler-side
+        logic that wants to distinguish a deliberate preempt from a
+        normal task completion.
+        """
+        await self._cancel_in_flight(reason)
 
     async def _cancel_in_flight(self, reason: str) -> None:
         """Cancel ``_current_task`` if one is running."""
@@ -168,9 +248,57 @@ class MainLoop:
                 self._current_task = None
 
     async def _handle_inner_tick(self, event: InnerTickEvent) -> None:
-        # M3 fills this in: yield to OWNER messages first, then call
-        # brain.think_inner().
-        logger.debug("InnerTickEvent stub: reason=%s", event.reason)
+        """Drive ``brain.think_inner`` for one tick.
+
+        Self-yield rule: if a higher-priority OWNER message arrived
+        between scheduling and dispatch, skip this tick and re-enqueue
+        nothing — the scheduler will fire again after its own delay.
+        Avoids burning a turn on inner thinking when Kevin is mid-typing.
+        """
+        if self._brain is None:
+            logger.debug("InnerTickEvent received but no brain wired")
+            return
+
+        if self._queue.has_owner_message():
+            logger.info(
+                "Inner tick skipped — OWNER message queued (reason=%s)",
+                event.reason,
+            )
+            return
+
+        urgent_items: list[dict] = []
+        if self._scheduler is not None:
+            urgent_items = self._scheduler.drain_urgency()
+
+        async def _drive():
+            return await self._brain.think_inner(urgent_items=urgent_items)
+
+        task = asyncio.create_task(_drive(), name="think_inner")
+        self._current_task = task
+        try:
+            reply, next_interval, did_something = await task
+        except asyncio.CancelledError:
+            if self._scheduler is not None:
+                self._scheduler.note_tick_failed()
+            raise
+        except Exception:
+            logger.exception("think_inner crashed")
+            if self._scheduler is not None:
+                self._scheduler.note_tick_failed()
+            return
+        finally:
+            if self._current_task is task:
+                self._current_task = None
+
+        if self._scheduler is not None:
+            self._scheduler.note_tick_result(
+                did_something=did_something,
+                llm_next_interval=next_interval,
+            )
+        logger.info(
+            "Inner tick done — did_something=%s next_interval=%s",
+            did_something, next_interval,
+        )
 
     async def _handle_system(self, event: SystemEvent) -> None:
         # Right now only "shutdown" is meaningful — it triggers stop()

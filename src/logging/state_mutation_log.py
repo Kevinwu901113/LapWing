@@ -161,6 +161,10 @@ class StateMutationLog:
         )
         self._db: aiosqlite.Connection | None = None
         self._write_lock = asyncio.Lock()
+        # Step 4 M5: synchronous fan-out to live subscribers (SSE, etc.).
+        # Independent from the JSONL/SQLite durable channels — purely a
+        # live-stream tap.
+        self._subscribers: list = []
 
     async def init(self) -> None:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -190,6 +194,40 @@ class StateMutationLog:
         if self._db is not None:
             await self._db.close()
             self._db = None
+
+    # ── Live subscriptions (Step 4 M5) ───────────────────────────────
+
+    def subscribe(self, callback) -> None:
+        """Register a sync or async callback fired after each ``record``.
+
+        Step 4 M5. The SSE endpoint (``events_v2``) registers itself
+        here so it can stream mutations to the desktop client without
+        the dispatcher's own pub/sub. Subscribers receive the full
+        ``Mutation`` object; the fanout is best-effort — exceptions in
+        a subscriber are logged but never block the write or affect
+        other subscribers.
+        """
+        self._subscribers.append(callback)
+
+    def unsubscribe(self, callback) -> None:
+        try:
+            self._subscribers.remove(callback)
+        except ValueError:
+            pass
+
+    async def _fanout(self, mutation: "Mutation") -> None:
+        if not self._subscribers:
+            return
+        for cb in list(self._subscribers):
+            try:
+                result = cb(mutation)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception:
+                logger.warning(
+                    "mutation_log subscriber raised; continuing fanout",
+                    exc_info=True,
+                )
 
     async def record(
         self,
@@ -245,6 +283,21 @@ class StateMutationLog:
             logger.warning(
                 "mutation %d JSONL mirror failed", mutation_id, exc_info=True
             )
+
+        # Step 4 M5: live fan-out to subscribers (SSE, etc.). Runs after
+        # the durable write so subscribers see only data that's been
+        # persisted.
+        if self._subscribers:
+            mutation = Mutation(
+                id=mutation_id,
+                timestamp=timestamp,
+                event_type=event_type.value,
+                iteration_id=iteration_id,
+                chat_id=chat_id,
+                payload=payload,
+                payload_size=payload_size,
+            )
+            await self._fanout(mutation)
 
         return mutation_id
 
