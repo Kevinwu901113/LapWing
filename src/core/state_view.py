@@ -161,6 +161,14 @@ class StateView:
 
     The field order matches the prompt-layer render order so a reader of
     this type sees the system prompt's structure directly.
+
+    Identity boundary (Step 4 §M1.d):
+      ``identity_docs`` carries who Lapwing IS — soul + constitution +
+      voice. Rules and interests live in ``data/evolution/`` and are
+      *evolution artifacts*, not identity; when the evolution layer
+      lands they get their own StateView field rather than being grafted
+      onto IdentityDocs. Keeping the line bright here prevents the
+      serializer from blurring "stable self" with "learned behaviour".
     """
 
     identity_docs: IdentityDocs
