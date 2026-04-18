@@ -246,36 +246,6 @@ async def search_notes_executor(req: ToolExecutionRequest, ctx: ToolExecutionCon
 
 
 # ---------------------------------------------------------------------------
-# search_archive
-# ---------------------------------------------------------------------------
-
-
-async def search_archive_executor(req: ToolExecutionRequest, ctx: ToolExecutionContext) -> ToolExecutionResult:
-    """搜索深度归档旧对话。"""
-    conversation_memory = ctx.services.get("conversation_memory")
-    if conversation_memory is None:
-        return ToolExecutionResult(
-            success=False,
-            payload={"error": "conversation_memory 不可用"},
-            reason="conversation_memory 未注入",
-        )
-
-    query: str = req.arguments.get("query", "").strip()
-    chat_id: str = ctx.chat_id or ""
-
-    try:
-        rows = await conversation_memory.search_deep_archive(chat_id, query)
-    except Exception as e:
-        logger.error("search_archive 失败: %s", e)
-        return ToolExecutionResult(success=False, payload={"error": str(e)}, reason=str(e))
-
-    return ToolExecutionResult(
-        success=True,
-        payload={"results": rows, "count": len(rows), "query": query},
-    )
-
-
-# ---------------------------------------------------------------------------
 # get_context
 # ---------------------------------------------------------------------------
 
@@ -433,20 +403,6 @@ def register_memory_tools_v2(registry) -> None:
                 "required": ["keyword"],
             },
             executor=search_notes_executor,
-            capability="memory",
-            risk_level="low",
-        ),
-        ToolSpec(
-            name="search_archive",
-            description="搜索很久以前的旧对话。适用于你模糊记得但想不起细节的事。",
-            json_schema={
-                "type": "object",
-                "properties": {
-                    "query": {"type": "string", "description": "搜索关键词"},
-                },
-                "required": ["query"],
-            },
-            executor=search_archive_executor,
             capability="memory",
             risk_level="low",
         ),
