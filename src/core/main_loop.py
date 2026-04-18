@@ -121,12 +121,51 @@ class MainLoop:
     # ── Handlers (stubs filled in later milestones) ──────────────────
 
     async def _handle_message(self, event: MessageEvent) -> None:
-        # M2 fills this in: wrap brain.think_conversational in a task and
-        # store on _current_task so M4's interrupt path can cancel it.
-        logger.debug(
-            "MessageEvent stub: chat=%s adapter=%s text=%r",
-            event.chat_id, event.adapter, event.text[:50],
-        )
+        """Drive ``brain.think_conversational`` for ``event``.
+
+        The actual call is wrapped in ``self._current_task`` so M4's
+        interrupt path can cancel it. ``done_future`` (when supplied by
+        the producer) gets the assistant's full reply or the exception
+        the brain raised — this is how the desktop ``/ws/chat`` route
+        keeps its synchronous "send reply, then close turn" semantic.
+        """
+        if self._brain is None:
+            logger.warning("MessageEvent received but no brain wired")
+            if event.done_future is not None and not event.done_future.done():
+                event.done_future.set_result("")
+            return
+
+        async def _drive() -> str:
+            return await self._brain.think_conversational(
+                chat_id=event.chat_id,
+                user_message=event.text,
+                send_fn=event.send_fn,
+                typing_fn=event.typing_fn,
+                status_callback=event.status_callback,
+                adapter=event.adapter,
+                user_id=event.user_id,
+                images=list(event.images) if event.images else None,
+            )
+
+        task = asyncio.create_task(_drive(), name=f"think_conv:{event.chat_id}")
+        self._current_task = task
+        try:
+            reply = await task
+            if event.done_future is not None and not event.done_future.done():
+                event.done_future.set_result(reply)
+        except asyncio.CancelledError:
+            # M4 surfaces partial output here; for now propagate the
+            # cancellation to the producer so it can clean up.
+            if event.done_future is not None and not event.done_future.done():
+                event.done_future.cancel()
+            raise
+        except Exception as exc:
+            logger.exception("think_conversational failed for %s", event.chat_id)
+            if event.done_future is not None and not event.done_future.done():
+                event.done_future.set_exception(exc)
+        finally:
+            if self._current_task is task:
+                self._current_task = None
 
     async def _handle_inner_tick(self, event: InnerTickEvent) -> None:
         # M3 fills this in: yield to OWNER messages first, then call

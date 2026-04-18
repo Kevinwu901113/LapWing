@@ -22,6 +22,8 @@ from src.core.consciousness import ConsciousnessEngine
 from src.core.dispatcher import Dispatcher
 from src.core.durable_scheduler import DurableScheduler
 from src.core.attention import AttentionManager
+from src.core.event_queue import EventQueue
+from src.core.main_loop import MainLoop
 from src.core.trajectory_store import TrajectoryStore
 from src.logging.state_mutation_log import MutationType, StateMutationLog
 
@@ -110,11 +112,16 @@ class AppContainer:
         self.channel_manager.register(ChannelType.DESKTOP, self._desktop_adapter)
         self.brain.channel_manager = self.channel_manager
 
+        # event_queue must already exist before LocalApiServer is built so
+        # the desktop /ws/chat route can enqueue MessageEvent on it.
+        self.event_queue: EventQueue = EventQueue()
+
         self.api_server = api_server or LocalApiServer(
             brain=self.brain,
             event_bus=self.event_bus,
             task_view_store=self.task_view_store,
             channel_manager=self.channel_manager,
+            event_queue=self.event_queue,
         )
         self.consciousness: ConsciousnessEngine | None = None
         self.durable_scheduler: DurableScheduler | None = None
@@ -137,6 +144,12 @@ class AppContainer:
         # dual-written alongside the legacy conversations table during the
         # sub-phase-A window; becomes read-side truth in sub-phase B.
         self.trajectory_store: TrajectoryStore | None = None
+
+        # v2.0 Step 4: MainLoop — single runtime driver. event_queue was
+        # constructed above (so LocalApiServer could pick it up). The
+        # loop itself starts in start() once brain wiring is complete.
+        self.main_loop: MainLoop | None = None
+        self._main_loop_task = None
 
         self._prepared = False
         self._started = False
@@ -249,6 +262,15 @@ class AppContainer:
         elif PHASE0_MODE:
             logger.info("Phase 0 模式：跳过意识循环")
 
+        # v2.0 Step 4: start MainLoop before adapters connect, so the
+        # very first MessageEvent has a consumer waiting on the queue.
+        import asyncio as _asyncio
+        self.main_loop = MainLoop(self.event_queue, self.brain)
+        self._main_loop_task = _asyncio.create_task(
+            self.main_loop.run(), name="lapwing-main-loop",
+        )
+        logger.info("MainLoop 已启动")
+
         await self.channel_manager.start_all()
 
         await self.api_server.start()
@@ -298,6 +320,19 @@ class AppContainer:
 
         # Channel 后停，处理完在途消息
         await self.channel_manager.stop_all()
+
+        # v2.0 Step 4: stop MainLoop after channels so any in-flight
+        # adapter callbacks can drain. cancel() unblocks queue.get.
+        if self.main_loop is not None:
+            await self.main_loop.stop()
+        if self._main_loop_task is not None:
+            self._main_loop_task.cancel()
+            try:
+                await self._main_loop_task
+            except _asyncio.CancelledError:
+                pass
+            self._main_loop_task = None
+        self.main_loop = None
 
         # VLM 客户端关闭
         if hasattr(self, "_vlm_client") and self._vlm_client is not None:

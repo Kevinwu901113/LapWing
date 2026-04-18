@@ -28,6 +28,7 @@ def create_app(
     latency_monitor=None,
     channel_manager=None,
     dispatcher=None,
+    event_queue=None,
 ) -> FastAPI:
     if latency_monitor is not None and hasattr(event_bus, "set_latency_monitor"):
         event_bus.set_latency_monitor(latency_monitor)
@@ -54,7 +55,7 @@ def create_app(
     from src.api.routes import chat_ws as _chat_ws_routes
 
     _auth_routes.init(app.state.auth_manager, api_session_ttl=API_SESSION_TTL_SECONDS)
-    _chat_ws_routes.init(brain, channel_manager)
+    _chat_ws_routes.init(brain, channel_manager, event_queue=event_queue)
 
     app.include_router(_auth_routes.router)
     app.include_router(_chat_ws_routes.router)
@@ -213,6 +214,7 @@ class LocalApiServer:
         port: int = API_PORT,
         channel_manager=None,
         dispatcher=None,
+        event_queue=None,
     ) -> None:
         self._brain = brain
         self._event_bus = event_bus
@@ -222,6 +224,7 @@ class LocalApiServer:
         self._port = port
         self._channel_manager = channel_manager
         self._dispatcher = dispatcher
+        self._event_queue = event_queue
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None
         self._app: FastAPI | None = None
@@ -237,6 +240,7 @@ class LocalApiServer:
             self._latency_monitor,
             channel_manager=self._channel_manager,
             dispatcher=self._dispatcher,
+            event_queue=self._event_queue,
         )
         self._app = app
         config = uvicorn.Config(
