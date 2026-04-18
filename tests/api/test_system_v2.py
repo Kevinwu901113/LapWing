@@ -1,6 +1,10 @@
-"""Phase 5: /api/v2/system/* 端点测试。"""
+"""Tests for /api/v2/system/* endpoints.
 
-from datetime import datetime, timezone
+v2.0 Step 1: /api/v2/system/events now reads from StateMutationLog
+(mutation_log.db) rather than events_v2.db. Response field names stay
+backward-compatible for the desktop frontend.
+"""
+
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -8,7 +12,7 @@ import pytest
 
 from src.api.event_bus import DesktopEventBus
 from src.api.server import create_app
-from src.core.event_logger_v2 import Event, EventLogger
+from src.logging.state_mutation_log import MutationType, StateMutationLog
 
 
 @pytest.fixture
@@ -23,26 +27,16 @@ def mock_brain():
     brain.memory.get_last_interaction = AsyncMock(return_value=None)
     brain._note_store = None
     brain._memory_vector_store = None
+    brain._mutation_log_ref = None
     return brain
 
 
 @pytest.fixture
-def mock_event_logger():
-    logger = MagicMock(spec=EventLogger)
-    logger.query = AsyncMock(return_value=[
-        Event(
-            event_id="ev1",
-            timestamp=datetime(2026, 4, 15, 10, 0, tzinfo=timezone.utc),
-            event_type="system.heartbeat_tick",
-            actor="system",
-            task_id=None,
-            source="",
-            trust_level="",
-            correlation_id="ev1",
-            payload={"tick": 42},
-        ),
-    ])
-    return logger
+async def mutation_log(tmp_path):
+    log = StateMutationLog(tmp_path / "ml.db", logs_dir=tmp_path / "logs")
+    await log.init()
+    yield log
+    await log.close()
 
 
 @pytest.mark.asyncio
@@ -61,17 +55,31 @@ class TestSystemV2:
         assert "channels" in data
         assert data["channels"]["desktop"] == "via_websocket"
 
-    async def test_events_query(self, mock_brain, mock_event_logger):
-        app = create_app(mock_brain, DesktopEventBus(), event_logger_v2=mock_event_logger)
+    async def test_events_query_from_mutation_log(self, mock_brain, mutation_log):
+        await mutation_log.record(
+            MutationType.SYSTEM_STARTED,
+            {"pid": 1, "reason": "normal_start"},
+        )
+        mock_brain._mutation_log_ref = mutation_log
+
+        app = create_app(mock_brain, DesktopEventBus())
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
-            resp = await client.get("/api/v2/system/events", params={"event_type": "system.heartbeat_tick"})
+            resp = await client.get(
+                "/api/v2/system/events",
+                params={"event_type": "system.started"},
+            )
         assert resp.status_code == 200
         data = resp.json()
         assert len(data["events"]) == 1
-        assert data["events"][0]["event_type"] == "system.heartbeat_tick"
+        ev = data["events"][0]
+        assert ev["event_type"] == "system.started"
+        assert ev["payload"] == {"pid": 1, "reason": "normal_start"}
+        # task_id not in payload → None
+        assert ev["task_id"] is None
 
-    async def test_events_no_logger(self, mock_brain):
+    async def test_events_no_mutation_log(self, mock_brain):
+        mock_brain._mutation_log_ref = None
         app = create_app(mock_brain, DesktopEventBus())
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:

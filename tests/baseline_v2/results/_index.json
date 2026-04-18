@@ -1,0 +1,42 @@
+[
+  {
+    "case": "A1_idle_chat_uses_tell_user",
+    "pass_rate": "10/10",
+    "wall_sec": 41.6
+  },
+  {
+    "case": "A2_multi_tell_user",
+    "pass_rate": "2/10",
+    "wall_sec": 103.8
+  },
+  {
+    "case": "A3_tell_user_plus_commit_plus_tool",
+    "pass_rate": "1/10",
+    "wall_sec": 92.8
+  },
+  {
+    "case": "A4_pure_silence",
+    "pass_rate": "0/10",
+    "wall_sec": 66.9
+  },
+  {
+    "case": "B1_time_awareness",
+    "pass_rate": "1/10",
+    "wall_sec": 81.3
+  },
+  {
+    "case": "B2_commitment_injection",
+    "pass_rate": "8/10",
+    "wall_sec": 72.8
+  },
+  {
+    "case": "C1_tool_failure_fallback",
+    "pass_rate": "10/10",
+    "wall_sec": 35.4
+  },
+  {
+    "case": "C2_reasoning_tag_leak",
+    "pass_rate": "10/10",
+    "wall_sec": 143.7
+  }
+]

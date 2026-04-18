@@ -1,5 +1,12 @@
 # Lapwing Health Check Report
 
+> **STATUS — read this first**: this report is a historical snapshot from 2026-04-14.
+> Several items have since been addressed by Blueprint v2.0 Step 1 (see
+> `cleanup_report_step1.md` at the repo root after Step 1 merges). In particular,
+> `quality_checker`, `progress_reporter`, and `task_resumption` have been removed;
+> `EventLogger` / `events_v2.db` are replaced by `StateMutationLog` /
+> `data/mutation_log.db`. Original content retained below for the audit trail.
+
 **Inspection time**: 2026-04-14
 **Code version**: `ca4903c` (branch `feature/tool-loop-reform`)
 **Inspection scope**: `src/` (143 files, 31,552 lines), `tests/` (107 files, 20,284 lines)

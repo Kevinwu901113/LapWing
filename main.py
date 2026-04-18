@@ -36,7 +36,7 @@ def setup_logging() -> logging.Logger:
     lapwing_logger.propagate = False  # never propagate to root
 
     if not lapwing_logger.handlers:
-        # Main log: rotated, 5MB per file, keep 2 backups (reduced — business events now go to EventLogger)
+        # Main log: rotated, 5MB per file, keep 2 backups (reduced — durable records live in StateMutationLog)
         main_fh = RotatingFileHandler(
             LOGS_DIR / "lapwing.log",
             encoding="utf-8",
@@ -54,7 +54,7 @@ def setup_logging() -> logging.Logger:
         lapwing_logger.addHandler(main_fh)
         lapwing_logger.addHandler(console_sh)
 
-    # ── 业务信息已走 EventLogger，内部模块降噪到 WARNING ──
+    # ── 业务信息由 StateMutationLog 负责，内部模块降噪到 WARNING ──
     for module_name in (
         "lapwing.core.brain",
         "lapwing.core.task_runtime",

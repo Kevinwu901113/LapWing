@@ -31,7 +31,6 @@ def _make_brain():
         brain = LapwingBrain(db_path=Path("test.db"))
     brain.fact_extractor = MagicMock()
     brain.fact_extractor.notify = MagicMock()
-    brain.quality_checker = None
     return brain
 
 

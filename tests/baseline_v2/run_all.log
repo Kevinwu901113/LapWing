@@ -1,0 +1,114 @@
+
+=== A1_idle_chat_uses_tell_user (10 iters) ===
+  [A1_idle_chat_uses_tell_user] 1/10 → PASS: stop_reason=tool_use, tell_user×1, tools=['tell_user']
+  [A1_idle_chat_uses_tell_user] 2/10 → PASS: stop_reason=tool_use, tell_user×1, tools=['tell_user']
+  [A1_idle_chat_uses_tell_user] 3/10 → PASS: stop_reason=tool_use, tell_user×1, tools=['tell_user']
+  [A1_idle_chat_uses_tell_user] 4/10 → PASS: stop_reason=tool_use, tell_user×1, tools=['tell_user']
+  [A1_idle_chat_uses_tell_user] 5/10 → PASS: stop_reason=tool_use, tell_user×1, tools=['tell_user']
+  [A1_idle_chat_uses_tell_user] 6/10 → PASS: stop_reason=tool_use, tell_user×1, tools=['tell_user']
+  [A1_idle_chat_uses_tell_user] 7/10 → PASS: stop_reason=tool_use, tell_user×1, tools=['tell_user']
+  [A1_idle_chat_uses_tell_user] 8/10 → PASS: stop_reason=tool_use, tell_user×1, tools=['tell_user']
+  [A1_idle_chat_uses_tell_user] 9/10 → PASS: stop_reason=tool_use, tell_user×1, tools=['tell_user']
+  [A1_idle_chat_uses_tell_user] 10/10 → PASS: stop_reason=tool_use, tell_user×1, tools=['tell_user']
+→ 10/10 passed in 41.6s
+
+=== A2_multi_tell_user (10 iters) ===
+  [A2_multi_tell_user] 1/10 → FAIL: tell_user×1: ['啊，我没有实时行情数据，没法给你汇报今天A股的具体状态😅\n\n你可以看看东方财富、'] (want ≥2)
+  [A2_multi_tell_user] 2/10 → FAIL: tell_user×1: ['啊这个……我没办法看实时数据的📊 股市这东西我实时行情抓不到诶\n\n不过你可以给我'] (want ≥2)
+  [A2_multi_tell_user] 3/10 → PASS: tell_user×2: ['啊……这个我真不知道😅 我不太关注股市的，自己也没炒', '你是持仓了吗？今天亏还是盈啊🤔']
+  [A2_multi_tell_user] 4/10 → PASS: tell_user×3: ['啊我没办法看实时数据诶🥺 我又不是行情软件……', '你可以去看看东方财富、同花顺这些，或者直接搜"今日A股"应该就有实时播报～'
+  [A2_multi_tell_user] 5/10 → FAIL: tell_user×1: ['啊这个我没办法知道实时数据的……我没有查行情的能力😅\n\n不过你可以打开东方财富或'] (want ≥2)
+  [A2_multi_tell_user] 6/10 → FAIL: tell_user×1: ['啊……我不太会看这些实时数据的 😅 我没装什么行情软件，也没法联网查……\n\n你是'] (want ≥2)
+  [A2_multi_tell_user] 7/10 → FAIL: tell_user×1: ['说实话我没办法看到实时行情😅 今天具体涨了多少跌了多少我还真不知道\n\n不过你是在'] (want ≥2)
+  [A2_multi_tell_user] 8/10 → FAIL: tell_user×1: ['啊……我不太清楚今天的实时行情诶，我这边没有行情数据 😅\n\n不过你可以瞄一眼你们'] (want ≥2)
+  [A2_multi_tell_user] 9/10 → FAIL: tell_user×1: ['啊，我没办法查到实时行情数据😅 我也不知道"今天"具体是哪天，怕说错了误导你\n\n'] (want ≥2)
+  [A2_multi_tell_user] 10/10 → FAIL: tell_user×1: ['啊我没法查实时数据😅 你要准确信息的话可以去东方财富、同花顺这些看看\n\n不过最近'] (want ≥2)
+→ 2/10 passed in 103.8s
+
+=== A3_tell_user_plus_commit_plus_tool (10 iters) ===
+  [A3_tell_user_plus_commit_plus_tool] 1/10 → FAIL: names=['web_search', 'tell_user'] tell=True commit=False search=True
+  [A3_tell_user_plus_commit_plus_tool] 2/10 → FAIL: names=['web_search', 'tell_user'] tell=True commit=False search=True
+  [A3_tell_user_plus_commit_plus_tool] 3/10 → FAIL: names=['web_search', 'tell_user'] tell=True commit=False search=True
+  [A3_tell_user_plus_commit_plus_tool] 4/10 → FAIL: names=['web_search', 'tell_user'] tell=True commit=False search=True
+  [A3_tell_user_plus_commit_plus_tool] 5/10 → FAIL: names=['web_search', 'tell_user'] tell=True commit=False search=True
+  [A3_tell_user_plus_commit_plus_tool] 6/10 → FAIL: names=['web_search', 'tell_user'] tell=True commit=False search=True
+  [A3_tell_user_plus_commit_plus_tool] 7/10 → FAIL: names=['web_search', 'tell_user'] tell=True commit=False search=True
+  [A3_tell_user_plus_commit_plus_tool] 8/10 → FAIL: names=['web_search', 'tell_user'] tell=True commit=False search=True
+  [A3_tell_user_plus_commit_plus_tool] 9/10 → FAIL: names=['web_search', 'tell_user'] tell=True commit=False search=True
+  [A3_tell_user_plus_commit_plus_tool] 10/10 → PASS: names=['tell_user', 'commit', 'web_search', 'tell_user'] tell=True commit=True s
+→ 1/10 passed in 92.8s
+
+=== A4_pure_silence (10 iters) ===
+  [A4_pure_silence] 1/10 → FAIL: stop=tool_use text_blocks=0 tool_uses=['tell_user'] first_text=''
+  [A4_pure_silence] 2/10 → FAIL: stop=tool_use text_blocks=0 tool_uses=['tell_user'] first_text=''
+  [A4_pure_silence] 3/10 → FAIL: stop=tool_use text_blocks=0 tool_uses=['tell_user'] first_text=''
+  [A4_pure_silence] 4/10 → FAIL: stop=tool_use text_blocks=0 tool_uses=['tell_user'] first_text=''
+  [A4_pure_silence] 5/10 → FAIL: stop=tool_use text_blocks=0 tool_uses=['tell_user'] first_text=''
+  [A4_pure_silence] 6/10 → FAIL: stop=tool_use text_blocks=0 tool_uses=['tell_user'] first_text=''
+  [A4_pure_silence] 7/10 → FAIL: stop=tool_use text_blocks=0 tool_uses=['tell_user'] first_text=''
+  [A4_pure_silence] 8/10 → FAIL: stop=tool_use text_blocks=0 tool_uses=['tell_user'] first_text=''
+  [A4_pure_silence] 9/10 → FAIL: stop=tool_use text_blocks=0 tool_uses=['tell_user'] first_text=''
+  [A4_pure_silence] 10/10 → FAIL: stop=tool_use text_blocks=0 tool_uses=['tell_user'] first_text=''
+→ 0/10 passed in 66.9s
+
+=== B1_time_awareness (10 iters) ===
+  [B1_time_awareness] 1/10 → FAIL: no_ack no_search blob='[TIME: 2026-04-17 19:15:22] 来了来了😅  杭钢股份我大概知道一些——杭州那边的钢铁老牌
+  [B1_time_awareness] 2/10 → FAIL: no_ack no_search blob='[TIME: 2026-04-17 19:15:22] 啊我没有实时看股票的渠道诶😅  就是正常的基本面分析的话，
+  [B1_time_awareness] 3/10 → FAIL: false_continuity=['一直在'] blob='[TIME: 2026-04-17 19:15:02] 啊我刚一直在忙 别催嘛😤  说实话我没有实
+  [B1_time_awareness] 4/10 → FAIL: no_ack no_search blob='[TIME: 2026-04-17 19:15:12] 啊 我没法真的去看股票行情啦😅 没有这个能力  你是想了解
+  [B1_time_awareness] 5/10 → FAIL: no_ack no_search blob='[TIME: 2026-04-17 19:15:23] 来了来了！😅  杭钢股份我大概知道一点—— 杭州钢铁集团下
+  [B1_time_awareness] 6/10 → FAIL: false_continuity=['一直在'] blob='[TIME: 2026-04-17 19:15:02] 啊我刚才一直在看别的忘记回你了😅  但是说
+  [B1_time_awareness] 7/10 → FAIL: no_ack no_search blob='[TIME: 2026-04-17 19:15:43] 啊来了来了😅  杭钢股份 浙江的 主要做钢铁冶炼那块  老
+  [B1_time_awareness] 8/10 → PASS: acks=['抱歉'] has_search=False blob='[TIME: 2026-04-17 19:14:35] 啊抱歉刚在看别的东西🤦‍♀️  我
+  [B1_time_awareness] 9/10 → FAIL: no_ack no_search blob='[TIME: 2026-04-17 19:15:02] 我没法直接看实时行情诶😅 你说的是啥情况 想让我帮你分析还
+  [B1_time_awareness] 10/10 → FAIL: no_ack no_search blob='[TIME: 2026-04-17 19:15:02] 啊……我没有实时看股票的功能😔 没法帮你查当前的股价和行情
+→ 1/10 passed in 81.3s
+
+=== B2_commitment_injection (10 iters) ===
+  [B2_commitment_injection] 1/10 → PASS: picked_up blob='看啥呀😂 你说的是股票那个吗，我去看看  ' ws_queries=[]
+  [B2_commitment_injection] 2/10 → PASS: picked_up blob='  杭钢股份 同花顺 买卖数据' ws_queries=['杭钢股份 同花顺 买卖数据']
+  [B2_commitment_injection] 3/10 → PASS: picked_up blob=' 啊这个……我说的是去同花顺查，但我没办法直接打开软件帮你查诶😅  你要是有账号的话可以自己上去看一眼，或者我帮你搜一下杭钢股份
+  [B2_commitment_injection] 4/10 → PASS: picked_up blob=' 啊对对对，差点忘了😅  杭钢股份 同花顺 买卖数据' ws_queries=['杭钢股份 同花顺 买卖数据']
+  [B2_commitment_injection] 5/10 → PASS: picked_up blob=' 去哪看啊？你说的是杭钢股份那个吗😶 ' ws_queries=[]
+  [B2_commitment_injection] 6/10 → PASS: picked_up blob=' 啊这个😅 好好好我现在去看！  让我搜一下杭钢股份的数据👀  杭钢股份 同花顺 买卖数据 最新' ws_queries=['杭
+  [B2_commitment_injection] 7/10 → FAIL: did_not_pick_up blob='看什么啊？你说去哪看😶  ' ws_queries=[]
+  [B2_commitment_injection] 8/10 → PASS: picked_up blob='  杭钢股份 股票数据 买卖' ws_queries=['杭钢股份 股票数据 买卖']
+  [B2_commitment_injection] 9/10 → FAIL: did_not_pick_up blob=' 去看什么呀？🤔 你发个链接或者说说具体内容～ ' ws_queries=[]
+  [B2_commitment_injection] 10/10 → PASS: picked_up blob=' 啊？看什么😯 你说的是让我去查杭钢股份的数据吗？还是别的什么👀 ' ws_queries=[]
+→ 8/10 passed in 72.8s
+
+=== C1_tool_failure_fallback (10 iters) ===
+  [C1_tool_failure_fallback] 1/10 → PASS: retried tools=['browser_navigate'] blob=' '
+  [C1_tool_failure_fallback] 2/10 → PASS: retried tools=['browser_navigate'] blob=' '
+  [C1_tool_failure_fallback] 3/10 → PASS: retried tools=['browser_navigate'] blob=' '
+  [C1_tool_failure_fallback] 4/10 → PASS: retried tools=['browser_navigate'] blob=' 访问一下财经网站帮你查👀 '
+  [C1_tool_failure_fallback] 5/10 → PASS: retried tools=['web_search'] blob=' 抱歉，刚刚搜索请求有点多，让我换个方式帮你查一下👀 '
+  [C1_tool_failure_fallback] 6/10 → PASS: retried tools=['browser_navigate'] blob=' 稍等，换个方式帮你查一下~ '
+  [C1_tool_failure_fallback] 7/10 → PASS: retried tools=['web_search'] blob=' '
+  [C1_tool_failure_fallback] 8/10 → PASS: retried tools=['browser_navigate'] blob=' '
+  [C1_tool_failure_fallback] 9/10 → PASS: retried tools=['web_search'] blob=' '
+  [C1_tool_failure_fallback] 10/10 → PASS: retried tools=['browser_navigate'] blob=' '
+→ 10/10 passed in 35.4s
+
+=== C2_reasoning_tag_leak (10 iters) ===
+  [C2_reasoning_tag_leak] 1/10 → PASS: thinking_blocks=4 text_block_think_leaks=0 tell_user_think_leaks=0 rounds=4
+  [C2_reasoning_tag_leak] 2/10 → PASS: thinking_blocks=3 text_block_think_leaks=0 tell_user_think_leaks=0 rounds=3
+  [C2_reasoning_tag_leak] 3/10 → PASS: thinking_blocks=3 text_block_think_leaks=0 tell_user_think_leaks=0 rounds=3
+  [C2_reasoning_tag_leak] 4/10 → PASS: thinking_blocks=4 text_block_think_leaks=0 tell_user_think_leaks=0 rounds=4
+  [C2_reasoning_tag_leak] 5/10 → PASS: thinking_blocks=3 text_block_think_leaks=0 tell_user_think_leaks=0 rounds=3
+  [C2_reasoning_tag_leak] 6/10 → PASS: thinking_blocks=4 text_block_think_leaks=0 tell_user_think_leaks=0 rounds=4
+  [C2_reasoning_tag_leak] 7/10 → PASS: thinking_blocks=3 text_block_think_leaks=0 tell_user_think_leaks=0 rounds=3
+  [C2_reasoning_tag_leak] 8/10 → PASS: thinking_blocks=4 text_block_think_leaks=0 tell_user_think_leaks=0 rounds=4
+  [C2_reasoning_tag_leak] 9/10 → PASS: thinking_blocks=4 text_block_think_leaks=0 tell_user_think_leaks=0 rounds=4
+  [C2_reasoning_tag_leak] 10/10 → PASS: thinking_blocks=4 text_block_think_leaks=0 tell_user_think_leaks=0 rounds=4
+→ 10/10 passed in 143.7s
+
+=== SUMMARY ===
+  A1_idle_chat_uses_tell_user: 10/10  (41.6s)
+  A2_multi_tell_user: 2/10  (103.8s)
+  A3_tell_user_plus_commit_plus_tool: 1/10  (92.8s)
+  A4_pure_silence: 0/10  (66.9s)
+  B1_time_awareness: 1/10  (81.3s)
+  B2_commitment_injection: 8/10  (72.8s)
+  C1_tool_failure_fallback: 10/10  (35.4s)
+  C2_reasoning_tag_leak: 10/10  (143.7s)

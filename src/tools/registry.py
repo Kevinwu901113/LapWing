@@ -31,6 +31,17 @@ from src.tools.types import (
 logger = logging.getLogger("lapwing.tools.registry")
 
 
+class ToolNotRegisteredError(RuntimeError):
+    """Raised when a caller requests tools by name that aren't registered.
+
+    v2.0 Step 1 §4.2 — every ``tool_names`` entry passed to
+    :meth:`ToolRegistry.list_tools` (and therefore :meth:`function_tools`)
+    must resolve to an actually-registered ToolSpec. Silent filtering of
+    unknown names is forbidden: it hides configuration drift where a
+    whitelist lists a tool that was never implemented.
+    """
+
+
 class ToolRegistry:
     def __init__(self) -> None:
         self._tools: dict[str, ToolSpec] = {}
@@ -59,6 +70,12 @@ class ToolRegistry:
                 if any(tool.supports_capability(item) for item in capabilities)
             ]
         if tool_names is not None:
+            known = set(self._tools.keys())
+            missing = set(tool_names) - known
+            if missing:
+                raise ToolNotRegisteredError(
+                    f"tool_names whitelist references unregistered tools: {sorted(missing)}"
+                )
             specs = [tool for tool in specs if tool.name in tool_names]
         if not include_internal:
             specs = [tool for tool in specs if tool.is_model_facing]

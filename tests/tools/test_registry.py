@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from src.tools.registry import build_default_tool_registry
+from src.tools.registry import ToolNotRegisteredError, build_default_tool_registry
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest
 from src.tools.shell_executor import ShellResult
 
@@ -177,3 +177,23 @@ async def test_activate_skill_tool_uses_skill_manager_service():
     assert result.payload["resources"] == ["scripts/run.sh"]
 
 
+
+
+def test_tool_names_whitelist_raises_on_unknown_tool():
+    """Step 1i: whitelist names not in registry must raise, not silently skip."""
+    registry = build_default_tool_registry()
+    with pytest.raises(ToolNotRegisteredError, match="nonexistent_tool"):
+        registry.list_tools(tool_names={"get_time", "nonexistent_tool"})
+
+
+def test_function_tools_whitelist_raises_on_unknown_tool():
+    registry = build_default_tool_registry()
+    with pytest.raises(ToolNotRegisteredError):
+        registry.function_tools(tool_names={"totally_fake_tool"})
+
+
+def test_tool_names_whitelist_accepts_only_registered_names():
+    """Positive control — registered names resolve cleanly."""
+    registry = build_default_tool_registry()
+    specs = registry.list_tools(tool_names={"execute_shell", "read_file"})
+    assert {s.name for s in specs} == {"execute_shell", "read_file"}

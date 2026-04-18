@@ -11,6 +11,32 @@ from src.core.shell_policy import PendingShellConfirmation, VerificationStatus
 from src.tools.shell_executor import ShellResult
 
 
+def _register_chat_tools(brain) -> None:
+    """Register personal/research/agent/reminder tools on a freshly built brain.
+
+    Step 1i: chat_tools() now raises if a whitelisted name isn't registered.
+    AppContainer does this registration in production; tests that call
+    brain.think() must match that setup.
+    """
+    from src.tools.personal_tools import register_personal_tools
+    from src.tools.research_tool import register_research_tool
+    from src.tools.agent_tools import register_agent_tools
+    from src.core.durable_scheduler import DURABLE_SCHEDULER_EXECUTORS
+    from src.tools.types import ToolSpec
+
+    register_personal_tools(brain.tool_registry, {})
+    register_research_tool(brain.tool_registry)
+    register_agent_tools(brain.tool_registry)
+    for name in ("set_reminder", "view_reminders", "cancel_reminder"):
+        brain.tool_registry.register(ToolSpec(
+            name=name,
+            description="reminder tool",
+            json_schema={"type": "object", "properties": {}},
+            executor=DURABLE_SCHEDULER_EXECUTORS[name],
+            capability="schedule",
+        ))
+
+
 def _tool_turn(
     text: str = "",
     tool_calls: list | None = None,
@@ -50,6 +76,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -73,6 +100,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -98,6 +126,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -157,6 +186,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -217,6 +247,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -240,10 +271,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
-            from src.tools.personal_tools import register_personal_tools
-            from src.tools.research_tool import register_research_tool
-            register_personal_tools(brain.tool_registry, {})
-            register_research_tool(brain.tool_registry)
+            _register_chat_tools(brain)
 
             fake_engine = MagicMock()
             fake_engine.research = AsyncMock(return_value=ResearchResult(
@@ -302,6 +330,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -359,6 +388,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -420,6 +450,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -488,6 +519,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -574,6 +606,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -609,6 +642,7 @@ class TestBrainTools:
             )
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -706,6 +740,7 @@ class TestBrainTools:
             )
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -758,6 +793,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -830,6 +866,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -890,6 +927,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -969,6 +1007,7 @@ class TestBrainTools:
             )
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -1039,6 +1078,7 @@ class TestBrainTools:
             )
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -1068,6 +1108,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -1095,6 +1136,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -1126,6 +1168,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])
@@ -1159,6 +1202,7 @@ class TestBrainTools:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
+            _register_chat_tools(brain)
             brain.memory.append = AsyncMock()
             brain.memory.get = AsyncMock(return_value=[])
             brain.memory.get_user_facts = AsyncMock(return_value=[])

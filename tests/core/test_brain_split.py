@@ -34,7 +34,6 @@ def _make_brain():
     brain.memory.remove_last = AsyncMock()
     brain.fact_extractor = MagicMock()
     brain.fact_extractor.notify = MagicMock()
-    brain.quality_checker = None
     return brain
 
 

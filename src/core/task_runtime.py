@@ -23,6 +23,16 @@ from config.settings import (
     TASK_NO_ACTION_BUDGET,
 )
 from src.core.llm_router import ToolCallRequest
+from src.logging.state_mutation_log import (
+    MutationType,
+    StateMutationLog,
+    current_chat_id,
+    current_iteration_id,
+    current_llm_request_id,
+    iteration_context,
+    new_iteration_id,
+)
+from src.logging.hallucination_patch import check_and_record as _check_hallucination
 
 # Re-export types for backward compatibility
 from src.core.task_types import (  # noqa: F401
@@ -142,7 +152,7 @@ def _strip_simulated_tool_calls(text: str) -> str:
 
 
 def _truncate_result(payload: Any, max_chars: int = 800) -> str:
-    """将工具结果 payload 序列化并截断，供 events_v2 审计使用。"""
+    """将工具结果 payload 序列化并截断，供 dispatcher SSE 广播使用（预览，非持久化）。"""
     if payload is None:
         return ""
     if isinstance(payload, str):
@@ -314,7 +324,7 @@ class TaskRuntime:
         Phase 4: 个人工具（send_message, send_image 等）+ 提醒工具始终可用。
         """
         tool_names: set[str] = {
-            "get_time", "get_weather",
+            "get_time",
             "send_message", "send_image", "view_image",
             "set_reminder", "view_reminders", "cancel_reminder",
             "delegate",
@@ -322,7 +332,7 @@ class TaskRuntime:
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
         if web_enabled:
-            tool_names.update({"research", "browse", "image_search"})
+            tool_names.update({"research", "browse"})
         if skill_activation_enabled:
             tool_names.add("activate_skill")
         return self._tool_registry.function_tools(
@@ -376,8 +386,99 @@ class TaskRuntime:
         on_typing: Callable[[], "Awaitable[None]"] | None = None,
         adapter: str = "",
         user_id: str = "",
-        resumption_context: dict | None = None,
     ) -> str:
+        mutation_log: StateMutationLog | None = (services or {}).get("mutation_log")
+        iteration_id = new_iteration_id()
+        iter_start_mono = time.monotonic()
+        end_reason = "completed"
+
+        if mutation_log is not None:
+            try:
+                await mutation_log.record(
+                    MutationType.ITERATION_STARTED,
+                    {
+                        "iteration_id": iteration_id,
+                        "trigger_type": "user_message" if adapter else "internal",
+                        "trigger_detail": {
+                            "adapter": adapter,
+                            "user_id": user_id,
+                            "chat_id": chat_id,
+                        },
+                    },
+                    iteration_id=iteration_id,
+                    chat_id=chat_id,
+                )
+            except Exception:
+                logger.warning("ITERATION_STARTED mutation record failed", exc_info=True)
+
+        try:
+            with iteration_context(iteration_id, chat_id=chat_id):
+                reply = await self._complete_chat_body(
+                    chat_id=chat_id,
+                    messages=messages,
+                    constraints=constraints,
+                    tools=tools,
+                    deps=deps,
+                    status_callback=status_callback,
+                    event_bus=event_bus,
+                    on_consent_required=on_consent_required,
+                    services=services,
+                    profile=profile,
+                    on_interim_text=on_interim_text,
+                    on_typing=on_typing,
+                    adapter=adapter,
+                    user_id=user_id,
+                )
+                # TEMPORARY — Step 1 → Step 5 hallucination observation patch.
+                # See src/logging/hallucination_patch.py docstring for removal plan.
+                await _check_hallucination(reply, mutation_log)
+                return reply
+        except Exception:
+            end_reason = "error"
+            raise
+        finally:
+            duration_ms = (time.monotonic() - iter_start_mono) * 1000
+            if mutation_log is not None:
+                try:
+                    rows = await mutation_log.query_by_iteration(iteration_id)
+                    llm_calls = sum(1 for r in rows if r.event_type == MutationType.LLM_REQUEST.value)
+                    tool_calls = sum(1 for r in rows if r.event_type == MutationType.TOOL_CALLED.value)
+                    await mutation_log.record(
+                        MutationType.ITERATION_ENDED,
+                        {
+                            "iteration_id": iteration_id,
+                            "duration_ms": duration_ms,
+                            "end_reason": end_reason,
+                            "llm_calls_count": llm_calls,
+                            "tool_calls_count": tool_calls,
+                        },
+                        iteration_id=iteration_id,
+                        chat_id=chat_id,
+                    )
+                except Exception:
+                    logger.warning("ITERATION_ENDED mutation record failed", exc_info=True)
+
+    async def _complete_chat_body(
+        self,
+        *,
+        chat_id: str,
+        messages: list[dict[str, Any]],
+        constraints: ExecutionConstraints,
+        tools: list[dict[str, Any]],
+        deps: RuntimeDeps,
+        status_callback=None,
+        event_bus=None,
+        on_consent_required: Callable[[ExecutionSessionState], str] | None = None,
+        services: dict[str, Any] | None = None,
+        profile: str | RuntimeProfile = "chat_shell",
+        on_interim_text: Callable[..., "Awaitable[None]"] | None = None,
+        on_typing: Callable[[], "Awaitable[None]"] | None = None,
+        adapter: str = "",
+        user_id: str = "",
+    ) -> str:
+        """Original complete_chat body. Wrapped by complete_chat() which binds
+        the iteration context and records ITERATION_STARTED / ITERATION_ENDED.
+        """
         if not tools:
             await self._emit_status(status_callback, chat_id, "stage:planning")
             reply = await self._router.complete(
@@ -426,7 +527,6 @@ class TaskRuntime:
             services=services,
             adapter=adapter,
             user_id=user_id,
-            resumption_context=resumption_context,
             state=state,
             loop_detection_state=self._new_loop_detection_state(),
             recovery=LoopRecoveryState(),
@@ -435,7 +535,6 @@ class TaskRuntime:
                 remaining=self._no_action_budget,
             ),
             error_guard=ErrorBurstGuard(threshold=self._error_burst_threshold),
-            progress_state=None,
         )
 
         loop_result = await self.run_task_loop(
@@ -1443,6 +1542,9 @@ class TaskRuntime:
         user_id: str = "",
     ) -> tuple[str, dict[str, Any], bool]:
         dispatcher = (services or {}).get("dispatcher")
+        mutation_log: StateMutationLog | None = (services or {}).get("mutation_log")
+        iteration_id = current_iteration_id()
+
         if dispatcher is not None:
             try:
                 preview = json.dumps(tool_call.arguments, ensure_ascii=False)[:500]
@@ -1459,6 +1561,29 @@ class TaskRuntime:
             except Exception:
                 logger.debug("tool.called 事件提交失败", exc_info=True)
 
+        # Mutation log records the durable, un-truncated picture of the call.
+        # Dispatcher above is separately responsible for the live UI stream.
+        if mutation_log is not None:
+            try:
+                await mutation_log.record(
+                    MutationType.TOOL_CALLED,
+                    {
+                        "tool_name": tool_call.name,
+                        "tool_call_id": getattr(tool_call, "id", None),
+                        "arguments": tool_call.arguments,
+                        "called_from_iteration": iteration_id,
+                        "parent_llm_request_id": current_llm_request_id(),
+                        "task_id": task_id,
+                        "adapter": adapter,
+                        "user_id": user_id,
+                    },
+                    iteration_id=iteration_id,
+                    chat_id=current_chat_id() or chat_id,
+                )
+            except Exception:
+                logger.warning("TOOL_CALLED mutation record failed", exc_info=True)
+
+        tool_start_mono = time.monotonic()
         execution = await self.execute_tool(
             request=ToolExecutionRequest(name=tool_call.name, arguments=tool_call.arguments),
             profile=profile,
@@ -1471,6 +1596,7 @@ class TaskRuntime:
             adapter=adapter,
             user_id=user_id,
         )
+        elapsed_ms = (time.monotonic() - tool_start_mono) * 1000
 
         # P0: 大结果存磁盘，只留预览
         execution = self._budget_tool_result(tool_call.name, execution)
@@ -1496,6 +1622,25 @@ class TaskRuntime:
                 )
             except Exception:
                 logger.debug("tool.result 事件提交失败", exc_info=True)
+
+        if mutation_log is not None:
+            try:
+                await mutation_log.record(
+                    MutationType.TOOL_RESULT,
+                    {
+                        "tool_call_id": getattr(tool_call, "id", None),
+                        "tool_name": tool_call.name,
+                        "success": execution.success,
+                        "payload": payload,
+                        "reason": execution.reason or "",
+                        "elapsed_ms": elapsed_ms,
+                        "is_error": not execution.success,
+                    },
+                    iteration_id=iteration_id,
+                    chat_id=current_chat_id() or chat_id,
+                )
+            except Exception:
+                logger.warning("TOOL_RESULT mutation record failed", exc_info=True)
 
         return tool_result_text, payload, execution.success
 

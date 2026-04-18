@@ -192,7 +192,6 @@ class ToolLoopContext:
     services: dict[str, Any] | None
     adapter: str
     user_id: str
-    resumption_context: dict | None
 
     # 状态对象
     state: Any  # ExecutionSessionState
@@ -200,7 +199,6 @@ class ToolLoopContext:
     recovery: LoopRecoveryState
     no_action_budget: NoActionBudget
     error_guard: ErrorBurstGuard
-    progress_state: Any | None  # ProgressState | None
 
     # 运行时累积状态
     last_payload: dict[str, Any] | None = None
