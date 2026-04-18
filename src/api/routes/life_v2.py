@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+import time as _time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -294,6 +295,32 @@ async def get_timeline(
         "items": truncated,
         "next_before_ts": next_cursor,
         "total_in_window": len(truncated),
+    }
+
+
+@router.get("/inner-state")
+async def get_inner_state():
+    if _trajectory_store is None:
+        return {"content": None, "timestamp": None, "age_seconds": None, "has_recent": False}
+
+    rows = await _trajectory_store.list_for_timeline(
+        limit=1,
+        entry_types=[TrajectoryEntryType.INNER_THOUGHT],
+    )
+    if not rows:
+        return {"content": None, "timestamp": None, "age_seconds": None, "has_recent": False}
+
+    entry = rows[0]
+    text = ""
+    if isinstance(entry.content, dict):
+        text = entry.content.get("text") or ""
+    now = _time.time()
+    age = now - entry.timestamp
+    return {
+        "content": text,
+        "timestamp": entry.timestamp,
+        "age_seconds": age,
+        "has_recent": age < 3600,
     }
 
 

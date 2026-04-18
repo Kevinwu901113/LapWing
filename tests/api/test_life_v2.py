@@ -425,3 +425,66 @@ class TestLifeV2TimelineReminderFired:
         timestamps = [i["timestamp"] for i in resp.json()["items"]]
         assert timestamps == sorted(timestamps, reverse=True)
         assert len(timestamps) == 6
+
+
+import time as _time
+
+
+@pytest.mark.asyncio
+class TestLifeV2InnerState:
+    async def test_returns_latest_inner_thought(self, client, mock_brain):
+        now = _time.time()
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[
+            _make_entry(
+                id=99,
+                timestamp=now - 4000,
+                entry_type="inner_thought",
+                content={"text": "想念 Kevin"},
+                source_chat_id="__inner__",
+            ),
+        ])
+
+        async with client:
+            resp = await client.get("/api/v2/life/inner-state")
+
+        data = resp.json()
+        assert data["content"] == "想念 Kevin"
+        assert data["timestamp"] == now - 4000
+        assert 3990 < data["age_seconds"] < 4100
+        assert data["has_recent"] is False  # > 1h old
+
+    async def test_recent_flag_true_when_under_one_hour(self, client, mock_brain):
+        now = _time.time()
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[
+            _make_entry(
+                id=99, timestamp=now - 60,
+                entry_type="inner_thought", content={"text": "刚想的"},
+                source_chat_id="__inner__",
+            ),
+        ])
+
+        async with client:
+            resp = await client.get("/api/v2/life/inner-state")
+        assert resp.json()["has_recent"] is True
+
+    async def test_no_inner_thought_returns_nulls(self, client, mock_brain):
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[])
+
+        async with client:
+            resp = await client.get("/api/v2/life/inner-state")
+
+        assert resp.json() == {
+            "content": None,
+            "timestamp": None,
+            "age_seconds": None,
+            "has_recent": False,
+        }
+
+    async def test_store_unavailable(self, client, mock_brain):
+        mock_brain.trajectory_store = None
+        from src.api.routes import life_v2
+        life_v2.init(trajectory_store=None)
+
+        async with client:
+            resp = await client.get("/api/v2/life/inner-state")
+        assert resp.json()["has_recent"] is False
