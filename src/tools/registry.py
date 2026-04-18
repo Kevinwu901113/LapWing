@@ -21,6 +21,11 @@ from src.tools.handlers import (
     verify_workspace_tool,
     write_file_tool,
 )
+from src.tools.tell_user import (
+    TELL_USER_DESCRIPTION,
+    TELL_USER_SCHEMA,
+    tell_user_executor,
+)
 from src.tools.types import (
     ToolExecutionContext,
     ToolExecutionRequest,
@@ -140,6 +145,19 @@ class ToolRegistry:
 
 def build_default_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
+
+    # Step 5: tell_user 是模型唯一对外说话的路径，必须最先注册以
+    # 确保所有 RuntimeProfile 都能看到。
+    registry.register(
+        ToolSpec(
+            name="tell_user",
+            description=TELL_USER_DESCRIPTION,
+            json_schema=TELL_USER_SCHEMA,
+            executor=tell_user_executor,
+            capability="communication",
+            risk_level="low",
+        )
+    )
 
     registry.register(
         ToolSpec(

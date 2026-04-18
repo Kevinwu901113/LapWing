@@ -32,6 +32,9 @@ class ToolExecutionContext:
     chat_id: str = ""
     memory: Any = None  # ConversationMemory 实例
     memory_index: Any = None  # MemoryIndex 实例（可选）
+    # Step 5: tell_user 工具的用户通道。None 表示当前上下文没有可达用户
+    # （内部 tick / agent 调用 / heartbeat），tell_user 在此情况下返回失败。
+    send_fn: Callable[[str], Awaitable[Any]] | None = None
 
 
 @dataclass

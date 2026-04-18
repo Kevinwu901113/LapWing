@@ -10,10 +10,9 @@ from typing import TYPE_CHECKING, Any
 from src.auth.service import AuthManager
 from src.core.llm_router import LLMRouter
 from src.core.prompt_loader import load_prompt
-from src.core.output_sanitizer import sanitize_outgoing
+# Step 5: sanitize_outgoing / split_on_markers / split_on_paragraphs 在
+# bare-text auto-send 移除后不再使用；裸文本统一走 INNER_THOUGHT。
 from src.core.reasoning_tags import (
-    split_on_markers,
-    split_on_paragraphs,
     strip_internal_thinking_tags,
     strip_split_markers,
 )
@@ -35,12 +34,6 @@ from src.tools.types import ToolExecutionRequest
 from config.settings import (
     CHAT_WEB_TOOLS_ENABLED,
     MAX_HISTORY_TURNS,
-    MESSAGE_SPLIT_DELAY_BASE,
-    MESSAGE_SPLIT_DELAY_MAX,
-    MESSAGE_SPLIT_DELAY_PER_CHAR,
-    MESSAGE_SPLIT_ENABLED,
-    MESSAGE_SPLIT_FALLBACK_NEWLINE,
-    MESSAGE_SPLIT_SINGLE_NL_MIN_LEN,
     SHELL_ALLOW_SUDO,
     SHELL_DEFAULT_CWD,
     SHELL_ENABLED,
@@ -53,42 +46,10 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("lapwing.core.brain")
 
-# ── 中间文字过滤：屏蔽搜索过程的内部独白 ─────────────────────────────
-
-_INTERNAL_MONOLOGUE_PATTERNS = [
-    "等我重新搜",
-    "奇怪",
-    "不对我再",
-    "我再看看",
-    "搜到的好像",
-    "让我确认",
-    "我再查",
-    "等等，",
-    "我试试",
-    "有些还没更新",
-    "我再仔细",
-    "可能每个数据源",
-    "等我搜",
-    "我搜一下",
-    "我查一下",
-    "让我看看",
-    "我翻一下",
-    "我找一下",
-    "啊等等",
-    "不对不对",
-    "嗯让我",
-]
-
-
-def _is_internal_monologue(text: str) -> bool:
-    """判断文字是否属于搜索过程中的内部独白，不应发给用户。"""
-    stripped = text.strip()
-    if not stripped:
-        return True
-    for pattern in _INTERNAL_MONOLOGUE_PATTERNS:
-        if pattern in stripped:
-            return True
-    return False
+# Step 5：内心独白模式匹配过滤已废弃。Step 5 之前用 _INTERNAL_MONOLOGUE_PATTERNS
+# 启发式拦截"等我搜一下/让我看看/啊等等"这类口头禅。Step 5 起所有 LLM
+# 裸文本结构性地视为内心独白（不发用户、写 INNER_THOUGHT trajectory），
+# 真正要说的话必须通过 tell_user 工具——契约取代过滤。
 
 
 @dataclasses.dataclass
@@ -250,6 +211,8 @@ class LapwingBrain:
         on_typing=None,
         adapter: str = "",
         user_id: str = "",
+        send_fn=None,
+        tell_user_buffer: list[str] | None = None,
     ) -> str:
         constraints = extract_execution_constraints(
             user_message,
@@ -261,6 +224,18 @@ class LapwingBrain:
             skill_activation_enabled=include_skill_activation_tool,
         )
         services = {}
+        # Step 5: 暴露 trajectory_store 给 tell_user / commitment 工具，
+        # 让它们写入 TELL_USER / COMMITMENT_* trajectory entry。
+        if self.trajectory_store is not None:
+            services["trajectory_store"] = self.trajectory_store
+        # Step 5: tell_user 缓冲——本轮所有 tell_user 文本累计到这里，
+        # think_conversational 在 _complete_chat 返回后用它算 memory_text。
+        if tell_user_buffer is not None:
+            services["tell_user_buffer"] = tell_user_buffer
+        # Step 5: commitment 工具需要 commitment_store
+        commitment_store = getattr(self, "_commitment_store_ref", None)
+        if commitment_store is not None:
+            services["commitment_store"] = commitment_store
         if include_skill_activation_tool and self.skill_manager is not None:
             services["skill_manager"] = self.skill_manager
         if self.reminder_scheduler is not None:
@@ -323,6 +298,7 @@ class LapwingBrain:
             on_typing=on_typing,
             adapter=adapter,
             user_id=user_id,
+            send_fn=send_fn,
         )
 
     async def _render_messages(
@@ -929,58 +905,36 @@ class LapwingBrain:
             self._schedule_conversation_end()  # ← ADD THIS
             return ctx.early_reply
 
-        # 跟踪通过流式回调已发出的文字片段
-        parts_sent: list[str] = []
-        # 原始（未拆分）文本，用于 already_sent 比较
-        originals_sent: list[str] = []
+        # Step 5: tell_user 缓冲——tell_user 工具每次调用 append 一条文本。
+        # 这取代了 Step 4 之前的 parts_sent / originals_sent 流式自动发送机制。
+        # 现在裸文本（LLM 未通过 tell_user 调用就直接返回的文字）属于内心独白
+        # （inner_monologue），不会发送给用户，只写入 trajectory 留痕。
+        tell_user_buffer: list[str] = []
 
-        async def _send_with_split(text: str) -> None:
-            """按 [SPLIT] 拆分后逐条发送，片段间模拟打字延迟。
+        async def on_inner_monologue(
+            text: str, *, bypass_monologue_filter: bool = False  # noqa: ARG001
+        ) -> None:
+            """Step 5: 模型裸文本 → 写入 trajectory 作为 INNER_THOUGHT。
 
-            如果模型未输出 [SPLIT] 但文本含多个段落（\\n\\n），
-            在 MESSAGE_SPLIT_FALLBACK_NEWLINE 开启时自动按段落拆分。
+            ``bypass_monologue_filter`` 仅为兼容旧调用签名保留，Step 5 起
+            不再影响路由——裸文本永远不发给用户。
             """
-            text = sanitize_outgoing(text)  # 兜底过滤内部标记
-            if not text:
+            stripped = strip_internal_thinking_tags(text).strip()
+            if not stripped:
                 return
-            if not MESSAGE_SPLIT_ENABLED:
-                await send_fn(text)
-                parts_sent.append(text)
-                originals_sent.append(text)
+            if self.trajectory_store is None:
                 return
+            try:
+                from src.core.trajectory_store import TrajectoryEntryType
 
-            # 优先按 [SPLIT] 标记拆分
-            if "[" in text:
-                segments = split_on_markers(text)
-            else:
-                segments = [text]
-
-            # Fallback 1：模型没输出 [SPLIT]，按 \n\n 段落拆分
-            if len(segments) <= 1 and MESSAGE_SPLIT_FALLBACK_NEWLINE and "\n" in text:
-                segments = split_on_paragraphs(text)
-
-            # Fallback 2：仍为单段且长度超阈值，按单 \n 拆分
-            if len(segments) <= 1 and MESSAGE_SPLIT_FALLBACK_NEWLINE and "\n" in text:
-                line_segments = [s.strip() for s in text.split("\n") if s.strip()]
-                if len(line_segments) >= 2 and len(text) >= MESSAGE_SPLIT_SINGLE_NL_MIN_LEN:
-                    segments = line_segments
-
-            originals_sent.append(text)
-            for i, seg in enumerate(segments):
-                if i > 0:
-                    await on_typing()
-                    delay = min(
-                        MESSAGE_SPLIT_DELAY_BASE + len(seg) * MESSAGE_SPLIT_DELAY_PER_CHAR,
-                        MESSAGE_SPLIT_DELAY_MAX,
-                    )
-                    await asyncio.sleep(delay)
-                await send_fn(seg)
-                parts_sent.append(seg)
-
-        async def on_interim_text(text: str, *, bypass_monologue_filter: bool = False) -> None:
-            stripped = strip_internal_thinking_tags(text)
-            if stripped and (bypass_monologue_filter or not _is_internal_monologue(stripped)):
-                await _send_with_split(stripped)
+                await self.trajectory_store.append(
+                    TrajectoryEntryType.INNER_THOUGHT,
+                    chat_id,
+                    "lapwing",
+                    {"text": stripped, "source": "llm_bare_text"},
+                )
+            except Exception:
+                logger.debug("inner_monologue trajectory write failed", exc_info=True)
 
         async def on_typing() -> None:
             if typing_fn is not None:
@@ -998,32 +952,34 @@ class LapwingBrain:
                 approved_directory=ctx.approved_directory,
                 include_skill_activation_tool=self._skill_activation_tool_enabled(),
                 status_callback=status_callback,
-                on_interim_text=on_interim_text,
+                on_interim_text=on_inner_monologue,
                 on_typing=on_typing,
                 adapter=adapter,
                 user_id=user_id,
+                send_fn=send_fn,
+                tell_user_buffer=tell_user_buffer,
             )
             full_reply = strip_internal_thinking_tags(full_reply)
 
-            # 如果最终回复没有通过流式发出（无工具场景 / 特殊状态消息），则现在发送
-            _reply_clean = strip_split_markers(full_reply).strip()
-            already_sent = any(
-                _reply_clean == strip_split_markers(orig).strip()
-                for orig in originals_sent
-            ) if originals_sent else False
+            # Step 5: 不再有 fallback "若未流式发出则现在发送 full_reply"——
+            # 裸文本永远不发给用户。如果模型在最后一轮返回纯文本（无 tell_user
+            # 调用），它属于内心独白，已经走 on_inner_monologue 写入 trajectory。
+            tail = strip_split_markers(full_reply).strip()
+            if tail:
+                await on_inner_monologue(tail)
 
-            if not already_sent and full_reply:
-                await _send_with_split(full_reply)
-
-            # ── 后处理：回复已发出，失败不应再发"走神了" ──
-            memory_text = strip_split_markers(full_reply)
+            # ── 后处理：memory 记录"她真正说出口的话"（tell_user 调用累积） ──
+            memory_text = "\n\n".join(tell_user_buffer) if tell_user_buffer else ""
             try:
-                memory_text = "\n\n".join(parts_sent) if parts_sent else memory_text
-                await self.memory.append(chat_id, "assistant", memory_text)
-                logger.debug(f"[{chat_id}] 流式回复完成，片段数: {len(parts_sent)}")
+                if memory_text:
+                    await self.memory.append(chat_id, "assistant", memory_text)
+                logger.debug(
+                    "[%s] tell_user 累计 %d 条；裸文本字数=%d",
+                    chat_id, len(tell_user_buffer), len(tail),
+                )
             except Exception as post_exc:
                 logger.warning(
-                    "[brain] 后处理失败（回复已发出，不影响用户）: %s",
+                    "[brain] 后处理失败（消息已发出，不影响用户）: %s",
                     post_exc, exc_info=True,
                 )
             # Step 4 M5: message.sent dispatcher emit removed — see M5.c.
@@ -1031,9 +987,9 @@ class LapwingBrain:
 
         except asyncio.CancelledError:
             # Step 4 M4: OWNER preempt cancelled the in-flight call.
-            # Persist whatever was already streamed so the trajectory
-            # carries a record of "started, but didn't finish".
-            partial = "\n\n".join(parts_sent) if parts_sent else ""
+            # Persist whatever was already sent so the trajectory carries
+            # a record of "started, but didn't finish".
+            partial = "\n\n".join(tell_user_buffer) if tell_user_buffer else ""
             await self._persist_interrupted(
                 chat_id=chat_id,
                 partial_text=partial,

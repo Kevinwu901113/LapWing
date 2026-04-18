@@ -115,6 +115,9 @@ class MutationType(str, Enum):
     MEMORY_RAPTOR_UPDATED = "memory.raptor_updated"    # Step 3+
     MEMORY_FILE_EDITED = "memory.file_edited"          # Step 3+
 
+    # --- Step 5: tell_user — 唯一对外说话路径 ---
+    TELL_USER = "tell_user.invoked"
+
     # TEMPORARY (Step 1 → Step 5): records suspected MiniMax hallucinations
     # where the reply claims prior work with zero supporting tool calls.
     # Observation-only; does NOT intercept the reply. Scheduled for removal
