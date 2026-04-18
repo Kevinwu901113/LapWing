@@ -1,8 +1,11 @@
-"""Tests for /api/v2/events SSE endpoint + Dispatcher pub/sub.
+"""Tests for /api/v2/events SSE endpoint + StateMutationLog pub/sub.
 
 v2.0 Step 1: EventLogger + events_v2.db have been removed. Dispatcher is
-pure in-memory pub/sub now; the Last-Event-ID replay branch on the SSE
-route has been deleted (flagged in cleanup_report_step1.md as Step 2 debt).
+pure in-memory pub/sub.
+
+v2.0 Step 4 M5: SSE now subscribes to StateMutationLog directly. The
+Dispatcher tests below stay because Dispatcher is still used elsewhere
+(trajectory_appended fanout); only SSE moved off it.
 """
 
 import asyncio
@@ -14,6 +17,7 @@ import pytest
 from src.api.event_bus import DesktopEventBus
 from src.api.server import create_app
 from src.core.dispatcher import Dispatcher, Event
+from src.logging.state_mutation_log import Mutation
 
 
 @pytest.fixture
@@ -79,25 +83,23 @@ class TestDispatcherSubscribeAll:
 
 @pytest.mark.asyncio
 class TestSSEFormat:
-    """SSE 格式化单元测试。"""
+    """SSE 格式化单元测试 — Step 4 M5: source is StateMutationLog."""
 
-    async def test_format_sse(self):
-        from src.api.routes.events_v2 import _format_sse
+    async def test_format_sse_mutation(self):
+        from src.api.routes.events_v2 import _format_sse_mutation
 
-        event = Event(
-            event_id="e1",
-            timestamp=datetime(2026, 4, 15, 10, 0, tzinfo=timezone.utc),
-            event_type="note.written",
-            actor="lapwing",
-            task_id=None,
-            source="",
-            trust_level="",
-            correlation_id="e1",
-            payload={"note_id": "n1"},
+        mutation = Mutation(
+            id=42,
+            timestamp=1745000000.0,
+            event_type="trajectory.appended",
+            iteration_id="iter-x",
+            chat_id="kev",
+            payload={"text": "hello"},
+            payload_size=20,
         )
-        formatted = _format_sse(event)
-        assert formatted.startswith("id: e1\n")
-        assert "event: note.written\n" in formatted
+        formatted = _format_sse_mutation(mutation)
+        assert formatted.startswith("id: 42\n")
+        assert "event: trajectory.appended\n" in formatted
         assert "data: " in formatted
         assert formatted.endswith("\n\n")
 
@@ -107,6 +109,75 @@ class TestSSEEndpoint:
     """SSE 端点基本注册检查。"""
 
     async def test_sse_endpoint_exists(self, mock_brain):
-        app = create_app(mock_brain, DesktopEventBus(), dispatcher=Dispatcher())
+        app = create_app(
+            mock_brain, DesktopEventBus(),
+            dispatcher=Dispatcher(),
+            mutation_log=None,  # not required for route registration
+        )
         routes = [r.path for r in app.routes if hasattr(r, "path")]
         assert "/api/v2/events" in routes
+
+
+@pytest.mark.asyncio
+class TestMutationLogSubscribe:
+    """Step 4 M5: StateMutationLog.subscribe + fanout."""
+
+    async def test_subscriber_receives_mutation_after_record(self, tmp_path):
+        from src.logging.state_mutation_log import (
+            MutationType,
+            StateMutationLog,
+        )
+
+        log = StateMutationLog(tmp_path / "mut.db", logs_dir=tmp_path / "logs")
+        await log.init()
+        try:
+            received: list = []
+            log.subscribe(lambda m: received.append(m))
+            await log.record(
+                MutationType.SYSTEM_STARTED,
+                {"pid": 1, "git_commit": "x"},
+            )
+            assert len(received) == 1
+            assert received[0].event_type == "system.started"
+            assert received[0].payload == {"pid": 1, "git_commit": "x"}
+        finally:
+            await log.close()
+
+    async def test_unsubscribe_stops_delivery(self, tmp_path):
+        from src.logging.state_mutation_log import (
+            MutationType,
+            StateMutationLog,
+        )
+
+        log = StateMutationLog(tmp_path / "mut.db", logs_dir=tmp_path / "logs")
+        await log.init()
+        try:
+            received: list = []
+            cb = lambda m: received.append(m)
+            log.subscribe(cb)
+            log.unsubscribe(cb)
+            await log.record(MutationType.SYSTEM_STARTED, {"pid": 1})
+            assert received == []
+        finally:
+            await log.close()
+
+    async def test_subscriber_exception_does_not_block_others(self, tmp_path):
+        from src.logging.state_mutation_log import (
+            MutationType,
+            StateMutationLog,
+        )
+
+        log = StateMutationLog(tmp_path / "mut.db", logs_dir=tmp_path / "logs")
+        await log.init()
+        try:
+            received: list = []
+
+            def bad(_m):
+                raise RuntimeError("boom")
+
+            log.subscribe(bad)
+            log.subscribe(lambda m: received.append(m))
+            await log.record(MutationType.SYSTEM_STARTED, {"pid": 1})
+            assert len(received) == 1
+        finally:
+            await log.close()

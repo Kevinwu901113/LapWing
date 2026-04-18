@@ -408,16 +408,26 @@ def run_bot(logger: logging.Logger) -> int:
             async def noop_status(cid: str, t: str) -> None:
                 pass
 
-            await brain.think_conversational(
-                chat_id,
-                text,
+            # v2.0 Step 4: route through MainLoop's EventQueue instead
+            # of calling brain directly. Adapters are now event producers,
+            # MainLoop is the sole consumer.
+            from src.core.authority_gate import AuthLevel, identify
+            from src.core.events import MessageEvent
+
+            user_id = str(raw_event.get("user_id", ""))
+            auth_level = identify("qq", user_id)
+            event = MessageEvent.from_message(
+                chat_id=chat_id,
+                user_id=user_id,
+                text=text,
+                adapter="qq",
                 send_fn=send_fn,
+                auth_level=int(auth_level),
+                images=tuple(images) if images else (),
                 typing_fn=typing_fn,
                 status_callback=noop_status,
-                adapter="qq",
-                user_id=str(raw_event.get("user_id", "")),
-                images=images,
             )
+            await container.event_queue.put(event)
 
         qq_adapter = QQAdapter(config=qq_config, on_message=_qq_on_message)
         qq_adapter.router = container.brain.router  # Inject LLM router for group decisions

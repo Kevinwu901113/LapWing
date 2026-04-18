@@ -28,6 +28,8 @@ def create_app(
     latency_monitor=None,
     channel_manager=None,
     dispatcher=None,
+    event_queue=None,
+    mutation_log=None,
 ) -> FastAPI:
     if latency_monitor is not None and hasattr(event_bus, "set_latency_monitor"):
         event_bus.set_latency_monitor(latency_monitor)
@@ -54,7 +56,7 @@ def create_app(
     from src.api.routes import chat_ws as _chat_ws_routes
 
     _auth_routes.init(app.state.auth_manager, api_session_ttl=API_SESSION_TTL_SECONDS)
-    _chat_ws_routes.init(brain, channel_manager)
+    _chat_ws_routes.init(brain, channel_manager, event_queue=event_queue)
 
     app.include_router(_auth_routes.router)
     app.include_router(_chat_ws_routes.router)
@@ -105,7 +107,11 @@ def create_app(
     _permissions_v2_routes.init(_data_dir_for_perms)
     app.include_router(_permissions_v2_routes.router)
 
-    _events_v2_routes.init(dispatcher)
+    # Step 4 M5: SSE subscribes to StateMutationLog (durable source of
+    # truth) instead of dispatcher (transient pub/sub). Dispatcher is
+    # still used for trajectory_appended → SSE during the M5 transition;
+    # M5 cleans that up too.
+    _events_v2_routes.init(mutation_log)
     app.include_router(_events_v2_routes.router)
 
     # Phase 6: /api/v2/life/* — 她的生活页面后端
@@ -213,6 +219,8 @@ class LocalApiServer:
         port: int = API_PORT,
         channel_manager=None,
         dispatcher=None,
+        event_queue=None,
+        mutation_log=None,
     ) -> None:
         self._brain = brain
         self._event_bus = event_bus
@@ -222,6 +230,8 @@ class LocalApiServer:
         self._port = port
         self._channel_manager = channel_manager
         self._dispatcher = dispatcher
+        self._event_queue = event_queue
+        self._mutation_log = mutation_log
         self._server: uvicorn.Server | None = None
         self._task: asyncio.Task | None = None
         self._app: FastAPI | None = None
@@ -237,6 +247,8 @@ class LocalApiServer:
             self._latency_monitor,
             channel_manager=self._channel_manager,
             dispatcher=self._dispatcher,
+            event_queue=self._event_queue,
+            mutation_log=self._mutation_log,
         )
         self._app = app
         config = uvicorn.Config(

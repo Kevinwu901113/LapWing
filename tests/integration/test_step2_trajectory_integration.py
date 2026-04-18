@@ -165,13 +165,15 @@ class TestConversationalTurn:
 
 class TestInnerTickRemap:
     async def test_inner_write_categorised_as_inner_thought(self, lapwing_db):
-        """Step 2i: chat_id='__inner__' writes land as INNER_THOUGHT /
-        source_chat_id='__inner__', with user→system / assistant→lapwing."""
+        """Step 4 M3+M7: ``is_inner=True`` writes land as INNER_THOUGHT
+        with ``source_chat_id IS NULL``; user→system / assistant→lapwing.
+        The pre-Step-4 ``chat_id == '__inner__'`` sentinel branch was
+        removed when consciousness.py was deleted."""
         memory = lapwing_db["memory"]
         trajectory = lapwing_db["trajectory"]
 
-        await memory.append("__inner__", "user", "[tick prompt]")
-        await memory.append("__inner__", "assistant", "pondering")
+        await memory.append("_inner_tick", "user", "[tick prompt]", is_inner=True)
+        await memory.append("_inner_tick", "assistant", "pondering", is_inner=True)
 
         rows = await trajectory.recent(10)
         assert [r.entry_type for r in rows] == [
@@ -179,7 +181,7 @@ class TestInnerTickRemap:
             TrajectoryEntryType.INNER_THOUGHT.value,
         ]
         assert [r.actor for r in rows] == ["system", "lapwing"]
-        assert all(r.source_chat_id == "__inner__" for r in rows)
+        assert all(r.source_chat_id is None for r in rows)
 
     async def test_inner_rows_excluded_from_chat_read_by_default(
         self, lapwing_db
@@ -188,7 +190,7 @@ class TestInnerTickRemap:
         trajectory = lapwing_db["trajectory"]
 
         await memory.append("919231551", "user", "chat message")
-        await memory.append("__inner__", "assistant", "inner thought")
+        await memory.append("_inner_tick", "assistant", "inner thought", is_inner=True)
 
         chat_only = await trajectory.relevant_to_chat(
             "919231551", n=10, include_inner=False,

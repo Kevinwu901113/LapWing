@@ -45,7 +45,6 @@ from src.core.task_types import (  # noqa: F401
     TaskLoopStep,
     TaskLoopResult,
     ToolLoopContext,
-    _refresh_voice_reminder,
 )
 from src.core.llm_exceptions import (
     classify_as_llm_exception,
@@ -1098,9 +1097,10 @@ class TaskRuntime:
 
         # 压缩旧的浏览器 PageState（保留最新完整，旧的只留摘要）
         self._compress_browser_history(ctx.messages)
-        # 重新注入 voice reminder（tool call 循环会让消息越来越长，
-        # 导致 voice reminder 离生成位置越来越远）
-        _refresh_voice_reminder(ctx.messages)
+        # Step 4 M4.d: voice reminder is now placed by StateSerializer
+        # at the message tail on every render, so re-injection inside
+        # the tool loop is unnecessary. The pre-Step-3 helper that lived
+        # here was a silently-swallowed no-op and has been removed.
 
         # ── Loop turn 日志 ──
         result_chars = sum(len(t[1]) for t in tool_results) if tool_results else 0

@@ -18,10 +18,13 @@ from src.api.server import LocalApiServer
 from src.app.task_view import TaskViewStore
 from src.core.brain import LapwingBrain
 from src.core.channel_manager import ChannelManager
-from src.core.consciousness import ConsciousnessEngine
 from src.core.dispatcher import Dispatcher
 from src.core.durable_scheduler import DurableScheduler
 from src.core.attention import AttentionManager
+from src.core.event_queue import EventQueue
+from src.core.inner_tick_scheduler import InnerTickScheduler
+from src.core.main_loop import MainLoop
+from src.core.maintenance_timer import MaintenanceTimer
 from src.core.trajectory_store import TrajectoryStore
 from src.logging.state_mutation_log import MutationType, StateMutationLog
 
@@ -110,13 +113,22 @@ class AppContainer:
         self.channel_manager.register(ChannelType.DESKTOP, self._desktop_adapter)
         self.brain.channel_manager = self.channel_manager
 
+        # event_queue must already exist before LocalApiServer is built so
+        # the desktop /ws/chat route can enqueue MessageEvent on it.
+        self.event_queue: EventQueue = EventQueue()
+
+        # mutation_log is wired into the API server lazily — see prepare()
+        # where the StateMutationLog instance is constructed. The server
+        # creates the FastAPI app at start() time, by which point
+        # prepare() will have populated self.mutation_log.
         self.api_server = api_server or LocalApiServer(
             brain=self.brain,
             event_bus=self.event_bus,
             task_view_store=self.task_view_store,
             channel_manager=self.channel_manager,
+            event_queue=self.event_queue,
         )
-        self.consciousness: ConsciousnessEngine | None = None
+        self.maintenance_timer: MaintenanceTimer | None = None
         self.durable_scheduler: DurableScheduler | None = None
         # 浏览器子系统（可选）
         self._browser_manager = None
@@ -137,6 +149,16 @@ class AppContainer:
         # dual-written alongside the legacy conversations table during the
         # sub-phase-A window; becomes read-side truth in sub-phase B.
         self.trajectory_store: TrajectoryStore | None = None
+
+        # v2.0 Step 4: MainLoop — single runtime driver. event_queue was
+        # constructed above (so LocalApiServer could pick it up). The
+        # loop itself starts in start() once brain wiring is complete.
+        self.main_loop: MainLoop | None = None
+        self._main_loop_task = None
+
+        # v2.0 Step 4 M3: InnerTickScheduler replaces ConsciousnessEngine's
+        # built-in timer. Started in start() alongside MainLoop.
+        self.inner_tick_scheduler: InnerTickScheduler | None = None
 
         self._prepared = False
         self._started = False
@@ -167,6 +189,8 @@ class AppContainer:
         await self.mutation_log.init()
         self.brain._mutation_log_ref = self.mutation_log
         self.brain.router.set_mutation_log(self.mutation_log)
+        # Step 4 M5: SSE subscribes to mutation_log via the API server.
+        self.api_server._mutation_log = self.mutation_log
         logger.info("StateMutationLog 已初始化：%s", mutation_db)
 
         # v2.0 Step 2: TrajectoryStore — separate aiosqlite connection to the
@@ -204,58 +228,70 @@ class AppContainer:
 
         await self.prepare()
 
+        # v2.0 Step 4 M3: build InnerTickScheduler first so DurableScheduler
+        # can wire its urgency callback into it before kicking off.
+        import asyncio as _asyncio
+        self.inner_tick_scheduler = InnerTickScheduler(self.event_queue)
+        self.brain.inner_tick_scheduler = self.inner_tick_scheduler
+
         if send_fn is not None and not PHASE0_MODE:
-            from config.settings import CONSCIOUSNESS_ENABLED
-            import asyncio as _asyncio
+            # Step 4 M7: ConsciousnessEngine retired. Inner ticks live on
+            # InnerTickScheduler; periodic maintenance lives on
+            # MaintenanceTimer (this block).
+            self.maintenance_timer = MaintenanceTimer(self.brain, send_fn=send_fn)
+            await self.maintenance_timer.start()
 
-            if CONSCIOUSNESS_ENABLED:
-                self.consciousness = ConsciousnessEngine(
-                    brain=self.brain,
-                    send_fn=send_fn,
-                    dispatcher=self.dispatcher,
-                )
-                self.brain.consciousness_engine = self.consciousness
-                await self.consciousness.start()
+            # DurableScheduler always starts when send_fn is wired.
+            # Reminder fires push into InnerTickScheduler's urgency queue
+            # so the next tick picks them up.
+            if self.durable_scheduler is not None:
+                _scheduler = self.inner_tick_scheduler
 
-                # Phase 4: 连接 DurableScheduler → consciousness urgency queue
-                if self.durable_scheduler is not None:
-                    async def _on_reminder_fired(reminder):
-                        self.consciousness.push_urgency({
+                async def _on_reminder_fired(reminder):
+                    if _scheduler is not None:
+                        _scheduler.push_urgency({
                             "type": "reminder",
                             "content": reminder.content,
                             "reminder_id": reminder.reminder_id,
                         })
-                    self.durable_scheduler.urgency_callback = _on_reminder_fired
-                    self.durable_scheduler.send_fn = send_fn
-                    self.durable_scheduler.brain = self.brain
-                    self._durable_scheduler_task = _asyncio.create_task(
-                        self.durable_scheduler.run_loop(),
-                        name="durable-scheduler",
-                    )
-                    # 更新 StateViewBuilder 的 reminder_source：DurableScheduler
-                    # 上线前用 ConversationMemory 的 compat 接口，上线后切到 scheduler
-                    # 本身（后者才是提醒的权威存储）。
-                    self.brain.state_view_builder._reminders = self.durable_scheduler
-                    logger.info("DurableScheduler 循环已启动，已连接意识循环 urgency queue")
-            else:
-                # DurableScheduler 在非意识模式下也启动
-                if self.durable_scheduler is not None:
-                    self.durable_scheduler.send_fn = send_fn
-                    self.durable_scheduler.brain = self.brain
-                    self._durable_scheduler_task = _asyncio.create_task(
-                        self.durable_scheduler.run_loop(),
-                        name="durable-scheduler",
-                    )
+
+                self.durable_scheduler.urgency_callback = _on_reminder_fired
+                self.durable_scheduler.send_fn = send_fn
+                self.durable_scheduler.brain = self.brain
+                self._durable_scheduler_task = _asyncio.create_task(
+                    self.durable_scheduler.run_loop(),
+                    name="durable-scheduler",
+                )
+                self.brain.state_view_builder._reminders = self.durable_scheduler
+                logger.info("DurableScheduler 循环已启动 → 内心 tick 调度器")
         elif PHASE0_MODE:
             logger.info("Phase 0 模式：跳过意识循环")
+
+        # v2.0 Step 4: start MainLoop after the consciousness/scheduler
+        # block above (so brain wiring is complete) but before adapters
+        # connect (so the first MessageEvent / InnerTickEvent has a
+        # consumer). InnerTickScheduler was constructed at the top of
+        # start() so DurableScheduler could wire its urgency callback.
+        self.main_loop = MainLoop(
+            self.event_queue, self.brain, self.inner_tick_scheduler,
+        )
+        self._main_loop_task = _asyncio.create_task(
+            self.main_loop.run(), name="lapwing-main-loop",
+        )
+        if not PHASE0_MODE:
+            await self.inner_tick_scheduler.start()
+        logger.info("MainLoop + InnerTickScheduler 已启动")
 
         await self.channel_manager.start_all()
 
         await self.api_server.start()
 
-        # 将意识引擎注入 API 状态
+        # Step 4 M7: api_server.app.state.consciousness was used by SSE
+        # status endpoints to project the legacy ConsciousnessEngine
+        # state. With the engine retired, no API consumes the field;
+        # set it to None so any lingering reader sees a clean signal.
         if self.api_server._app is not None:
-            self.api_server._app.state.consciousness = self.consciousness
+            self.api_server._app.state.consciousness = None
 
         if self.mutation_log is not None:
             try:
@@ -288,16 +324,36 @@ class AppContainer:
                     pass
             self.durable_scheduler = None
 
-        # Consciousness engine shutdown
-        if self.consciousness is not None:
-            await self.consciousness.stop()
-            self.consciousness = None
+        # Step 4 M7: MaintenanceTimer replaces ConsciousnessEngine for
+        # periodic background work; stop it during shutdown.
+        if self.maintenance_timer is not None:
+            await self.maintenance_timer.stop()
+            self.maintenance_timer = None
 
         # API 先停，不再接受新请求
         await self.api_server.shutdown()
 
         # Channel 后停，处理完在途消息
         await self.channel_manager.stop_all()
+
+        # v2.0 Step 4: stop scheduler before MainLoop so it stops
+        # producing events into the queue we're about to drain.
+        if self.inner_tick_scheduler is not None:
+            await self.inner_tick_scheduler.stop()
+            self.inner_tick_scheduler = None
+
+        # Stop MainLoop after channels so any in-flight adapter callbacks
+        # can drain. cancel() unblocks queue.get.
+        if self.main_loop is not None:
+            await self.main_loop.stop()
+        if self._main_loop_task is not None:
+            self._main_loop_task.cancel()
+            try:
+                await self._main_loop_task
+            except _asyncio.CancelledError:
+                pass
+            self._main_loop_task = None
+        self.main_loop = None
 
         # VLM 客户端关闭
         if hasattr(self, "_vlm_client") and self._vlm_client is not None:

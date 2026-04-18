@@ -48,6 +48,7 @@ class TrajectoryEntryType(str, Enum):
     TOOL_RESULT = "tool_result"
     STATE_CHANGE = "state_change"
     STAY_SILENT = "stay_silent"            # Step 4+
+    INTERRUPTED = "interrupted"            # Step 4 M4 — partial output saved on OWNER preempt
 
 
 _VALID_ACTORS = frozenset({"user", "lapwing", "system"})
@@ -95,7 +96,7 @@ class TrajectoryStore:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 timestamp REAL NOT NULL,
                 entry_type TEXT NOT NULL,
-                source_chat_id TEXT NOT NULL,
+                source_chat_id TEXT,
                 actor TEXT NOT NULL,
                 content_json TEXT NOT NULL,
                 related_commitment_id TEXT,
@@ -112,7 +113,68 @@ class TrajectoryStore:
                 ON trajectory(related_iteration_id, timestamp);
             """
         )
+        # Step 4 M3: in-place migration for databases created with the
+        # original NOT NULL schema. Idempotent — only runs when the
+        # constraint is still present.
+        await self._migrate_source_chat_id_nullable()
         await self._db.commit()
+
+    async def _migrate_source_chat_id_nullable(self) -> None:
+        """Drop ``NOT NULL`` on ``source_chat_id`` for legacy DBs.
+
+        Pre-Step-4 schema required ``source_chat_id NOT NULL``; inner
+        thoughts then had to use the ``"__inner__"`` sentinel string.
+        Step 4 M3 retires that sentinel by allowing NULL — inner thoughts
+        identify themselves via ``entry_type = 'inner_thought'`` instead.
+        Existing rows are preserved; new inner writes go in as NULL.
+        """
+        if self._db is None:
+            return
+        cur = await self._db.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='trajectory'"
+        )
+        row = await cur.fetchone()
+        if not row or "source_chat_id TEXT NOT NULL" not in (row[0] or ""):
+            return
+        await self._db.executescript(
+            """
+            BEGIN;
+            CREATE TABLE trajectory_new (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                timestamp REAL NOT NULL,
+                entry_type TEXT NOT NULL,
+                source_chat_id TEXT,
+                actor TEXT NOT NULL,
+                content_json TEXT NOT NULL,
+                related_commitment_id TEXT,
+                related_iteration_id TEXT,
+                related_tool_call_id TEXT
+            );
+            INSERT INTO trajectory_new
+                (id, timestamp, entry_type, source_chat_id, actor,
+                 content_json, related_commitment_id, related_iteration_id,
+                 related_tool_call_id)
+                SELECT id, timestamp, entry_type, source_chat_id, actor,
+                       content_json, related_commitment_id, related_iteration_id,
+                       related_tool_call_id
+                FROM trajectory;
+            DROP TABLE trajectory;
+            ALTER TABLE trajectory_new RENAME TO trajectory;
+            CREATE INDEX IF NOT EXISTS idx_traj_timestamp
+                ON trajectory(timestamp);
+            CREATE INDEX IF NOT EXISTS idx_traj_chat
+                ON trajectory(source_chat_id, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_traj_type
+                ON trajectory(entry_type, timestamp);
+            CREATE INDEX IF NOT EXISTS idx_traj_iteration
+                ON trajectory(related_iteration_id, timestamp);
+            COMMIT;
+            """
+        )
+        logger.info(
+            "trajectory schema migrated — source_chat_id is now nullable "
+            "(Step 4 M3 inner-thought writes use NULL instead of '__inner__')"
+        )
 
     async def close(self) -> None:
         if self._db is not None:
@@ -133,7 +195,7 @@ class TrajectoryStore:
     async def append(
         self,
         entry_type: TrajectoryEntryType,
-        source_chat_id: str,
+        source_chat_id: str | None,
         actor: str,
         content: dict[str, Any],
         *,
@@ -254,12 +316,14 @@ class TrajectoryStore:
     ) -> list[TrajectoryEntry]:
         """Most recent N entries related to ``chat_id``, oldest→newest.
 
-        ``include_inner=True`` mixes in ``source_chat_id = '__inner__'`` entries
-        (consciousness-loop thinking) so the conversational path sees them.
+        ``include_inner=True`` mixes in inner-thought entries identified
+        by ``entry_type = 'inner_thought'``. This matches both legacy
+        rows (where ``source_chat_id`` was the literal ``'__inner__'``)
+        and Step-4 rows (where ``source_chat_id IS NULL``).
         """
         if include_inner:
-            where = "source_chat_id = ? OR source_chat_id = '__inner__'"
-            params: tuple[Any, ...] = (chat_id,)
+            where = "(source_chat_id = ? OR entry_type = ?)"
+            params: tuple[Any, ...] = (chat_id, TrajectoryEntryType.INNER_THOUGHT.value)
         else:
             where = "source_chat_id = ?"
             params = (chat_id,)

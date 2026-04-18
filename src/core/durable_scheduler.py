@@ -372,7 +372,7 @@ class DurableScheduler:
             except Exception as exc:
                 logger.error("创建下一次循环提醒失败: %s err=%s", reminder.reminder_id, exc)
 
-        # 调用 urgency_callback（consciousness engine 注入）
+        # 调用 urgency_callback（Step 4 M3 起：注入到 InnerTickScheduler.push_urgency）
         if self._urgency_callback is not None:
             try:
                 await self._urgency_callback(reminder)

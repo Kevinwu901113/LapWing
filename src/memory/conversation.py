@@ -156,6 +156,7 @@ class ConversationMemory:
         self, channel_id: str, role: str, content: str, *,
         channel: str = "qq", source: str = "qq",
         trust_level: int = 3, actor_id: str | None = None,
+        is_inner: bool = False,
     ) -> None:
         """追加一条消息。
 
@@ -163,6 +164,12 @@ class ConversationMemory:
         to. When a ``TrajectoryStore`` is wired (production), the message is
         persisted there; the in-memory ``_store`` cache is updated only as a
         fallback for unit tests and phase-0 contexts with no trajectory.
+
+        ``is_inner=True`` (Step 4 M3) marks the row as an inner-thought
+        write — trajectory uses ``INNER_THOUGHT`` entry type and stores
+        ``source_chat_id = NULL`` instead of the legacy ``'__inner__'``
+        sentinel. ``channel_id`` becomes a per-tick session key only;
+        callers should not assume the value is durable beyond the call.
 
         The parameters ``channel``, ``source``, ``trust_level`` and
         ``actor_id`` remain in the signature for caller compatibility;
@@ -174,6 +181,7 @@ class ConversationMemory:
                 channel_id, role, content,
                 channel=channel, source=source,
                 actor_id=actor_id,
+                is_inner=is_inner,
             )
             return
 
@@ -237,33 +245,32 @@ class ConversationMemory:
         channel: str,
         source: str,
         actor_id: str | None,
+        is_inner: bool = False,
     ) -> None:
         """Write the same logical event to trajectory. No-op if no trajectory
         wired (unit tests, phase 0, pre-container boot).
 
-        Inner-tick writes (chat_id == "__inner__", set by consciousness.py
-        after v2.0 Step 2i) are mapped to INNER_THOUGHT so the output
-        matches the Step 2e migration categorisation. Step 4's main-loop
-        unification replaces this sentinel-based dispatch with a dedicated
-        inner-turn entry point on brain.
+        ``is_inner=True`` (Step 4 M3 entry path via brain.think_inner)
+        records the row as ``INNER_THOUGHT`` with
+        ``source_chat_id = NULL``. The previous ``chat_id == "__inner__"``
+        sentinel branch was removed in Step 4 M7 along with
+        consciousness.py — production callers all go through is_inner now.
         """
         if self._trajectory is None:
             return
         try:
             from src.core.trajectory_store import TrajectoryEntryType
 
-            is_consciousness = chat_id == "__inner__"
-
-            if is_consciousness:
+            if is_inner:
                 entry_type = TrajectoryEntryType.INNER_THOUGHT
-                source_chat_id = "__inner__"
+                source_chat_id = None
                 if role == "assistant":
                     actor = "lapwing"
                 elif role == "user":
                     actor = "system"
                 else:
                     logger.warning(
-                        "trajectory mirror skipped — unknown consciousness role %r",
+                        "trajectory mirror skipped — unknown inner-thought role %r",
                         role,
                     )
                     return

@@ -209,22 +209,3 @@ class ToolLoopContext:
     start_time: float = field(default_factory=time.perf_counter)
 
 
-def _refresh_voice_reminder(messages: list[dict]) -> None:
-    """No-op retained so task_runtime keeps compiling.
-
-    Pre-Step-3 this tried to strip the existing ``[System Note]``
-    voice reminder from the tool-loop messages list and re-inject a
-    fresh one via ``PromptBuilder.inject_voice_reminder``. The import
-    it relied on (``from src.core.prompt_builder import
-    inject_voice_reminder``) pointed at a module-level symbol that
-    never existed — only the method of the same name was defined —
-    so the whole function silently swallowed an ImportError on every
-    call throughout Step 2.
-
-    Step 3 deleted PromptBuilder. Keep the shape of the helper so
-    task_runtime's call site stays live, but do not re-inject: voice
-    is placed at prompt-render time by StateSerializer. A future step
-    that wants mid-tool-loop voice refresh can bring the builder back
-    into task_runtime's dependency list and populate this body.
-    """
-    return None

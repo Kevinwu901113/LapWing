@@ -1,9 +1,13 @@
 """WebSocket chat 端点。"""
 
+import asyncio
 import json
 import logging
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+
+from src.core.authority_gate import AuthLevel
+from src.core.events import MessageEvent
 
 logger = logging.getLogger("lapwing.api.routes.chat_ws")
 
@@ -12,6 +16,7 @@ router = APIRouter(tags=["chat"])
 # 由 server.py init() 注入
 _brain = None
 _channel_manager = None
+_event_queue = None
 
 # chat_id → WebSocket 映射，用于 Agent 事件推送
 _chat_ws_map: dict[str, WebSocket] = {}
@@ -53,10 +58,11 @@ async def forward_agent_result(chat_id: str, notify) -> None:
         pass
 
 
-def init(brain, channel_manager) -> None:
-    global _brain, _channel_manager
+def init(brain, channel_manager, event_queue=None) -> None:
+    global _brain, _channel_manager, _event_queue
     _brain = brain
     _channel_manager = channel_manager
+    _event_queue = event_queue
 
 
 @router.websocket("/ws/chat")
@@ -155,16 +161,27 @@ async def websocket_chat(ws: WebSocket):
 
                 try:
                     await ws.send_json({"type": "status", "phase": "thinking", "text": ""})
-                    reply = await _brain.think_conversational(
+                    if _event_queue is None:
+                        # No queue wired — should not happen at runtime;
+                        # fail loudly so the integration gets fixed.
+                        raise RuntimeError("event_queue not initialised on chat_ws")
+
+                    done = asyncio.get_running_loop().create_future()
+                    images_tuple = tuple(images) if images else ()
+                    event = MessageEvent.from_message(
                         chat_id=chat_id,
-                        user_message=content,
+                        user_id="owner",
+                        text=content,
+                        adapter="desktop",
                         send_fn=send_fn,
+                        auth_level=int(AuthLevel.OWNER),
+                        images=images_tuple,
                         typing_fn=typing_fn,
                         status_callback=status_callback,
-                        adapter="desktop",
-                        user_id="owner",
-                        images=images,
+                        done_future=done,
                     )
+                    await _event_queue.put(event)
+                    await done  # propagate handler exception to except block
                     await ws.send_json({"type": "reply", "content": "", "final": True})
                 except Exception as exc:
                     await ws.send_json({
