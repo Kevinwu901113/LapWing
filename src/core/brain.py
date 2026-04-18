@@ -124,8 +124,6 @@ class LapwingBrain:
         )
         from src.memory.compactor import ConversationCompactor
         self.compactor = ConversationCompactor(self.memory, self.router)
-        from src.core.prompt_snapshot import PromptSnapshotManager
-        self._prompt_snapshot = PromptSnapshotManager()
         # v2.0 Step 3: StateViewBuilder is the sole prompt-assembly entry.
         # Default builder has no store wiring — every section but identity
         # docs collapses to empty. AppContainer replaces this at prepare()
@@ -213,7 +211,6 @@ class LapwingBrain:
         else:
             self._system_prompt = reload_prompt("lapwing_soul")
         reload_prompt("lapwing_voice")
-        self._prompt_snapshot.invalidate()
         logger.info("已重新加载所有 prompt 缓存")
 
     def reload_skills(self) -> None:
@@ -231,14 +228,12 @@ class LapwingBrain:
         return self.router.model_status(session_key=self._chat_session_key(chat_id))
 
     def switch_model(self, chat_id: str, selector: str) -> dict[str, Any]:
-        self._prompt_snapshot.invalidate()
         return self.router.switch_session_model(
             session_key=self._chat_session_key(chat_id),
             selector=selector,
         )
 
     def reset_model(self, chat_id: str) -> dict[str, Any]:
-        self._prompt_snapshot.invalidate()
         return self.router.clear_session_model(session_key=self._chat_session_key(chat_id))
 
     async def _complete_chat(
