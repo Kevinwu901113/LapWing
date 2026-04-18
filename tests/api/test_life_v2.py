@@ -568,3 +568,61 @@ class TestLifeV2TodayToneEmpty:
             resp = await client.get("/api/v2/life/today-tone")
 
         assert resp.json()["tone"] is None
+
+
+@pytest.mark.asyncio
+class TestLifeV2TodayToneGenerate:
+    async def test_calls_llm_with_prompt(self, client, mock_brain):
+        now = _time.time()
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[
+            _make_entry(id=1, timestamp=now - 60, entry_type="inner_thought",
+                        content={"text": "想他"}, source_chat_id="__inner__"),
+            _make_entry(id=2, timestamp=now - 3600, entry_type="inner_thought",
+                        content={"text": "有点累"}, source_chat_id="__inner__"),
+        ])
+        mock_brain.router.complete = AsyncMock(return_value="今天心里不算焦躁但一直想他。")
+
+        # Ensure test module knows the live brain.router
+        from src.api.routes import life_v2
+        life_v2.init(
+            trajectory_store=mock_brain.trajectory_store,
+            llm_router=mock_brain.router,
+            summaries_dir=None,
+        )
+
+        # Reset cache — tone endpoint is cached 1h
+        life_v2._today_tone_cache.clear()
+
+        async with client:
+            resp = await client.get("/api/v2/life/today-tone")
+
+        data = resp.json()
+        assert data["tone"] == "今天心里不算焦躁但一直想他。"
+        assert data["based_on_count"] == 2
+        assert data["generated_at"] is not None
+
+        # Prompt got both thoughts
+        messages = mock_brain.router.complete.call_args.kwargs["messages"]
+        prompt = messages[0]["content"]
+        assert "想他" in prompt
+        assert "有点累" in prompt
+
+        # Slot is lightweight
+        assert mock_brain.router.complete.call_args.kwargs["slot"] == "lightweight_judgment"
+
+    async def test_llm_error_returns_null(self, client, mock_brain):
+        now = _time.time()
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[
+            _make_entry(id=1, timestamp=now - 60, entry_type="inner_thought",
+                        content={"text": "x"}, source_chat_id="__inner__"),
+        ])
+        mock_brain.router.complete = AsyncMock(side_effect=RuntimeError("429 overloaded"))
+
+        from src.api.routes import life_v2
+        life_v2.init(trajectory_store=mock_brain.trajectory_store, llm_router=mock_brain.router)
+        life_v2._today_tone_cache.clear()
+
+        async with client:
+            resp = await client.get("/api/v2/life/today-tone")
+
+        assert resp.json()["tone"] is None

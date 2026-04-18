@@ -396,9 +396,28 @@ async def get_today_tone():
     if not recent_thoughts:
         return {"tone": None, "generated_at": None, "based_on_count": 0}
 
-    # LLM generation deferred to Task 13. For now, return a placeholder shape
-    # that the tests assert on in Task 13.
-    return {"tone": None, "generated_at": None, "based_on_count": len(recent_thoughts)}
+    from src.core.prompt_loader import load_prompt
+
+    thoughts_block = "\n".join(
+        f"- {r.content.get('text', '')}" if isinstance(r.content, dict) else ""
+        for r in recent_thoughts
+    )
+    prompt = load_prompt("life_today_tone").replace("{thoughts}", thoughts_block)
+
+    try:
+        tone = await _llm_router.complete(
+            messages=[{"role": "user", "content": prompt}],
+            slot="lightweight_judgment",
+            max_tokens=200,
+        )
+        tone = (tone or "").strip()
+    except Exception as exc:
+        logger.warning("today-tone LLM call failed: %s", exc)
+        return {"tone": None, "generated_at": None, "based_on_count": len(recent_thoughts)}
+
+    generated_at = _time.time()
+    _today_tone_cache["default"] = (generated_at, tone, len(recent_thoughts))
+    return {"tone": tone, "generated_at": generated_at, "based_on_count": len(recent_thoughts)}
 
 
 @router.get("/ping")
