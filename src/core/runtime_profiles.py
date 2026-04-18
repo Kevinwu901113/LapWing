@@ -33,7 +33,8 @@ CODER_SNIPPET_PROFILE = RuntimeProfile(
     name="coder_snippet",
     capabilities=frozenset({"code", "verify", "communication", "commitment"}),
     tool_names=frozenset({
-        "run_python_code", "verify_code_result", "tell_user",
+        "run_python_code", "verify_code_result",
+        "tell_user", "commit_promise", "fulfill_promise", "abandon_promise",
     }),
     include_internal=True,
 )
@@ -43,7 +44,8 @@ CODER_WORKSPACE_PROFILE = RuntimeProfile(
     capabilities=frozenset({"code", "file", "verify", "communication", "commitment"}),
     include_internal=True,
     tool_names=frozenset({
-        "apply_workspace_patch", "verify_workspace", "tell_user",
+        "apply_workspace_patch", "verify_workspace",
+        "tell_user", "commit_promise", "fulfill_promise", "abandon_promise",
     }),
 )
 
@@ -57,6 +59,9 @@ FILE_OPS_PROFILE = RuntimeProfile(
             "file_append",
             "file_list_directory",
             "tell_user",
+            "commit_promise",
+            "fulfill_promise",
+            "abandon_promise",
         }
     ),
     include_internal=False,
