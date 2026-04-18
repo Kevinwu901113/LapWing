@@ -22,6 +22,7 @@ from src.core.dispatcher import Dispatcher
 from src.core.durable_scheduler import DurableScheduler
 from src.core.attention import AttentionManager
 from src.core.event_queue import EventQueue
+from src.core.commitments import CommitmentStore
 from src.core.inner_tick_scheduler import InnerTickScheduler
 from src.core.main_loop import MainLoop
 from src.core.maintenance_timer import MaintenanceTimer
@@ -150,6 +151,12 @@ class AppContainer:
         # sub-phase-A window; becomes read-side truth in sub-phase B.
         self.trajectory_store: TrajectoryStore | None = None
 
+        # v2.0 Step 5: CommitmentStore — durable record of Lapwing's
+        # outstanding promises. Wired into brain services so the
+        # commit/fulfill/abandon_promise tools can write to it, and into
+        # StateViewBuilder so inner ticks see open + overdue commitments.
+        self.commitment_store: CommitmentStore | None = None
+
         # v2.0 Step 4: MainLoop — single runtime driver. event_queue was
         # constructed above (so LocalApiServer could pick it up). The
         # loop itself starts in start() once brain wiring is complete.
@@ -206,6 +213,16 @@ class AppContainer:
         self.brain.trajectory_store = self.trajectory_store
         _wire_trajectory_to_dispatcher(self.brain.trajectory_store, self.dispatcher)
         logger.info("TrajectoryStore 已初始化（dual-write + read-path wired）")
+
+        # v2.0 Step 5: CommitmentStore — same lapwing.db, separate aiosqlite
+        # connection. brain._commitment_store_ref 让 brain._complete_chat 把
+        # 它放到 services dict，三个 commit/fulfill/abandon_promise 工具就能拿到。
+        self.commitment_store = CommitmentStore(
+            self._data_dir / "lapwing.db", self.mutation_log,
+        )
+        await self.commitment_store.init()
+        self.brain._commitment_store_ref = self.commitment_store
+        logger.info("CommitmentStore 已初始化")
 
         # v2.0 Step 2: AttentionManager — focus singleton, recovers state from
         # mutation_log's most recent ATTENTION_CHANGED at boot.
@@ -387,6 +404,15 @@ class AppContainer:
                 logger.warning("trajectory_store close failed", exc_info=True)
             self.trajectory_store = None
 
+        # v2.0 Step 5: same ordering rule for CommitmentStore — flush before
+        # mutation_log so COMMITMENT_* events land in the audit trail.
+        if self.commitment_store is not None:
+            try:
+                await self.commitment_store.close()
+            except Exception:
+                logger.warning("commitment_store close failed", exc_info=True)
+            self.commitment_store = None
+
         # v2.0 Step 1: 写入 SYSTEM_STOPPED 并关闭 mutation_log
         if self.mutation_log is not None:
             try:
@@ -429,7 +455,7 @@ class AppContainer:
             voice_prompt_name="lapwing_voice",
             attention_manager=self.brain.attention_manager,
             trajectory_store=self.brain.trajectory_store,
-            commitment_store=None,  # wired when CommitmentStore lands in flow
+            commitment_store=self.commitment_store,  # Step 5: wired
             task_store=None,  # Phase 1 TaskStore wiring below
             reminder_source=self.brain.memory,
             previous_state_reader=get_previous_state,

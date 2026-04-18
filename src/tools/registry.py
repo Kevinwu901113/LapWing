@@ -21,6 +21,22 @@ from src.tools.handlers import (
     verify_workspace_tool,
     write_file_tool,
 )
+from src.tools.tell_user import (
+    TELL_USER_DESCRIPTION,
+    TELL_USER_SCHEMA,
+    tell_user_executor,
+)
+from src.tools.commitments import (
+    ABANDON_PROMISE_DESCRIPTION,
+    ABANDON_PROMISE_SCHEMA,
+    COMMIT_PROMISE_DESCRIPTION,
+    COMMIT_PROMISE_SCHEMA,
+    FULFILL_PROMISE_DESCRIPTION,
+    FULFILL_PROMISE_SCHEMA,
+    abandon_promise_executor,
+    commit_promise_executor,
+    fulfill_promise_executor,
+)
 from src.tools.types import (
     ToolExecutionContext,
     ToolExecutionRequest,
@@ -140,6 +156,52 @@ class ToolRegistry:
 
 def build_default_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
+
+    # Step 5: tell_user 是模型唯一对外说话的路径，必须最先注册以
+    # 确保所有 RuntimeProfile 都能看到。
+    registry.register(
+        ToolSpec(
+            name="tell_user",
+            description=TELL_USER_DESCRIPTION,
+            json_schema=TELL_USER_SCHEMA,
+            executor=tell_user_executor,
+            capability="communication",
+            risk_level="low",
+        )
+    )
+
+    # Step 5: 承诺三件套——commit/fulfill/abandon_promise。
+    # 与 tell_user 一起构成"说话 + 承诺"语义层。
+    registry.register(
+        ToolSpec(
+            name="commit_promise",
+            description=COMMIT_PROMISE_DESCRIPTION,
+            json_schema=COMMIT_PROMISE_SCHEMA,
+            executor=commit_promise_executor,
+            capability="commitment",
+            risk_level="low",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="fulfill_promise",
+            description=FULFILL_PROMISE_DESCRIPTION,
+            json_schema=FULFILL_PROMISE_SCHEMA,
+            executor=fulfill_promise_executor,
+            capability="commitment",
+            risk_level="low",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="abandon_promise",
+            description=ABANDON_PROMISE_DESCRIPTION,
+            json_schema=ABANDON_PROMISE_SCHEMA,
+            executor=abandon_promise_executor,
+            capability="commitment",
+            risk_level="low",
+        )
+    )
 
     registry.register(
         ToolSpec(

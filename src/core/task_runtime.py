@@ -32,8 +32,6 @@ from src.logging.state_mutation_log import (
     iteration_context,
     new_iteration_id,
 )
-from src.logging.hallucination_patch import check_and_record as _check_hallucination
-
 # Re-export types for backward compatibility
 from src.core.task_types import (  # noqa: F401
     ErrorBurstGuard,
@@ -321,13 +319,23 @@ class TaskRuntime:
     ) -> list[dict[str, Any]]:
         """chat 场景工具集：按需暴露 shell / web / activate_skill。
         Phase 4: 个人工具（send_message, send_image 等）+ 提醒工具始终可用。
+        Step 5: tell_user 与 commit/fulfill/abandon_promise 始终包含——
+        前者是模型唯一对外说话出口，后者是承诺登记机制。
+        commit/fulfill/abandon_promise 在 M2 注册后自动并入。
         """
         tool_names: set[str] = {
+            "tell_user",
             "get_time",
             "send_message", "send_image", "view_image",
             "set_reminder", "view_reminders", "cancel_reminder",
             "delegate",
         }
+        # Step 5 M2: 承诺三件套若已注册则纳入（M1 时尚未注册）
+        for promise_tool in (
+            "commit_promise", "fulfill_promise", "abandon_promise",
+        ):
+            if self._tool_registry.get(promise_tool) is not None:
+                tool_names.add(promise_tool)
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
         if web_enabled:
@@ -385,6 +393,7 @@ class TaskRuntime:
         on_typing: Callable[[], "Awaitable[None]"] | None = None,
         adapter: str = "",
         user_id: str = "",
+        send_fn: Callable[[str], "Awaitable[Any]"] | None = None,
     ) -> str:
         mutation_log: StateMutationLog | None = (services or {}).get("mutation_log")
         iteration_id = new_iteration_id()
@@ -427,10 +436,13 @@ class TaskRuntime:
                     on_typing=on_typing,
                     adapter=adapter,
                     user_id=user_id,
+                    send_fn=send_fn,
                 )
-                # TEMPORARY — Step 1 → Step 5 hallucination observation patch.
-                # See src/logging/hallucination_patch.py docstring for removal plan.
-                await _check_hallucination(reply, mutation_log)
+                # Step 5 cleanup: removed observation-only hallucination
+                # patch (src/logging/hallucination_patch.py). Replaced by
+                # the structural fix — tell_user is the only user-facing
+                # path, commit_promise tracks intent. Audit lives in
+                # CommitmentStore + StateMutationLog.
                 return reply
         except Exception:
             end_reason = "error"
@@ -474,6 +486,7 @@ class TaskRuntime:
         on_typing: Callable[[], "Awaitable[None]"] | None = None,
         adapter: str = "",
         user_id: str = "",
+        send_fn: Callable[[str], "Awaitable[Any]"] | None = None,
     ) -> str:
         """Original complete_chat body. Wrapped by complete_chat() which binds
         the iteration context and records ITERATION_STARTED / ITERATION_ENDED.
@@ -526,6 +539,7 @@ class TaskRuntime:
             services=services,
             adapter=adapter,
             user_id=user_id,
+            send_fn=send_fn,
             state=state,
             loop_detection_state=self._new_loop_detection_state(),
             recovery=LoopRecoveryState(),
@@ -952,6 +966,7 @@ class TaskRuntime:
                 services=ctx.services,
                 adapter=ctx.adapter,
                 user_id=ctx.user_id,
+                send_fn=ctx.send_fn,
             )
             duration_ms = max(int((time.perf_counter() - tool_started_at) * 1000), 0)
             logger.debug(
@@ -1249,6 +1264,7 @@ class TaskRuntime:
         services: dict[str, Any] | None = None,
         adapter: str = "",
         user_id: str = "",
+        send_fn: Callable[[str], "Awaitable[Any]"] | None = None,
     ) -> ToolExecutionResult:
         profile_obj = self._resolve_profile(profile)
         tool = self._tool_registry.get(request.name)
@@ -1360,6 +1376,7 @@ class TaskRuntime:
             chat_id=chat_id or "",
             memory=self._memory,
             memory_index=self._memory_index,
+            send_fn=send_fn,
         )
 
         policy_hook = str(tool.metadata.get("policy_hook", "")).strip()
@@ -1540,6 +1557,7 @@ class TaskRuntime:
         profile: str | RuntimeProfile = "chat_shell",
         adapter: str = "",
         user_id: str = "",
+        send_fn: Callable[[str], "Awaitable[Any]"] | None = None,
     ) -> tuple[str, dict[str, Any], bool]:
         dispatcher = (services or {}).get("dispatcher")
         mutation_log: StateMutationLog | None = (services or {}).get("mutation_log")
@@ -1595,6 +1613,7 @@ class TaskRuntime:
             services=services,
             adapter=adapter,
             user_id=user_id,
+            send_fn=send_fn,
         )
         elapsed_ms = (time.monotonic() - tool_start_mono) * 1000
 

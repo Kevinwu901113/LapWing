@@ -56,6 +56,12 @@ class Commitment:
     status_changed_at: float
     fulfilled_by_entry_ids: list[int] | None
     reasoning: str | None
+    # Step 5: optional deadline (epoch seconds). NULL = 无明确截止；
+    # 用于 inner tick 巡检"超时未完成的承诺"。
+    deadline: float | None = None
+    # Step 5: 关闭时的简短说明——fulfill 时写完成结果摘要，abandon 时
+    # 写放弃原因。审计回看不用翻 mutation_log。
+    closing_note: str | None = None
 
 
 class CommitmentStore:
@@ -97,7 +103,25 @@ class CommitmentStore:
                 ON commitments(target_chat_id, status);
             """
         )
+        # Step 5 schema migration: deadline + closing_note。SQLite ALTER TABLE
+        # ADD COLUMN 是廉价 op；旧库升级到 Step 5 自动获得新列。
+        await self._add_column_if_missing("deadline", "REAL")
+        await self._add_column_if_missing("closing_note", "TEXT")
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_commit_deadline "
+            "ON commitments(deadline) WHERE deadline IS NOT NULL"
+        )
         await self._db.commit()
+
+    async def _add_column_if_missing(self, column: str, sql_type: str) -> None:
+        if self._db is None:
+            return
+        async with self._db.execute("PRAGMA table_info(commitments)") as cur:
+            cols = {row[1] for row in await cur.fetchall()}
+        if column not in cols:
+            await self._db.execute(
+                f"ALTER TABLE commitments ADD COLUMN {column} {sql_type}"
+            )
 
     async def close(self) -> None:
         if self._db is not None:
@@ -113,10 +137,14 @@ class CommitmentStore:
         source_trajectory_entry_id: int,
         *,
         reasoning: str | None = None,
+        deadline: float | None = None,
     ) -> str:
         """Create a new pending commitment; returns its id.
 
         Emits ``COMMITMENT_CREATED`` on mutation_log.
+
+        Step 5: ``deadline`` (epoch seconds) optional——若设置，inner tick
+        会通过 ``list_overdue`` 巡检"承诺超时未完成"。
         """
         if self._db is None:
             raise RuntimeError("CommitmentStore not initialized; call init() first")
@@ -129,11 +157,11 @@ class CommitmentStore:
             """INSERT INTO commitments
                (id, created_at, target_chat_id, content,
                 source_trajectory_entry_id, status, status_changed_at,
-                fulfilled_by_entry_ids, reasoning)
-               VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)""",
+                fulfilled_by_entry_ids, reasoning, deadline, closing_note)
+               VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)""",
             (
                 commitment_id, now, target_chat_id, content,
-                source_trajectory_entry_id, status, now, reasoning,
+                source_trajectory_entry_id, status, now, reasoning, deadline,
             ),
         )
         await self._db.commit()
@@ -147,6 +175,7 @@ class CommitmentStore:
                     "content": content,
                     "source_trajectory_entry_id": source_trajectory_entry_id,
                     "reasoning": reasoning,
+                    "deadline": deadline,
                 },
                 iteration_id=current_iteration_id(),
                 chat_id=target_chat_id,
@@ -165,8 +194,13 @@ class CommitmentStore:
         status: str,
         *,
         fulfilled_by_entry_ids: list[int] | None = None,
+        closing_note: str | None = None,
     ) -> None:
-        """Transition status. Emits ``COMMITMENT_STATUS_CHANGED``."""
+        """Transition status. Emits ``COMMITMENT_STATUS_CHANGED``.
+
+        Step 5: ``closing_note`` 在 fulfill 时记结果摘要、abandon 时记
+        放弃原因。写表 + 进 mutation payload，便于回看。
+        """
         if self._db is None:
             raise RuntimeError("CommitmentStore not initialized; call init() first")
         if status not in _VALID_STATUSES:
@@ -184,9 +218,10 @@ class CommitmentStore:
         )
         await self._db.execute(
             """UPDATE commitments
-               SET status = ?, status_changed_at = ?, fulfilled_by_entry_ids = ?
+               SET status = ?, status_changed_at = ?, fulfilled_by_entry_ids = ?,
+                   closing_note = COALESCE(?, closing_note)
                WHERE id = ?""",
-            (status, now, entries_json, commitment_id),
+            (status, now, entries_json, closing_note, commitment_id),
         )
         await self._db.commit()
 
@@ -198,6 +233,7 @@ class CommitmentStore:
                     "old_status": existing.status,
                     "new_status": status,
                     "fulfilled_by_entry_ids": fulfilled_by_entry_ids,
+                    "closing_note": closing_note,
                 },
                 iteration_id=current_iteration_id(),
                 chat_id=existing.target_chat_id,
@@ -214,14 +250,17 @@ class CommitmentStore:
         if self._db is None:
             return None
         async with self._db.execute(
-            "SELECT id, created_at, target_chat_id, content, "
-            "source_trajectory_entry_id, status, status_changed_at, "
-            "fulfilled_by_entry_ids, reasoning "
-            "FROM commitments WHERE id = ?",
+            f"SELECT {self._SELECT_COLS} FROM commitments WHERE id = ?",
             (commitment_id,),
         ) as cur:
             row = await cur.fetchone()
         return self._row_to_commitment(row) if row else None
+
+    _SELECT_COLS = (
+        "id, created_at, target_chat_id, content, "
+        "source_trajectory_entry_id, status, status_changed_at, "
+        "fulfilled_by_entry_ids, reasoning, deadline, closing_note"
+    )
 
     async def list_open(
         self, chat_id: str | None = None
@@ -235,15 +274,38 @@ class CommitmentStore:
         placeholders = ",".join("?" * len(_OPEN_STATUSES))
         params: tuple[Any, ...] = tuple(_OPEN_STATUSES)
         sql = (
-            "SELECT id, created_at, target_chat_id, content, "
-            "source_trajectory_entry_id, status, status_changed_at, "
-            "fulfilled_by_entry_ids, reasoning "
-            f"FROM commitments WHERE status IN ({placeholders})"
+            f"SELECT {self._SELECT_COLS} FROM commitments "
+            f"WHERE status IN ({placeholders})"
         )
         if chat_id is not None:
             sql += " AND target_chat_id = ?"
             params = params + (chat_id,)
         sql += " ORDER BY created_at ASC, id ASC"
+        async with self._db.execute(sql, params) as cur:
+            rows = await cur.fetchall()
+        return [self._row_to_commitment(row) for row in rows]
+
+    async def list_overdue(
+        self, now: float, *, chat_id: str | None = None,
+    ) -> list[Commitment]:
+        """Step 5: 列出已过 deadline 但仍 open 的承诺。
+
+        ``deadline IS NULL`` 的承诺永远不算超时。inner tick 用这个 API
+        判断"我之前承诺要做的事是否漏了"。
+        """
+        if self._db is None:
+            return []
+        placeholders = ",".join("?" * len(_OPEN_STATUSES))
+        params: tuple[Any, ...] = tuple(_OPEN_STATUSES) + (now,)
+        sql = (
+            f"SELECT {self._SELECT_COLS} FROM commitments "
+            f"WHERE status IN ({placeholders}) "
+            "AND deadline IS NOT NULL AND deadline < ?"
+        )
+        if chat_id is not None:
+            sql += " AND target_chat_id = ?"
+            params = params + (chat_id,)
+        sql += " ORDER BY deadline ASC, id ASC"
         async with self._db.execute(sql, params) as cur:
             rows = await cur.fetchall()
         return [self._row_to_commitment(row) for row in rows]
@@ -261,4 +323,6 @@ class CommitmentStore:
             status_changed_at=row[6],
             fulfilled_by_entry_ids=fulfilled,
             reasoning=row[8],
+            deadline=row[9] if len(row) > 9 else None,
+            closing_note=row[10] if len(row) > 10 else None,
         )

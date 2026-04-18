@@ -45,6 +45,11 @@ def identify(adapter: str, user_id: str) -> AuthLevel:
 # 工具名 → 最低所需权限
 OPERATION_AUTH: dict[str, AuthLevel] = {
     "chat": AuthLevel.GUEST,
+    # Step 5：基础通讯能力——所有人都可以让 Lapwing 说话/承诺
+    "tell_user": AuthLevel.GUEST,
+    "commit_promise": AuthLevel.GUEST,
+    "fulfill_promise": AuthLevel.GUEST,
+    "abandon_promise": AuthLevel.GUEST,
     # 信息查询类
     "research": AuthLevel.TRUSTED,
     "file_list_directory": AuthLevel.TRUSTED,

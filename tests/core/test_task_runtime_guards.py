@@ -161,7 +161,8 @@ async def test_task_runtime_stops_on_budget_exhaustion():
 
     # Mock tool execution to succeed
     async def mock_execute(*, tool_call, state, deps, task_id, chat_id,
-                           event_bus, profile, services, adapter, user_id):
+                           event_bus, profile, services, adapter, user_id,
+                           send_fn=None):
         return "OK", {"result": "ok"}, True
 
     runtime._execute_tool_call = mock_execute
@@ -240,7 +241,8 @@ async def test_task_runtime_injects_error_context():
 
     # Mock _execute_tool_call to always fail
     async def mock_execute(*, tool_call, state, deps, task_id, chat_id,
-                           event_bus, profile, services, adapter, user_id):
+                           event_bus, profile, services, adapter, user_id,
+                           send_fn=None):
         return "Error: command not found", {"error": True}, False
 
     runtime._execute_tool_call = mock_execute

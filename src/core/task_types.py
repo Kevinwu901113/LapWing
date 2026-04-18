@@ -200,6 +200,10 @@ class ToolLoopContext:
     no_action_budget: NoActionBudget
     error_guard: ErrorBurstGuard
 
+    # Step 5: tell_user 工具的用户通道，由 brain 透传；inner tick / agent
+    # 等无用户通道的 caller 留 None。带默认值放在所有非默认字段之后。
+    send_fn: Callable[[str], Awaitable[Any]] | None = None
+
     # 运行时累积状态
     last_payload: dict[str, Any] | None = None
     final_reply: str | None = None

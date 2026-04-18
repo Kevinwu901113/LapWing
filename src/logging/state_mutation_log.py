@@ -115,12 +115,12 @@ class MutationType(str, Enum):
     MEMORY_RAPTOR_UPDATED = "memory.raptor_updated"    # Step 3+
     MEMORY_FILE_EDITED = "memory.file_edited"          # Step 3+
 
-    # TEMPORARY (Step 1 → Step 5): records suspected MiniMax hallucinations
-    # where the reply claims prior work with zero supporting tool calls.
-    # Observation-only; does NOT intercept the reply. Scheduled for removal
-    # in Step 5 once the trajectory/commitment path lands. See
-    # cleanup_report_step1.md debt registry.
-    LLM_HALLUCINATION_SUSPECTED = "llm.hallucination_suspected"
+    # --- Step 5: tell_user — 唯一对外说话路径 ---
+    TELL_USER = "tell_user.invoked"
+
+    # Step 5 cleanup: LLM_HALLUCINATION_SUSPECTED + hallucination_patch.py
+    # 已移除——结构性 fix（tell_user + commit_promise）取代了启发式观测。
+    # Audit trail 现在是 CommitmentStore + TELL_USER mutation 的组合。
 
 
 @dataclass
