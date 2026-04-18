@@ -203,28 +203,26 @@ class DurableScheduler:
         """List fired reminders, newest-first. Returns raw dict rows."""
         query = "SELECT * FROM reminders_v2 WHERE fired = 1"
         params: list = []
-        # Note: due_time is ISO string; string compare is fine only because
-        # all timestamps use the same ISO shape. To compare by float ts we
-        # parse per-row after the fetch. Keep the SQL simple + apply the
-        # cutoff in Python.
+
+        if before_ts is not None:
+            # due_time is stored as ISO in Taipei tz — convert `before_ts` to
+            # the same tz/format so lexicographic `<` matches chronological `<`.
+            cutoff_iso = datetime.fromtimestamp(
+                before_ts,
+                tz=ZoneInfo("Asia/Taipei"),
+            ).isoformat()
+            query += " AND due_time < ?"
+            params.append(cutoff_iso)
+
         query += " ORDER BY due_time DESC LIMIT ?"
-        params.append(limit * 2 if before_ts is not None else limit)
+        params.append(limit)
 
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
             cursor = await db.execute(query, tuple(params))
             rows = [dict(r) for r in await cursor.fetchall()]
 
-        if before_ts is None:
-            return rows[:limit]
-
-        # Filter in Python against the float cutoff.
-        from datetime import datetime
-        def _row_ts(row: dict) -> float:
-            dt = datetime.fromisoformat(row["due_time"])
-            return dt.timestamp()
-        filtered = [r for r in rows if _row_ts(r) < before_ts]
-        return filtered[:limit]
+        return rows
 
     async def get_due_reminders(
         self,
