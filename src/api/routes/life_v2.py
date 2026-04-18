@@ -216,6 +216,35 @@ def _load_soul_revisions(soul_manager, *, before_ts: float | None, limit: int) -
     return items[:limit]
 
 
+async def _load_fired_reminders(scheduler, *, before_ts: float | None, limit: int) -> list[dict]:
+    if scheduler is None or not hasattr(scheduler, "list_fired"):
+        return []
+    rows = await scheduler.list_fired(before_ts=before_ts, limit=limit)
+    items: list[dict] = []
+    for row in rows:
+        due_time_str = row.get("due_time")
+        if not due_time_str:
+            continue
+        try:
+            dt = datetime.fromisoformat(due_time_str)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            ts = dt.timestamp()
+        except ValueError:
+            continue
+        items.append({
+            "kind": "reminder_fired",
+            "timestamp": ts,
+            "id": row["reminder_id"],
+            "content": row.get("content", ""),
+            "metadata": {
+                "content": row.get("content", ""),
+                "execution_mode": row.get("execution_mode", "notify"),
+            },
+        })
+    return items
+
+
 @router.get("/timeline")
 async def get_timeline(
     before_ts: float | None = Query(None),
@@ -251,6 +280,7 @@ async def get_timeline(
     if parsed_types is None:
         items.extend(_load_summaries(_resolved_summaries_dir(), before_ts=before_ts, limit=limit))
         items.extend(_load_soul_revisions(_soul_manager, before_ts=before_ts, limit=limit))
+        items.extend(await _load_fired_reminders(_durable_scheduler, before_ts=before_ts, limit=limit))
 
     # Merge cutoff: DESC by timestamp, truncate to `limit`.
     items.sort(key=lambda i: i["timestamp"], reverse=True)

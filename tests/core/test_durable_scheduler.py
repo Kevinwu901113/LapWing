@@ -388,3 +388,37 @@ class TestToolExecutors:
         result = await cancel_reminder_executor(req, ctx)
         assert result.success is False
         assert result.reason == "missing_reminder_id"
+
+
+# ===========================================================================
+# list_fired tests
+# ===========================================================================
+
+
+import aiosqlite  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_list_fired_returns_only_fired(tmp_path):
+    db = tmp_path / "rem.db"
+    scheduler = DurableScheduler(db_path=db)
+    await scheduler._init_table()
+    # Schedule one and manually mark it fired + one unfired for contrast.
+    from datetime import timezone
+    rid1 = await scheduler.schedule(
+        due_time=datetime.now(tz=timezone.utc),
+        content="done",
+    )
+    rid2 = await scheduler.schedule(
+        due_time=datetime.now(tz=timezone.utc),
+        content="pending",
+    )
+    async with aiosqlite.connect(db) as conn:
+        await conn.execute("UPDATE reminders_v2 SET fired = 1 WHERE reminder_id = ?", (rid1,))
+        await conn.commit()
+
+    rows = await scheduler.list_fired(limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]["reminder_id"] == rid1
+    assert rows[0]["content"] == "done"

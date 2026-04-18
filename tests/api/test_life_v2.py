@@ -374,3 +374,54 @@ class TestLifeV2TimelineSoulRevision:
 
         snap_items = [i for i in resp.json()["items"] if i["kind"] == "soul_revision"]
         assert len(snap_items) == 1
+
+
+def _iso_utc_from_ts(ts: float) -> str:
+    return datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
+
+
+@pytest.mark.asyncio
+class TestLifeV2TimelineReminderFired:
+    async def test_fired_reminder_merged(self, client, mock_brain):
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[])
+        mock_brain._durable_scheduler_ref.list_fired = AsyncMock(return_value=[
+            {
+                "reminder_id": "rem_abc",
+                "due_time": "2026-04-18T08:00:00+08:00",
+                "content": "喝水",
+                "execution_mode": "notify",
+                "fired": 1,
+            },
+        ])
+
+        async with client:
+            resp = await client.get("/api/v2/life/timeline")
+
+        fired_items = [i for i in resp.json()["items"] if i["kind"] == "reminder_fired"]
+        assert len(fired_items) == 1
+        assert fired_items[0]["id"] == "rem_abc"
+        assert fired_items[0]["content"] == "喝水"
+        assert fired_items[0]["metadata"]["execution_mode"] == "notify"
+        # Converted to UTC float ts correctly (08:00+08:00 == 00:00 UTC)
+        expected_ts = datetime(2026, 4, 18, 0, 0, 0, tzinfo=timezone.utc).timestamp()
+        assert fired_items[0]["timestamp"] == expected_ts
+
+    async def test_merge_cutoff_total_sorts_desc(self, client, mock_brain):
+        # 3 fired reminders + 3 traj rows interleaved → final 6 items must be sorted DESC
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[
+            _make_entry(id=1, timestamp=100.0),
+            _make_entry(id=2, timestamp=300.0),
+            _make_entry(id=3, timestamp=500.0),
+        ])
+        mock_brain._durable_scheduler_ref.list_fired = AsyncMock(return_value=[
+            {"reminder_id": "r1", "due_time": _iso_utc_from_ts(200.0), "content": "a", "execution_mode": "notify"},
+            {"reminder_id": "r2", "due_time": _iso_utc_from_ts(400.0), "content": "b", "execution_mode": "notify"},
+            {"reminder_id": "r3", "due_time": _iso_utc_from_ts(600.0), "content": "c", "execution_mode": "notify"},
+        ])
+
+        async with client:
+            resp = await client.get("/api/v2/life/timeline", params={"limit": 10})
+
+        timestamps = [i["timestamp"] for i in resp.json()["items"]]
+        assert timestamps == sorted(timestamps, reverse=True)
+        assert len(timestamps) == 6
