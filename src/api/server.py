@@ -63,14 +63,13 @@ def create_app(
     _agents_routes.init(brain)
     app.include_router(_agents_routes.router)
 
-    # 身份文件管理路由（soul.md / constitution.md / voice.md）
-    soul_manager = getattr(brain, "_soul_manager_ref", None)
+    # 身份文件管理路由（soul.md / constitution.md / voice.md）。
+    # 三个文件各自的 manager 都在 container 里装配好后挂到 brain 上。
     from src.api.routes import identity as _identity_routes
-    from config.settings import IDENTITY_DIR
     _identity_routes.init(
-        soul_manager,
-        identity_dir=IDENTITY_DIR,
-        voice_path=Path(__file__).parent.parent / "prompts" / "lapwing_voice.md",
+        soul_manager=getattr(brain, "_soul_manager_ref", None),
+        voice_manager=getattr(brain, "_voice_manager_ref", None),
+        constitution_manager=getattr(brain, "_constitution_manager_ref", None),
     )
     app.include_router(_identity_routes.router)
 

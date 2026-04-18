@@ -354,6 +354,27 @@ class AppContainer:
         # 暴露给 API server 使用
         self.brain._soul_manager_ref = self._soul_manager
 
+        # voice.md / constitution.md 走通用的 IdentityFileManager：
+        # 无冷却（编辑权全归 Kevin），但要版本化。voice.md 写入后
+        # 清掉 prompt_loader 缓存，让下一次 state view 重新读取。
+        from src.core.identity_file_manager import IdentityFileManager
+        from src.core.prompt_loader import clear_cache as _clear_prompt_cache
+        from config.settings import PROMPTS_DIR
+
+        self._voice_manager = IdentityFileManager(
+            file_path=PROMPTS_DIR / "lapwing_voice.md",
+            snapshot_dir=IDENTITY_DIR / "voice_snapshots",
+            kind="voice",
+            on_after_write=_clear_prompt_cache,
+        )
+        self._constitution_manager = IdentityFileManager(
+            file_path=IDENTITY_DIR / "constitution.md",
+            snapshot_dir=IDENTITY_DIR / "constitution_snapshots",
+            kind="constitution",
+        )
+        self.brain._voice_manager_ref = self._voice_manager
+        self.brain._constitution_manager_ref = self._constitution_manager
+
         # Phase 3: 记忆树 + 向量库 + 工具
         from src.memory.note_store import NoteStore
         from src.memory.vector_store import MemoryVectorStore
