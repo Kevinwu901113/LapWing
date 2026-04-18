@@ -241,6 +241,112 @@ class TestAttentionIntegration:
         assert restored.mode == snapshot.mode
 
 
+class TestMasterVsStep2Parity:
+    """Smoke test: given the same append sequence, the history read the
+    2g switch (TrajectoryStore path) returns is equivalent — shape,
+    order, content — to what pre-Step-2 would have produced via the
+    in-memory cache.
+
+    Input is the exact 4-turn QQ conversation Kevin used for the 2g
+    real-conversation validation. The intent is to catch any future
+    regression where the read-path switch silently drops or reorders
+    messages even though unit tests still pass.
+
+    The two scenarios exercised:
+      - 'pre-Step-2 shape' : ConversationMemory with trajectory wired.
+                              Each append writes to trajectory; reading
+                              via brain's new _load_history path, then
+                              the trajectory_compat shim, yields
+                              legacy-shape dicts.
+      - 'baseline shape'   : ConversationMemory without trajectory.
+                              append() falls back to the in-memory cache
+                              (the pre-Step-2 behaviour, preserved as the
+                              phase-0 / unit-test fallback). memory.get
+                              returns that cache.
+
+    If these diverge on the same sequence of writes, sub-phase B
+    silently regressed.
+    """
+
+    # Verbatim from Kevin's 2g QQ validation (conv#1910-1917), reproduced
+    # here so a future reader knows exactly what input triggers this
+    # smoke test.
+    VALIDATION_TURNS = [
+        ("user",      "帮我记一下我下周末去泡温泉"),
+        ("assistant", "好 帮你记了\n\n下周末泡温泉\n\n要去之前提醒你吗"),
+        ("user",      "你刚刚记了什么"),
+        ("assistant", "泡温泉\n\n刚没真的记下来 现在帮你弄\n\n要我设置什么时候提醒你吗"),
+        ("user",      "除了那个还有周一提醒我找老师签名"),
+        ("assistant", "好 周一4/20提醒你找老师签名\n\n帮你设置了 周一早上九点提醒你\n\n这样不会忘"),
+        ("user",      "把你记住的都说一遍"),
+        ("assistant", "等我看一下"),
+    ]
+
+    async def test_2g_validation_turns_read_identically(self, lapwing_db, tmp_path):
+        memory = lapwing_db["memory"]
+        trajectory = lapwing_db["trajectory"]
+
+        # Scenario A: trajectory-wired (Step 2g read path)
+        for role, content in self.VALIDATION_TURNS:
+            await memory.append("919231551", role, content)
+
+        rows = await trajectory.relevant_to_chat(
+            "919231551", n=len(self.VALIDATION_TURNS) * 2, include_inner=False,
+        )
+        step2_history = trajectory_entries_to_legacy_messages(rows)
+
+        # Scenario B: baseline shape (trajectory None, cache-only fallback)
+        baseline_memory = ConversationMemory(tmp_path / "baseline.db")
+        await baseline_memory.init_db()
+        # NO set_trajectory — falls back to cache
+        try:
+            for role, content in self.VALIDATION_TURNS:
+                await baseline_memory.append("919231551", role, content)
+            baseline_history = await baseline_memory.get("919231551")
+        finally:
+            await baseline_memory.close()
+
+        # Parity assertions — shape, order, content must match exactly
+        assert len(step2_history) == len(baseline_history) == len(self.VALIDATION_TURNS)
+
+        for i, ((role, content), step2_msg, baseline_msg) in enumerate(zip(
+            self.VALIDATION_TURNS, step2_history, baseline_history
+        )):
+            assert step2_msg["role"] == role, f"turn {i}: step2 role mismatch"
+            assert baseline_msg["role"] == role, f"turn {i}: baseline role mismatch"
+            assert step2_msg["content"] == content, f"turn {i}: step2 content drift"
+            assert baseline_msg["content"] == content, f"turn {i}: baseline content drift"
+            # And they must agree with each other
+            assert step2_msg == baseline_msg, f"turn {i}: step2 vs baseline diverged"
+
+    async def test_2g_validation_turns_cross_turn_recall_pattern(self, lapwing_db):
+        """The 2g validation's whole point was 'does she remember turn 1
+        when answering turn 2?'. This asserts the read-path gives the
+        caller (brain._load_history) access to all earlier turns at
+        each point in the conversation — the necessary condition for
+        cross-turn recall."""
+        memory = lapwing_db["memory"]
+        trajectory = lapwing_db["trajectory"]
+
+        for i, (role, content) in enumerate(self.VALIDATION_TURNS):
+            await memory.append("919231551", role, content)
+
+            # After each turn, the read path should expose every prior
+            # turn so the model's context includes them
+            rows = await trajectory.relevant_to_chat(
+                "919231551", n=100, include_inner=False,
+            )
+            seen = trajectory_entries_to_legacy_messages(rows)
+            expected = [
+                {"role": r, "content": c}
+                for r, c in self.VALIDATION_TURNS[: i + 1]
+            ]
+            assert seen == expected, (
+                f"after turn {i} ({role}: {content[:30]!r}): "
+                f"read path returned {len(seen)} msgs, expected {len(expected)}"
+            )
+
+
 class TestCommitmentsOutlet:
     async def test_commitments_wired_but_list_open_empty_pre_step5(
         self, lapwing_db

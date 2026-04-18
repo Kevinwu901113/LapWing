@@ -4,7 +4,7 @@
 **Baseline tag**: `pre_recast_v2_step2` → `0e782e4` (Step 1 merge commit)
 **Date range**: 2026-04-18
 **Pre-step-2 baseline**: 920 tests (Step 1 complete, `recast_v2_step1_complete`)
-**Final test count**: **1036** pass (net +116 vs. pre-branch 920)
+**Final test count**: **1038** pass (net +118 vs. pre-branch 920)
 
 Blueprint v2.0 Step 2 executed per Kevin's 2026-04-18 brief + in-flight
 scope revision (§"Scope 修订"): ConversationMemory is no longer deleted
@@ -180,14 +180,22 @@ source_chat_id:
 
 Invariant: **1354 read = 1351 migrated + 3 discarded** ✓
 
-Discards (all `empty_content` in consciousness/assistant, preserved in
-dry-run report):
+Discards (all three are **zero-length assistant replies** from the
+consciousness tick loop — not schema violations; Lapwing literally
+emitted `""` instead of `"无事"` or any text. Context verified by
+reading the preceding row in each case):
 
-| id   | reason        | chat_id             | role      |
-|------|---------------|---------------------|-----------|
-| 1728 | empty_content | __consciousness__   | assistant |
-| 1752 | empty_content | __consciousness__   | assistant |
-| 1878 | empty_content | __consciousness__   | assistant |
+| id   | chat_id             | role      | timestamp (UTC)              | content length | disposition                                                                       |
+|------|---------------------|-----------|------------------------------|----------------|-----------------------------------------------------------------------------------|
+| 1728 | `__consciousness__` | assistant | 2026-04-16T21:45:05.854740   | 0 chars        | empty reply to tick at 05:44 Friday (`id=1727`, system tick prompt). Next tick at 06:57 (`id=1731`). |
+| 1752 | `__consciousness__` | assistant | 2026-04-17T01:07:09.756706   | 0 chars        | empty reply to tick at 09:06 Friday (`id=1751`). Next tick at 09:45 (`id=1754`).   |
+| 1878 | `__consciousness__` | assistant | 2026-04-17T12:45:15.960005   | 0 chars        | empty reply to tick at 20:45 Friday (`id=1877`). Next tick at 21:22 (`id=1880`).   |
+
+Discard rule: `content is None or content == ""` (`scripts/migrate_to_trajectory.py:_map_row`).
+These would have become `INNER_THOUGHT` rows with empty `text` — semantically
+indistinguishable from "no tick output", so dropping rather than storing
+an empty row is the safer choice. All three are surrounded by normal
+ticks, so losing them doesn't break downstream readers' continuity.
 
 Legacy `conversations` table **preserved** (Step 3 drops it per roadmap).
 
@@ -286,10 +294,22 @@ grep 'conversation_memory\.(append|write|   →  0 hits
 grep '__consciousness__'                     →  1 hit: comment on
                                                 consciousness.py:259
 
-grep 'session_id|session_manager|            →  2 hits, both comments:
-      _session_store|append_to_session|         src/memory/conversation.py:192
-      get_session_messages|…'                   src/core/trajectory_compat.py:4
+grep 'session_id|session_manager|            →  9 hits in src/:
+      _session_store|append_to_session|         8 in PromptSnapshotManager
+      get_session_messages|…'                     (src/core/prompt_builder.py:32,
+                                                  34, 35, 37, 40, 41, 42, 49)
+                                                   — unrelated "session" naming,
+                                                  see §7.2 reachability proof;
+                                                 1 comment:
+                                                   src/memory/conversation.py:192
 ```
+
+The 8 PromptSnapshotManager hits describe an **opaque cache key** named
+`session_id` by legacy convention — it is not the ConversationMemory
+session concept that Step 2j tore out, and no Step-2 call site passes
+the old session_id into it. See §7.2 for the end-to-end proof; cleaned
+up as part of Step 3 when StateSerializer replaces PromptSnapshotManager
+wholesale.
 
 ### 7.1 Reachability chain — compactor `session_manager` param
 
@@ -366,61 +386,168 @@ TestInnerTickRemap::test_inner_write_categorised_as_inner_thought`.
 
 ### New — carried forward
 
-1. **[Pre-existing, not in v2.0 roadmap] `get_last_interaction` /
-   `get_all_chat_ids` ghost methods.**
-   - Location: `src/api/routes/status_v2.py` (calls inside try/except);
-     8 test files mock them.
-   - Defined: nowhere in source.
-   - Current behaviour: production calls raise AttributeError silently;
-     tests override via mock.
-   - Need product decision: what should these return? Is the desktop
-     status page actually using their values?
-   - Schedule: separate, does not block v2.0 Steps.
+Each item carries **清理时机** (when it's scheduled to be resolved) and
+**清理条件** (the concrete criterion that tells the next executor the
+debt is paid). Both fields must be satisfied for the item to move off
+this list.
 
-2. **[Pre-existing infrastructure] `scripts/deploy.sh stop` silently
-   restarts.**
-   - Root cause: the script has no argument parsing; it unconditionally
-     runs kill-old + spawn-new.
-   - Impact: every Step's "stop → modify → restart" flow is unreliable
-     without a manual `kill $(cat data/lapwing.pid)`.
-   - Fix: add `start`/`stop` subcommands, or rename the script to
-     `restart.sh` to match actual behaviour.
+---
 
-3. **[Step 3 debt] `trajectory_compat` transitional shim.**
-   - `src/core/trajectory_compat.py` (92 lines). The StateSerializer
-     lands in Step 3 and replaces the legacy `{role, content}` dict
-     shape with a richer prompt rendering; this file deletes then.
+**Debt #1 — `get_last_interaction` / `get_all_chat_ids` ghost methods.**
 
-4. **[Step 3 debt] Conversations table + FTS5 index still present.**
-   - Table retained with 1354 pre-migration rows; FTS still works over
-     them via `search_history` / `search_deep_archive`. Step 3 drops
-     both and kills the associated legacy API.
+- **Location**: `src/api/routes/status_v2.py:48,54` calls; 8 test files
+  mock them. **Not defined** anywhere in source.
+- **Current behaviour**: production calls raise AttributeError caught
+  silently by try/except (last_msg_ts stays None); tests patch the
+  methods before invocation.
+- **清理时机**: independent, outside v2.0 roadmap. Kevin's product call.
+- **清理条件**: either (a) both methods get real implementations that
+  satisfy the status_v2 contract (returning datetime or None), with a
+  test asserting real values flow through; or (b) the status_v2 call
+  sites are deleted and all 8 test-file mocks are removed. Grep for
+  `get_last_interaction\|get_all_chat_ids` must return 0 across `src/`
+  + `tests/` + no untested try/except swallows.
 
-5. **[Step 3 debt] PromptSnapshotManager explicit cache keys.**
-   - See §7.2. StateSerializer reimplements the prefix-cache in a form
-     that doesn't borrow the word "session".
+---
 
-6. **[Step 4 debt] Consciousness path still uses `chat_id="__inner__"`
-   sentinel.**
-   - The active string was renamed in 2i but dispatch still happens via
-     `chat_id` and `_mirror_to_trajectory`'s remap branch. Step 4 (main
-     loop unification) introduces a dedicated brain.think_inner entry
-     point and removes the sentinel-based dispatch.
+**Debt #2 — `scripts/deploy.sh` silently restarts on `stop`.**
 
-7. **[Step 4 debt] Session semantics re-specification.**
-   - Sessions were removed wholesale in 2j; Step 4 re-introduces them
-     bound to attention focus rather than chat_id. The archived
-     `sessions_archive.json` (149 rows) is available as reference data.
+- **Root cause**: the script has no argument parsing; it unconditionally
+  runs kill-old → `pkill -f main.py` → `nohup python main.py`. The
+  `stop` argument Kevin passed was ignored.
+- **Impact**: every Step's "stop → modify → restart" flow is unreliable
+  without a manual `kill $(cat data/lapwing.pid)`.
+- **清理时机**: independent infrastructure, outside v2.0 roadmap.
+- **清理条件**: `bash scripts/deploy.sh stop` exits 0 having sent SIGTERM
+  to the running main.py PID, waited for it to exit, removed the PID
+  file, and left `data/*.db-wal` / `*.db-shm` cleared — without
+  starting a new process. Separately, `bash scripts/deploy.sh start`
+  or the current no-arg form must continue to deploy. A smoke test
+  that asserts `ps aux | grep main.py` reports 0 matches after `stop`.
 
-8. **[Step 4 debt] SSE desktop event source (`message.received` /
-   `message.sent`) not yet mutation-log-driven.**
-   - See "Adjusted" above — rescheduled from Step 2 to Step 4.
+---
 
-9. **[Step 5 evaluation corpus] Two real-world hallucination cases +
-   one ghost-task case captured during 2f/2g validation.**
-   - Details in `docs/refactor_v2/step2_data_audit_notes.md`. Concrete
-     inputs for Step 5's Commitment Reviewer + post-action honesty hook
-     to regression-test against.
+**Debt #3 — `trajectory_compat` transitional shim (Step 3).**
+
+- File: `src/core/trajectory_compat.py` (92 lines).
+- The shim converts `TrajectoryEntry → {role, content}` dicts so
+  Step 2 could drop into the pre-existing `_recent_messages` pipeline
+  without changing its signature.
+- **清理时机**: Step 3 (StateSerializer replaces PromptBuilder).
+- **清理条件**: StateSerializer reads TrajectoryEntry directly into
+  its prompt serialization and emits final prompt bytes; no call to
+  `trajectory_entries_to_legacy_messages` remains in `src/`; the file
+  is deleted; `brain._load_history` either no longer exists or no
+  longer imports from trajectory_compat.
+
+---
+
+**Debt #4 — Conversations table + FTS5 index still present (Step 3).**
+
+- 1354 pre-migration rows retained in `data/lapwing.db`. New rows are
+  never written (Step 2h invariant). FTS5 index still indexes those
+  legacy rows and `search_history` / `search_deep_archive` / `get_active`
+  still query them.
+- **FTS backfill mechanism** (documented for completeness): on every
+  `ConversationMemory.init_db()` call, `_migrate_fts` runs a
+  `SELECT COUNT(*) FROM conversations_fts`; if 0, it bulk-inserts
+  `(rowid, _cjk_tokenize(content))` from `conversations` rows where
+  content is non-null, then commits. This is one-shot; subsequent
+  boots skip the backfill. Post-2h, `_fts_insert` (the per-write sync)
+  is no longer called from any production path — the FTS index is
+  frozen on whatever the one-time backfill produced.
+- **清理时机**: Step 3 drops the conversations table.
+- **清理条件**: `DROP TABLE conversations` executed; `conversations_fts`
+  and its shadow tables (`conversations_fts_config`, `…_content`,
+  `…_data`, `…_docsize`, `…_idx`) also dropped; `search_history`,
+  `search_deep_archive`, `get_active`, `get_messages`,
+  `_get_surrounding_messages`, `_migrate_fts`, `_fts_insert`,
+  `_load_recent_history`, `_cjk_tokenize` either deleted or moved to
+  the trajectory query surface; `src/tools/memory_tools_v2.py:267,317`
+  migrated to trajectory-based queries or removed.
+
+---
+
+**Debt #5 — PromptSnapshotManager "session_id" cache key (Step 3).**
+
+- See §7.2. The class (`src/core/prompt_builder.py:23-49`) predates
+  Step 2; it caches the frozen system-prompt snapshot keyed by an
+  opaque string the callers name "session_id". Step 2 does not wire
+  any caller to the `freeze()` / `get()` methods — production only
+  calls `invalidate()`. The cache value is thus permanently None at
+  runtime.
+- **清理时机**: Step 3.
+- **清理条件**: either the class is deleted as part of the
+  StateSerializer rewrite; or its key argument is renamed to something
+  unambiguous (e.g. `cache_key`). No `session` lexeme in
+  `src/core/prompt_builder.py` after the change.
+
+---
+
+**Debt #6 — Consciousness path still uses `chat_id="__inner__"` sentinel
+(Step 4).**
+
+- The active string was renamed in 2i but dispatch still happens via
+  `chat_id` and `_mirror_to_trajectory`'s `is_consciousness = chat_id
+  == "__inner__"` branch (`src/memory/conversation.py:526`).
+- **清理时机**: Step 4 (main-loop unification).
+- **清理条件**: `brain.think_inner(internal_message)` (or equivalent
+  dedicated entry) exists and is the sole consciousness caller;
+  `brain.think` no longer sees `chat_id="__inner__"`; the
+  `is_consciousness` branch in `_mirror_to_trajectory` is deleted;
+  `grep '__inner__' src/` returns 0 hits in active code (migration
+  data references `__inner__` are in `scripts/migrate_to_trajectory.py`
+  and are fine — those comments / literals describe the
+  post-migration source_chat_id, not active dispatch).
+
+---
+
+**Debt #7 — Session semantics re-specification (Step 4).**
+
+- Sessions were removed wholesale in 2j. Step 4 re-introduces them
+  bound to attention focus (topic continuity) rather than chat_id
+  partitioning.
+- **清理时机**: Step 4.
+- **清理条件**: Step 4 spec + implementation adds a session abstraction
+  keyed on AttentionState (e.g. `AttentionState.current_topic_id`),
+  backed by Trajectory with no partitioning of the legacy
+  `conversations` table. New session implementation has its own test
+  suite + doesn't reintroduce any of the 7 methods deleted in 2j.
+
+---
+
+**Debt #8 — SSE desktop event source not mutation-log-driven (Step 4).**
+
+- Scope adjustment from original Step 1 plan (§ "Adjusted"). Dispatcher
+  still fires `message.received` / `message.sent` in `brain.py:631,653`
+  for in-process desktop SSE consumers; trajectory / mutation_log is a
+  parallel, durable stream. Merging them needs a
+  dispatcher→mutation_log subscription bridge.
+- **清理时机**: Step 4.
+- **清理条件**: SSE route subscribes directly to
+  StateMutationLog.query_by_window (or a live subscribe API) rather
+  than Dispatcher's in-process pub/sub; `dispatcher.submit(
+  "message.received"...)` + `"message.sent"...` callsites deleted
+  from `brain.py`; SSE event shape documented as derived from
+  TRAJECTORY_APPENDED payloads; desktop frontend tested against the
+  new source.
+
+---
+
+**Debt #9 — Step 5 evaluation corpus.**
+
+- The 2f + 2g validations captured three pre-existing hallucination
+  cases + one ghost task (conv#1907, conv#1910, conv#1915, conv#1917).
+  Details in `docs/refactor_v2/step2_data_audit_notes.md`.
+- **清理时机**: Step 5 (Commitment Reviewer + post-action honesty hook).
+- **清理条件**: Step 5's Reviewer passes a regression test harness that
+  replays these specific row pairs and outputs (a) a `commitments`
+  row with `status=pending` for conv#1917 ("等我看一下"), (b) an
+  iteration-level hallucination flag for conv#1910 ("帮你记了" without
+  a remind/todo call), and (c) auto-retract / retry trigger for
+  conv#1915 ("帮你设置了" with specific time but no tool call). The
+  test data set is captured as a fixture and referenced in the Step 5
+  plan.
 
 ---
 
@@ -463,9 +590,28 @@ grep 'conversations' src/api/            →  no hits (only via brain.memory)
 | After 2j (session removal)         | 1024  | -2  (deleted two session-specific tests) |
 | After 2k (OpenAI normalisation)    | 1027  | +3    |
 | After 2l (integration test)        | 1036  | +9    |
+| 2l follow-up (master/step2 parity smoke) | 1038  | +2  |
 
-**Final**: 1036 pass (target in the 1030s after the 2 session deletions —
-net +116 across Step 2).
+**Final**: 1038 pass.
+
+### 10.1 Math reconciliation — 118 vs. 116 vs. 118
+
+Per-sub-phase deltas summed naively (positive only, pre-smoke-test):
+
+  21 + 13 + 15 + 25 + 13 + 19 + 0 + 0 + 3 + 9 = **118 additions**
+
+Net across Step 2 (accounting for the 2 session-specific tests deleted
+in 2j — `test_append_to_session_records_legacy_session_id` and
+`test_search_session_messages`):
+
+  118 − 2 = **116 net delta**  (920 + 116 = 1036 ✓)
+
+Both numbers are correct for the question they answer:
+- **118** = total new tests authored through 2l.
+- **116** = observable test-count delta from Step 1 baseline to 2l final.
+
+The 2l follow-up commit adds 2 master-vs-step2 parity smoke tests,
+bringing the final count to 1038 and the net delta to +118.
 
 ---
 
@@ -481,10 +627,12 @@ net +116 across Step 2).
 - [x] __consciousness__ sentinel renamed to __inner__ in active code
 - [x] Session machinery fully removed (methods, attribute, DDL, DB table)
 - [x] OpenAI stop_reason normalisation (Step 1 debt cleared)
-- [x] 9 end-to-end integration tests
-- [x] Full suite green (1036 pass)
-- [x] Cleanup report with debt registry + reachability proofs
+- [x] 9 end-to-end integration tests + 2 master-vs-step2 parity smoke tests
+- [x] Full suite green (1038 pass)
+- [x] Cleanup report with debt registry + reachability proofs + concrete
+      discard content + 清理时机/清理条件 table
 - [x] Desktop compatibility verification (no route changes required)
+- [x] Backup conventions documented (`docs/refactor_v2/backup_conventions.md`)
 
 ## 12. Next Step Preview (not executed)
 
