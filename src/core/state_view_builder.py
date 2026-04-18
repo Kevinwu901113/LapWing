@@ -370,10 +370,11 @@ def _entries_to_turns(
 ) -> list[TrajectoryTurn]:
     """Convert trajectory rows into TrajectoryTurn values.
 
-    Same semantics as ``trajectory_compat.trajectory_entries_to_legacy_messages``
-    (which disappears in M2.b): user/assistant rows pass through,
-    tool/state rows drop, inner-thoughts drop here (chat path passes
-    ``include_inner=False`` above). Input is oldest→newest already.
+    Mirrors ``trajectory_store.trajectory_entries_to_messages`` but
+    emits ``TrajectoryTurn`` values instead of legacy dicts. user/
+    assistant rows pass through; tool/state rows drop; inner-thoughts
+    drop here (chat path passes ``include_inner=False`` above). Input
+    is oldest→newest already.
     """
     out: list[TrajectoryTurn] = []
     for entry in entries:

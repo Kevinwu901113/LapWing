@@ -86,7 +86,8 @@ class TrajectoryTurn:
 
     ``role`` ∈ {``user``, ``assistant``, ``system``}. ``system`` is used
     for inner-thought rows when they are surfaced to the conversational
-    path (same rendering convention as ``trajectory_compat`` had).
+    path — same rendering convention ``trajectory_entries_to_messages``
+    applies to the legacy-dict shape.
     """
 
     role: str

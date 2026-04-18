@@ -29,7 +29,7 @@ import pytest
 
 from src.core.attention import AttentionManager
 from src.core.commitments import CommitmentStatus, CommitmentStore
-from src.core.trajectory_compat import trajectory_entries_to_legacy_messages
+from src.core.trajectory_store import trajectory_entries_to_messages
 from src.core.trajectory_store import TrajectoryEntryType, TrajectoryStore
 from src.logging.state_mutation_log import (
     MutationType,
@@ -149,8 +149,8 @@ class TestConversationalTurn:
         )
         assert [r.content["text"] for r in rows] == ["first", "second", "third"]
 
-        # Legacy-shape via trajectory_compat, as brain._load_history uses
-        legacy = trajectory_entries_to_legacy_messages(rows)
+        # Legacy-shape via trajectory_store, as brain._load_history uses
+        legacy = trajectory_entries_to_messages(rows)
         assert legacy == [
             {"role": "user", "content": "first"},
             {"role": "assistant", "content": "second"},
@@ -256,7 +256,7 @@ class TestMasterVsStep2Parity:
       - 'pre-Step-2 shape' : ConversationMemory with trajectory wired.
                               Each append writes to trajectory; reading
                               via brain's new _load_history path, then
-                              the trajectory_compat shim, yields
+                              the trajectory_entries_to_messages helper, yields
                               legacy-shape dicts.
       - 'baseline shape'   : ConversationMemory without trajectory.
                               append() falls back to the in-memory cache
@@ -293,7 +293,7 @@ class TestMasterVsStep2Parity:
         rows = await trajectory.relevant_to_chat(
             "919231551", n=len(self.VALIDATION_TURNS) * 2, include_inner=False,
         )
-        step2_history = trajectory_entries_to_legacy_messages(rows)
+        step2_history = trajectory_entries_to_messages(rows)
 
         # Scenario B: baseline shape (trajectory None, cache-only fallback)
         baseline_memory = ConversationMemory(tmp_path / "baseline.db")
@@ -336,7 +336,7 @@ class TestMasterVsStep2Parity:
             rows = await trajectory.relevant_to_chat(
                 "919231551", n=100, include_inner=False,
             )
-            seen = trajectory_entries_to_legacy_messages(rows)
+            seen = trajectory_entries_to_messages(rows)
             expected = [
                 {"role": r, "content": c}
                 for r, c in self.VALIDATION_TURNS[: i + 1]

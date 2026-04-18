@@ -21,7 +21,7 @@ from src.core.state_serializer import serialize as _serialize_state
 from src.core.state_view import TrajectoryTurn
 from src.core.state_view_builder import StateViewBuilder
 from src.core.task_runtime import RuntimeDeps, TaskRuntime
-from src.core.trajectory_compat import trajectory_entries_to_legacy_messages
+from src.core.trajectory_store import trajectory_entries_to_messages
 from src.core.shell_policy import (
     ExecutionSessionState,
     build_shell_runtime_policy,
@@ -151,19 +151,19 @@ class LapwingBrain:
     async def _load_history(self, chat_id: str) -> list[dict]:
         """Legacy-shape conversation history for the LLM context.
 
-        v2.0 Step 2g: reads from ``TrajectoryStore.relevant_to_chat`` via
-        the ``trajectory_compat`` shim when wired; falls back to the
-        in-memory ConversationMemory cache otherwise (unit tests,
-        phase-0, pre-container boot). ``include_inner=False`` preserves
-        the legacy semantics — consciousness-loop rows stay out of the
-        user-facing exchange.
+        Reads from ``TrajectoryStore.relevant_to_chat`` and projects via
+        ``trajectory_entries_to_messages``; falls back to the in-memory
+        ConversationMemory cache when the trajectory store isn't wired
+        (unit tests, phase-0, pre-container boot). ``include_inner=False``
+        preserves the legacy semantics — consciousness-loop rows stay
+        out of the user-facing exchange.
         """
         if self.trajectory_store is not None:
             # Legacy cap: MAX_HISTORY_TURNS rounds × 2 messages/round
             rows = await self.trajectory_store.relevant_to_chat(
                 chat_id, n=MAX_HISTORY_TURNS * 2, include_inner=False,
             )
-            return trajectory_entries_to_legacy_messages(rows)
+            return trajectory_entries_to_messages(rows)
         return await self.memory.get(chat_id)
 
     async def clear_short_term_memory(self, chat_id: str) -> None:
