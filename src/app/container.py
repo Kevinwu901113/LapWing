@@ -28,6 +28,41 @@ from src.logging.state_mutation_log import MutationType, StateMutationLog
 logger = logging.getLogger("lapwing.app.container")
 
 
+def _wire_trajectory_to_dispatcher(trajectory_store, dispatcher) -> None:
+    """Register a listener that forwards every trajectory append to Dispatcher
+    as a `trajectory_appended` event matching the shape served by the
+    /api/v2/life/timeline endpoint."""
+    if trajectory_store is None or dispatcher is None:
+        return
+
+    async def _forward(entry) -> None:
+        text = ""
+        if isinstance(entry.content, dict):
+            text = (
+                entry.content.get("text")
+                or entry.content.get("message")
+                or entry.content.get("summary")
+                or ""
+            )
+        payload = {
+            "kind": entry.entry_type,
+            "timestamp": entry.timestamp,
+            "id": f"traj_{entry.id}",
+            "content": text,
+            "metadata": {
+                "source_chat_id": entry.source_chat_id,
+                "actor": entry.actor,
+                "related_iteration_id": entry.related_iteration_id,
+            },
+        }
+        try:
+            await dispatcher.submit("trajectory_appended", payload, actor=entry.actor or "system")
+        except Exception:
+            logger.warning("trajectory_appended dispatcher.submit failed", exc_info=True)
+
+    trajectory_store.add_on_append_listener(_forward)
+
+
 def _resolve_git_commit() -> str:
     try:
         result = subprocess.run(
@@ -145,6 +180,7 @@ class AppContainer:
         self.brain.memory.set_trajectory(self.trajectory_store)
         self.brain.compactor.set_trajectory(self.trajectory_store)
         self.brain.trajectory_store = self.trajectory_store
+        _wire_trajectory_to_dispatcher(self.brain.trajectory_store, self.dispatcher)
         logger.info("TrajectoryStore 已初始化（dual-write + read-path wired）")
 
         # v2.0 Step 2: AttentionManager — focus singleton, recovers state from
