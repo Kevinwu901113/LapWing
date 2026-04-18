@@ -436,24 +436,6 @@ class ConversationMemory:
         except Exception as e:
             logger.error(f"清除所有记忆失败: {e}")
 
-    async def get_active(self, chat_id: str, limit: int = 30) -> list[dict]:
-        """获取活跃对话（最近 1 天）用于上下文注入，按时间正序返回。"""
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=self.ACTIVE_WINDOW_DAYS)).isoformat()
-        try:
-            async with self._db.execute(
-                "SELECT role, content, timestamp FROM conversations "
-                "WHERE chat_id = ? AND timestamp > ? ORDER BY timestamp DESC LIMIT ?",
-                (chat_id, cutoff, limit),
-            ) as cursor:
-                rows = await cursor.fetchall()
-            return [
-                {"role": row[0], "content": row[1], "timestamp": row[2]}
-                for row in reversed(rows)
-            ]
-        except Exception as e:
-            logger.error(f"get_active 查询失败: {e}")
-            return []
-
     async def close(self) -> None:
         """关闭数据库连接。"""
         if self._db:
