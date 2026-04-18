@@ -148,20 +148,6 @@ class ConversationMemory:
         """)
         await self._db.commit()
 
-        # FTS5 全文搜索索引
-        # 使用独立表 + 手动同步（非 trigger），因为 CJK 文本需要预处理分词。
-        # rowid 手动与 conversations.id 对齐。
-        await self._db.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts USING fts5(
-                content,
-                tokenize='unicode61'
-            )
-        """)
-        await self._db.commit()
-
-        # 一次性回填现有数据到 FTS 索引
-        await self._migrate_fts()
-
         # Migration: add channel column if missing
         try:
             await self._db.execute(
@@ -231,31 +217,6 @@ class ConversationMemory:
             if messages:
                 self._store[chat_id] = messages
                 logger.debug(f"已从 DB 加载频道 {chat_id} 的 {len(messages)} 条历史消息")
-
-    async def _migrate_fts(self) -> None:
-        """一次性回填现有 conversations 数据到 FTS 索引（幂等）。
-
-        对 CJK 文本做字符级分词后再入索引。
-        """
-        try:
-            async with self._db.execute(
-                "SELECT count(*) FROM conversations_fts"
-            ) as cursor:
-                row = await cursor.fetchone()
-            if row and row[0] == 0:
-                async with self._db.execute(
-                    "SELECT id, content FROM conversations WHERE content IS NOT NULL"
-                ) as cursor:
-                    rows = await cursor.fetchall()
-                if rows:
-                    await self._db.executemany(
-                        "INSERT INTO conversations_fts(rowid, content) VALUES (?, ?)",
-                        [(rid, _cjk_tokenize(content)) for rid, content in rows],
-                    )
-                    await self._db.commit()
-                    logger.info("FTS5 索引回填完成，共 %d 条记录", len(rows))
-        except Exception as e:
-            logger.warning("FTS5 索引回填失败: %s", e)
 
     async def _fts_insert(self, row_id: int, content: str) -> None:
         """将一条消息插入 FTS 索引（CJK 预分词）。"""
