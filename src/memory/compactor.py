@@ -57,11 +57,10 @@ def _format_for_summary(messages: list[dict]) -> str:
 class ConversationCompactor:
     """监控对话窗口，在接近上限时触发压缩。"""
 
-    def __init__(self, memory, router, *, auto_memory_extractor=None, session_manager=None):
+    def __init__(self, memory, router, *, auto_memory_extractor=None):
         self._memory = memory
         self._router = router
         self._auto_memory_extractor = auto_memory_extractor
-        self._session_manager = session_manager
         self._trajectory = None  # Set via set_trajectory() after AppContainer init (Step 2g)
         self._compacting: set[str] = set()
         CONVERSATION_SUMMARIES_DIR.mkdir(parents=True, exist_ok=True)
@@ -75,17 +74,12 @@ class ConversationCompactor:
         max_messages = MAX_HISTORY_TURNS * 2
         return history_length >= int(max_messages * COMPACTION_TRIGGER_RATIO)
 
-    async def try_compact(self, chat_id: str, *, session_id: str | None = None) -> bool:
+    async def try_compact(self, chat_id: str) -> bool:
         """尝试压缩对话。返回是否执行了压缩。"""
-        key = session_id or chat_id
-        if key in self._compacting:
+        if chat_id in self._compacting:
             return False
 
-        if session_id is not None:
-            # Dead branch in production — session_id is always None after Step 2j
-            # tears out the session concept. Kept here for the 2g→2j window.
-            history = await self._memory.get_session_messages(session_id)
-        elif self._trajectory is not None:
+        if self._trajectory is not None:
             # v2.0 Step 2g: read via TrajectoryStore + compat shim.
             from config.settings import MAX_HISTORY_TURNS
             from src.core.trajectory_compat import (
@@ -101,17 +95,15 @@ class ConversationCompactor:
         if not self.should_compact(len(history)):
             return False
 
-        self._compacting.add(key)
+        self._compacting.add(chat_id)
         try:
-            return await self._do_compact(key, history, chat_id=chat_id, is_session=bool(session_id))
+            return await self._do_compact(chat_id, history)
         finally:
-            self._compacting.discard(key)
+            self._compacting.discard(chat_id)
 
-    async def _do_compact(
-        self, key: str, history: list[dict], *, chat_id: str | None = None, is_session: bool = False
-    ) -> bool:
+    async def _do_compact(self, chat_id: str, history: list[dict]) -> bool:
         """执行压缩：摘要前半段对话，保留后半段。"""
-        actual_chat_id = chat_id or key
+        actual_chat_id = chat_id
         # 压缩前 60% 的消息，保留后 40%
         compact_count = int(len(history) * 0.6)
         if compact_count < 4:
@@ -184,22 +176,10 @@ class ConversationCompactor:
         }
         new_history = [summary_message] + to_keep
 
-        # 替换内存缓存（不删除数据库中的旧记录，只更新缓存）
-        if is_session:
-            self._memory.replace_session_history(key, new_history)
-            # Session Lineage: 压缩后创建新 session，建立父子关系
-            if self._session_manager is not None:
-                try:
-                    new_session_id = await self._session_manager.split_on_compression(
-                        key, summary,
-                    )
-                    # 将新历史迁移到新 session
-                    self._memory.replace_session_history(new_session_id, new_history)
-                    self._memory.replace_session_history(key, [])
-                except Exception as e:
-                    logger.warning("[%s] Session lineage split failed: %s", actual_chat_id, e)
-        else:
-            self._memory.replace_history(key, new_history)
+        # v2.0 Step 2j: session lineage removed with sessions. Cache update
+        # is cache-only in 2h+ since reads come from TrajectoryStore; this
+        # call is retained so the phase-0 / unit-test path stays coherent.
+        self._memory.replace_history(chat_id, new_history)
 
         logger.info(
             f"[{actual_chat_id}] Compaction 完成：压缩 {compact_count} 条 → 保留 {len(to_keep)} 条 + 1 条摘要"

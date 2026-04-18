@@ -3,10 +3,10 @@
 Covers:
   - Step 2f contract (dual-write era, now superseded): kept some mapping +
     failure-isolation tests since they still apply to the single-write path.
-  - Step 2h contract (current): ``append`` / ``append_to_session`` write
-    ONLY to trajectory when wired; the legacy ``conversations`` table is
-    no longer populated. Unit tests / phase-0 without a trajectory fall
-    back to an in-memory cache.
+  - Step 2h contract: ``append`` writes ONLY to trajectory when wired;
+    the legacy ``conversations`` table is no longer populated. Unit tests
+    / phase-0 without a trajectory fall back to an in-memory cache.
+  - Step 2j: session-scoped methods (append_to_session + siblings) removed.
 
 The original file name is kept for git-blame continuity.
 """
@@ -152,18 +152,6 @@ class TestMetadataPassthrough:
         assert row.content["adapter"] == "desktop"
         assert row.content["source"] == "desktop"
         assert row.content["user_id"] == "kevin_device_a"
-
-    async def test_append_to_session_records_legacy_session_id(
-        self, memory, trajectory
-    ):
-        await memory.append_to_session(
-            "chat1", "sess_abc", "assistant", "done", channel="qq"
-        )
-        rows = await trajectory.recent(1)
-        assert rows[0].entry_type == TrajectoryEntryType.ASSISTANT_TEXT.value
-        assert rows[0].source_chat_id == "chat1"
-        assert rows[0].content["legacy_session_id"] == "sess_abc"
-
 
 class TestFailureIsolation:
     async def test_trajectory_failure_logs_but_does_not_raise(

@@ -1,8 +1,9 @@
 """Tests for FTS5 full-text search on the legacy conversations table.
 
-v2.0 Step 2h: ``ConversationMemory.append`` / ``append_to_session`` no
-longer write to the ``conversations`` table (data goes to
-TrajectoryStore). The FTS index + ``search_history`` API remain
+v2.0 Step 2h: ``ConversationMemory.append`` no longer writes to the
+``conversations`` table (data goes to TrajectoryStore). The session
+variant ``append_to_session`` and its session-scoped siblings were
+removed in Step 2j. The FTS index + ``search_history`` API remain
 operational over pre-existing rows (and the Step 2e migration legacy
 data in production). Tests here seed the conversations table directly
 via SQL — they validate the *search* path, not the *sync on write* path
@@ -26,23 +27,15 @@ async def memory(tmp_path):
     await m.close()
 
 
-async def _legacy_insert_with_fts(
-    memory,
-    chat_id,
-    role,
-    content,
-    *,
-    session_id=None,
-    ts=None,
-):
+async def _legacy_insert_with_fts(memory, chat_id, role, content, *, ts=None):
     """Insert a row into conversations + sync it to FTS, simulating the
     pre-2h auto-sync path that ``append`` used to perform."""
     if ts is None:
         ts = datetime.now(timezone.utc).isoformat()
     cursor = await memory._db.execute(
-        "INSERT INTO conversations (chat_id, role, content, timestamp, session_id) "
-        "VALUES (?, ?, ?, ?, ?)",
-        (chat_id, role, content, ts, session_id),
+        "INSERT INTO conversations (chat_id, role, content, timestamp) "
+        "VALUES (?, ?, ?, ?)",
+        (chat_id, role, content, ts),
     )
     await memory._db.commit()
     if cursor.lastrowid:
@@ -125,16 +118,6 @@ class TestSearchHistoryOverLegacyRows:
         assert len(results) >= 1
         r = results[0]
         assert isinstance(r.get("context"), list)
-
-    async def test_search_session_messages(self, memory):
-        await _legacy_insert_with_fts(
-            memory, "chat1", "user", "这是 session 中的消息",
-            session_id="session1",
-        )
-        results = await memory.search_history("session 中的消息")
-        assert len(results) >= 1
-        assert results[0]["session_id"] == "session1"
-
 
 class TestFTS5Migration:
     async def test_backfill_existing_data(self, tmp_path):

@@ -95,7 +95,6 @@ class _ThinkCtx:
     effective_user_message: str
     approved_directory: str | None
     early_reply: str | None = None
-    session_id: str | None = None
 
 
 class LapwingBrain:
@@ -615,8 +614,6 @@ class LapwingBrain:
         send_fn 非空时，immediate_reply / agent_reply 会通过它发送（用于 conversational 模式）。
         返回 _ThinkCtx；若 early_reply 非 None 则表示已完成回复，调用方直接返回该值即可。
         """
-        session_id = None
-
         # 存储文本到记忆（图片不持久化，只在当前 LLM 调用中传递）
         stored_text = user_message
         if images:
@@ -666,11 +663,10 @@ class LapwingBrain:
             if send_fn is not None:
                 await send_fn(immediate_reply)
             return _ThinkCtx(messages=[], effective_user_message=effective_user_message,
-                             approved_directory=approved_directory, early_reply=immediate_reply,
-                             session_id=session_id)
+                             approved_directory=approved_directory, early_reply=immediate_reply)
 
         # 压缩 + 组装 messages
-        await self.compactor.try_compact(chat_id, session_id=session_id)
+        await self.compactor.try_compact(chat_id)
         history = await self._load_history(chat_id)
         recent_messages = self._recent_messages(
             history,
@@ -720,7 +716,6 @@ class LapwingBrain:
             messages=messages,
             effective_user_message=effective_user_message,
             approved_directory=approved_directory,
-            session_id=session_id,
         )
 
     async def think(self, chat_id: str, user_message: str, status_callback=None) -> str:

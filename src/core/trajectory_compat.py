@@ -1,8 +1,8 @@
 """Transitional shim: TrajectoryEntry → legacy ``{"role", "content"}`` dict.
 
 Blueprint v2.0 Step 2g. Callers that historically consumed
-``ConversationMemory.get(chat_id)`` / ``get_session_messages`` expect a
-list of ``{"role": "user"|"assistant", "content": str}`` dicts. Step 2g
+``ConversationMemory.get(chat_id)`` expect a list of
+``{"role": "user"|"assistant", "content": str}`` dicts. Step 2g
 switches the underlying source to ``TrajectoryStore`` but keeps the same
 output shape so the downstream code paths (``_recent_messages``,
 ``PromptBuilder`` injection, LLM routing) don't have to change in the

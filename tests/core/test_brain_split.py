@@ -30,7 +30,6 @@ def _make_brain():
         from src.core.brain import LapwingBrain
         brain = LapwingBrain(db_path=Path("test.db"))
     brain.memory.append = AsyncMock()
-    brain.memory.append_to_session = AsyncMock()
     brain.memory.remove_last = AsyncMock()
     brain.fact_extractor = MagicMock()
     brain.fact_extractor.notify = MagicMock()
@@ -45,7 +44,6 @@ def _make_ctx(reply_text: str):
         effective_user_message="hi",
         approved_directory=None,
         early_reply=None,
-        session_id=None,
     )
 
     async def fake_complete_chat(chat_id, messages, user_msg, **kwargs):
