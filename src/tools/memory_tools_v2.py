@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from pathlib import Path
 
 from src.tools.types import (
     ToolExecutionContext,
@@ -246,53 +245,6 @@ async def search_notes_executor(req: ToolExecutionRequest, ctx: ToolExecutionCon
 
 
 # ---------------------------------------------------------------------------
-# get_context
-# ---------------------------------------------------------------------------
-
-
-async def get_context_executor(req: ToolExecutionRequest, ctx: ToolExecutionContext) -> ToolExecutionResult:
-    """拉取当前详细状态：工作集文件、活跃任务、最近对话。"""
-    sections: dict = {}
-
-    # 1. 工作集文件（data/workspace/，最多 5 个，每个 500 字符）
-    workspace_dir = Path("data/workspace")
-    workspace_items = []
-    if workspace_dir.exists() and workspace_dir.is_dir():
-        files = sorted(workspace_dir.iterdir())[:5]
-        for f in files:
-            if f.is_file():
-                try:
-                    content = f.read_text(encoding="utf-8")[:500]
-                    workspace_items.append({"name": f.name, "content": content})
-                except Exception:
-                    pass
-    sections["workspace"] = workspace_items
-
-    # 2. 活跃任务（通过 task_store 获取）
-    task_store = ctx.services.get("task_store")
-    active_tasks = []
-    if task_store is not None:
-        try:
-            tasks = await task_store.list_active() if asyncio.iscoroutinefunction(task_store.list_active) else task_store.list_active()
-            active_tasks = tasks if isinstance(tasks, list) else []
-        except Exception as e:
-            logger.debug("task_store.list_active 失败: %s", e)
-    sections["active_tasks"] = active_tasks
-
-    # 3. 最近对话摘要（conversation_memory）
-    recent_messages: list[dict] = []
-    conversation_memory = ctx.services.get("conversation_memory")
-    if conversation_memory is not None and ctx.chat_id:
-        try:
-            recent_messages = await conversation_memory.get_active(ctx.chat_id, limit=5)
-        except Exception:
-            pass
-    sections["recent_messages"] = recent_messages
-
-    return ToolExecutionResult(success=True, payload=sections)
-
-
-# ---------------------------------------------------------------------------
 # 注册函数
 # ---------------------------------------------------------------------------
 
@@ -404,14 +356,6 @@ def register_memory_tools_v2(registry) -> None:
             },
             executor=search_notes_executor,
             capability="memory",
-            risk_level="low",
-        ),
-        ToolSpec(
-            name="get_context",
-            description="获取当前详细状态：工作集内容、活跃任务详情、最近对话等。比系统自动感知的信息更详细。",
-            json_schema={"type": "object", "properties": {}},
-            executor=get_context_executor,
-            capability="general",
             risk_level="low",
         ),
     ]
