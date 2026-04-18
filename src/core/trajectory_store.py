@@ -265,6 +265,43 @@ class TrajectoryStore:
             limit=limit,
         )
 
+    async def list_for_timeline(
+        self,
+        *,
+        before_ts: float | None = None,
+        limit: int = 50,
+        entry_types: list[TrajectoryEntryType] | None = None,
+        source_chat_id: str | None = None,
+    ) -> list[TrajectoryEntry]:
+        """Page entries for timeline views. Returns newest→oldest (DESC).
+
+        `before_ts` is a strict upper bound (`<`), so passing the last row's
+        timestamp as the next page's cursor will not duplicate it.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+
+        if before_ts is not None:
+            clauses.append("timestamp < ?")
+            params.append(before_ts)
+
+        if entry_types:
+            placeholders = ",".join("?" for _ in entry_types)
+            clauses.append(f"entry_type IN ({placeholders})")
+            params.extend(t.value for t in entry_types)
+
+        if source_chat_id is not None:
+            clauses.append("source_chat_id = ?")
+            params.append(source_chat_id)
+
+        where = " AND ".join(clauses) if clauses else "1 = 1"
+        return await self._fetch(
+            where,
+            tuple(params),
+            order="timestamp DESC, id DESC",
+            limit=limit,
+        )
+
     async def _fetch(
         self,
         where: str,
