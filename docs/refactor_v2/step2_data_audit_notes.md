@@ -27,3 +27,66 @@ than corruption.
 **Disposition.** Independent observation. Not in Step 2 scope to repair.
 No retroactive data recovery attempted. Logged here for the cleanup
 report's data audit section.
+
+## 2026-04-18 — Real-world ghost-task during 2f dual-write validation
+
+**Observation.** During Kevin's 2f validation conversation on QQ, one of
+his messages received a reply along the lines of "等我查一下" (let me
+check) with **no follow-up action**. The corresponding row pair:
+
+```
+conv#1907  assistant @ 919231551   → mirrored to trajectory (ASSISTANT_TEXT)
+   content: "等我查一下"
+   no later conv / trajectory row completes the commitment
+```
+
+Lapwing promised work and never delivered. Dual-write captured the
+promise faithfully in both tables, but the behavioural problem
+(uncompleted commitment) is pre-existing.
+
+**Why this matters for the v2.0 roadmap.** Step 5 specifies a
+*Commitment Reviewer* loop that scans each iteration's trajectory output
+for discrete promises and parks them in `commitments` with
+`status=pending`. On every subsequent iteration, the Reviewer checks
+whether the promise has been fulfilled; unfulfilled items surface in the
+prompt as "outstanding commitments" until acted on or explicitly
+abandoned.
+
+This real-world case is the archetypal Step 5 trigger. Step 2 puts the
+data structures in place (`CommitmentStore`, `TrajectoryEntryType.
+TELL_USER` defined-but-unused); Step 5 will layer the Reviewer on top,
+using rows like conv#1907 as evaluation material.
+
+**Disposition.** Independent observation. Captured here so the Step 5
+spec has a concrete case to regression-test against. Not a Step 2 fix.
+
+## 2026-04-18 — Independent infrastructure debt: `deploy.sh stop` semantics
+
+**Observation.** Kevin ran `bash scripts/deploy.sh stop` between the 2f
+implementation and the validation conversation. The script output
+included `[deploy] 启动新进程... PID 722842` — it spawned a new instance
+rather than stopping the existing one.
+
+**Root cause.** `scripts/deploy.sh` is a **deploy/restart** script. It
+unconditionally runs: kill old PID via PID file → `pkill -f main.py`
+fallback → `nohup python main.py` new process. The script accepts no
+arguments; `stop` is silently ignored. There is no stop mode.
+
+**Impact.** Any "stop → modify → restart" workflow that relies on
+`deploy.sh stop` silently restarts instead of stopping. In particular:
+
+- Step-boundary backup capture (this Step's `pre_step2_*` flow would
+  have written a db to backup while a fresh instance was starting).
+- WAL flush verification after shutdown.
+- Any debugger-attach or deliberate-downtime scenario.
+
+**Mitigation used in this Step.** Manual `kill $(cat data/lapwing.pid)`
+→ `sleep 3` → verify WAL/SHM absent → `rm data/lapwing.pid`. Working as
+expected, but the chain is longer than it should be.
+
+**Disposition.** [Pre-existing, not in v2.0 roadmap]. Independent
+infrastructure debt. Fix timing is Kevin's call — likely options:
+add `stop`/`start` subcommands to deploy.sh, or rename to `restart.sh`
+to match actual behaviour. Does not block any Step but will keep
+ambushing future shutdown verifications until fixed.
+
