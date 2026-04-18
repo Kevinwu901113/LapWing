@@ -267,21 +267,6 @@ class ConversationMemory:
         except Exception as e:
             logger.debug("FTS 索引写入失败: %s", e)
 
-    async def _get_surrounding_messages(self, message_id: int) -> list[dict]:
-        """获取指定消息前后各 1 条消息（提供上下文）。"""
-        try:
-            async with self._db.execute(
-                """SELECT role, content, timestamp FROM conversations
-                   WHERE id IN (?, ?)""",
-                (message_id - 1, message_id + 1),
-            ) as cursor:
-                return [
-                    {"role": row[0], "content": row[1], "timestamp": row[2]}
-                    async for row in cursor
-                ]
-        except Exception:
-            return []
-
     async def get(self, channel_id: str) -> list[dict]:
         """获取指定频道的对话历史（从缓存读取）。"""
         if channel_id not in self._store:
