@@ -53,6 +53,27 @@ Inline deletions (within files that remain):
 | `config/.env.example` (3 lines)                 | `QUALITY_CHECK_ENABLED`/`PROGRESS_REPORT_ENABLED`/`TASK_RESUMPTION_ENABLED` |
 | `config/.env.test` (3 lines)                    | Same three flags (active=false)            |
 
+### 2.1 Reachability analysis — `is_resumption` / `_prepare_think_for_resumption`
+
+`_prepare_think_for_resumption` (50 lines) loaded history without appending a
+new user message, then injected a "## 恢复上下文" block into the system prompt
+with `user_req` / `remaining_description` pulled from `metadata`. The only
+caller path was via `metadata["source"] == "task_resumption"`, which in turn
+was only set by the `task_resumption` heartbeat action deleted in commit
+`f517138` (2026-04-16, Phase 6 Agent Team).
+
+Post-deletion grep for `source="task_resumption"` / `source": "task_resumption"`
+/ `"task_resumption"` callers returned **zero hits** across `src/`, `tests/`,
+`config/`, `main.py`. The `resumption_context = metadata.get(...)` threading
+was stored only in `ToolLoopContext.resumption_context` and never read by any
+production code path (grep for `.resumption_context` → only writes, no reads).
+Deletion was therefore safe.
+
+This reachability-evidence pattern (upstream caller grep + downstream reader
+grep) is the standard Step 2+ will follow for every dead-code excision —
+future rollbacks or audits can replay the same two greps against the
+pre-deletion tree to confirm.
+
 ---
 
 ## 3. Data Archival
