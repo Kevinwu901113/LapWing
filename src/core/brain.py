@@ -747,8 +747,6 @@ class LapwingBrain:
                     "[brain] 后处理失败（回复已生成，不影响调用方）: %s",
                     post_exc, exc_info=True,
                 )
-            # Step 4 M5: message.sent dispatcher emit removed — SSE now
-            # reads TRAJECTORY_APPENDED from StateMutationLog directly.
             return reply
 
         except Exception as e:
@@ -982,7 +980,6 @@ class LapwingBrain:
                     "[brain] 后处理失败（消息已发出，不影响用户）: %s",
                     post_exc, exc_info=True,
                 )
-            # Step 4 M5: message.sent dispatcher emit removed — see M5.c.
             return memory_text
 
         except asyncio.CancelledError:

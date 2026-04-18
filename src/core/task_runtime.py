@@ -32,8 +32,6 @@ from src.logging.state_mutation_log import (
     iteration_context,
     new_iteration_id,
 )
-from src.logging.hallucination_patch import check_and_record as _check_hallucination
-
 # Re-export types for backward compatibility
 from src.core.task_types import (  # noqa: F401
     ErrorBurstGuard,
@@ -440,9 +438,11 @@ class TaskRuntime:
                     user_id=user_id,
                     send_fn=send_fn,
                 )
-                # TEMPORARY — Step 1 → Step 5 hallucination observation patch.
-                # See src/logging/hallucination_patch.py docstring for removal plan.
-                await _check_hallucination(reply, mutation_log)
+                # Step 5 cleanup: removed observation-only hallucination
+                # patch (src/logging/hallucination_patch.py). Replaced by
+                # the structural fix — tell_user is the only user-facing
+                # path, commit_promise tracks intent. Audit lives in
+                # CommitmentStore + StateMutationLog.
                 return reply
         except Exception:
             end_reason = "error"

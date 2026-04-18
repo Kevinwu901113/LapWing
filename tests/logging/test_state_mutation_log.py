@@ -90,6 +90,8 @@ class TestEnumDiscipline:
             await log.record(Fake(), {"x": 1})  # type: ignore[arg-type]
 
     def test_enum_covers_all_step1_event_types(self):
+        # Step 5 cleanup: llm.hallucination_suspected 已移除——结构性 fix
+        # （tell_user + commit_promise）取代了观测式补丁。
         required_step1 = {
             "iteration.started",
             "iteration.ended",
@@ -99,7 +101,6 @@ class TestEnumDiscipline:
             "tool.result",
             "system.started",
             "system.stopped",
-            "llm.hallucination_suspected",
         }
         actual = {member.value for member in MutationType}
         missing = required_step1 - actual
@@ -114,6 +115,8 @@ class TestEnumDiscipline:
             "identity.edited",
             "memory.raptor_updated",
             "memory.file_edited",
+            # Step 5 additions
+            "tell_user.invoked",
         }
         actual = {member.value for member in MutationType}
         missing = required_future - actual
