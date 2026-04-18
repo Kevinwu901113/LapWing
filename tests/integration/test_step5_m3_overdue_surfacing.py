@@ -116,7 +116,11 @@ class TestOverdueSurfacing:
         view = await builder.build_for_inner()
         out = serialize(view)
 
-        assert "已超时的承诺" not in out.system_prompt
+        # 注：voice.md 教学文本里也提到 "已超时的承诺" 这个状态名，所以
+        # 不能简单 assert 子串不存在。改为检查序列化器生成的完整段落
+        # 头部标识——只有有 overdue 时才会出现。
+        assert "已超时的承诺（必须处理：" not in out.system_prompt
+        assert "⚠️ 超时未完成：" not in out.system_prompt
         assert "我对用户的承诺" in out.system_prompt
 
     async def test_promise_without_deadline_never_overdue(self, stores, tmp_path):
