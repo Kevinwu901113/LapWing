@@ -537,3 +537,34 @@ class TestLifeV2SummariesEndpoint:
         async with client:
             resp = await client.get("/api/v2/life/summaries")
         assert resp.json() == {"items": [], "next_before_date": None, "total": 0}
+
+
+@pytest.mark.asyncio
+class TestLifeV2TodayToneEmpty:
+    async def test_no_thoughts_returns_null(self, client, mock_brain):
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[])
+
+        async with client:
+            resp = await client.get("/api/v2/life/today-tone")
+
+        assert resp.json() == {"tone": None, "generated_at": None, "based_on_count": 0}
+
+    async def test_llm_router_unavailable_returns_null(self, client, mock_brain):
+        # Even if there are thoughts, without a router we can't generate.
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[
+            _make_entry(id=1, timestamp=_time.time(), entry_type="inner_thought",
+                        content={"text": "想 Kevin"}, source_chat_id="__inner__"),
+        ])
+        mock_brain.router = None
+
+        from src.api.routes import life_v2
+        life_v2.init(
+            trajectory_store=mock_brain.trajectory_store,
+            llm_router=None,
+            summaries_dir=None,
+        )
+
+        async with client:
+            resp = await client.get("/api/v2/life/today-tone")
+
+        assert resp.json()["tone"] is None

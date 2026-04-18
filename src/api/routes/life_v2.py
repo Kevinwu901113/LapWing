@@ -375,6 +375,32 @@ async def get_summaries(
     return {"items": page, "next_before_date": next_before, "total": total_count}
 
 
+_today_tone_cache: dict[str, tuple[float, str, int]] = {}  # key → (generated_at, tone, based_on_count)
+_TODAY_TONE_TTL_SECONDS = 3600.0
+
+
+@router.get("/today-tone")
+async def get_today_tone():
+    if _trajectory_store is None or _llm_router is None:
+        return {"tone": None, "generated_at": None, "based_on_count": 0}
+
+    # Pull past 24h of inner_thoughts — use in_window if we want, but list_for_timeline
+    # with a before_ts = now and entry_types filter is sufficient.
+    now = _time.time()
+    since = now - 86400
+    rows = await _trajectory_store.list_for_timeline(
+        limit=500,
+        entry_types=[TrajectoryEntryType.INNER_THOUGHT],
+    )
+    recent_thoughts = [r for r in rows if r.timestamp >= since]
+    if not recent_thoughts:
+        return {"tone": None, "generated_at": None, "based_on_count": 0}
+
+    # LLM generation deferred to Task 13. For now, return a placeholder shape
+    # that the tests assert on in Task 13.
+    return {"tone": None, "generated_at": None, "based_on_count": len(recent_thoughts)}
+
+
 @router.get("/ping")
 async def ping():
     """Smoke endpoint used by tests to verify routing."""
