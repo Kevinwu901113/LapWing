@@ -62,8 +62,13 @@ class ConversationCompactor:
         self._router = router
         self._auto_memory_extractor = auto_memory_extractor
         self._session_manager = session_manager
+        self._trajectory = None  # Set via set_trajectory() after AppContainer init (Step 2g)
         self._compacting: set[str] = set()
         CONVERSATION_SUMMARIES_DIR.mkdir(parents=True, exist_ok=True)
+
+    def set_trajectory(self, trajectory) -> None:
+        """v2.0 Step 2g: switch compactor's read path to TrajectoryStore."""
+        self._trajectory = trajectory
 
     def should_compact(self, history_length: int) -> bool:
         """判断当前对话长度是否需要触发压缩。"""
@@ -77,7 +82,20 @@ class ConversationCompactor:
             return False
 
         if session_id is not None:
+            # Dead branch in production — session_id is always None after Step 2j
+            # tears out the session concept. Kept here for the 2g→2j window.
             history = await self._memory.get_session_messages(session_id)
+        elif self._trajectory is not None:
+            # v2.0 Step 2g: read via TrajectoryStore + compat shim.
+            from config.settings import MAX_HISTORY_TURNS
+            from src.core.trajectory_compat import (
+                trajectory_entries_to_legacy_messages,
+            )
+
+            rows = await self._trajectory.relevant_to_chat(
+                chat_id, n=MAX_HISTORY_TURNS * 2, include_inner=False,
+            )
+            history = trajectory_entries_to_legacy_messages(rows)
         else:
             history = await self._memory.get(chat_id)
         if not self.should_compact(len(history)):

@@ -143,8 +143,9 @@ class AppContainer:
         )
         await self.trajectory_store.init()
         self.brain.memory.set_trajectory(self.trajectory_store)
+        self.brain.compactor.set_trajectory(self.trajectory_store)
         self.brain.trajectory_store = self.trajectory_store
-        logger.info("TrajectoryStore 已初始化（dual-write wired）")
+        logger.info("TrajectoryStore 已初始化（dual-write + read-path wired）")
 
         # v2.0 Step 2: AttentionManager — focus singleton, recovers state from
         # mutation_log's most recent ATTENTION_CHANGED at boot.
