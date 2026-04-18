@@ -396,6 +396,12 @@ async def get_today_tone():
     if not recent_thoughts:
         return {"tone": None, "generated_at": None, "based_on_count": 0}
 
+    cached = _today_tone_cache.get("default")
+    if cached is not None:
+        gen_at, tone, count = cached
+        if _time.time() - gen_at < _TODAY_TONE_TTL_SECONDS:
+            return {"tone": tone, "generated_at": gen_at, "based_on_count": count}
+
     from src.core.prompt_loader import load_prompt
 
     thoughts_block = "\n".join(

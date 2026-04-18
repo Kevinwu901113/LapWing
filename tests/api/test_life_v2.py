@@ -626,3 +626,50 @@ class TestLifeV2TodayToneGenerate:
             resp = await client.get("/api/v2/life/today-tone")
 
         assert resp.json()["tone"] is None
+
+
+@pytest.mark.asyncio
+class TestLifeV2TodayToneCache:
+    async def test_second_call_hits_cache(self, client, mock_brain):
+        now = _time.time()
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[
+            _make_entry(id=1, timestamp=now - 60, entry_type="inner_thought",
+                        content={"text": "x"}, source_chat_id="__inner__"),
+        ])
+        mock_brain.router.complete = AsyncMock(return_value="tone one")
+
+        from src.api.routes import life_v2
+        life_v2.init(trajectory_store=mock_brain.trajectory_store, llm_router=mock_brain.router)
+        life_v2._today_tone_cache.clear()
+
+        async with client:
+            r1 = await client.get("/api/v2/life/today-tone")
+            r2 = await client.get("/api/v2/life/today-tone")
+
+        assert r1.json()["tone"] == "tone one"
+        assert r2.json()["tone"] == "tone one"
+        assert mock_brain.router.complete.await_count == 1
+
+    async def test_cache_expires_after_ttl(self, client, mock_brain, monkeypatch):
+        now = _time.time()
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[
+            _make_entry(id=1, timestamp=now - 60, entry_type="inner_thought",
+                        content={"text": "x"}, source_chat_id="__inner__"),
+        ])
+        mock_brain.router.complete = AsyncMock(side_effect=["tone1", "tone2"])
+
+        from src.api.routes import life_v2
+        life_v2.init(trajectory_store=mock_brain.trajectory_store, llm_router=mock_brain.router)
+        life_v2._today_tone_cache.clear()
+
+        async with client:
+            r1 = await client.get("/api/v2/life/today-tone")
+
+            # Fast-forward: expire cache manually
+            cached = life_v2._today_tone_cache["default"]
+            life_v2._today_tone_cache["default"] = (cached[0] - 3601, cached[1], cached[2])
+
+            r2 = await client.get("/api/v2/life/today-tone")
+
+        assert r1.json()["tone"] == "tone1"
+        assert r2.json()["tone"] == "tone2"
