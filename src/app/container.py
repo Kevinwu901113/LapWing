@@ -21,6 +21,7 @@ from src.core.channel_manager import ChannelManager
 from src.core.consciousness import ConsciousnessEngine
 from src.core.dispatcher import Dispatcher
 from src.core.durable_scheduler import DurableScheduler
+from src.core.attention import AttentionManager
 from src.logging.state_mutation_log import MutationType, StateMutationLog
 
 logger = logging.getLogger("lapwing.app.container")
@@ -93,6 +94,9 @@ class AppContainer:
         # v2.0 Step 1: StateMutationLog — durable append-only log of state mutations
         self.mutation_log: StateMutationLog | None = None
 
+        # v2.0 Step 2: AttentionManager — in-memory focus state, event-sourced
+        self.attention_manager: AttentionManager | None = None
+
         self._prepared = False
         self._started = False
 
@@ -123,6 +127,13 @@ class AppContainer:
         self.brain._mutation_log_ref = self.mutation_log
         self.brain.router.set_mutation_log(self.mutation_log)
         logger.info("StateMutationLog 已初始化：%s", mutation_db)
+
+        # v2.0 Step 2: AttentionManager — focus singleton, recovers state from
+        # mutation_log's most recent ATTENTION_CHANGED at boot.
+        self.attention_manager = AttentionManager(self.mutation_log)
+        await self.attention_manager.initialize()
+        self.brain.attention_manager = self.attention_manager
+        logger.info("AttentionManager 已初始化")
 
         # 浏览器子系统初始化（在依赖装配前启动，因为工具注册需要 browser_manager）
         if BROWSER_ENABLED and not PHASE0_MODE:

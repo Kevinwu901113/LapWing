@@ -131,6 +131,7 @@ class LapwingBrain:
         self.reminder_scheduler = None  # Set externally (ReminderScheduler | None)
         self.channel_manager = None  # Set externally (ChannelManager | None)
         self.consciousness_engine = None  # Set externally (ConsciousnessEngine | None)
+        self.attention_manager = None  # Set externally (AttentionManager | None) — v2.0 Step 2
         self._conversation_end_task: asyncio.Task | None = None
 
     async def init_db(self) -> None:
@@ -785,6 +786,13 @@ class LapwingBrain:
         """
         if self.consciousness_engine is not None:
             self.consciousness_engine.on_conversation_start()
+
+        # v2.0 Step 2: focus moves to this conversation at the entry point.
+        # Other call sites (inner loop, action start) get wired in Step 3/4.
+        if self.attention_manager is not None:
+            await self.attention_manager.update(
+                current_conversation=chat_id, mode="conversing"
+            )
 
         logger.info("[%s] incoming: %s", chat_id, user_message[:200])
 
