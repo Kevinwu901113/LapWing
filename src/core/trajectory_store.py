@@ -83,6 +83,7 @@ class TrajectoryStore:
         self._db_path = Path(db_path)
         self._mutation_log = mutation_log
         self._db: aiosqlite.Connection | None = None
+        self._on_append_listeners: list = []
 
     async def init(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,6 +118,15 @@ class TrajectoryStore:
         if self._db is not None:
             await self._db.close()
             self._db = None
+
+    def add_on_append_listener(self, listener) -> None:
+        """Register a callback invoked after a successful append.
+
+        `listener` may be sync or async and receives the new TrajectoryEntry.
+        Exceptions are logged, never raised — this is a fanout channel, not
+        a transaction participant.
+        """
+        self._on_append_listeners.append(listener)
 
     # ── Write ───────────────────────────────────────────────────────────
 
@@ -197,6 +207,29 @@ class TrajectoryStore:
             logger.warning(
                 "trajectory %d mutation_log mirror failed", entry_id, exc_info=True
             )
+
+        if self._on_append_listeners:
+            entry = TrajectoryEntry(
+                id=entry_id,
+                timestamp=ts,
+                entry_type=entry_type.value,
+                source_chat_id=source_chat_id,
+                actor=actor,
+                content=content,
+                related_commitment_id=related_commitment_id,
+                related_iteration_id=related_iteration_id,
+                related_tool_call_id=related_tool_call_id,
+            )
+            import asyncio as _asyncio
+            for listener in list(self._on_append_listeners):
+                try:
+                    result = listener(entry)
+                    if _asyncio.iscoroutine(result):
+                        await result
+                except Exception:
+                    logger.warning(
+                        "trajectory on-append listener failed", exc_info=True
+                    )
 
         return entry_id
 
