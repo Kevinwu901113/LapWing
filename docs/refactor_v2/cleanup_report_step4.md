@@ -77,10 +77,10 @@ trigger.
 | After M3 | 1194 | +18 (inner_tick_scheduler unit + M3 integration) |
 | After M4 | 1198 | +4 (owner-interrupt integration) |
 | After M5 | 1207 | +9 (SSE format, mutation_log subscribe) |
-| After M6+M7 | **1180** | +6 attention session, +2 parity, −∼35 deleted (3 consciousness test files) |
+| After M6+M7 (final on master) | **1182** | +6 attention session, +2 parity, −∼35 deleted (3 consciousness test files) |
 
-Final: **1180 passed** (full suite, exit code 0). Net **+32** tests
-across Step 4 (after netting against deleted legacy tests). No
+Final: **1182 passed** (full suite, exit code 0; 160s). Net **+34**
+tests across Step 4 (after netting against deleted legacy tests). No
 skipped/xfail introduced.
 
 ## §5 — Data migration verification
