@@ -108,6 +108,55 @@ async def get_trajectory(
     return {"items": items, "next_before_ts": next_cursor}
 
 
+_ALL_TRAJECTORY_TYPES_EXCEPT_INNER = [
+    t for t in TrajectoryEntryType if t != TrajectoryEntryType.INNER_THOUGHT
+]
+
+
+@router.get("/timeline")
+async def get_timeline(
+    before_ts: float | None = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    include_inner_thought: bool = Query(True),
+    entry_types: str | None = Query(None),
+):
+    """Merged consciousness-stream timeline. Newest-first."""
+    parsed_types = _parse_entry_types(entry_types)
+
+    # Source 1 — trajectory
+    traj_types: list[TrajectoryEntryType] | None
+    if parsed_types is not None:
+        traj_types = parsed_types
+    elif not include_inner_thought:
+        traj_types = _ALL_TRAJECTORY_TYPES_EXCEPT_INNER
+    else:
+        traj_types = None  # all types
+
+    trajectory_rows: list = []
+    if _trajectory_store is not None:
+        trajectory_rows = await _trajectory_store.list_for_timeline(
+            before_ts=before_ts,
+            limit=limit,
+            entry_types=traj_types,
+        )
+
+    items = [_serialize_trajectory(r) for r in trajectory_rows]
+
+    # Merge cutoff: DESC by timestamp, truncate to `limit`.
+    items.sort(key=lambda i: i["timestamp"], reverse=True)
+    truncated = items[:limit]
+
+    # 如果 trajectory 正好返回了 limit 条，假设还有更多页。
+    has_more = len(items) > len(truncated) or len(trajectory_rows) == limit
+    next_cursor = truncated[-1]["timestamp"] if (truncated and has_more) else None
+
+    return {
+        "items": truncated,
+        "next_before_ts": next_cursor,
+        "total_in_window": len(truncated),
+    }
+
+
 @router.get("/ping")
 async def ping():
     """Smoke endpoint used by tests to verify routing."""

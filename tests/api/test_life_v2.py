@@ -161,3 +161,76 @@ class TestLifeV2Trajectory:
 
         assert resp.status_code == 200
         assert resp.json() == {"items": [], "next_before_ts": None}
+
+
+from src.core.trajectory_store import TrajectoryEntryType
+
+
+@pytest.mark.asyncio
+class TestLifeV2TimelineTrajectory:
+    async def test_basic_shape(self, client, mock_brain):
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[
+            _make_entry(id=3, timestamp=3000.0, entry_type="assistant_text", content={"text": "ok"}),
+            _make_entry(id=2, timestamp=2000.0, entry_type="user_message", actor="user", content={"text": "hi"}),
+            _make_entry(id=1, timestamp=1000.0, entry_type="inner_thought", content={"text": "想他"}),
+        ])
+
+        async with client:
+            resp = await client.get("/api/v2/life/timeline")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert len(data["items"]) == 3
+        assert data["items"][0]["timestamp"] == 3000.0  # DESC order
+        assert data["total_in_window"] == 3
+
+    async def test_include_inner_thought_false_excludes_from_trajectory_call(self, client, mock_brain):
+        spy = AsyncMock(return_value=[])
+        mock_brain.trajectory_store.list_for_timeline = spy
+
+        async with client:
+            await client.get(
+                "/api/v2/life/timeline",
+                params={"include_inner_thought": "false"},
+            )
+
+        types = spy.call_args.kwargs["entry_types"]
+        assert types is not None
+        assert TrajectoryEntryType.INNER_THOUGHT not in types
+
+    async def test_entry_types_param_passthrough(self, client, mock_brain):
+        spy = AsyncMock(return_value=[])
+        mock_brain.trajectory_store.list_for_timeline = spy
+
+        async with client:
+            await client.get(
+                "/api/v2/life/timeline",
+                params={"entry_types": "assistant_text"},
+            )
+
+        types = spy.call_args.kwargs["entry_types"]
+        assert types == [TrajectoryEntryType.ASSISTANT_TEXT]
+
+    async def test_next_before_ts_when_more_pages(self, client, mock_brain):
+        rows = [
+            _make_entry(id=i, timestamp=float(100 - i), entry_type="user_message", actor="user")
+            for i in range(50)
+        ]
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=rows)
+
+        async with client:
+            resp = await client.get("/api/v2/life/timeline", params={"limit": 50})
+
+        data = resp.json()
+        # Trajectory returned exactly limit rows → we assume more pages.
+        assert data["next_before_ts"] == data["items"][-1]["timestamp"]
+
+    async def test_next_before_ts_null_when_fewer(self, client, mock_brain):
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[
+            _make_entry(id=1, timestamp=500.0),
+        ])
+
+        async with client:
+            resp = await client.get("/api/v2/life/timeline", params={"limit": 50})
+
+        assert resp.json()["next_before_ts"] is None
