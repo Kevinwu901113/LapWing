@@ -21,6 +21,8 @@ from src.core.channel_manager import ChannelManager
 from src.core.consciousness import ConsciousnessEngine
 from src.core.dispatcher import Dispatcher
 from src.core.durable_scheduler import DurableScheduler
+from src.core.attention import AttentionManager
+from src.core.trajectory_store import TrajectoryStore
 from src.logging.state_mutation_log import MutationType, StateMutationLog
 
 logger = logging.getLogger("lapwing.app.container")
@@ -93,6 +95,14 @@ class AppContainer:
         # v2.0 Step 1: StateMutationLog — durable append-only log of state mutations
         self.mutation_log: StateMutationLog | None = None
 
+        # v2.0 Step 2: AttentionManager — in-memory focus state, event-sourced
+        self.attention_manager: AttentionManager | None = None
+
+        # v2.0 Step 2: TrajectoryStore — cross-channel behaviour timeline,
+        # dual-written alongside the legacy conversations table during the
+        # sub-phase-A window; becomes read-side truth in sub-phase B.
+        self.trajectory_store: TrajectoryStore | None = None
+
         self._prepared = False
         self._started = False
 
@@ -123,6 +133,26 @@ class AppContainer:
         self.brain._mutation_log_ref = self.mutation_log
         self.brain.router.set_mutation_log(self.mutation_log)
         logger.info("StateMutationLog 已初始化：%s", mutation_db)
+
+        # v2.0 Step 2: TrajectoryStore — separate aiosqlite connection to the
+        # same lapwing.db (WAL mode allows multi-writer). Must come before the
+        # ConversationMemory dual-write wiring so brain.memory sees the
+        # trajectory target at first-write time.
+        self.trajectory_store = TrajectoryStore(
+            self._data_dir / "lapwing.db", self.mutation_log,
+        )
+        await self.trajectory_store.init()
+        self.brain.memory.set_trajectory(self.trajectory_store)
+        self.brain.compactor.set_trajectory(self.trajectory_store)
+        self.brain.trajectory_store = self.trajectory_store
+        logger.info("TrajectoryStore 已初始化（dual-write + read-path wired）")
+
+        # v2.0 Step 2: AttentionManager — focus singleton, recovers state from
+        # mutation_log's most recent ATTENTION_CHANGED at boot.
+        self.attention_manager = AttentionManager(self.mutation_log)
+        await self.attention_manager.initialize()
+        self.brain.attention_manager = self.attention_manager
+        logger.info("AttentionManager 已初始化")
 
         # 浏览器子系统初始化（在依赖装配前启动，因为工具注册需要 browser_manager）
         if BROWSER_ENABLED and not PHASE0_MODE:
@@ -254,6 +284,15 @@ class AppContainer:
                 await self._embedding_task
             except _asyncio.CancelledError:
                 pass
+
+        # v2.0 Step 2f: close TrajectoryStore connection before mutation_log
+        # closes (so any in-flight TRAJECTORY_APPENDED records land first).
+        if self.trajectory_store is not None:
+            try:
+                await self.trajectory_store.close()
+            except Exception:
+                logger.warning("trajectory_store close failed", exc_info=True)
+            self.trajectory_store = None
 
         # v2.0 Step 1: 写入 SYSTEM_STOPPED 并关闭 mutation_log
         if self.mutation_log is not None:

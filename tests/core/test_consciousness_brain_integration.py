@@ -25,7 +25,6 @@ def _make_brain():
          patch("src.core.brain.ConversationMemory") as MockMemory:
         mock_mem_instance = MockMemory.return_value
         mock_mem_instance.append = AsyncMock()
-        mock_mem_instance.append_to_session = AsyncMock()
         mock_mem_instance.remove_last = AsyncMock()
         from src.core.brain import LapwingBrain
         brain = LapwingBrain(db_path=Path("test.db"))
@@ -61,7 +60,6 @@ class TestConversationStateNotification:
         ctx = _ThinkCtx(
             messages=[], effective_user_message="hi",
             approved_directory=None, early_reply="hello",
-            session_id=None,
         )
         brain._prepare_think = AsyncMock(return_value=ctx)
 
@@ -78,7 +76,6 @@ class TestConversationStateNotification:
         ctx = _ThinkCtx(
             messages=[], effective_user_message="hi",
             approved_directory=None, early_reply="hello",
-            session_id=None,
         )
         brain._prepare_think = AsyncMock(return_value=ctx)
 
@@ -94,7 +91,6 @@ class TestConversationStateNotification:
         ctx = _ThinkCtx(
             messages=[], effective_user_message="hi",
             approved_directory=None, early_reply="hello",
-            session_id=None,
         )
         brain._prepare_think = AsyncMock(return_value=ctx)
 

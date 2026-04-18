@@ -226,6 +226,13 @@ def _mut_content_blocks_from_codex(value: Any) -> list[dict[str, Any]]:
     return blocks
 
 
+_OPENAI_FINISH_REASON_MAP = {
+    "stop": "end_turn",
+    "tool_calls": "tool_use",
+    "length": "max_tokens",
+}
+
+
 def _mut_stop_reason(response: Any, protocol: str) -> str | None:
     if response is None:
         return None
@@ -235,7 +242,13 @@ def _mut_stop_reason(response: Any, protocol: str) -> str | None:
         choices = getattr(response, "choices", None)
         if not choices:
             return None
-        return getattr(choices[0], "finish_reason", None)
+        raw = getattr(choices[0], "finish_reason", None)
+        if raw is None:
+            return None
+        # Normalise to the Anthropic vocabulary used throughout mutation_log
+        # so downstream consumers (Step 1k observability tests, analytics)
+        # don't have to branch per provider. Unrecognised values pass through.
+        return _OPENAI_FINISH_REASON_MAP.get(raw, raw)
     if protocol == "codex_oauth":
         return "stream_end"
     return None

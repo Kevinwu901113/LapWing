@@ -1,13 +1,19 @@
 """对话记忆管理（SQLite 持久化 + 内存缓存）。"""
 
+from __future__ import annotations
+
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import aiosqlite
 
 from config.settings import MAX_HISTORY_TURNS
+
+if TYPE_CHECKING:
+    from src.core.trajectory_store import TrajectoryStore
 
 logger = logging.getLogger("lapwing.memory.conversation")
 
@@ -39,11 +45,15 @@ class ConversationMemory:
     def __init__(self, db_path: Path):
         self._db_path = db_path
         self._store: dict[str, list[dict]] = {}
-        self._session_store: dict[str, list[dict]] = {}  # key = session_id
         self._db: aiosqlite.Connection | None = None
         # Domain repositories (initialized in init_db)
         self._todos: "TodoRepository | None" = None
         self._reminders_repo: "ReminderRepository | None" = None
+        # v2.0 Step 2f: optional dual-write target. Injected by AppContainer
+        # after TrajectoryStore is initialized. When set, every conversations
+        # insert also lands as a trajectory entry; writes to the legacy
+        # table remain the truth-source until Step 2g flips reads.
+        self._trajectory: "TrajectoryStore | None" = None
 
     async def init_db(self) -> None:
         """初始化数据库：创建目录、建表、加载历史。"""
@@ -161,15 +171,6 @@ class ConversationMemory:
         except Exception:
             pass  # Column already exists
 
-        # Migration: add session_id column if missing
-        try:
-            await self._db.execute(
-                "ALTER TABLE conversations ADD COLUMN session_id TEXT"
-            )
-            await self._db.commit()
-        except Exception:
-            pass  # Column already exists
-
         # Migration: add interval_minutes column to reminders if missing
         try:
             await self._db.execute(
@@ -188,37 +189,10 @@ class ConversationMemory:
         except Exception:
             pass  # Column already exists
 
-        # Sessions table
-        await self._db.executescript("""
-            CREATE TABLE IF NOT EXISTS sessions (
-                id              TEXT PRIMARY KEY,
-                chat_id         TEXT NOT NULL,
-                status          TEXT NOT NULL DEFAULT 'active',
-                topic_summary   TEXT NOT NULL DEFAULT '',
-                topic_keywords  TEXT NOT NULL DEFAULT '[]',
-                snapshot_path   TEXT,
-                created_at      TEXT NOT NULL,
-                last_active_at  TEXT NOT NULL,
-                condensed_at    TEXT,
-                message_count   INTEGER NOT NULL DEFAULT 0
-            );
-            CREATE INDEX IF NOT EXISTS idx_sessions_chat_id_status
-                ON sessions(chat_id, status);
-            CREATE INDEX IF NOT EXISTS idx_sessions_last_active
-                ON sessions(last_active_at);
-            CREATE INDEX IF NOT EXISTS idx_conversations_session_id
-                ON conversations(session_id);
-        """)
-        await self._db.commit()
-
-        # Migration: session lineage 列
-        for col in ("parent_session_id TEXT", "lineage_root_id TEXT", "compression_summary TEXT"):
-            col_name = col.split()[0]
-            try:
-                await self._db.execute(f"ALTER TABLE sessions ADD COLUMN {col}")
-                await self._db.commit()
-            except Exception:
-                pass  # Column already exists
+        # v2.0 Step 2j: the ``sessions`` table and its ``conversations.session_id``
+        # column are no longer created by new installs. Existing rows are
+        # archived + dropped separately by scripts/drop_sessions_table.py.
+        # Step 4 re-introduces session semantics bound to attention focus.
 
         # Phase 1 Migration: conversations 新增 source / trust_level / actor_id
         for col in (
@@ -311,7 +285,7 @@ class ConversationMemory:
 
         Returns:
             匹配的消息列表，每条包含 message_id, chat_id, role, content,
-            timestamp, session_id 和 context（前后各 1 条消息）。
+            timestamp 和 context（前后各 1 条消息）。
         """
         safe_query = query.strip()
         if not safe_query:
@@ -322,8 +296,7 @@ class ConversationMemory:
         fts_query = f'"{tokenized}"' if tokenized else safe_query
 
         sql = """
-            SELECT c.id, c.chat_id, c.role, c.content, c.timestamp, c.session_id,
-                   rank
+            SELECT c.id, c.chat_id, c.role, c.content, c.timestamp, rank
             FROM conversations_fts
             JOIN conversations c ON conversations_fts.rowid = c.id
             WHERE conversations_fts MATCH ?
@@ -347,7 +320,7 @@ class ConversationMemory:
                 rows = await cursor.fetchall()
 
             for row in rows:
-                msg_id, msg_chat_id, role, content, timestamp, session_id, _rank = row
+                msg_id, msg_chat_id, role, content, timestamp, _rank = row
                 context = await self._get_surrounding_messages(msg_id)
                 results.append({
                     "message_id": msg_id,
@@ -355,7 +328,6 @@ class ConversationMemory:
                     "role": role,
                     "content": content,
                     "timestamp": timestamp,
-                    "session_id": session_id,
                     "context": context,
                 })
             return results
@@ -395,7 +367,7 @@ class ConversationMemory:
         try:
             if before:
                 async with self._db.execute(
-                    "SELECT id, chat_id, role, content, timestamp, session_id "
+                    "SELECT id, chat_id, role, content, timestamp "
                     "FROM conversations WHERE chat_id = ? AND timestamp < ? "
                     "ORDER BY id DESC LIMIT ?",
                     (chat_id, before, limit),
@@ -403,7 +375,7 @@ class ConversationMemory:
                     rows = await cursor.fetchall()
             else:
                 async with self._db.execute(
-                    "SELECT id, chat_id, role, content, timestamp, session_id "
+                    "SELECT id, chat_id, role, content, timestamp "
                     "FROM conversations WHERE chat_id = ? "
                     "ORDER BY id DESC LIMIT ?",
                     (chat_id, limit),
@@ -417,7 +389,6 @@ class ConversationMemory:
                     "role": row[2],
                     "content": row[3],
                     "timestamp": row[4],
-                    "session_id": row[5],
                 }
                 for row in reversed(rows)  # 返回时按时间正序
             ]
@@ -425,49 +396,72 @@ class ConversationMemory:
             logger.error(f"获取对话消息失败: {e}")
             return []
 
+    def set_trajectory(self, trajectory: "TrajectoryStore | None") -> None:
+        """v2.0 Step 2f: wire dual-write target. Safe to call multiple times."""
+        self._trajectory = trajectory
+
     async def append(
         self, channel_id: str, role: str, content: str, *,
         channel: str = "qq", source: str = "qq",
         trust_level: int = 3, actor_id: str | None = None,
     ) -> None:
-        """追加一条消息到对话历史（先写缓存，再持久化）。"""
+        """追加一条消息。
+
+        v2.0 Step 2h: the legacy ``conversations`` table is no longer written
+        to. When a ``TrajectoryStore`` is wired (production), the message is
+        persisted there; the in-memory ``_store`` cache is updated only as a
+        fallback for unit tests and phase-0 contexts with no trajectory.
+
+        The parameters ``channel``, ``source``, ``trust_level`` and
+        ``actor_id`` remain in the signature for caller compatibility;
+        ``trust_level`` is unused in trajectory (Step 3 StateSerializer
+        re-derives it from AuthorityGate context on demand).
+        """
+        if self._trajectory is not None:
+            await self._mirror_to_trajectory(
+                channel_id, role, content,
+                channel=channel, source=source,
+                actor_id=actor_id,
+            )
+            return
+
+        # Fallback: no trajectory (phase 0, unit tests). Update the cache so
+        # brain._load_history's fallback branch can still read history.
         if channel_id not in self._store:
             self._store[channel_id] = []
         self._store[channel_id].append({"role": role, "content": content})
 
-        try:
-            timestamp = datetime.now(timezone.utc).isoformat()
-            cursor = await self._db.execute(
-                "INSERT INTO conversations (chat_id, role, content, timestamp, channel, source, trust_level, actor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (channel_id, role, content, timestamp, channel, source, trust_level, actor_id),
-            )
-            await self._db.commit()
-            # 同步 FTS 索引
-            if cursor.lastrowid:
-                await self._fts_insert(cursor.lastrowid, content)
-                await self._db.commit()
-        except Exception as e:
-            logger.error(f"对话消息写入数据库失败: {e}")
-
     def replace_history(self, channel_id: str, new_history: list[dict]) -> None:
-        """替换指定频道的内存缓存（不修改数据库，供 Compactor 使用）。"""
+        """Update the legacy in-memory cache only.
+
+        v2.0 Step 2h: compactor no longer calls this in production
+        (Step 2g switched compactor's read path to trajectory). Kept as a
+        cache hook for phase-0 / unit-test scenarios. Does not touch
+        trajectory — compaction of the event-sourced timeline is Step 7.
+        """
         self._store[channel_id] = new_history
 
     async def remove_last(self, channel_id: str) -> None:
-        """移除指定频道的最后一条消息（LLM 调用失败时回滚用）。"""
-        history = self._store.get(channel_id, [])
-        if history:
-            history.pop()
-        try:
-            await self._db.execute(
-                """DELETE FROM conversations WHERE id = (
-                    SELECT id FROM conversations WHERE chat_id = ? ORDER BY id DESC LIMIT 1
-                )""",
-                (channel_id,),
-            )
-            await self._db.commit()
-        except Exception as e:
-            logger.error(f"移除最后一条消息失败: {e}")
+        """No-op in v2.0 Step 2h. Trajectory is append-only.
+
+        Previously rolled back the last appended row on LLM failure. Under
+        event sourcing, a failed LLM turn is still part of the behavioural
+        record (``mutation_log`` already captures the ``LLM_REQUEST`` /
+        ``LLM_RESPONSE`` or its exception), so no retraction is needed.
+        The cache is trimmed if a trajectory-less fallback context is in
+        use (phase-0 / unit tests) so those paths keep their pre-Step-2
+        semantics.
+        """
+        if self._trajectory is None:
+            history = self._store.get(channel_id, [])
+            if history:
+                history.pop()
+            return
+        logger.debug(
+            "remove_last ignored for chat %s — trajectory is append-only "
+            "(LLM failure tracked in mutation_log)",
+            channel_id,
+        )
 
     async def clear(self, channel_id: str) -> None:
         """清除指定频道的对话历史。"""
@@ -482,84 +476,77 @@ class ConversationMemory:
         except Exception as e:
             logger.error(f"清除频道 {channel_id} 记忆失败: {e}")
 
-    async def append_to_session(
-        self, chat_id: str, session_id: str, role: str, content: str, *, channel: str = "qq"
+    async def _mirror_to_trajectory(
+        self,
+        chat_id: str,
+        role: str,
+        content: str,
+        *,
+        channel: str,
+        source: str,
+        actor_id: str | None,
     ) -> None:
-        """追加消息到指定 session（先写缓存，再持久化）。"""
-        if session_id not in self._session_store:
-            self._session_store[session_id] = []
-        self._session_store[session_id].append({"role": role, "content": content})
+        """Write the same logical event to trajectory. No-op if no trajectory
+        wired (unit tests, phase 0, pre-container boot).
 
+        Inner-tick writes (chat_id == "__inner__", set by consciousness.py
+        after v2.0 Step 2i) are mapped to INNER_THOUGHT so the output
+        matches the Step 2e migration categorisation. Step 4's main-loop
+        unification replaces this sentinel-based dispatch with a dedicated
+        inner-turn entry point on brain.
+        """
+        if self._trajectory is None:
+            return
         try:
-            timestamp = datetime.now(timezone.utc).isoformat()
-            cursor = await self._db.execute(
-                "INSERT INTO conversations (chat_id, role, content, timestamp, channel, session_id) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (chat_id, role, content, timestamp, channel, session_id),
+            from src.core.trajectory_store import TrajectoryEntryType
+
+            is_consciousness = chat_id == "__inner__"
+
+            if is_consciousness:
+                entry_type = TrajectoryEntryType.INNER_THOUGHT
+                source_chat_id = "__inner__"
+                if role == "assistant":
+                    actor = "lapwing"
+                elif role == "user":
+                    actor = "system"
+                else:
+                    logger.warning(
+                        "trajectory mirror skipped — unknown consciousness role %r",
+                        role,
+                    )
+                    return
+                payload: dict = {
+                    "text": content,
+                    "trigger_type": "live_dual_write",
+                }
+            elif role == "user":
+                entry_type = TrajectoryEntryType.USER_MESSAGE
+                source_chat_id = chat_id
+                actor = "user"
+                payload = {"text": content, "adapter": channel, "source": source}
+            elif role == "assistant":
+                entry_type = TrajectoryEntryType.ASSISTANT_TEXT
+                source_chat_id = chat_id
+                actor = "lapwing"
+                payload = {"text": content, "adapter": channel, "source": source}
+            else:
+                logger.warning(
+                    "trajectory mirror skipped — unknown role %r for chat %s",
+                    role, chat_id,
+                )
+                return
+
+            if actor_id:
+                payload["user_id"] = actor_id
+
+            await self._trajectory.append(
+                entry_type, source_chat_id, actor, payload,
             )
-            await self._db.commit()
-            # 同步 FTS 索引
-            if cursor.lastrowid:
-                await self._fts_insert(cursor.lastrowid, content)
-                await self._db.commit()
-        except Exception as e:
-            logger.error(f"Session 消息写入数据库失败: {e}")
-
-    async def get_session_messages(self, session_id: str) -> list[dict]:
-        """获取指定 session 的对话历史（从缓存读取，不存在时从 DB 加载）。"""
-        if session_id not in self._session_store:
-            await self._load_session_history(session_id)
-        return self._session_store.get(session_id, [])
-
-    async def _load_session_history(self, session_id: str) -> None:
-        """从 DB 加载指定 session 的消息到内存缓存。"""
-        max_messages = MAX_HISTORY_TURNS * 2
-        try:
-            async with self._db.execute(
-                """SELECT role, content FROM (
-                    SELECT id, role, content FROM conversations
-                    WHERE session_id = ?
-                    ORDER BY id DESC
-                    LIMIT ?
-                ) ORDER BY id ASC""",
-                (session_id, max_messages),
-            ) as cursor:
-                messages = [
-                    {"role": row[0], "content": row[1]}
-                    async for row in cursor
-                ]
-            if messages:
-                self._session_store[session_id] = messages
-        except Exception as e:
-            logger.error(f"从 DB 加载 session {session_id} 历史失败: {e}")
-
-    async def load_session_from_snapshot(self, session_id: str, messages: list[dict]) -> None:
-        """从快照恢复的消息加载到内存缓存（用于 condensed session 复活）。"""
-        self._session_store[session_id] = list(messages)
-
-    async def clear_session_cache(self, session_id: str) -> None:
-        """清除指定 session 的内存缓存（session 被压缩归档或删除时调用）。"""
-        self._session_store.pop(session_id, None)
-
-    def replace_session_history(self, session_id: str, new_history: list[dict]) -> None:
-        """替换指定 session 的内存缓存（不修改数据库，供 Compactor 使用）。"""
-        self._session_store[session_id] = new_history
-
-    async def remove_last_session(self, session_id: str) -> None:
-        """移除指定 session 的最后一条消息（LLM 调用失败时回滚用）。"""
-        history = self._session_store.get(session_id, [])
-        if history:
-            history.pop()
-        try:
-            await self._db.execute(
-                """DELETE FROM conversations WHERE id = (
-                    SELECT id FROM conversations WHERE session_id = ? ORDER BY id DESC LIMIT 1
-                )""",
-                (session_id,),
+        except Exception:
+            logger.warning(
+                "trajectory mirror write failed for chat %s (role=%s)",
+                chat_id, role, exc_info=True,
             )
-            await self._db.commit()
-        except Exception as e:
-            logger.error(f"移除 session {session_id} 最后一条消息失败: {e}")
 
     async def clear_chat_all(self, channel_id: str) -> None:
         """清除指定频道的全部记忆（短期 + 长期）。"""

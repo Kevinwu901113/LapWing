@@ -253,7 +253,11 @@ class ConsciousnessEngine:
     async def _think_freely(self, urgent_items: list | None = None) -> bool:
         """执行一次自由思考 tick。返回是否做了有意义的事（用于退避逻辑）。"""
         internal_message = await self._build_consciousness_prompt(urgent_items)
-        chat_id = "__consciousness__"
+        # v2.0 Step 2i: canonical source_chat_id used by trajectory for inner
+        # ticks. brain.think + ConversationMemory.append recognise this and
+        # route data to TrajectoryStore as INNER_THOUGHT. The legacy literal
+        # "__consciousness__" survives only in migrated data and comments.
+        chat_id = "__inner__"
         try:
             response = await asyncio.wait_for(
                 self._brain.think(

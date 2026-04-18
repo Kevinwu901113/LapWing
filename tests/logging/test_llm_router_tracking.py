@@ -123,6 +123,7 @@ class TestTrackedCall:
         assert resp_payload["latency_ms"] >= 0
 
     async def test_openai_success_maps_blocks(self, router, log):
+        # Step 2k: OpenAI finish_reason="stop" normalises to "end_turn"
         response = FakeOpenAIResponse(content="hello", finish_reason="stop")
 
         async def call_fn():
@@ -145,9 +146,112 @@ class TestTrackedCall:
         resps = await log.query_by_type(MutationType.LLM_RESPONSE)
         assert len(resps) == 1
         payload = resps[0].payload
-        assert payload["stop_reason"] == "stop"
+        assert payload["stop_reason"] == "end_turn"
         assert payload["content_blocks"] == [{"type": "text", "content": "hello"}]
         assert payload["usage"] == {"input_tokens": 5, "output_tokens": 15}
+
+    async def test_openai_tool_use_finish_reason_normalises(self, router, log):
+        """Step 2k (Step 1 debt): finish_reason='tool_calls' → 'tool_use'.
+
+        Extends the OpenAI coverage to the tool-call path so mutation_log
+        records have a single vocabulary for stop_reason across providers.
+        """
+        class _ToolCallFn:
+            def __init__(self, name: str, arguments: str) -> None:
+                self.name = name
+                self.arguments = arguments
+
+        class _ToolCall:
+            def __init__(self, call_id: str, name: str, arguments: str) -> None:
+                self.id = call_id
+                self.type = "function"
+                self.function = _ToolCallFn(name, arguments)
+
+        message = FakeOpenAIMessage(
+            content="",
+            tool_calls=[_ToolCall("call_1", "search_web", '{"query":"weather"}')],
+        )
+        choice = FakeOpenAIChoice(content="", finish_reason="tool_calls")
+        choice.message = message  # replace the default message with tool_calls
+        response = FakeOpenAIResponse(content="")
+        response.choices = [choice]
+
+        async def call_fn():
+            return response
+
+        await router._tracked_call(
+            "openai",
+            {
+                "model_slot": "tool",
+                "model_name": "glm-4.5",
+                "base_url": "https://openai-compatible",
+                "purpose": "agent_execution",
+                "messages": [{"role": "user", "content": "what's the weather"}],
+                "tools": [{"name": "search_web"}],
+                "max_tokens": 1024,
+                "temperature": 0.2,
+            },
+            call_fn,
+        )
+        resps = await log.query_by_type(MutationType.LLM_RESPONSE)
+        assert len(resps) == 1
+        payload = resps[0].payload
+        assert payload["stop_reason"] == "tool_use"
+        types = [b["type"] for b in payload["content_blocks"]]
+        assert "tool_use" in types
+        tool_block = next(b for b in payload["content_blocks"] if b["type"] == "tool_use")
+        assert tool_block["name"] == "search_web"
+        assert tool_block["input"] == {"query": "weather"}
+
+    async def test_openai_length_finish_reason_normalises(self, router, log):
+        """Step 2k: finish_reason='length' → 'max_tokens' (truncation path)."""
+        response = FakeOpenAIResponse(content="partial", finish_reason="length")
+
+        async def call_fn():
+            return response
+
+        await router._tracked_call(
+            "openai",
+            {
+                "model_slot": "tool",
+                "model_name": "glm-4.5",
+                "base_url": "https://openai-compatible",
+                "purpose": "lightweight_judgment",
+                "messages": [{"role": "user", "content": "ping"}],
+                "tools": None,
+                "max_tokens": 8,
+                "temperature": 0.2,
+            },
+            call_fn,
+        )
+        resps = await log.query_by_type(MutationType.LLM_RESPONSE)
+        assert len(resps) == 1
+        assert resps[0].payload["stop_reason"] == "max_tokens"
+
+    async def test_openai_unknown_finish_reason_passes_through(self, router, log):
+        """Step 2k: unrecognised values are not dropped — they pass through
+        verbatim so new OpenAI-compatible vendors don't silently lose data."""
+        response = FakeOpenAIResponse(content="x", finish_reason="content_filter")
+
+        async def call_fn():
+            return response
+
+        await router._tracked_call(
+            "openai",
+            {
+                "model_slot": "tool",
+                "model_name": "glm-4.5",
+                "base_url": "https://openai-compatible",
+                "purpose": "lightweight_judgment",
+                "messages": [],
+                "tools": None,
+                "max_tokens": 1,
+                "temperature": 0.2,
+            },
+            call_fn,
+        )
+        resps = await log.query_by_type(MutationType.LLM_RESPONSE)
+        assert resps[0].payload["stop_reason"] == "content_filter"
 
     async def test_exception_still_records_response(self, router, log):
         async def call_fn():

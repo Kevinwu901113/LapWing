@@ -18,6 +18,7 @@ from src.core.reasoning_tags import (
     strip_split_markers,
 )
 from src.core.task_runtime import RuntimeDeps, TaskRuntime
+from src.core.trajectory_compat import trajectory_entries_to_legacy_messages
 from src.core.shell_policy import (
     ExecutionSessionState,
     build_shell_runtime_policy,
@@ -94,7 +95,6 @@ class _ThinkCtx:
     effective_user_message: str
     approved_directory: str | None
     early_reply: str | None = None
-    session_id: str | None = None
 
 
 class LapwingBrain:
@@ -131,11 +131,31 @@ class LapwingBrain:
         self.reminder_scheduler = None  # Set externally (ReminderScheduler | None)
         self.channel_manager = None  # Set externally (ChannelManager | None)
         self.consciousness_engine = None  # Set externally (ConsciousnessEngine | None)
+        self.attention_manager = None  # Set externally (AttentionManager | None) — v2.0 Step 2
+        self.trajectory_store = None  # Set externally (TrajectoryStore | None) — v2.0 Step 2f
         self._conversation_end_task: asyncio.Task | None = None
 
     async def init_db(self) -> None:
         """初始化数据库连接和表结构。"""
         await self.memory.init_db()
+
+    async def _load_history(self, chat_id: str) -> list[dict]:
+        """Legacy-shape conversation history for the LLM context.
+
+        v2.0 Step 2g: reads from ``TrajectoryStore.relevant_to_chat`` via
+        the ``trajectory_compat`` shim when wired; falls back to the
+        in-memory ConversationMemory cache otherwise (unit tests,
+        phase-0, pre-container boot). ``include_inner=False`` preserves
+        the legacy semantics — consciousness-loop rows stay out of the
+        user-facing exchange.
+        """
+        if self.trajectory_store is not None:
+            # Legacy cap: MAX_HISTORY_TURNS rounds × 2 messages/round
+            rows = await self.trajectory_store.relevant_to_chat(
+                chat_id, n=MAX_HISTORY_TURNS * 2, include_inner=False,
+            )
+            return trajectory_entries_to_legacy_messages(rows)
+        return await self.memory.get(chat_id)
 
     async def clear_short_term_memory(self, chat_id: str) -> None:
         """仅清除短期对话记忆。"""
@@ -485,7 +505,7 @@ class LapwingBrain:
         skill_context = str(activation.get("wrapped_content", "")).strip()
         model_user_message = user_input.strip() or f"请按照技能 `{skill.name}` 的说明完成任务。"
 
-        history = await self.memory.get(chat_id)
+        history = await self._load_history(chat_id)
         recent_messages = self._recent_messages(
             history,
             user_message=model_user_message,
@@ -594,8 +614,6 @@ class LapwingBrain:
         send_fn 非空时，immediate_reply / agent_reply 会通过它发送（用于 conversational 模式）。
         返回 _ThinkCtx；若 early_reply 非 None 则表示已完成回复，调用方直接返回该值即可。
         """
-        session_id = None
-
         # 存储文本到记忆（图片不持久化，只在当前 LLM 调用中传递）
         stored_text = user_message
         if images:
@@ -645,12 +663,11 @@ class LapwingBrain:
             if send_fn is not None:
                 await send_fn(immediate_reply)
             return _ThinkCtx(messages=[], effective_user_message=effective_user_message,
-                             approved_directory=approved_directory, early_reply=immediate_reply,
-                             session_id=session_id)
+                             approved_directory=approved_directory, early_reply=immediate_reply)
 
         # 压缩 + 组装 messages
-        await self.compactor.try_compact(chat_id, session_id=session_id)
-        history = await self.memory.get(chat_id)
+        await self.compactor.try_compact(chat_id)
+        history = await self._load_history(chat_id)
         recent_messages = self._recent_messages(
             history,
             user_message=effective_user_message,
@@ -699,7 +716,6 @@ class LapwingBrain:
             messages=messages,
             effective_user_message=effective_user_message,
             approved_directory=approved_directory,
-            session_id=session_id,
         )
 
     async def think(self, chat_id: str, user_message: str, status_callback=None) -> str:
@@ -785,6 +801,13 @@ class LapwingBrain:
         """
         if self.consciousness_engine is not None:
             self.consciousness_engine.on_conversation_start()
+
+        # v2.0 Step 2: focus moves to this conversation at the entry point.
+        # Other call sites (inner loop, action start) get wired in Step 3/4.
+        if self.attention_manager is not None:
+            await self.attention_manager.update(
+                current_conversation=chat_id, mode="conversing"
+            )
 
         logger.info("[%s] incoming: %s", chat_id, user_message[:200])
 
