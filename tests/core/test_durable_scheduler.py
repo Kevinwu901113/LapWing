@@ -388,3 +388,124 @@ class TestToolExecutors:
         result = await cancel_reminder_executor(req, ctx)
         assert result.success is False
         assert result.reason == "missing_reminder_id"
+
+
+# ===========================================================================
+# list_fired tests
+# ===========================================================================
+
+
+import aiosqlite  # noqa: E402
+
+
+@pytest.mark.asyncio
+async def test_list_fired_returns_only_fired(tmp_path):
+    db = tmp_path / "rem.db"
+    scheduler = DurableScheduler(db_path=db)
+    await scheduler._init_table()
+    # Schedule one and manually mark it fired + one unfired for contrast.
+    from datetime import timezone
+    rid1 = await scheduler.schedule(
+        due_time=datetime.now(tz=timezone.utc),
+        content="done",
+    )
+    rid2 = await scheduler.schedule(
+        due_time=datetime.now(tz=timezone.utc),
+        content="pending",
+    )
+    async with aiosqlite.connect(db) as conn:
+        await conn.execute("UPDATE reminders_v2 SET fired = 1 WHERE reminder_id = ?", (rid1,))
+        await conn.commit()
+
+    rows = await scheduler.list_fired(limit=10)
+
+    assert len(rows) == 1
+    assert rows[0]["reminder_id"] == rid1
+    assert rows[0]["content"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_list_fired_orders_newest_first(tmp_path):
+    db = tmp_path / "rem.db"
+    scheduler = DurableScheduler(db_path=db)
+    await scheduler._init_table()
+    from datetime import datetime, timezone
+    # Three reminders with distinct due_times
+    r_old = await scheduler.schedule(
+        due_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+        content="old",
+    )
+    r_mid = await scheduler.schedule(
+        due_time=datetime(2026, 2, 1, tzinfo=timezone.utc),
+        content="mid",
+    )
+    r_new = await scheduler.schedule(
+        due_time=datetime(2026, 3, 1, tzinfo=timezone.utc),
+        content="new",
+    )
+    async with aiosqlite.connect(db) as conn:
+        await conn.execute("UPDATE reminders_v2 SET fired = 1")
+        await conn.commit()
+
+    rows = await scheduler.list_fired(limit=10)
+
+    assert [r["reminder_id"] for r in rows] == [r_new, r_mid, r_old]
+
+
+@pytest.mark.asyncio
+async def test_list_fired_before_ts_cutoff_is_correct(tmp_path):
+    """Regression: over-fetch limit*2 used to silently under-return
+    when all nearest rows were above the cutoff. Cutoff now applied in SQL."""
+    db = tmp_path / "rem.db"
+    scheduler = DurableScheduler(db_path=db)
+    await scheduler._init_table()
+    from datetime import datetime, timezone
+    # Five reminders above cutoff, five below. Cutoff sits between Feb and Mar.
+    above_ids = []
+    for day in (10, 11, 12, 13, 14):
+        rid = await scheduler.schedule(
+            due_time=datetime(2026, 3, day, tzinfo=timezone.utc),
+            content=f"above_{day}",
+        )
+        above_ids.append(rid)
+    below_ids = []
+    for day in (1, 2, 3, 4, 5):
+        rid = await scheduler.schedule(
+            due_time=datetime(2026, 2, day, tzinfo=timezone.utc),
+            content=f"below_{day}",
+        )
+        below_ids.append(rid)
+    async with aiosqlite.connect(db) as conn:
+        await conn.execute("UPDATE reminders_v2 SET fired = 1")
+        await conn.commit()
+
+    cutoff = datetime(2026, 3, 1, tzinfo=timezone.utc).timestamp()
+    rows = await scheduler.list_fired(before_ts=cutoff, limit=3)
+
+    # Must get 3 rows — all from below the cutoff. The bug was returning 0
+    # because limit*2 (=6) of the top-newest rows were all >= cutoff.
+    assert len(rows) == 3
+    returned_ids = [r["reminder_id"] for r in rows]
+    assert all(rid in below_ids for rid in returned_ids), (
+        f"Returned ids should all be below-cutoff: {returned_ids}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_fired_limit_enforced(tmp_path):
+    db = tmp_path / "rem.db"
+    scheduler = DurableScheduler(db_path=db)
+    await scheduler._init_table()
+    from datetime import datetime, timezone
+    for i in range(10):
+        await scheduler.schedule(
+            due_time=datetime(2026, 1, 1 + i, tzinfo=timezone.utc),
+            content=f"r{i}",
+        )
+    async with aiosqlite.connect(db) as conn:
+        await conn.execute("UPDATE reminders_v2 SET fired = 1")
+        await conn.commit()
+
+    rows = await scheduler.list_fired(limit=3)
+
+    assert len(rows) == 3

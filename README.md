@@ -283,7 +283,7 @@ Brain._complete_chat()
 
 ---
 
-### src/api/（7 文件，~750 行）— Desktop API 服务
+### src/api/（14 文件，~2,200 行）— Desktop API 服务
 
 | 文件 | 行数 | 职责 |
 |------|------|------|
@@ -293,8 +293,16 @@ Brain._complete_chat()
 | `routes/auth.py` | - | 认证路由（桌面端 token 认证） |
 | `routes/chat_ws.py` | - | WebSocket 对话路由 |
 | `routes/browser.py` | - | 浏览器控制路由 |
-| `routes/data.py` | - | 数据查询路由（记忆、事实、会话） |
-| `routes/system.py` | - | 系统信息路由（vitals、heartbeat） |
+| `routes/agents.py` | - | Agent 管理路由（v2） |
+| `routes/identity.py` | - | 身份管理路由（v2） |
+| `routes/events_v2.py` | - | 事件查询路由（v2） |
+| `routes/life_v2.py` | - | 人生图景路由（v2） |
+| `routes/models_v2.py` | - | 模型管理路由（v2） |
+| `routes/notes_v2.py` | - | 笔记管理路由（v2） |
+| `routes/permissions_v2.py` | - | 权限管理路由（v2） |
+| `routes/status_v2.py` | - | 状态查询路由（v2） |
+| `routes/system_v2.py` | - | 系统信息路由（v2） |
+| `routes/tasks_v2.py` | - | 任务管理路由（v2） |
 
 ---
 

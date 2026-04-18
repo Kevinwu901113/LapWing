@@ -113,7 +113,9 @@ Each adapter injects identity info into `ToolExecutionContext`, which flows thro
 src/
   adapters/      — Messaging platform adapters (QQ, Desktop)
   api/           — Desktop API server (FastAPI + WebSocket)
-    routes/      — auth.py, browser.py, chat_ws.py, data.py, system.py
+    routes/      — auth.py, agents.py, browser.py, chat_ws.py, identity.py,
+                   events_v2.py, life_v2.py, models_v2.py, notes_v2.py,
+                   permissions_v2.py, status_v2.py, system_v2.py, tasks_v2.py
   app/           — Application bootstrap: AppContainer (DI root), TelegramApp
   auth/          — Auth management (OAuth, API keys, desktop tokens)
   core/          — Core logic (brain, llm_router, task_runtime, prompt_builder,
@@ -131,7 +133,9 @@ config/          — Settings (.env) and settings.py (all config via os.getenv)
 prompts/         — Markdown prompt templates (hot-reloadable)
 data/
   identity/      — soul.md, constitution.md (immutable by Lapwing)
-  memory/        — KEVIN.md, SELF.md, _index.json, journal/, sessions/, conversations/summaries/
+  memory/        — conversations/summaries/, notes/, chroma_memory/; KEVIN.md
+                   / SELF.md / user_facts / interest_topics are deprecated — see
+                   2026-04-18 记忆系统盘点报告
   evolution/     — rules.md, interests.md, changelog.md (diff-based)
   config/        — model_routing.json (runtime model config)
   browser/       — profile/ (persistent browser context), screenshots/

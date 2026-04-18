@@ -83,6 +83,7 @@ class TrajectoryStore:
         self._db_path = Path(db_path)
         self._mutation_log = mutation_log
         self._db: aiosqlite.Connection | None = None
+        self._on_append_listeners: list = []
 
     async def init(self) -> None:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,6 +118,15 @@ class TrajectoryStore:
         if self._db is not None:
             await self._db.close()
             self._db = None
+
+    def add_on_append_listener(self, listener) -> None:
+        """Register a callback invoked after a successful append.
+
+        `listener` may be sync or async and receives the new TrajectoryEntry.
+        Exceptions are logged, never raised — this is a fanout channel, not
+        a transaction participant.
+        """
+        self._on_append_listeners.append(listener)
 
     # ── Write ───────────────────────────────────────────────────────────
 
@@ -198,6 +208,29 @@ class TrajectoryStore:
                 "trajectory %d mutation_log mirror failed", entry_id, exc_info=True
             )
 
+        if self._on_append_listeners:
+            entry = TrajectoryEntry(
+                id=entry_id,
+                timestamp=ts,
+                entry_type=entry_type.value,
+                source_chat_id=source_chat_id,
+                actor=actor,
+                content=content,
+                related_commitment_id=related_commitment_id,
+                related_iteration_id=related_iteration_id,
+                related_tool_call_id=related_tool_call_id,
+            )
+            import asyncio as _asyncio
+            for listener in list(self._on_append_listeners):
+                try:
+                    result = listener(entry)
+                    if _asyncio.iscoroutine(result):
+                        await result
+                except Exception:
+                    logger.warning(
+                        "trajectory on-append listener failed", exc_info=True
+                    )
+
         return entry_id
 
     # ── Read ────────────────────────────────────────────────────────────
@@ -262,6 +295,43 @@ class TrajectoryStore:
             "timestamp >= ? AND timestamp < ?",
             (start_ts, end_ts),
             order="timestamp ASC, id ASC",
+            limit=limit,
+        )
+
+    async def list_for_timeline(
+        self,
+        *,
+        before_ts: float | None = None,
+        limit: int = 50,
+        entry_types: list[TrajectoryEntryType] | None = None,
+        source_chat_id: str | None = None,
+    ) -> list[TrajectoryEntry]:
+        """Page entries for timeline views. Returns newest→oldest (DESC).
+
+        `before_ts` is a strict upper bound (`<`), so passing the last row's
+        timestamp as the next page's cursor will not duplicate it.
+        """
+        clauses: list[str] = []
+        params: list[Any] = []
+
+        if before_ts is not None:
+            clauses.append("timestamp < ?")
+            params.append(before_ts)
+
+        if entry_types:
+            placeholders = ",".join("?" for _ in entry_types)
+            clauses.append(f"entry_type IN ({placeholders})")
+            params.extend(t.value for t in entry_types)
+
+        if source_chat_id is not None:
+            clauses.append("source_chat_id = ?")
+            params.append(source_chat_id)
+
+        where = " AND ".join(clauses) if clauses else "1 = 1"
+        return await self._fetch(
+            where,
+            tuple(params),
+            order="timestamp DESC, id DESC",
             limit=limit,
         )
 

@@ -194,6 +194,36 @@ class DurableScheduler:
 
         return [_reminder_from_row(dict(row)) for row in rows]
 
+    async def list_fired(
+        self,
+        *,
+        before_ts: float | None = None,
+        limit: int = 100,
+    ) -> list[dict]:
+        """List fired reminders, newest-first. Returns raw dict rows."""
+        query = "SELECT * FROM reminders_v2 WHERE fired = 1"
+        params: list = []
+
+        if before_ts is not None:
+            # due_time is stored as ISO in Taipei tz — convert `before_ts` to
+            # the same tz/format so lexicographic `<` matches chronological `<`.
+            cutoff_iso = datetime.fromtimestamp(
+                before_ts,
+                tz=ZoneInfo("Asia/Taipei"),
+            ).isoformat()
+            query += " AND due_time < ?"
+            params.append(cutoff_iso)
+
+        query += " ORDER BY due_time DESC LIMIT ?"
+        params.append(limit)
+
+        async with aiosqlite.connect(self._db_path) as db:
+            db.row_factory = aiosqlite.Row
+            cursor = await db.execute(query, tuple(params))
+            rows = [dict(r) for r in await cursor.fetchall()]
+
+        return rows
+
     async def get_due_reminders(
         self,
         chat_id: str = "__all__",

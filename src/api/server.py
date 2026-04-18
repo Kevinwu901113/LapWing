@@ -108,6 +108,19 @@ def create_app(
     _events_v2_routes.init(dispatcher)
     app.include_router(_events_v2_routes.router)
 
+    # Phase 6: /api/v2/life/* — 她的生活页面后端
+    from src.api.routes import life_v2 as _life_v2_routes
+    from config.settings import CONVERSATION_SUMMARIES_DIR as _summaries_dir
+
+    _life_v2_routes.init(
+        trajectory_store=getattr(brain, "trajectory_store", None),
+        soul_manager=getattr(brain, "_soul_manager_ref", None),
+        durable_scheduler=getattr(brain, "_durable_scheduler_ref", None),
+        llm_router=getattr(brain, "router", None),
+        summaries_dir=_summaries_dir,
+    )
+    app.include_router(_life_v2_routes.router)
+
     # 浏览器子系统路由（可选，仅在 BROWSER_ENABLED 时挂载）
     _browser_manager = getattr(brain, "browser_manager", None)
     if _browser_manager is not None:
