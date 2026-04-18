@@ -164,11 +164,15 @@ def _render_runtime_state(state: StateView) -> str:
         lines.append("正在进行的任务：\n" + "\n".join(task_lines))
 
     # Open promises (commitments with kind=promise) — new layer from
-    # Step 3; previous PromptBuilder had no promise surface.
+    # Step 3; previous PromptBuilder had no promise surface. Every
+    # commitment in ``state.commitments_active`` has already been
+    # filtered to "live" by the builder (CommitmentStore.list_open
+    # returns pending + in_progress rows only) — the serializer does
+    # not re-filter on status here.
     promise_lines = [
         f"  - {c.description}"
         for c in state.commitments_active
-        if c.kind == "promise" and c.status == "open"
+        if c.kind == "promise"
     ][:5]
     if promise_lines:
         lines.append("我对 Kevin 的承诺：\n" + "\n".join(promise_lines))

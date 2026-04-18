@@ -214,13 +214,20 @@ class TestCommitments:
         assert "陪 Kevin 散步" in out.system_prompt
         assert "我对 Kevin 的承诺" in out.system_prompt
 
-    def test_closed_promises_suppressed(self):
+    def test_serializer_does_not_filter_by_promise_status(self):
+        """Contract split: CommitmentStore.list_open() returns only the
+        pending + in_progress rows; the serializer renders whatever
+        kind=promise commitments the StateView carries, trusting the
+        builder's filter. A post-Step-3 test that wants to confirm
+        'closed promises disappear' lives at the builder layer, not
+        here."""
         com = CommitmentView(
             id="p1", description="已完成的事", status="fulfilled",
             kind="promise", due_at=None,
         )
         out = serialize(_make_state(commitments=(com,)))
-        assert "已完成的事" not in out.system_prompt
+        # Serializer still renders it — the builder is the checkpoint.
+        assert "已完成的事" in out.system_prompt
 
     def test_empty_commitments_no_section(self):
         out = serialize(_make_state())
