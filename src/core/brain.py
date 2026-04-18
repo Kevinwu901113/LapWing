@@ -124,7 +124,7 @@ class LapwingBrain:
         )
         from src.memory.compactor import ConversationCompactor
         self.compactor = ConversationCompactor(self.memory, self.router)
-        from src.core.prompt_builder import PromptSnapshotManager
+        from src.core.prompt_snapshot import PromptSnapshotManager
         self._prompt_snapshot = PromptSnapshotManager()
         # v2.0 Step 3: StateViewBuilder is the sole prompt-assembly entry.
         # Default builder has no store wiring — every section but identity
@@ -188,7 +188,7 @@ class LapwingBrain:
         if self._system_prompt is None:
             from config.settings import PHASE0_MODE
             if PHASE0_MODE:
-                from src.core.prompt_builder import build_phase0_prompt
+                from src.core.phase0 import build_phase0_prompt
                 self._system_prompt = build_phase0_prompt()
                 logger.info("Phase 0 模式：使用极简 prompt（soul_test + constitution_test + 时间）")
             elif SOUL_PATH.exists():
