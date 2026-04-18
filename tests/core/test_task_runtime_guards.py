@@ -283,7 +283,7 @@ async def test_task_runtime_injects_error_context():
 class TestTimeContextCoarseGrained:
     def test_same_hour_produces_same_context(self):
         """同一小时内的时间上下文相同"""
-        from src.core.prompt_builder import _get_period_name
+        from src.core.vitals import get_period_name as _get_period_name
 
         dt1 = datetime(2026, 4, 13, 14, 5)
         dt2 = datetime(2026, 4, 13, 14, 55)
@@ -298,13 +298,13 @@ class TestTimeContextCoarseGrained:
         assert ctx1 == ctx2
 
     def test_different_hours_produce_different_context(self):
-        from src.core.prompt_builder import _get_period_name
+        from src.core.vitals import get_period_name as _get_period_name
 
         assert _get_period_name(9) != _get_period_name(15)
 
     def test_period_names_cover_all_hours(self):
         """所有 24 小时都有对应的时段名"""
-        from src.core.prompt_builder import _get_period_name
+        from src.core.vitals import get_period_name as _get_period_name
 
         for hour in range(24):
             name = _get_period_name(hour)
@@ -312,7 +312,7 @@ class TestTimeContextCoarseGrained:
             assert len(name) > 0
 
     def test_period_boundaries(self):
-        from src.core.prompt_builder import _get_period_name
+        from src.core.vitals import get_period_name as _get_period_name
 
         assert _get_period_name(0) == "深夜"
         assert _get_period_name(4) == "深夜"

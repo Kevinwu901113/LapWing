@@ -10,8 +10,6 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
-from config.settings import MAX_HISTORY_TURNS
-
 if TYPE_CHECKING:
     from src.core.trajectory_store import TrajectoryStore
 
@@ -19,15 +17,6 @@ logger = logging.getLogger("lapwing.memory.conversation")
 
 _VALID_RECURRENCE_TYPES = {"once", "daily", "weekly", "interval"}
 _TIME_OF_DAY_PATTERN = re.compile(r"^\d{2}:\d{2}$")
-
-# CJK 字符范围：基本汉字 + 扩展 A + 兼容汉字
-_CJK_RE = re.compile(r"([\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff])")
-
-
-def _cjk_tokenize(text: str) -> str:
-    """在 CJK 字符之间插入空格，使 FTS5 unicode61 tokenizer 能正确分词。"""
-    return _CJK_RE.sub(r" \1 ", text).strip()
-
 
 class ConversationMemory:
     """管理对话历史的存取。
@@ -56,28 +45,15 @@ class ConversationMemory:
         self._trajectory: "TrajectoryStore | None" = None
 
     async def init_db(self) -> None:
-        """初始化数据库：创建目录、建表、加载历史。"""
+        """初始化数据库：创建目录、建表。"""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(self._db_path)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._create_tables()
-        await self._load_recent_history()
         logger.info(f"对话记忆已初始化（SQLite 模式），数据库: {self._db_path}")
 
     async def _create_tables(self) -> None:
         await self._db.executescript("""
-            CREATE TABLE IF NOT EXISTS conversations (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id   TEXT NOT NULL,
-                role      TEXT NOT NULL,
-                content   TEXT NOT NULL,
-                timestamp TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_conversations_chat_id
-                ON conversations(chat_id);
-            CREATE INDEX IF NOT EXISTS idx_conversations_timestamp
-                ON conversations(timestamp);
-
             CREATE TABLE IF NOT EXISTS user_facts (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id    TEXT NOT NULL,
@@ -148,29 +124,6 @@ class ConversationMemory:
         """)
         await self._db.commit()
 
-        # FTS5 全文搜索索引
-        # 使用独立表 + 手动同步（非 trigger），因为 CJK 文本需要预处理分词。
-        # rowid 手动与 conversations.id 对齐。
-        await self._db.execute("""
-            CREATE VIRTUAL TABLE IF NOT EXISTS conversations_fts USING fts5(
-                content,
-                tokenize='unicode61'
-            )
-        """)
-        await self._db.commit()
-
-        # 一次性回填现有数据到 FTS 索引
-        await self._migrate_fts()
-
-        # Migration: add channel column if missing
-        try:
-            await self._db.execute(
-                "ALTER TABLE conversations ADD COLUMN channel TEXT DEFAULT 'qq'"
-            )
-            await self._db.commit()
-        except Exception:
-            pass  # Column already exists
-
         # Migration: add interval_minutes column to reminders if missing
         try:
             await self._db.execute(
@@ -189,212 +142,11 @@ class ConversationMemory:
         except Exception:
             pass  # Column already exists
 
-        # v2.0 Step 2j: the ``sessions`` table and its ``conversations.session_id``
-        # column are no longer created by new installs. Existing rows are
-        # archived + dropped separately by scripts/drop_sessions_table.py.
-        # Step 4 re-introduces session semantics bound to attention focus.
-
-        # Phase 1 Migration: conversations 新增 source / trust_level / actor_id
-        for col in (
-            "source TEXT DEFAULT 'qq'",
-            "trust_level INTEGER DEFAULT 3",
-            "actor_id TEXT",
-        ):
-            try:
-                await self._db.execute(f"ALTER TABLE conversations ADD COLUMN {col}")
-                await self._db.commit()
-            except Exception:
-                pass  # Column already exists
-
-    async def _load_recent_history(self) -> None:
-        """从数据库加载每个对话的最近历史到内存缓存。"""
-        max_messages = MAX_HISTORY_TURNS * 2
-        async with self._db.execute(
-            "SELECT DISTINCT chat_id FROM conversations"
-        ) as cursor:
-            chat_ids = [row[0] async for row in cursor]
-
-        for chat_id in chat_ids:
-            async with self._db.execute(
-                """SELECT role, content FROM (
-                    SELECT id, role, content FROM conversations
-                    WHERE chat_id = ?
-                    ORDER BY id DESC
-                    LIMIT ?
-                ) ORDER BY id ASC""",
-                (chat_id, max_messages),
-            ) as cursor:
-                messages = [
-                    {"role": row[0], "content": row[1]}
-                    async for row in cursor
-                ]
-            if messages:
-                self._store[chat_id] = messages
-                logger.debug(f"已从 DB 加载频道 {chat_id} 的 {len(messages)} 条历史消息")
-
-    async def _migrate_fts(self) -> None:
-        """一次性回填现有 conversations 数据到 FTS 索引（幂等）。
-
-        对 CJK 文本做字符级分词后再入索引。
-        """
-        try:
-            async with self._db.execute(
-                "SELECT count(*) FROM conversations_fts"
-            ) as cursor:
-                row = await cursor.fetchone()
-            if row and row[0] == 0:
-                async with self._db.execute(
-                    "SELECT id, content FROM conversations WHERE content IS NOT NULL"
-                ) as cursor:
-                    rows = await cursor.fetchall()
-                if rows:
-                    await self._db.executemany(
-                        "INSERT INTO conversations_fts(rowid, content) VALUES (?, ?)",
-                        [(rid, _cjk_tokenize(content)) for rid, content in rows],
-                    )
-                    await self._db.commit()
-                    logger.info("FTS5 索引回填完成，共 %d 条记录", len(rows))
-        except Exception as e:
-            logger.warning("FTS5 索引回填失败: %s", e)
-
-    async def _fts_insert(self, row_id: int, content: str) -> None:
-        """将一条消息插入 FTS 索引（CJK 预分词）。"""
-        try:
-            await self._db.execute(
-                "INSERT INTO conversations_fts(rowid, content) VALUES (?, ?)",
-                (row_id, _cjk_tokenize(content)),
-            )
-        except Exception as e:
-            logger.debug("FTS 索引写入失败: %s", e)
-
-    async def search_history(
-        self,
-        query: str,
-        *,
-        chat_id: str | None = None,
-        limit: int = 10,
-        days_back: int | None = None,
-    ) -> list[dict]:
-        """全文搜索历史对话消息（FTS5 BM25 排序）。
-
-        Args:
-            query: 搜索关键词（FTS5 MATCH 语法）
-            chat_id: 限定特定对话（可选）
-            limit: 最多返回条数
-            days_back: 限定最近 N 天（可选）
-
-        Returns:
-            匹配的消息列表，每条包含 message_id, chat_id, role, content,
-            timestamp 和 context（前后各 1 条消息）。
-        """
-        safe_query = query.strip()
-        if not safe_query:
-            return []
-
-        # 对查询做 CJK 分词，并用引号包裹以进行短语匹配
-        tokenized = _cjk_tokenize(safe_query)
-        fts_query = f'"{tokenized}"' if tokenized else safe_query
-
-        sql = """
-            SELECT c.id, c.chat_id, c.role, c.content, c.timestamp, rank
-            FROM conversations_fts
-            JOIN conversations c ON conversations_fts.rowid = c.id
-            WHERE conversations_fts MATCH ?
-        """
-        params: list = [fts_query]
-
-        if chat_id:
-            sql += " AND c.chat_id = ?"
-            params.append(chat_id)
-
-        if days_back:
-            sql += " AND c.timestamp >= datetime('now', ?)"
-            params.append(f"-{days_back} days")
-
-        sql += " ORDER BY rank LIMIT ?"
-        params.append(limit)
-
-        try:
-            results = []
-            async with self._db.execute(sql, params) as cursor:
-                rows = await cursor.fetchall()
-
-            for row in rows:
-                msg_id, msg_chat_id, role, content, timestamp, _rank = row
-                context = await self._get_surrounding_messages(msg_id)
-                results.append({
-                    "message_id": msg_id,
-                    "chat_id": msg_chat_id,
-                    "role": role,
-                    "content": content,
-                    "timestamp": timestamp,
-                    "context": context,
-                })
-            return results
-        except Exception as e:
-            logger.error("FTS5 搜索失败: %s", e)
-            return []
-
-    async def _get_surrounding_messages(self, message_id: int) -> list[dict]:
-        """获取指定消息前后各 1 条消息（提供上下文）。"""
-        try:
-            async with self._db.execute(
-                """SELECT role, content, timestamp FROM conversations
-                   WHERE id IN (?, ?)""",
-                (message_id - 1, message_id + 1),
-            ) as cursor:
-                return [
-                    {"role": row[0], "content": row[1], "timestamp": row[2]}
-                    async for row in cursor
-                ]
-        except Exception:
-            return []
-
     async def get(self, channel_id: str) -> list[dict]:
         """获取指定频道的对话历史（从缓存读取）。"""
         if channel_id not in self._store:
             self._store[channel_id] = []
         return self._store[channel_id]
-
-    async def get_messages(
-        self,
-        chat_id: str,
-        limit: int = 50,
-        before: str | None = None,
-    ) -> list[dict]:
-        """获取分页对话历史（从数据库读取，按时间倒序）。"""
-        limit = max(1, min(limit, 500))
-        try:
-            if before:
-                async with self._db.execute(
-                    "SELECT id, chat_id, role, content, timestamp "
-                    "FROM conversations WHERE chat_id = ? AND timestamp < ? "
-                    "ORDER BY id DESC LIMIT ?",
-                    (chat_id, before, limit),
-                ) as cursor:
-                    rows = await cursor.fetchall()
-            else:
-                async with self._db.execute(
-                    "SELECT id, chat_id, role, content, timestamp "
-                    "FROM conversations WHERE chat_id = ? "
-                    "ORDER BY id DESC LIMIT ?",
-                    (chat_id, limit),
-                ) as cursor:
-                    rows = await cursor.fetchall()
-
-            return [
-                {
-                    "id": str(row[0]),
-                    "chat_id": row[1],
-                    "role": row[2],
-                    "content": row[3],
-                    "timestamp": row[4],
-                }
-                for row in reversed(rows)  # 返回时按时间正序
-            ]
-        except Exception as e:
-            logger.error(f"获取对话消息失败: {e}")
-            return []
 
     def set_trajectory(self, trajectory: "TrajectoryStore | None") -> None:
         """v2.0 Step 2f: wire dual-write target. Safe to call multiple times."""
@@ -464,17 +216,17 @@ class ConversationMemory:
         )
 
     async def clear(self, channel_id: str) -> None:
-        """清除指定频道的对话历史。"""
+        """清除指定频道的内存对话缓存。
+
+        The durable conversation history lives in TrajectoryStore after
+        Step 2h, and trajectory is append-only by Blueprint contract.
+        ``clear()`` therefore only resets the in-process cache — it no
+        longer deletes anything in the database. Callers that truly
+        want to wipe historical rows must go through a scripted
+        migration with an audit trail, not a runtime clear.
+        """
         self._store.pop(channel_id, None)
-        try:
-            await self._db.execute(
-                "DELETE FROM conversations WHERE chat_id = ?",
-                (channel_id,),
-            )
-            await self._db.commit()
-            logger.info(f"已清除频道 {channel_id} 的对话记忆")
-        except Exception as e:
-            logger.error(f"清除频道 {channel_id} 记忆失败: {e}")
+        logger.info(f"已清除频道 {channel_id} 的内存对话缓存")
 
     async def _mirror_to_trajectory(
         self,
@@ -549,10 +301,13 @@ class ConversationMemory:
             )
 
     async def clear_chat_all(self, channel_id: str) -> None:
-        """清除指定频道的全部记忆（短期 + 长期）。"""
+        """清除指定频道的可变记忆：内存缓存 + todos/reminders。
+
+        Trajectory rows stay put (append-only). Callers that want to
+        erase trajectory history must run a dedicated migration.
+        """
         self._store.pop(channel_id, None)
         tables = (
-            "conversations",
             "todos",
             "reminders",
         )
@@ -563,55 +318,14 @@ class ConversationMemory:
                     (channel_id,),
                 )
             await self._db.commit()
-            logger.info(f"已清除频道 {channel_id} 的全部记忆（长短期）")
+            logger.info(f"已清除频道 {channel_id} 的可变记忆（缓存 + todos + reminders）")
         except Exception as e:
-            logger.error(f"清除频道 {channel_id} 全部记忆失败: {e}")
+            logger.error(f"清除频道 {channel_id} 可变记忆失败: {e}")
 
     async def clear_all(self) -> None:
-        """清除所有对话历史。"""
+        """清除所有内存对话缓存。Trajectory 不动（append-only）。"""
         self._store.clear()
-        try:
-            await self._db.execute("DELETE FROM conversations")
-            await self._db.commit()
-            logger.info("已清除所有对话记忆")
-        except Exception as e:
-            logger.error(f"清除所有记忆失败: {e}")
-
-    async def get_active(self, chat_id: str, limit: int = 30) -> list[dict]:
-        """获取活跃对话（最近 1 天）用于上下文注入，按时间正序返回。"""
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=self.ACTIVE_WINDOW_DAYS)).isoformat()
-        try:
-            async with self._db.execute(
-                "SELECT role, content, timestamp FROM conversations "
-                "WHERE chat_id = ? AND timestamp > ? ORDER BY timestamp DESC LIMIT ?",
-                (chat_id, cutoff, limit),
-            ) as cursor:
-                rows = await cursor.fetchall()
-            return [
-                {"role": row[0], "content": row[1], "timestamp": row[2]}
-                for row in reversed(rows)
-            ]
-        except Exception as e:
-            logger.error(f"get_active 查询失败: {e}")
-            return []
-
-    async def search_deep_archive(self, chat_id: str, query: str, limit: int = 10) -> list[dict]:
-        """在深度归档（7 天前）中按关键词搜索对话，按时间倒序返回。"""
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=self.RECENT_ARCHIVE_DAYS)).isoformat()
-        try:
-            async with self._db.execute(
-                "SELECT role, content, timestamp FROM conversations "
-                "WHERE chat_id = ? AND timestamp < ? AND content LIKE ? ORDER BY timestamp DESC LIMIT ?",
-                (chat_id, cutoff, f"%{query}%", limit),
-            ) as cursor:
-                rows = await cursor.fetchall()
-            return [
-                {"role": row[0], "content": row[1], "timestamp": row[2]}
-                for row in rows
-            ]
-        except Exception as e:
-            logger.error(f"search_deep_archive 查询失败: {e}")
-            return []
+        logger.info("已清除所有内存对话缓存")
 
     async def close(self) -> None:
         """关闭数据库连接。"""

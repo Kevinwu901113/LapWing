@@ -7,7 +7,7 @@ from src.tools.types import ToolExecutionRequest, ToolExecutionContext
 from src.tools.memory_tools_v2 import (
     recall_executor, write_note_executor, edit_note_executor,
     read_note_executor, list_notes_executor, move_note_executor,
-    search_notes_executor, search_archive_executor, get_context_executor,
+    search_notes_executor,
 )
 
 
@@ -238,53 +238,8 @@ class TestRecall:
         assert len(result.payload["results"][0]["content"]) <= 500
 
 
-class TestSearchArchive:
-    async def test_archive_no_memory(self):
-        ctx = _make_ctx({"conversation_memory": None})
-        req = _make_req("search_archive", {"query": "test"})
-        result = await search_archive_executor(req, ctx)
-        assert result.success is False
-
-    async def test_archive_success(self):
-        mock_mem = MagicMock()
-        mock_mem.search_deep_archive = AsyncMock(return_value=[
-            {"role": "user", "content": "remember that trip?", "timestamp": "2025-01-01T00:00:00"}
-        ])
-        ctx = _make_ctx({"conversation_memory": mock_mem}, chat_id="chat_123")
-        req = _make_req("search_archive", {"query": "trip"})
-        result = await search_archive_executor(req, ctx)
-        assert result.success is True
-        assert result.payload["count"] == 1
-
-    async def test_archive_empty_results(self):
-        mock_mem = MagicMock()
-        mock_mem.search_deep_archive = AsyncMock(return_value=[])
-        ctx = _make_ctx({"conversation_memory": mock_mem})
-        req = _make_req("search_archive", {"query": "nothing"})
-        result = await search_archive_executor(req, ctx)
-        assert result.success is True
-        assert result.payload["count"] == 0
-
-
-class TestGetContext:
-    async def test_get_context_empty(self):
-        ctx = _make_ctx({}, chat_id="test_chat")
-        req = _make_req("get_context", {})
-        result = await get_context_executor(req, ctx)
-        assert result.success is True
-
-    async def test_get_context_has_sections(self):
-        """返回的 payload 应包含预期的段落键。"""
-        ctx = _make_ctx({}, chat_id="test_chat")
-        req = _make_req("get_context", {})
-        result = await get_context_executor(req, ctx)
-        assert result.success is True
-        # payload 应至少有 workspace 相关字段
-        assert "workspace" in result.payload or "output" in result.payload
-
-
 class TestRegisterMemoryToolsV2:
-    def test_register_all_9_tools(self):
+    def test_register_all_tools(self):
         from src.tools.memory_tools_v2 import register_memory_tools_v2
 
         registered = {}
@@ -296,7 +251,7 @@ class TestRegisterMemoryToolsV2:
         register_memory_tools_v2(MockRegistry())
         expected_names = {
             "recall", "write_note", "edit_note", "read_note",
-            "list_notes", "move_note", "search_notes", "search_archive", "get_context",
+            "list_notes", "move_note", "search_notes",
         }
         assert set(registered.keys()) == expected_names
 
@@ -310,9 +265,5 @@ class TestRegisterMemoryToolsV2:
                 registered[spec.name] = spec
 
         register_memory_tools_v2(MockRegistry())
-        # get_context 用 general，其余用 memory
-        for name, spec in registered.items():
-            if name == "get_context":
-                assert spec.capability == "general"
-            else:
-                assert spec.capability == "memory"
+        for spec in registered.values():
+            assert spec.capability == "memory"

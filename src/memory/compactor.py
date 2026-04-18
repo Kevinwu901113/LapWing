@@ -80,16 +80,17 @@ class ConversationCompactor:
             return False
 
         if self._trajectory is not None:
-            # v2.0 Step 2g: read via TrajectoryStore + compat shim.
+            # Read history for summarisation via TrajectoryStore. The
+            # conversion stays in trajectory_store's public surface —
+            # compactor does not need the full StateSerializer flow
+            # (it builds its own LLM prompt for summarisation).
             from config.settings import MAX_HISTORY_TURNS
-            from src.core.trajectory_compat import (
-                trajectory_entries_to_legacy_messages,
-            )
+            from src.core.trajectory_store import trajectory_entries_to_messages
 
             rows = await self._trajectory.relevant_to_chat(
                 chat_id, n=MAX_HISTORY_TURNS * 2, include_inner=False,
             )
-            history = trajectory_entries_to_legacy_messages(rows)
+            history = trajectory_entries_to_messages(rows)
         else:
             history = await self._memory.get(chat_id)
         if not self.should_compact(len(history)):

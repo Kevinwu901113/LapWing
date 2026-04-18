@@ -1,9 +1,18 @@
-"""tests/core/test_brain_system_prompt.py — Phase 2 brain system prompt 测试。"""
+"""brain._render_messages — v2.0 Step 3 replaces _build_system_prompt.
+
+These tests exercise the integration point between LapwingBrain and
+StateViewBuilder / StateSerializer. They don't repeat the per-layer
+rendering tests that live in ``tests/core/test_state_serializer.py``;
+they only pin down that brain wires the right stores into the builder
+and returns the fully assembled messages list.
+"""
+
+from __future__ import annotations
 
 import sys
 from contextlib import ExitStack
 from pathlib import Path
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -21,70 +30,115 @@ def reset_module_cache():
             del sys.modules[mod]
 
 
-def _mock_load_prompt(name, **kwargs):
-    if name == "lapwing_soul":
-        return "SOUL"
-    return ""
-
-
-def base_brain_stack(**overrides):
+def _stack():
     stack = ExitStack()
-    load_fn = overrides.get("load_fn", _mock_load_prompt)
-    stack.enter_context(patch("src.core.brain.load_prompt", side_effect=load_fn))
-    stack.enter_context(patch("src.core.prompt_builder.load_prompt", side_effect=load_fn))
+    stack.enter_context(patch("src.core.brain.load_prompt", return_value="SOUL_FALLBACK"))
     stack.enter_context(patch("src.core.brain.LLMRouter"))
     stack.enter_context(patch("src.core.brain.ConversationMemory"))
-    stack.enter_context(patch("src.core.brain.SOUL_PATH", overrides.get("soul", _NONEXISTENT / "soul.md")))
+    stack.enter_context(patch("src.core.brain.SOUL_PATH", _NONEXISTENT / "soul.md"))
     return stack
 
 
-class TestPhase0Fallback:
-    """Phase 0 模式下直接返回极简 prompt。"""
+class TestRenderMessages:
+    """v2.0 Step 3: brain._render_messages takes recent_messages and
+    returns the full [system, *trajectory_with_voice] list."""
 
-    async def test_phase0_uses_system_prompt_directly(self):
-        with base_brain_stack():
-            with patch("config.settings.PHASE0_MODE", "A"):
-                from src.core.brain import LapwingBrain
-                brain = LapwingBrain(db_path=Path("test.db"))
-                # Phase 0 使用 system_prompt property
-                result = await brain._build_system_prompt("chat1")
-                # Phase 0 调用 build_phase0_prompt，我们 mock 了相关文件不存在
-                # 所以会走 fallback
-                assert result is not None
-
-
-class TestPromptBuilderIntegration:
-    """PromptBuilder 注入后的行为。"""
-
-    async def test_uses_prompt_builder_when_available(self, tmp_path):
+    async def test_assembles_full_list(self, tmp_path):
         soul = tmp_path / "soul.md"
-        soul.write_text("# Lapwing Soul", encoding="utf-8")
+        soul.write_text("I AM LAPWING", encoding="utf-8")
         constitution = tmp_path / "constitution.md"
-        constitution.write_text("# Constitution", encoding="utf-8")
+        constitution.write_text("CONSTITUTION", encoding="utf-8")
 
-        with base_brain_stack():
-            with patch("config.settings.PHASE0_MODE", ""):
-                from src.core.brain import LapwingBrain
-                from src.core.prompt_builder import PromptBuilder
-                brain = LapwingBrain(db_path=Path("test.db"))
-                brain.prompt_builder = PromptBuilder(
-                    soul_path=soul,
-                    constitution_path=constitution,
-                )
-                with patch("src.core.prompt_builder._get_period_name", return_value="下午"):
-                    result = await brain._build_system_prompt(
-                        "chat1", adapter="desktop"
-                    )
-                assert "# Lapwing Soul" in result
-                assert "# Constitution" in result
-                assert "## 当前状态" in result
+        with _stack(), patch("config.settings.PHASE0_MODE", ""):
+            from src.core.brain import LapwingBrain
+            from src.core.state_view_builder import StateViewBuilder
 
-    async def test_fallback_when_no_prompt_builder(self):
-        with base_brain_stack():
-            with patch("config.settings.PHASE0_MODE", ""):
-                from src.core.brain import LapwingBrain
-                brain = LapwingBrain(db_path=Path("test.db"))
-                assert brain.prompt_builder is None
-                result = await brain._build_system_prompt("chat1")
-                # Falls back to self.system_prompt
-                assert result is not None
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.state_view_builder = StateViewBuilder(
+                soul_path=soul,
+                constitution_path=constitution,
+                voice_prompt_name="does_not_exist",
+            )
+            messages = await brain._render_messages(
+                "chat1",
+                [{"role": "user", "content": "hi"}],
+                adapter="desktop",
+            )
+            assert messages[0]["role"] == "system"
+            assert "I AM LAPWING" in messages[0]["content"]
+            assert "CONSTITUTION" in messages[0]["content"]
+            # 1 recent + total=2 < 4 → voice folded into system, no
+            # injected user-role note; messages = [system, user]
+            assert len(messages) == 2
+            assert messages[1] == {"role": "user", "content": "hi"}
+
+    async def test_voice_injected_for_long_convo(self, tmp_path):
+        soul = tmp_path / "soul.md"
+        soul.write_text("SOUL", encoding="utf-8")
+
+        with _stack(), patch("config.settings.PHASE0_MODE", ""):
+            from src.core.brain import LapwingBrain
+            from src.core.state_view_builder import StateViewBuilder
+
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.state_view_builder = StateViewBuilder(
+                soul_path=soul,
+                constitution_path=tmp_path / "no_const",
+                voice_prompt_name="does_not_exist",  # empty voice → no inject
+            )
+            # Even with 8 turns, empty voice means no note gets inserted.
+            recent = [{"role": "user", "content": f"t{i}"} for i in range(8)]
+            out = await brain._render_messages("c", recent, adapter="desktop")
+            assert all("[System Note]" not in m.get("content", "") for m in out)
+            # length = system + 8 recent
+            assert len(out) == 9
+
+    async def test_phase0_skips_state_serializer(self, tmp_path):
+        with _stack(), patch("config.settings.PHASE0_MODE", "A"):
+            from src.core.brain import LapwingBrain
+
+            brain = LapwingBrain(db_path=Path("test.db"))
+            out = await brain._render_messages(
+                "c", [{"role": "user", "content": "x"}], adapter="desktop"
+            )
+            assert out[0]["role"] == "system"
+            # Phase 0 returns raw soul fallback, no runtime-state block
+            assert "## 当前状态" not in out[0]["content"]
+
+    async def test_skill_context_appended_to_system(self, tmp_path):
+        soul = tmp_path / "soul.md"
+        soul.write_text("SOUL", encoding="utf-8")
+
+        with _stack(), patch("config.settings.PHASE0_MODE", ""):
+            from src.core.brain import LapwingBrain
+            from src.core.state_view_builder import StateViewBuilder
+
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.state_view_builder = StateViewBuilder(
+                soul_path=soul,
+                constitution_path=tmp_path / "x",
+                voice_prompt_name="does_not_exist",
+            )
+            out = await brain._render_messages(
+                "c", [{"role": "user", "content": "hi"}],
+                skill_context="SKILL_BODY_XYZ",
+            )
+            assert "SKILL_BODY_XYZ" in out[0]["content"]
+            assert "显式激活技能" in out[0]["content"]
+
+    async def test_adapter_drives_channel_description(self, tmp_path):
+        with _stack(), patch("config.settings.PHASE0_MODE", ""):
+            from src.core.brain import LapwingBrain
+            from src.core.state_view_builder import StateViewBuilder
+
+            brain = LapwingBrain(db_path=Path("test.db"))
+            brain.state_view_builder = StateViewBuilder(
+                soul_path=tmp_path / "_",
+                constitution_path=tmp_path / "_",
+                voice_prompt_name="does_not_exist",
+            )
+            out = await brain._render_messages(
+                "c1", [{"role": "user", "content": "yo"}],
+                adapter="qq",
+            )
+            assert "QQ 私聊" in out[0]["content"]

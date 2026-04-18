@@ -299,3 +299,76 @@ class TrajectoryStore:
             related_iteration_id=row[7],
             related_tool_call_id=row[8],
         )
+
+
+# ── Legacy-dict projection ──────────────────────────────────────────
+#
+# Step 3 moved prompt assembly to StateSerializer, but two call paths
+# still need the pre-serializer ``[{"role", "content"}]`` shape:
+#
+#   - brain._load_history: hands the list to _prepare_think, which
+#     applies trust tagging in place and forwards as the builder's
+#     trajectory_turns_override.
+#   - ConversationCompactor: feeds the list into the LLM summarisation
+#     prompt, which is built outside the serializer for historical
+#     reasons (compaction predates Step 3).
+#
+# A future step can retire this helper once both callers move to the
+# TrajectoryTurn shape. The projection itself is the same mapping
+# Step 2g introduced in a short-lived transitional module; this is
+# the permanent home.
+
+_LEGACY_ROLE_MAP: dict[str, str] = {
+    TrajectoryEntryType.USER_MESSAGE.value: "user",
+    TrajectoryEntryType.TELL_USER.value: "assistant",
+    TrajectoryEntryType.ASSISTANT_TEXT.value: "assistant",
+}
+
+
+def trajectory_entries_to_messages(
+    entries: list[TrajectoryEntry] | tuple[TrajectoryEntry, ...],
+    *,
+    include_inner: bool = False,
+) -> list[dict]:
+    """Project trajectory rows onto the legacy conversation-message shape.
+
+    ``USER_MESSAGE`` / ``TELL_USER`` / ``ASSISTANT_TEXT`` map to
+    ``user`` / ``assistant``; ``INNER_THOUGHT`` surfaces as a
+    ``[内部思考]``-prefixed system note when ``include_inner=True``; all
+    other types drop. Preserves input iteration order.
+    """
+    out: list[dict] = []
+    for entry in entries:
+        role = _LEGACY_ROLE_MAP.get(entry.entry_type)
+        if role is not None:
+            text = _extract_legacy_text(entry)
+            if text is None:
+                continue
+            out.append({"role": role, "content": text})
+            continue
+
+        if entry.entry_type == TrajectoryEntryType.INNER_THOUGHT.value:
+            if not include_inner:
+                continue
+            text = _extract_legacy_text(entry)
+            if text is None:
+                continue
+            out.append({"role": "system", "content": f"[内部思考] {text}"})
+            continue
+    return out
+
+
+def _extract_legacy_text(entry: TrajectoryEntry) -> str | None:
+    content = entry.content or {}
+    if entry.entry_type == TrajectoryEntryType.TELL_USER.value:
+        msgs = content.get("messages")
+        if isinstance(msgs, list) and msgs:
+            return "\n".join(str(m) for m in msgs)
+        text = content.get("text")
+        if isinstance(text, str):
+            return text
+        return None
+    text = content.get("text")
+    if isinstance(text, str):
+        return text
+    return None

@@ -17,8 +17,11 @@ from src.core.reasoning_tags import (
     strip_internal_thinking_tags,
     strip_split_markers,
 )
+from src.core.state_serializer import serialize as _serialize_state
+from src.core.state_view import TrajectoryTurn
+from src.core.state_view_builder import StateViewBuilder
 from src.core.task_runtime import RuntimeDeps, TaskRuntime
-from src.core.trajectory_compat import trajectory_entries_to_legacy_messages
+from src.core.trajectory_store import trajectory_entries_to_messages
 from src.core.shell_policy import (
     ExecutionSessionState,
     build_shell_runtime_policy,
@@ -121,9 +124,13 @@ class LapwingBrain:
         )
         from src.memory.compactor import ConversationCompactor
         self.compactor = ConversationCompactor(self.memory, self.router)
-        from src.core.prompt_builder import PromptSnapshotManager, PromptBuilder
-        self._prompt_snapshot = PromptSnapshotManager()
-        self.prompt_builder: PromptBuilder | None = None  # Set externally (container)
+        # v2.0 Step 3: StateViewBuilder is the sole prompt-assembly entry.
+        # Default builder has no store wiring — every section but identity
+        # docs collapses to empty. AppContainer replaces this at prepare()
+        # with a fully wired instance. Replacing rather than mutating
+        # keeps this attribute "live" throughout brain's lifetime so
+        # render paths never have to guard against ``None``.
+        self.state_view_builder: StateViewBuilder = StateViewBuilder()
         self.vector_store: VectorStore | None = None
         self.skill_manager = None  # SkillManager | None — Phase 3 重建
         self.event_bus = None
@@ -142,19 +149,19 @@ class LapwingBrain:
     async def _load_history(self, chat_id: str) -> list[dict]:
         """Legacy-shape conversation history for the LLM context.
 
-        v2.0 Step 2g: reads from ``TrajectoryStore.relevant_to_chat`` via
-        the ``trajectory_compat`` shim when wired; falls back to the
-        in-memory ConversationMemory cache otherwise (unit tests,
-        phase-0, pre-container boot). ``include_inner=False`` preserves
-        the legacy semantics — consciousness-loop rows stay out of the
-        user-facing exchange.
+        Reads from ``TrajectoryStore.relevant_to_chat`` and projects via
+        ``trajectory_entries_to_messages``; falls back to the in-memory
+        ConversationMemory cache when the trajectory store isn't wired
+        (unit tests, phase-0, pre-container boot). ``include_inner=False``
+        preserves the legacy semantics — consciousness-loop rows stay
+        out of the user-facing exchange.
         """
         if self.trajectory_store is not None:
             # Legacy cap: MAX_HISTORY_TURNS rounds × 2 messages/round
             rows = await self.trajectory_store.relevant_to_chat(
                 chat_id, n=MAX_HISTORY_TURNS * 2, include_inner=False,
             )
-            return trajectory_entries_to_legacy_messages(rows)
+            return trajectory_entries_to_messages(rows)
         return await self.memory.get(chat_id)
 
     async def clear_short_term_memory(self, chat_id: str) -> None:
@@ -179,7 +186,7 @@ class LapwingBrain:
         if self._system_prompt is None:
             from config.settings import PHASE0_MODE
             if PHASE0_MODE:
-                from src.core.prompt_builder import build_phase0_prompt
+                from src.core.phase0 import build_phase0_prompt
                 self._system_prompt = build_phase0_prompt()
                 logger.info("Phase 0 模式：使用极简 prompt（soul_test + constitution_test + 时间）")
             elif SOUL_PATH.exists():
@@ -204,7 +211,6 @@ class LapwingBrain:
         else:
             self._system_prompt = reload_prompt("lapwing_soul")
         reload_prompt("lapwing_voice")
-        self._prompt_snapshot.invalidate()
         logger.info("已重新加载所有 prompt 缓存")
 
     def reload_skills(self) -> None:
@@ -222,14 +228,12 @@ class LapwingBrain:
         return self.router.model_status(session_key=self._chat_session_key(chat_id))
 
     def switch_model(self, chat_id: str, selector: str) -> dict[str, Any]:
-        self._prompt_snapshot.invalidate()
         return self.router.switch_session_model(
             session_key=self._chat_session_key(chat_id),
             selector=selector,
         )
 
     def reset_model(self, chat_id: str) -> dict[str, Any]:
-        self._prompt_snapshot.invalidate()
         return self.router.clear_session_model(session_key=self._chat_session_key(chat_id))
 
     async def _complete_chat(
@@ -319,44 +323,85 @@ class LapwingBrain:
             user_id=user_id,
         )
 
-    async def _build_system_prompt(
+    async def _render_messages(
         self,
         chat_id: str,
-        user_message: str = "",
+        recent_messages: list[dict],
+        *,
         adapter: str = "",
         user_id: str = "",
         auth_level: int = 3,
         group_id: str | None = None,
-    ) -> str:
-        """按优先级分层组装 system prompt — delegates to prompt_builder."""
-        from config.settings import PHASE0_MODE
-        if PHASE0_MODE:
-            return self.system_prompt
+        skill_context: str | None = None,
+        inner: bool = False,
+    ) -> list[dict]:
+        """Assemble the full LLM messages list via StateSerializer.
 
-        if self.prompt_builder is not None:
-            # Phase 2：class-based PromptBuilder（4 层）
-            channel = adapter or "desktop"
-            return await self.prompt_builder.build_system_prompt(
-                channel=channel,
+        v2.0 Step 3 §3.1. Replaces the former ``_build_system_prompt`` +
+        ``_inject_voice_reminder`` pair. ``recent_messages`` is the list
+        brain already assembled (effective user-message swapped in, trust
+        tagging applied, etc.); we carry it into StateView via the
+        builder's ``trajectory_turns_override`` so the serializer renders
+        exactly what the LLM needs without re-reading the trajectory.
+
+        Returns the final ``[{system}, ...serialized, ...]`` list with
+        the voice reminder depth-injected. Caller layers image blocks
+        on top using ``_inject_images_into_last_user_message``.
+        """
+        from config.settings import PHASE0_MODE
+
+        # Phase 0: tests and minimal boots use the soul-only prompt and
+        # skip the full StateView assembly entirely.
+        if PHASE0_MODE:
+            system_content = self.system_prompt
+            if skill_context:
+                system_content = (
+                    f"{system_content}\n\n## 显式激活技能\n\n{skill_context}"
+                )
+            return [{"role": "system", "content": system_content}, *recent_messages]
+
+        # Convert already-processed dicts into TrajectoryTurn values. Only
+        # string-content messages fit; multimodal image blocks get applied
+        # later by ``_inject_images_into_last_user_message``.
+        turns = tuple(
+            TrajectoryTurn(role=str(m.get("role", "")), content=m["content"])
+            for m in recent_messages
+            if isinstance(m.get("content"), str)
+        )
+
+        if inner:
+            state_view = await self.state_view_builder.build_for_inner(
+                trajectory_turns_override=turns,
+            )
+        else:
+            state_view = await self.state_view_builder.build_for_chat(
+                chat_id,
+                channel=adapter or "desktop",
                 actor_id=user_id or None,
                 actor_name=None,
                 auth_level=auth_level,
                 group_id=group_id,
+                trajectory_turns_override=turns,
             )
 
-        # fallback：极简 prompt（不应到达，但防御性保留）
-        return self.system_prompt
+        serialized = _serialize_state(state_view)
+        system_content = serialized.system_prompt
+        if skill_context:
+            system_content = (
+                f"{system_content}\n\n## 显式激活技能\n\n{skill_context}"
+            )
 
-    def _inject_voice_reminder(self, messages: list[dict]) -> None:
-        from config.settings import PHASE0_MODE
-        if PHASE0_MODE:
-            return  # Phase 0：不注入 voice reminder
-        if self.prompt_builder is not None:
-            self.prompt_builder.inject_voice_reminder(messages)
-        else:
-            # fallback for tests that don't set prompt_builder
-            from src.core.prompt_builder import PromptBuilder
-            PromptBuilder().inject_voice_reminder(messages)
+        # Rebuild with any non-string (multimodal) entries preserved in
+        # their original positions: the serializer dropped them when
+        # building its output, so we splice them back by index.
+        rendered = list(serialized.messages)
+        for idx, m in enumerate(recent_messages):
+            if isinstance(m.get("content"), list):
+                # Multimodal block — insert at its original depth so
+                # image alignment with text stays correct.
+                rendered.insert(idx, dict(m))
+
+        return [{"role": "system", "content": system_content}, *rendered]
 
     def _schedule_conversation_end(self) -> None:
         """延迟判定对话结束。用户最后一条消息后 N 秒无新消息算结束。"""
@@ -511,21 +556,12 @@ class LapwingBrain:
             user_message=model_user_message,
             original_user_message=raw_user_message,
         )
-        system_content = await self._build_system_prompt(chat_id, model_user_message)
 
-        if skill_context:
-            system_content = (
-                f"{system_content}\n\n"
-                "## 显式激活技能\n\n"
-                f"{skill_context}"
-            )
-
-        messages = [
-            {"role": "system", "content": system_content},
-            *recent_messages,
-        ]
-
-        self._inject_voice_reminder(messages)
+        messages = await self._render_messages(
+            chat_id,
+            recent_messages,
+            skill_context=skill_context or None,
+        )
 
         return await self._complete_chat(
             chat_id,
@@ -694,23 +730,18 @@ class LapwingBrain:
                         msg["content"], sender_id=user_id, sender_name="", trust=trust
                     )
 
-        # System prompt 快照：同一 session 内复用冻结的 prompt（prefix cache 优化）
-        system_content = await self._build_system_prompt(
-            chat_id, effective_user_message,
-            adapter=adapter, user_id=user_id,
-            auth_level=auth_level, group_id=group_id,
+        messages = await self._render_messages(
+            chat_id,
+            recent_messages,
+            adapter=adapter,
+            user_id=user_id,
+            auth_level=auth_level,
+            group_id=group_id,
         )
-
-        messages = [
-            {"role": "system", "content": system_content},
-            *recent_messages,
-        ]
 
         # 多模态：将图片注入到最后一条 user 消息中（Anthropic content blocks 格式）
         if images:
             self._inject_images_into_last_user_message(messages, images)
-
-        self._inject_voice_reminder(messages)
 
         return _ThinkCtx(
             messages=messages,
@@ -976,10 +1007,8 @@ class LapwingBrain:
             logger.warning("[compose_proactive] 无法确定 chat_id，跳过")
             return None
 
-        # 1. 构建完整 system prompt（8 层：soul → rules → time → memory → facts → vectors → summaries → voice）
-        system_content = await self._build_system_prompt(resolved_chat_id)
-
-        # 2. 构造消息列表
+        # 1. 构造用户提示（proactive 没有真实的 user turn，用 sense + context
+        #    做合成输入让模型知道环境上下文）
         sense_text = ""
         if sense_context:
             sense_text = "[当前环境]\n"
@@ -987,13 +1016,14 @@ class LapwingBrain:
                 sense_text += f"- {k}: {v}\n"
             sense_text += "\n"
 
-        messages = [
-            {"role": "system", "content": system_content},
-            {"role": "user", "content": f"{sense_text}{context_prompt}"},
-        ]
+        proactive_user = {"role": "user", "content": f"{sense_text}{context_prompt}"}
 
-        # 3. voice.md depth-0 注入（与 think_conversational 共享同一个注入逻辑）
-        self._inject_voice_reminder(messages)
+        # 2. StateSerializer 组装：单条合成用户消息作为 recent_messages。
+        #    total = 2 < 4 → 走短对话分支，voice 折进 system prompt。
+        messages = await self._render_messages(
+            resolved_chat_id,
+            [proactive_user],
+        )
 
         # 4. 生成回复
         if tools:
