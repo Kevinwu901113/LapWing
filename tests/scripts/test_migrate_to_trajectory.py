@@ -297,3 +297,53 @@ class TestAuditPrint:
         out = capsys.readouterr().out
         assert "conversations rows read:" in out
         assert "invariant" in out
+
+
+class TestInitSchema:
+    async def test_init_creates_both_tables(self, tmp_path):
+        db_path = tmp_path / "fresh.db"
+        counts = await mig.init_schema(db_path)
+        assert counts == {"trajectory_rows": 0, "commitments_rows": 0}
+        db = await aiosqlite.connect(db_path)
+        try:
+            async with db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ) as cur:
+                names = {row[0] async for row in cur}
+            assert "trajectory" in names
+            assert "commitments" in names
+            async with db.execute(
+                "SELECT name FROM sqlite_master WHERE type='index' "
+                "AND tbl_name='trajectory'"
+            ) as cur:
+                idx = {row[0] async for row in cur}
+            assert "idx_traj_timestamp" in idx
+            assert "idx_traj_chat" in idx
+            assert "idx_traj_type" in idx
+            assert "idx_traj_iteration" in idx
+        finally:
+            await db.close()
+
+    async def test_init_is_idempotent(self, tmp_path):
+        db_path = tmp_path / "fresh.db"
+        await mig.init_schema(db_path)
+        # Second call must not raise
+        counts = await mig.init_schema(db_path)
+        assert counts == {"trajectory_rows": 0, "commitments_rows": 0}
+
+    async def test_init_preserves_existing_data(self, tmp_path):
+        db_path = tmp_path / "fresh.db"
+        await mig.init_schema(db_path)
+        db = await aiosqlite.connect(db_path)
+        try:
+            await db.execute(
+                "INSERT INTO trajectory "
+                "(timestamp, entry_type, source_chat_id, actor, content_json) "
+                "VALUES (1.0, 'user_message', 'c', 'user', '{}')"
+            )
+            await db.commit()
+        finally:
+            await db.close()
+        # Re-init must not drop the row
+        counts = await mig.init_schema(db_path)
+        assert counts["trajectory_rows"] == 1

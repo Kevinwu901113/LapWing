@@ -2,13 +2,18 @@
 """Step 2e migration: conversations → trajectory.
 
 Moves the legacy ``conversations`` table rows into the new ``trajectory``
-table as described in cleanup_report_step2 §5.2. Two modes:
+table as described in cleanup_report_step2 §5.2. Three modes:
 
-  --dry-run   Read-only audit. Prints what would happen — counts, per-chat
-              histogram, discarded rows with reason, predicted write count.
-              No writes to any DB.
-  --execute   Perform the migration. Writes to ``trajectory``; does NOT
-              delete the source ``conversations`` table (Step 3 cleans up).
+  --init-schema  Create the trajectory / commitments tables and indexes in
+                 a clean or pre-existing lapwing.db. Idempotent. Required
+                 one-time before --execute when bootstrapping a DB that
+                 never ran TrajectoryStore. Also usable for test-env setup
+                 and disaster recovery.
+  --dry-run      Read-only audit. Prints what would happen — counts,
+                 per-chat histogram, discarded rows with reason, predicted
+                 write count. No writes to any DB.
+  --execute      Perform the migration. Writes to ``trajectory``; does NOT
+                 delete the source ``conversations`` table (Step 3 cleans up).
 
 The mapping rules, enum values and discard policy live in this file alone so
 the Step 2 cleanup_report can cite it verbatim.
@@ -32,6 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 import aiosqlite
 
 from src.core.trajectory_store import TrajectoryEntryType
+from src.logging.state_mutation_log import StateMutationLog
 
 
 # ── Mapping table (matches §5.2) ────────────────────────────────────────
@@ -347,10 +353,67 @@ async def post_execute_verify(
     return migrated_rows, migrated_rows == expected_migrated
 
 
+# ── Schema init ────────────────────────────────────────────────────────
+
+async def init_schema(db_path: Path) -> dict[str, int]:
+    """Create trajectory + commitments tables and indexes in ``db_path``.
+
+    Idempotent — runs CREATE TABLE IF NOT EXISTS / CREATE INDEX IF NOT
+    EXISTS. Uses the TrajectoryStore and CommitmentStore init methods as
+    the single source of truth for the schema, so this subcommand stays
+    aligned with the runtime.
+
+    Returns a summary dict with existing row counts post-init.
+    """
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    # Lazy import so tests can run without the runtime wiring.
+    from src.core.commitments import CommitmentStore
+    from src.core.trajectory_store import TrajectoryStore
+
+    # Use a scratch mutation_log file alongside the target db: we do NOT
+    # log the schema-init itself (no actual state change yet) and we close
+    # the log immediately. The store classes require a StateMutationLog
+    # instance but do not record anything during init().
+    scratch_log_path = db_path.parent / "mutation_log.db"
+    scratch_logs_dir = db_path.parent / "logs"
+    log = StateMutationLog(scratch_log_path, logs_dir=scratch_logs_dir)
+    await log.init()
+    try:
+        traj = TrajectoryStore(db_path, log)
+        await traj.init()
+        await traj.close()
+        commit = CommitmentStore(db_path, log)
+        await commit.init()
+        await commit.close()
+    finally:
+        await log.close()
+
+    # Post-init counts
+    db = await aiosqlite.connect(db_path)
+    try:
+        async with db.execute("SELECT COUNT(*) FROM trajectory") as cur:
+            traj_count = (await cur.fetchone())[0]
+        async with db.execute("SELECT COUNT(*) FROM commitments") as cur:
+            commit_count = (await cur.fetchone())[0]
+    finally:
+        await db.close()
+    return {"trajectory_rows": traj_count, "commitments_rows": commit_count}
+
+
 # ── CLI ────────────────────────────────────────────────────────────────
 
 async def _run(args: argparse.Namespace) -> int:
     db_path = Path(args.db)
+
+    if args.init_schema:
+        counts = await init_schema(db_path)
+        print(
+            f"init-schema OK: db={db_path}  "
+            f"trajectory rows={counts['trajectory_rows']}  "
+            f"commitments rows={counts['commitments_rows']}"
+        )
+        return 0
+
     if not db_path.exists():
         print(f"db not found: {db_path}", file=sys.stderr)
         return 2
@@ -381,6 +444,10 @@ async def _run(args: argparse.Namespace) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     group = p.add_mutually_exclusive_group(required=True)
+    group.add_argument(
+        "--init-schema", dest="init_schema", action="store_true",
+        help="create trajectory + commitments tables (idempotent)",
+    )
     group.add_argument(
         "--dry-run", dest="dry_run", action="store_true",
         help="audit only — no writes",
