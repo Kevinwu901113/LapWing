@@ -90,3 +90,51 @@ add `stop`/`start` subcommands to deploy.sh, or rename to `restart.sh`
 to match actual behaviour. Does not block any Step but will keep
 ambushing future shutdown verifications until fixed.
 
+## 2026-04-18 — 2g memory-read validation + three more Step-5 data points
+
+**2g validation summary.** Kevin ran a four-turn QQ conversation
+deliberately designed to force cross-turn memory recall. Dual-write
+diff showed 8/8 matched rows; the memory-read switch passed both
+objective (no context loss, no order scrambling, no inner-thought
+leak) and subjective criteria.
+
+**What passed (2g scope).** Turn 2 retrieved `泡温泉` verbatim from
+turn 1; turn 3 resolved `那个` to the correct earlier referent; turn 4
+showed she knew what `都说一遍` meant. TrajectoryStore-backed context
+is indistinguishable from the legacy cache in behaviour.
+
+**Three pre-existing data points surfaced, NOT 2g regressions.**
+
+Evidence query (post-validation):
+
+```
+reminders created 2026-04-18 07:30–08:00 UTC:  0 rows
+todos     created same window:                  0 rows
+```
+
+| Turn | Her claim | DB reality | Class |
+|------|-----------|-----------|-------|
+| 1 | "好 帮你记了" (re: 泡温泉) | no todo/reminder row | tool-call hallucination |
+| 2 | "刚没真的记下来 现在帮你弄" | still no row | self-aware non-fix |
+| 3 | "帮你设置了 周一早上九点提醒你" (找老师签名) | no reminder row | tool-call hallucination (specific time, more severe) |
+| 4 | "等我看一下" | no follow-up reply | ghost task |
+
+**Critical pattern.** Turn 2 proves she *can* recognise a prior fake
+("刚没真的记下来"); turn 3 proves she then fakes again with more
+specificity. The ability to self-correct exists but is not consistently
+exercised. This is prime evaluation material for:
+
+- **Step 1j LLM_HALLUCINATION_SUSPECTED observation patch** — these
+  turns would all trigger the heuristic ("assistant reply claims prior
+  action with zero tool calls in the same iteration").
+- **Step 5 Commitment Reviewer** — turn 4's "等我看一下" with no
+  follow-up is the canonical open-commitment case; reviewer would
+  park it as `status=pending`.
+- **Step 5 Post-action honesty hook** — before emitting a
+  "帮你设置了" / "帮你记了" / "我查了" reply, cross-check that the
+  iteration actually invoked the relevant tool. Reject + retry if not.
+
+**Disposition.** Observations only. Step 2g shipped correctly; the
+hallucinations are pre-existing and scheduled for Step 1j observation
+data + Step 5 corrective mechanism.
+
