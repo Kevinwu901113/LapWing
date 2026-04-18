@@ -218,16 +218,6 @@ class ConversationMemory:
                 self._store[chat_id] = messages
                 logger.debug(f"已从 DB 加载频道 {chat_id} 的 {len(messages)} 条历史消息")
 
-    async def _fts_insert(self, row_id: int, content: str) -> None:
-        """将一条消息插入 FTS 索引（CJK 预分词）。"""
-        try:
-            await self._db.execute(
-                "INSERT INTO conversations_fts(rowid, content) VALUES (?, ?)",
-                (row_id, _cjk_tokenize(content)),
-            )
-        except Exception as e:
-            logger.debug("FTS 索引写入失败: %s", e)
-
     async def get(self, channel_id: str) -> list[dict]:
         """获取指定频道的对话历史（从缓存读取）。"""
         if channel_id not in self._store:
