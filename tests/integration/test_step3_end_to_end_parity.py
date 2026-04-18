@@ -147,7 +147,8 @@ class TestStep3EndToEndParity:
 
         # 3. commitments — the promise we created should render
         assert "记得提醒 Kevin 周一找老师签名" in out.system_prompt
-        assert "我对 Kevin 的承诺" in out.system_prompt
+        # Step 5: 标题改为通道无关的"我对用户的承诺"
+        assert "我对用户的承诺" in out.system_prompt
 
         # 4. memory — layer is intentionally empty in the chat builder
         #    (StateSerializer elides the section when snippets == ()).

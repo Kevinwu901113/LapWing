@@ -212,7 +212,39 @@ class TestCommitments:
         )
         out = serialize(_make_state(commitments=(com,)))
         assert "陪 Kevin 散步" in out.system_prompt
-        assert "我对 Kevin 的承诺" in out.system_prompt
+        # Step 5: 标题改为通道无关的"我对用户的承诺"
+        assert "我对用户的承诺" in out.system_prompt
+        # overdue 段在没有 overdue 时不出现
+        assert "已超时的承诺" not in out.system_prompt
+
+    def test_overdue_promise_rendered_with_warning(self):
+        """Step 5: overdue=True 走单独的 overdue 段，带 ⚠️ 前缀。"""
+        com = CommitmentView(
+            id="p2", description="查比赛", status="open",
+            kind="promise", due_at="2026-04-19T01:00:00+00:00",
+            is_overdue=True,
+        )
+        out = serialize(_make_state(commitments=(com,)))
+        assert "已超时的承诺" in out.system_prompt
+        assert "⚠️ 超时未完成：查比赛" in out.system_prompt
+        # 不在普通 active 段
+        assert "我对用户的承诺" not in out.system_prompt
+
+    def test_overdue_and_active_promises_split(self):
+        """Step 5: 同时存在 overdue + active 时，分两段显示。"""
+        active = CommitmentView(
+            id="p3", description="还没到期的事", status="open",
+            kind="promise", due_at=None, is_overdue=False,
+        )
+        overdue = CommitmentView(
+            id="p4", description="超时的事", status="open",
+            kind="promise", due_at=None, is_overdue=True,
+        )
+        out = serialize(_make_state(commitments=(active, overdue)))
+        assert "已超时的承诺" in out.system_prompt
+        assert "我对用户的承诺" in out.system_prompt
+        assert "超时的事" in out.system_prompt
+        assert "还没到期的事" in out.system_prompt
 
     def test_serializer_does_not_filter_by_promise_status(self):
         """Contract split: CommitmentStore.list_open() returns only the

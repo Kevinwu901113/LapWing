@@ -144,6 +144,11 @@ class CommitmentView:
 
     ``due_at`` is populated for reminders and due-dated tasks; ``None``
     means open-ended.
+
+    Step 5: ``is_overdue`` flips True when a promise's deadline has
+    already passed at view-build time. Inner tick uses this to nudge
+    the model: "you said X by Y, it's past Y" — turning silent forgetting
+    into an explicit prompt input.
     """
 
     id: str
@@ -151,6 +156,7 @@ class CommitmentView:
     status: str
     kind: str
     due_at: str | None
+    is_overdue: bool = False
 
 
 # ── Top-level view ───────────────────────────────────────────────────

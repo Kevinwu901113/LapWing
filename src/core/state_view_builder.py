@@ -270,18 +270,30 @@ class StateViewBuilder:
     ) -> tuple[CommitmentView, ...]:
         views: list[CommitmentView] = []
 
-        # CommitmentStore — open promises
+        # CommitmentStore — open promises (Step 5: 标记 overdue)
         if self._commitments is not None:
             try:
+                import time as _time
                 opens = await self._commitments.list_open(chat_id=chat_id)
+                now_epoch = _time.time()
                 for c in opens:
+                    deadline = getattr(c, "deadline", None)
+                    is_overdue = bool(
+                        deadline is not None and deadline < now_epoch
+                    )
+                    due_at_iso: str | None = None
+                    if deadline is not None:
+                        due_at_iso = datetime.fromtimestamp(
+                            deadline, tz=timezone.utc
+                        ).isoformat()
                     views.append(
                         CommitmentView(
                             id=c.id,
                             description=c.content,
                             status=c.status,
                             kind="promise",
-                            due_at=None,
+                            due_at=due_at_iso,
+                            is_overdue=is_overdue,
                         )
                     )
             except Exception:

@@ -169,13 +169,32 @@ def _render_runtime_state(state: StateView) -> str:
     # filtered to "live" by the builder (CommitmentStore.list_open
     # returns pending + in_progress rows only) — the serializer does
     # not re-filter on status here.
-    promise_lines = [
-        f"  - {c.description}"
-        for c in state.commitments_active
-        if c.kind == "promise"
-    ][:5]
-    if promise_lines:
-        lines.append("我对 Kevin 的承诺：\n" + "\n".join(promise_lines))
+    #
+    # Step 5: 拆 overdue 与 active 两段，overdue 段加显著前缀
+    # ⚠️ 让模型必然看到——它要决定重试 / 告知用户 / abandon。
+    promise_active: list[str] = []
+    promise_overdue: list[str] = []
+    for c in state.commitments_active:
+        if c.kind != "promise":
+            continue
+        if c.is_overdue:
+            promise_overdue.append(
+                f"  - ⚠️ 超时未完成：{c.description}"
+                + (f"（截止 {c.due_at}）" if c.due_at else "")
+                + f"  [id={c.id[:8]}]"
+            )
+        else:
+            promise_active.append(
+                f"  - {c.description}"
+                + (f"（截止 {c.due_at}）" if c.due_at else "")
+                + f"  [id={c.id[:8]}]"
+            )
+
+    if promise_overdue:
+        # overdue 单独一段，标题强调
+        lines.append("⚠️ 已超时的承诺（必须处理：重试 / 告诉用户 / abandon）：\n" + "\n".join(promise_overdue[:8]))
+    if promise_active:
+        lines.append("我对用户的承诺：\n" + "\n".join(promise_active[:5]))
 
     return "## 当前状态\n\n" + "\n".join(lines)
 
