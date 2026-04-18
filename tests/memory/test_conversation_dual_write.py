@@ -1,13 +1,14 @@
-"""Unit tests for ConversationMemory → TrajectoryStore dual-write.
+"""Unit tests for ConversationMemory → TrajectoryStore write path.
 
-Covers Blueprint v2.0 Step 2f contract:
-  1. append() writes both the legacy conversations row and a trajectory entry
-  2. append_to_session() mirrors with legacy_session_id in trajectory payload
-  3. Role → entry_type / actor mapping (user → USER_MESSAGE/user;
-     assistant → ASSISTANT_TEXT/lapwing; other → trajectory skip + warn)
-  4. trajectory.append failure does NOT abort the legacy write
-  5. set_trajectory(None) disables dual-write without affecting the old path
-  6. Metadata passthrough: adapter / source / user_id / session_id
+Covers:
+  - Step 2f contract (dual-write era, now superseded): kept some mapping +
+    failure-isolation tests since they still apply to the single-write path.
+  - Step 2h contract (current): ``append`` / ``append_to_session`` write
+    ONLY to trajectory when wired; the legacy ``conversations`` table is
+    no longer populated. Unit tests / phase-0 without a trajectory fall
+    back to an in-memory cache.
+
+The original file name is kept for git-blame continuity.
 """
 
 from __future__ import annotations
@@ -97,43 +98,45 @@ class TestDualWriteMapping:
         assert any("trajectory mirror skipped" in r.message for r in caplog.records)
 
 
-class TestDualWriteConsistency:
-    async def test_conversations_and_trajectory_grow_together(
+class TestStep2hContract:
+    """Step 2h: trajectory is the sole write target; conversations stays empty."""
+
+    async def test_conversations_table_no_longer_written(
         self, memory, trajectory, tmp_path
     ):
         db_path = tmp_path / "shared.db"
         assert await _count_conversations(db_path) == 0
-        assert await trajectory.recent(100) == []
-
         await memory.append("chat1", "user", "a")
         await memory.append("chat1", "assistant", "b")
         await memory.append("chat1", "user", "c")
 
-        assert await _count_conversations(db_path) == 3
+        # conversations untouched
+        assert await _count_conversations(db_path) == 0
+        # trajectory has everything
         assert len(await trajectory.recent(100)) == 3
 
-    async def test_content_text_identical_across_both_stores(
-        self, memory, trajectory, tmp_path
+    async def test_trajectory_texts_roundtrip_unicode(
+        self, memory, trajectory
     ):
-        db_path = tmp_path / "shared.db"
         texts = ["测试 CJK", "emoji 🎉", "multi\nline"]
         for t in texts:
             await memory.append("chat1", "user", t)
-
-        traj_rows = await trajectory.recent(100)
-        traj_texts = [r.content["text"] for r in traj_rows]
-
-        db = await aiosqlite.connect(db_path)
-        try:
-            async with db.execute(
-                "SELECT content FROM conversations ORDER BY id ASC"
-            ) as cur:
-                legacy_texts = [row[0] async for row in cur]
-        finally:
-            await db.close()
-
-        assert legacy_texts == texts
+        traj_texts = [r.content["text"] for r in await trajectory.recent(100)]
         assert traj_texts == texts
+
+    async def test_no_trajectory_falls_back_to_cache_only(self, tmp_path):
+        # No set_trajectory call — phase-0 path
+        m = ConversationMemory(tmp_path / "legacy_only.db")
+        await m.init_db()
+        try:
+            await m.append("chat1", "user", "solo")
+            # conversations table is not written even in the fallback path
+            assert await _count_conversations(tmp_path / "legacy_only.db") == 0
+            # Cache is updated so brain._load_history fallback still works
+            cached = await m.get("chat1")
+            assert cached == [{"role": "user", "content": "solo"}]
+        finally:
+            await m.close()
 
 
 class TestMetadataPassthrough:
@@ -163,15 +166,20 @@ class TestMetadataPassthrough:
 
 
 class TestFailureIsolation:
-    async def test_trajectory_failure_does_not_abort_legacy_write(
+    async def test_trajectory_failure_logs_but_does_not_raise(
         self, memory, trajectory, tmp_path, caplog
     ):
+        """v2.0 Step 2h: trajectory is the sole write target. A failure logs
+        a warning; the append call itself still returns cleanly so the
+        caller (brain.think) is not interrupted. The event is lost —
+        mutation_log's LLM_REQUEST/LLM_RESPONSE still captures the turn
+        context, so the row can be reconstructed if needed."""
         db_path = tmp_path / "shared.db"
-        # Force the trajectory append to raise
         trajectory.append = AsyncMock(side_effect=RuntimeError("simulated"))
         with caplog.at_level(logging.WARNING, logger="lapwing.memory.conversation"):
             await memory.append("chat1", "user", "payload")
-        assert await _count_conversations(db_path) == 1
+        # Legacy conversations table stays empty
+        assert await _count_conversations(db_path) == 0
         assert any(
             "trajectory mirror write failed" in r.message for r in caplog.records
         )
@@ -209,19 +217,13 @@ class TestConsciousnessRemap:
 
 
 class TestOptionalWiring:
-    async def test_no_trajectory_wired_falls_back_to_legacy_only(self, tmp_path):
-        m = ConversationMemory(tmp_path / "legacy_only.db")
-        await m.init_db()
-        try:
-            # No set_trajectory call
-            await m.append("chat1", "user", "solo")
-            assert await _count_conversations(tmp_path / "legacy_only.db") == 1
-        finally:
-            await m.close()
-
-    async def test_set_trajectory_none_disables_mirror(
+    async def test_set_trajectory_none_disables_trajectory_writes(
         self, memory, trajectory
     ):
         memory.set_trajectory(None)
         await memory.append("chat1", "user", "silent")
+        # Trajectory unaffected
         assert await trajectory.recent(10) == []
+        # Cache-only fallback keeps the row readable via get()
+        cached = await memory.get("chat1")
+        assert cached == [{"role": "user", "content": "silent"}]

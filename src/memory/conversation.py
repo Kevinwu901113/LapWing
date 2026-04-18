@@ -445,52 +445,63 @@ class ConversationMemory:
         channel: str = "qq", source: str = "qq",
         trust_level: int = 3, actor_id: str | None = None,
     ) -> None:
-        """追加一条消息到对话历史（先写缓存，再持久化）。"""
+        """追加一条消息。
+
+        v2.0 Step 2h: the legacy ``conversations`` table is no longer written
+        to. When a ``TrajectoryStore`` is wired (production), the message is
+        persisted there; the in-memory ``_store`` cache is updated only as a
+        fallback for unit tests and phase-0 contexts with no trajectory.
+
+        The parameters ``channel``, ``source``, ``trust_level`` and
+        ``actor_id`` remain in the signature for caller compatibility;
+        ``trust_level`` is unused in trajectory (Step 3 StateSerializer
+        re-derives it from AuthorityGate context on demand).
+        """
+        if self._trajectory is not None:
+            await self._mirror_to_trajectory(
+                channel_id, role, content,
+                channel=channel, source=source,
+                actor_id=actor_id, session_id=None,
+            )
+            return
+
+        # Fallback: no trajectory (phase 0, unit tests). Update the cache so
+        # brain._load_history's fallback branch can still read history.
         if channel_id not in self._store:
             self._store[channel_id] = []
         self._store[channel_id].append({"role": role, "content": content})
 
-        try:
-            timestamp = datetime.now(timezone.utc).isoformat()
-            cursor = await self._db.execute(
-                "INSERT INTO conversations (chat_id, role, content, timestamp, channel, source, trust_level, actor_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (channel_id, role, content, timestamp, channel, source, trust_level, actor_id),
-            )
-            await self._db.commit()
-            # 同步 FTS 索引
-            if cursor.lastrowid:
-                await self._fts_insert(cursor.lastrowid, content)
-                await self._db.commit()
-        except Exception as e:
-            logger.error(f"对话消息写入数据库失败: {e}")
-
-        # v2.0 Step 2f: mirror into trajectory. Best-effort — the legacy
-        # row is still the truth-source during sub-phase A.
-        await self._mirror_to_trajectory(
-            channel_id, role, content,
-            channel=channel, source=source,
-            actor_id=actor_id, session_id=None,
-        )
-
     def replace_history(self, channel_id: str, new_history: list[dict]) -> None:
-        """替换指定频道的内存缓存（不修改数据库，供 Compactor 使用）。"""
+        """Update the legacy in-memory cache only.
+
+        v2.0 Step 2h: compactor no longer calls this in production
+        (Step 2g switched compactor's read path to trajectory). Kept as a
+        cache hook for phase-0 / unit-test scenarios. Does not touch
+        trajectory — compaction of the event-sourced timeline is Step 7.
+        """
         self._store[channel_id] = new_history
 
     async def remove_last(self, channel_id: str) -> None:
-        """移除指定频道的最后一条消息（LLM 调用失败时回滚用）。"""
-        history = self._store.get(channel_id, [])
-        if history:
-            history.pop()
-        try:
-            await self._db.execute(
-                """DELETE FROM conversations WHERE id = (
-                    SELECT id FROM conversations WHERE chat_id = ? ORDER BY id DESC LIMIT 1
-                )""",
-                (channel_id,),
-            )
-            await self._db.commit()
-        except Exception as e:
-            logger.error(f"移除最后一条消息失败: {e}")
+        """No-op in v2.0 Step 2h. Trajectory is append-only.
+
+        Previously rolled back the last appended row on LLM failure. Under
+        event sourcing, a failed LLM turn is still part of the behavioural
+        record (``mutation_log`` already captures the ``LLM_REQUEST`` /
+        ``LLM_RESPONSE`` or its exception), so no retraction is needed.
+        The cache is trimmed if a trajectory-less fallback context is in
+        use (phase-0 / unit tests) so those paths keep their pre-Step-2
+        semantics.
+        """
+        if self._trajectory is None:
+            history = self._store.get(channel_id, [])
+            if history:
+                history.pop()
+            return
+        logger.debug(
+            "remove_last ignored for chat %s — trajectory is append-only "
+            "(LLM failure tracked in mutation_log)",
+            channel_id,
+        )
 
     async def clear(self, channel_id: str) -> None:
         """清除指定频道的对话历史。"""
@@ -508,34 +519,24 @@ class ConversationMemory:
     async def append_to_session(
         self, chat_id: str, session_id: str, role: str, content: str, *, channel: str = "qq"
     ) -> None:
-        """追加消息到指定 session（先写缓存，再持久化）。"""
+        """追加消息到指定 session（dead branch after Step 2j removes sessions）。
+
+        v2.0 Step 2h: same as ``append`` — writes now go to trajectory only.
+        The ``session_id`` is kept in the trajectory payload for audit
+        continuity; Step 2j removes the session concept entirely.
+        """
+        if self._trajectory is not None:
+            await self._mirror_to_trajectory(
+                chat_id, role, content,
+                channel=channel, source=channel, actor_id=None,
+                session_id=session_id,
+            )
+            return
+
+        # Fallback cache (unit tests / phase 0)
         if session_id not in self._session_store:
             self._session_store[session_id] = []
         self._session_store[session_id].append({"role": role, "content": content})
-
-        try:
-            timestamp = datetime.now(timezone.utc).isoformat()
-            cursor = await self._db.execute(
-                "INSERT INTO conversations (chat_id, role, content, timestamp, channel, session_id) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (chat_id, role, content, timestamp, channel, session_id),
-            )
-            await self._db.commit()
-            # 同步 FTS 索引
-            if cursor.lastrowid:
-                await self._fts_insert(cursor.lastrowid, content)
-                await self._db.commit()
-        except Exception as e:
-            logger.error(f"Session 消息写入数据库失败: {e}")
-
-        # v2.0 Step 2f: mirror into trajectory. session_id is surfaced in the
-        # payload for audit traceability only — trajectory does not partition
-        # by session (that concept goes away entirely in Step 2j).
-        await self._mirror_to_trajectory(
-            chat_id, role, content,
-            channel=channel, source=channel, actor_id=None,
-            session_id=session_id,
-        )
 
     async def _mirror_to_trajectory(
         self,
@@ -649,24 +650,20 @@ class ConversationMemory:
         self._session_store.pop(session_id, None)
 
     def replace_session_history(self, session_id: str, new_history: list[dict]) -> None:
-        """替换指定 session 的内存缓存（不修改数据库，供 Compactor 使用）。"""
+        """Cache-only replacement (parallel to replace_history). Step 2j removes sessions."""
         self._session_store[session_id] = new_history
 
     async def remove_last_session(self, session_id: str) -> None:
-        """移除指定 session 的最后一条消息（LLM 调用失败时回滚用）。"""
-        history = self._session_store.get(session_id, [])
-        if history:
-            history.pop()
-        try:
-            await self._db.execute(
-                """DELETE FROM conversations WHERE id = (
-                    SELECT id FROM conversations WHERE session_id = ? ORDER BY id DESC LIMIT 1
-                )""",
-                (session_id,),
-            )
-            await self._db.commit()
-        except Exception as e:
-            logger.error(f"移除 session {session_id} 最后一条消息失败: {e}")
+        """No-op in v2.0 Step 2h — same semantics as ``remove_last``."""
+        if self._trajectory is None:
+            history = self._session_store.get(session_id, [])
+            if history:
+                history.pop()
+            return
+        logger.debug(
+            "remove_last_session ignored for session %s — trajectory is append-only",
+            session_id,
+        )
 
     async def clear_chat_all(self, channel_id: str) -> None:
         """清除指定频道的全部记忆（短期 + 长期）。"""
