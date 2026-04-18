@@ -54,18 +54,6 @@ class ConversationMemory:
 
     async def _create_tables(self) -> None:
         await self._db.executescript("""
-            CREATE TABLE IF NOT EXISTS conversations (
-                id        INTEGER PRIMARY KEY AUTOINCREMENT,
-                chat_id   TEXT NOT NULL,
-                role      TEXT NOT NULL,
-                content   TEXT NOT NULL,
-                timestamp TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_conversations_chat_id
-                ON conversations(chat_id);
-            CREATE INDEX IF NOT EXISTS idx_conversations_timestamp
-                ON conversations(timestamp);
-
             CREATE TABLE IF NOT EXISTS user_facts (
                 id         INTEGER PRIMARY KEY AUTOINCREMENT,
                 chat_id    TEXT NOT NULL,
@@ -136,15 +124,6 @@ class ConversationMemory:
         """)
         await self._db.commit()
 
-        # Migration: add channel column if missing
-        try:
-            await self._db.execute(
-                "ALTER TABLE conversations ADD COLUMN channel TEXT DEFAULT 'qq'"
-            )
-            await self._db.commit()
-        except Exception:
-            pass  # Column already exists
-
         # Migration: add interval_minutes column to reminders if missing
         try:
             await self._db.execute(
@@ -162,23 +141,6 @@ class ConversationMemory:
             await self._db.commit()
         except Exception:
             pass  # Column already exists
-
-        # v2.0 Step 2j: the ``sessions`` table and its ``conversations.session_id``
-        # column are no longer created by new installs. Existing rows are
-        # archived + dropped separately by scripts/drop_sessions_table.py.
-        # Step 4 re-introduces session semantics bound to attention focus.
-
-        # Phase 1 Migration: conversations 新增 source / trust_level / actor_id
-        for col in (
-            "source TEXT DEFAULT 'qq'",
-            "trust_level INTEGER DEFAULT 3",
-            "actor_id TEXT",
-        ):
-            try:
-                await self._db.execute(f"ALTER TABLE conversations ADD COLUMN {col}")
-                await self._db.commit()
-            except Exception:
-                pass  # Column already exists
 
     async def get(self, channel_id: str) -> list[dict]:
         """获取指定频道的对话历史（从缓存读取）。"""
@@ -254,17 +216,17 @@ class ConversationMemory:
         )
 
     async def clear(self, channel_id: str) -> None:
-        """清除指定频道的对话历史。"""
+        """清除指定频道的内存对话缓存。
+
+        The durable conversation history lives in TrajectoryStore after
+        Step 2h, and trajectory is append-only by Blueprint contract.
+        ``clear()`` therefore only resets the in-process cache — it no
+        longer deletes anything in the database. Callers that truly
+        want to wipe historical rows must go through a scripted
+        migration with an audit trail, not a runtime clear.
+        """
         self._store.pop(channel_id, None)
-        try:
-            await self._db.execute(
-                "DELETE FROM conversations WHERE chat_id = ?",
-                (channel_id,),
-            )
-            await self._db.commit()
-            logger.info(f"已清除频道 {channel_id} 的对话记忆")
-        except Exception as e:
-            logger.error(f"清除频道 {channel_id} 记忆失败: {e}")
+        logger.info(f"已清除频道 {channel_id} 的内存对话缓存")
 
     async def _mirror_to_trajectory(
         self,
@@ -339,10 +301,13 @@ class ConversationMemory:
             )
 
     async def clear_chat_all(self, channel_id: str) -> None:
-        """清除指定频道的全部记忆（短期 + 长期）。"""
+        """清除指定频道的可变记忆：内存缓存 + todos/reminders。
+
+        Trajectory rows stay put (append-only). Callers that want to
+        erase trajectory history must run a dedicated migration.
+        """
         self._store.pop(channel_id, None)
         tables = (
-            "conversations",
             "todos",
             "reminders",
         )
@@ -353,19 +318,14 @@ class ConversationMemory:
                     (channel_id,),
                 )
             await self._db.commit()
-            logger.info(f"已清除频道 {channel_id} 的全部记忆（长短期）")
+            logger.info(f"已清除频道 {channel_id} 的可变记忆（缓存 + todos + reminders）")
         except Exception as e:
-            logger.error(f"清除频道 {channel_id} 全部记忆失败: {e}")
+            logger.error(f"清除频道 {channel_id} 可变记忆失败: {e}")
 
     async def clear_all(self) -> None:
-        """清除所有对话历史。"""
+        """清除所有内存对话缓存。Trajectory 不动（append-only）。"""
         self._store.clear()
-        try:
-            await self._db.execute("DELETE FROM conversations")
-            await self._db.commit()
-            logger.info("已清除所有对话记忆")
-        except Exception as e:
-            logger.error(f"清除所有记忆失败: {e}")
+        logger.info("已清除所有内存对话缓存")
 
     async def close(self) -> None:
         """关闭数据库连接。"""

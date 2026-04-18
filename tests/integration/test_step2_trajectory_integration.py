@@ -82,11 +82,15 @@ async def lapwing_db(tmp_path):
     await mutation_log.close()
 
 
-async def _count_conversations(db_path: Path) -> int:
+async def _conversations_table_exists(db_path: Path) -> bool:
+    """Step 3 M2.e dropped the conversations table. The sharper
+    post-Step-3 guarantee is 'the table is absent from the schema'."""
     db = await aiosqlite.connect(db_path)
     try:
-        async with db.execute("SELECT COUNT(*) FROM conversations") as cur:
-            return (await cur.fetchone())[0]
+        async with db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversations'"
+        ) as cur:
+            return (await cur.fetchone()) is not None
     finally:
         await db.close()
 
@@ -123,16 +127,17 @@ class TestConversationalTurn:
             assert m.chat_id == "919231551"
             assert m.iteration_id is not None
 
-    async def test_conversations_table_not_written_post_2h(self, lapwing_db):
-        """Step 2h invariant: legacy table stays empty in production flow."""
+    async def test_conversations_table_absent_post_step3(self, lapwing_db):
+        """Step 3 M2.e: the legacy table is no longer part of the schema.
+        Writes go to trajectory only."""
         memory = lapwing_db["memory"]
         db_path = lapwing_db["db_path"]
 
-        assert await _count_conversations(db_path) == 0
+        assert not await _conversations_table_exists(db_path)
         await memory.append("919231551", "user", "a")
         await memory.append("919231551", "assistant", "b")
         await memory.append("919231551", "user", "c")
-        assert await _count_conversations(db_path) == 0
+        assert not await _conversations_table_exists(db_path)
 
     async def test_read_path_relevant_to_chat_returns_turn(self, lapwing_db):
         """Step 2g: the read path used by brain._load_history returns the

@@ -56,11 +56,17 @@ async def memory(tmp_path, trajectory):
     await m.close()
 
 
-async def _count_conversations(db_path: Path) -> int:
+async def _conversations_table_exists(db_path: Path) -> bool:
+    """Step 3 dropped the conversations table entirely. Before Step 3,
+    this helper counted rows to verify the Step 2h "no-writes" invariant.
+    The sharper post-Step-3 guarantee is "the table is absent from the
+    schema" — asserted via sqlite_master rather than row count."""
     db = await aiosqlite.connect(db_path)
     try:
-        async with db.execute("SELECT COUNT(*) FROM conversations") as cur:
-            return (await cur.fetchone())[0]
+        async with db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='conversations'"
+        ) as cur:
+            return (await cur.fetchone()) is not None
     finally:
         await db.close()
 
@@ -101,17 +107,19 @@ class TestDualWriteMapping:
 class TestStep2hContract:
     """Step 2h: trajectory is the sole write target; conversations stays empty."""
 
-    async def test_conversations_table_no_longer_written(
+    async def test_conversations_table_absent(
         self, memory, trajectory, tmp_path
     ):
+        """Step 3 M2.e: conversations table no longer exists in the
+        schema. ConversationMemory writes only to trajectory."""
         db_path = tmp_path / "shared.db"
-        assert await _count_conversations(db_path) == 0
+        assert not await _conversations_table_exists(db_path)
         await memory.append("chat1", "user", "a")
         await memory.append("chat1", "assistant", "b")
         await memory.append("chat1", "user", "c")
 
-        # conversations untouched
-        assert await _count_conversations(db_path) == 0
+        # Still absent
+        assert not await _conversations_table_exists(db_path)
         # trajectory has everything
         assert len(await trajectory.recent(100)) == 3
 
@@ -130,8 +138,8 @@ class TestStep2hContract:
         await m.init_db()
         try:
             await m.append("chat1", "user", "solo")
-            # conversations table is not written even in the fallback path
-            assert await _count_conversations(tmp_path / "legacy_only.db") == 0
+            # conversations table isn't created at all after Step 3
+            assert not await _conversations_table_exists(tmp_path / "legacy_only.db")
             # Cache is updated so brain._load_history fallback still works
             cached = await m.get("chat1")
             assert cached == [{"role": "user", "content": "solo"}]
@@ -157,17 +165,17 @@ class TestFailureIsolation:
     async def test_trajectory_failure_logs_but_does_not_raise(
         self, memory, trajectory, tmp_path, caplog
     ):
-        """v2.0 Step 2h: trajectory is the sole write target. A failure logs
-        a warning; the append call itself still returns cleanly so the
-        caller (brain.think) is not interrupted. The event is lost —
-        mutation_log's LLM_REQUEST/LLM_RESPONSE still captures the turn
-        context, so the row can be reconstructed if needed."""
+        """Trajectory is the sole write target. A failure logs a warning
+        and the append call returns cleanly so the caller (brain.think)
+        isn't interrupted. The event is lost — mutation_log's LLM_REQUEST /
+        LLM_RESPONSE still captures the turn context, so the row can be
+        reconstructed if needed."""
         db_path = tmp_path / "shared.db"
         trajectory.append = AsyncMock(side_effect=RuntimeError("simulated"))
         with caplog.at_level(logging.WARNING, logger="lapwing.memory.conversation"):
             await memory.append("chat1", "user", "payload")
-        # Legacy conversations table stays empty
-        assert await _count_conversations(db_path) == 0
+        # Step 3: conversations table is absent, not merely empty.
+        assert not await _conversations_table_exists(db_path)
         assert any(
             "trajectory mirror write failed" in r.message for r in caplog.records
         )
