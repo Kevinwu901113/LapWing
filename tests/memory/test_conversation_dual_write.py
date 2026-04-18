@@ -185,11 +185,16 @@ class TestFailureIsolation:
         )
 
 
-class TestConsciousnessRemap:
-    async def test_consciousness_assistant_becomes_inner_thought_lapwing(
+class TestInnerTickRemap:
+    """Step 2i: consciousness now uses chat_id='__inner__' (the same string
+    trajectory uses as source_chat_id for inner-tick rows). The legacy
+    '__consciousness__' literal survives only in migration data + comments.
+    """
+
+    async def test_inner_assistant_becomes_inner_thought_lapwing(
         self, memory, trajectory
     ):
-        await memory.append("__consciousness__", "assistant", "pondering")
+        await memory.append("__inner__", "assistant", "pondering")
         row = (await trajectory.recent(1))[0]
         assert row.entry_type == TrajectoryEntryType.INNER_THOUGHT.value
         assert row.source_chat_id == "__inner__"
@@ -197,10 +202,10 @@ class TestConsciousnessRemap:
         assert row.content["text"] == "pondering"
         assert row.content["trigger_type"] == "live_dual_write"
 
-    async def test_consciousness_user_becomes_inner_thought_system(
+    async def test_inner_user_becomes_inner_thought_system(
         self, memory, trajectory
     ):
-        await memory.append("__consciousness__", "user", "tick prompt")
+        await memory.append("__inner__", "user", "tick prompt")
         row = (await trajectory.recent(1))[0]
         assert row.entry_type == TrajectoryEntryType.INNER_THOUGHT.value
         assert row.source_chat_id == "__inner__"

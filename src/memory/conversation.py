@@ -552,18 +552,18 @@ class ConversationMemory:
         """Write the same logical event to trajectory. No-op if no trajectory
         wired (unit tests, phase 0, pre-container boot).
 
-        Consciousness-loop writes (chat_id == "__consciousness__") are
-        remapped to INNER_THOUGHT / source_chat_id="__inner__" so the
-        dual-write output matches the Step 2e migration categorisation.
-        Step 2i replaces consciousness's output path to call TrajectoryStore
-        directly, removing this branch.
+        Inner-tick writes (chat_id == "__inner__", set by consciousness.py
+        after v2.0 Step 2i) are mapped to INNER_THOUGHT so the output
+        matches the Step 2e migration categorisation. Step 4's main-loop
+        unification replaces this sentinel-based dispatch with a dedicated
+        inner-turn entry point on brain.
         """
         if self._trajectory is None:
             return
         try:
             from src.core.trajectory_store import TrajectoryEntryType
 
-            is_consciousness = chat_id == "__consciousness__"
+            is_consciousness = chat_id == "__inner__"
 
             if is_consciousness:
                 entry_type = TrajectoryEntryType.INNER_THOUGHT
