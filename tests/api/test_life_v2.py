@@ -307,3 +307,70 @@ class TestLifeV2TimelineSummaries:
 
         kinds = [i["kind"] for i in resp.json()["items"]]
         assert kinds == ["assistant_text", "summary", "assistant_text"]
+
+
+import json
+
+
+def _write_snapshot(dir_path, stem: str, meta: dict):
+    (dir_path / f"{stem}.md").write_text("# snapshot body", encoding="utf-8")
+    (dir_path / f"{stem}.meta.json").write_text(json.dumps(meta), encoding="utf-8")
+
+
+@pytest.mark.asyncio
+class TestLifeV2TimelineSoulRevision:
+    async def test_soul_snapshot_merged(self, client, mock_brain, tmp_path, monkeypatch):
+        snap_dir = tmp_path / "soul_snapshots"
+        snap_dir.mkdir()
+        _write_snapshot(
+            snap_dir,
+            "soul_20260418_080000_000000",
+            {
+                "timestamp": "2026-04-18T08:00:00+00:00",
+                "actor": "kevin",
+                "trigger": "manual edit",
+                "diff_summary": "+3 lines, -1 lines",
+            },
+        )
+
+        # Point soul_manager at our tmp snapshot dir
+        mock_brain._soul_manager_ref.SNAPSHOT_DIR = snap_dir
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[])
+
+        async with client:
+            resp = await client.get("/api/v2/life/timeline")
+
+        snap_items = [i for i in resp.json()["items"] if i["kind"] == "soul_revision"]
+        assert len(snap_items) == 1
+        assert snap_items[0]["metadata"]["actor"] == "kevin"
+        assert snap_items[0]["metadata"]["trigger"] == "manual edit"
+        assert snap_items[0]["metadata"]["diff_summary"] == "+3 lines, -1 lines"
+        assert snap_items[0]["id"] == "snapshot_soul_20260418_080000_000000"
+
+    async def test_snapshot_dir_missing_is_silent(self, client, mock_brain, tmp_path):
+        mock_brain._soul_manager_ref.SNAPSHOT_DIR = tmp_path / "does_not_exist"
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[])
+
+        async with client:
+            resp = await client.get("/api/v2/life/timeline")
+
+        assert resp.status_code == 200  # no 500
+
+    async def test_bad_meta_json_is_skipped(self, client, mock_brain, tmp_path):
+        snap_dir = tmp_path / "soul_snapshots"
+        snap_dir.mkdir()
+        (snap_dir / "soul_bad.meta.json").write_text("not-valid-json", encoding="utf-8")
+        _write_snapshot(
+            snap_dir,
+            "soul_20260418_080000_000000",
+            {"timestamp": "2026-04-18T08:00:00+00:00", "actor": "kevin", "trigger": "x", "diff_summary": ""},
+        )
+
+        mock_brain._soul_manager_ref.SNAPSHOT_DIR = snap_dir
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[])
+
+        async with client:
+            resp = await client.get("/api/v2/life/timeline")
+
+        snap_items = [i for i in resp.json()["items"] if i["kind"] == "soul_revision"]
+        assert len(snap_items) == 1

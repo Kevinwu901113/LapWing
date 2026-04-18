@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import re
 from datetime import datetime, timezone
@@ -166,6 +167,55 @@ def _load_summaries(dir_path: Path | None, *, before_ts: float | None, limit: in
     return items[:limit]
 
 
+def _load_soul_revisions(soul_manager, *, before_ts: float | None, limit: int) -> list[dict]:
+    if soul_manager is None:
+        return []
+    snap_dir: Path = getattr(soul_manager, "SNAPSHOT_DIR", None)
+    if snap_dir is None or not snap_dir.exists():
+        return []
+
+    items: list[dict] = []
+    for meta_path in snap_dir.iterdir():
+        if not (meta_path.is_file() and meta_path.suffix == ".json" and meta_path.name.endswith(".meta.json")):
+            continue
+        try:
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            logger.warning("soul meta read/parse failed %s: %s", meta_path.name, exc)
+            continue
+
+        ts_iso = meta.get("timestamp")
+        if not ts_iso:
+            continue
+        try:
+            dt = datetime.fromisoformat(ts_iso)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            ts = dt.timestamp()
+        except ValueError:
+            continue
+
+        if before_ts is not None and ts >= before_ts:
+            continue
+
+        stem = meta_path.name[: -len(".meta.json")]
+        items.append({
+            "kind": "soul_revision",
+            "timestamp": ts,
+            "id": f"snapshot_{stem}",
+            "content": meta.get("diff_summary", ""),
+            "metadata": {
+                "actor": meta.get("actor", "unknown"),
+                "trigger": meta.get("trigger", ""),
+                "diff_summary": meta.get("diff_summary", ""),
+                "snapshot_id": stem,
+            },
+        })
+
+    items.sort(key=lambda i: i["timestamp"], reverse=True)
+    return items[:limit]
+
+
 @router.get("/timeline")
 async def get_timeline(
     before_ts: float | None = Query(None),
@@ -195,11 +245,12 @@ async def get_timeline(
 
     items = [_serialize_trajectory(r) for r in trajectory_rows]
 
-    # Source 2 — summaries. Only merged when the caller did not pin
-    # entry_types to a trajectory-only set (summary is a virtual kind, not
-    # a TrajectoryEntryType value).
+    # Source 2 — summaries + soul_revision. Only merged when the caller did not pin
+    # entry_types to a trajectory-only set (these are virtual kinds, not
+    # TrajectoryEntryType values).
     if parsed_types is None:
         items.extend(_load_summaries(_resolved_summaries_dir(), before_ts=before_ts, limit=limit))
+        items.extend(_load_soul_revisions(_soul_manager, before_ts=before_ts, limit=limit))
 
     # Merge cutoff: DESC by timestamp, truncate to `limit`.
     items.sort(key=lambda i: i["timestamp"], reverse=True)
