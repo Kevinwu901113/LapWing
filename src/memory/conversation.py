@@ -1,13 +1,19 @@
 """对话记忆管理（SQLite 持久化 + 内存缓存）。"""
 
+from __future__ import annotations
+
 import logging
 import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import aiosqlite
 
 from config.settings import MAX_HISTORY_TURNS
+
+if TYPE_CHECKING:
+    from src.core.trajectory_store import TrajectoryStore
 
 logger = logging.getLogger("lapwing.memory.conversation")
 
@@ -44,6 +50,11 @@ class ConversationMemory:
         # Domain repositories (initialized in init_db)
         self._todos: "TodoRepository | None" = None
         self._reminders_repo: "ReminderRepository | None" = None
+        # v2.0 Step 2f: optional dual-write target. Injected by AppContainer
+        # after TrajectoryStore is initialized. When set, every conversations
+        # insert also lands as a trajectory entry; writes to the legacy
+        # table remain the truth-source until Step 2g flips reads.
+        self._trajectory: "TrajectoryStore | None" = None
 
     async def init_db(self) -> None:
         """初始化数据库：创建目录、建表、加载历史。"""
@@ -425,6 +436,10 @@ class ConversationMemory:
             logger.error(f"获取对话消息失败: {e}")
             return []
 
+    def set_trajectory(self, trajectory: "TrajectoryStore | None") -> None:
+        """v2.0 Step 2f: wire dual-write target. Safe to call multiple times."""
+        self._trajectory = trajectory
+
     async def append(
         self, channel_id: str, role: str, content: str, *,
         channel: str = "qq", source: str = "qq",
@@ -448,6 +463,14 @@ class ConversationMemory:
                 await self._db.commit()
         except Exception as e:
             logger.error(f"对话消息写入数据库失败: {e}")
+
+        # v2.0 Step 2f: mirror into trajectory. Best-effort — the legacy
+        # row is still the truth-source during sub-phase A.
+        await self._mirror_to_trajectory(
+            channel_id, role, content,
+            channel=channel, source=source,
+            actor_id=actor_id, session_id=None,
+        )
 
     def replace_history(self, channel_id: str, new_history: list[dict]) -> None:
         """替换指定频道的内存缓存（不修改数据库，供 Compactor 使用）。"""
@@ -504,6 +527,90 @@ class ConversationMemory:
                 await self._db.commit()
         except Exception as e:
             logger.error(f"Session 消息写入数据库失败: {e}")
+
+        # v2.0 Step 2f: mirror into trajectory. session_id is surfaced in the
+        # payload for audit traceability only — trajectory does not partition
+        # by session (that concept goes away entirely in Step 2j).
+        await self._mirror_to_trajectory(
+            chat_id, role, content,
+            channel=channel, source=channel, actor_id=None,
+            session_id=session_id,
+        )
+
+    async def _mirror_to_trajectory(
+        self,
+        chat_id: str,
+        role: str,
+        content: str,
+        *,
+        channel: str,
+        source: str,
+        actor_id: str | None,
+        session_id: str | None,
+    ) -> None:
+        """Write the same logical event to trajectory. No-op if no trajectory
+        wired (unit tests, phase 0, pre-container boot).
+
+        Consciousness-loop writes (chat_id == "__consciousness__") are
+        remapped to INNER_THOUGHT / source_chat_id="__inner__" so the
+        dual-write output matches the Step 2e migration categorisation.
+        Step 2i replaces consciousness's output path to call TrajectoryStore
+        directly, removing this branch.
+        """
+        if self._trajectory is None:
+            return
+        try:
+            from src.core.trajectory_store import TrajectoryEntryType
+
+            is_consciousness = chat_id == "__consciousness__"
+
+            if is_consciousness:
+                entry_type = TrajectoryEntryType.INNER_THOUGHT
+                source_chat_id = "__inner__"
+                if role == "assistant":
+                    actor = "lapwing"
+                elif role == "user":
+                    actor = "system"
+                else:
+                    logger.warning(
+                        "trajectory mirror skipped — unknown consciousness role %r",
+                        role,
+                    )
+                    return
+                payload: dict = {
+                    "text": content,
+                    "trigger_type": "live_dual_write",
+                }
+            elif role == "user":
+                entry_type = TrajectoryEntryType.USER_MESSAGE
+                source_chat_id = chat_id
+                actor = "user"
+                payload = {"text": content, "adapter": channel, "source": source}
+            elif role == "assistant":
+                entry_type = TrajectoryEntryType.ASSISTANT_TEXT
+                source_chat_id = chat_id
+                actor = "lapwing"
+                payload = {"text": content, "adapter": channel, "source": source}
+            else:
+                logger.warning(
+                    "trajectory mirror skipped — unknown role %r for chat %s",
+                    role, chat_id,
+                )
+                return
+
+            if actor_id:
+                payload["user_id"] = actor_id
+            if session_id:
+                payload["legacy_session_id"] = session_id
+
+            await self._trajectory.append(
+                entry_type, source_chat_id, actor, payload,
+            )
+        except Exception:
+            logger.warning(
+                "trajectory mirror write failed for chat %s (role=%s)",
+                chat_id, role, exc_info=True,
+            )
 
     async def get_session_messages(self, session_id: str) -> list[dict]:
         """获取指定 session 的对话历史（从缓存读取，不存在时从 DB 加载）。"""

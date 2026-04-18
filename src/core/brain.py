@@ -132,6 +132,7 @@ class LapwingBrain:
         self.channel_manager = None  # Set externally (ChannelManager | None)
         self.consciousness_engine = None  # Set externally (ConsciousnessEngine | None)
         self.attention_manager = None  # Set externally (AttentionManager | None) — v2.0 Step 2
+        self.trajectory_store = None  # Set externally (TrajectoryStore | None) — v2.0 Step 2f
         self._conversation_end_task: asyncio.Task | None = None
 
     async def init_db(self) -> None:
