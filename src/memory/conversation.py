@@ -10,8 +10,6 @@ from typing import TYPE_CHECKING
 
 import aiosqlite
 
-from config.settings import MAX_HISTORY_TURNS
-
 if TYPE_CHECKING:
     from src.core.trajectory_store import TrajectoryStore
 
@@ -47,12 +45,11 @@ class ConversationMemory:
         self._trajectory: "TrajectoryStore | None" = None
 
     async def init_db(self) -> None:
-        """初始化数据库：创建目录、建表、加载历史。"""
+        """初始化数据库：创建目录、建表。"""
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._db = await aiosqlite.connect(self._db_path)
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._create_tables()
-        await self._load_recent_history()
         logger.info(f"对话记忆已初始化（SQLite 模式），数据库: {self._db_path}")
 
     async def _create_tables(self) -> None:
@@ -182,32 +179,6 @@ class ConversationMemory:
                 await self._db.commit()
             except Exception:
                 pass  # Column already exists
-
-    async def _load_recent_history(self) -> None:
-        """从数据库加载每个对话的最近历史到内存缓存。"""
-        max_messages = MAX_HISTORY_TURNS * 2
-        async with self._db.execute(
-            "SELECT DISTINCT chat_id FROM conversations"
-        ) as cursor:
-            chat_ids = [row[0] async for row in cursor]
-
-        for chat_id in chat_ids:
-            async with self._db.execute(
-                """SELECT role, content FROM (
-                    SELECT id, role, content FROM conversations
-                    WHERE chat_id = ?
-                    ORDER BY id DESC
-                    LIMIT ?
-                ) ORDER BY id ASC""",
-                (chat_id, max_messages),
-            ) as cursor:
-                messages = [
-                    {"role": row[0], "content": row[1]}
-                    async for row in cursor
-                ]
-            if messages:
-                self._store[chat_id] = messages
-                logger.debug(f"已从 DB 加载频道 {chat_id} 的 {len(messages)} 条历史消息")
 
     async def get(self, channel_id: str) -> list[dict]:
         """获取指定频道的对话历史（从缓存读取）。"""
