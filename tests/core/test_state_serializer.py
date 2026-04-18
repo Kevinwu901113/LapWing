@@ -283,15 +283,17 @@ class TestMessagesFromTrajectory:
             for i in range(8)
         )
         out = serialize(_make_state(turns=turns))
-        # With 8 turns → total 9 ≥ 6 → voice inserted as user msg two from end
-        # So messages == original 8 turns + 1 voice note
+        # 8 turns → total 9 ≥ 6 → voice injected at (len-2)=6 so the
+        # two-element tail (msg 6, msg 7) stays at the end; matches
+        # PromptBuilder.inject_voice_reminder behaviour on [system, *recent].
         assert len(out.messages) == 9
-        # First 7 messages should be the first 7 original turns
-        for i in range(7):
+        # First 6 messages are the first 6 original turns, untouched
+        for i in range(6):
             assert out.messages[i]["content"] == f"msg {i}"
-        # Second-to-last should be the injected voice note
-        assert "[System Note]" in out.messages[-2]["content"]
-        # Last should be the final original turn
+        # Position -3 is the injected voice note
+        assert "[System Note]" in out.messages[-3]["content"]
+        # Last two positions hold the final two original turns
+        assert out.messages[-2]["content"] == "msg 6"
         assert out.messages[-1]["content"] == "msg 7"
 
     def test_short_convo_voice_folded_into_system(self):
@@ -330,14 +332,17 @@ class TestMessagesFromTrajectory:
         assert "VOICE_L" in note_msgs[0]["content"]
         assert _PERSONA_ANCHOR[:15] in note_msgs[0]["content"]
 
-    def test_voice_note_placement_two_from_end(self):
+    def test_voice_note_placement_preserves_tail_pair(self):
+        """For ≥6 total messages, voice note lands third-from-end so
+        the last two original turns stay at the end — mirrors the
+        pre-Step-3 inject_voice_reminder on [system, *recent]."""
         turns = tuple(
             TrajectoryTurn(role="user", content=f"t{i}") for i in range(6)
         )
         out = serialize(_make_state(turns=turns))
-        # Voice note should land at index len(messages)-2 (for 6 turns → index 5, with 7 total messages the note is at position 5, preserving last original turn at the end)
-        assert out.messages[-1]["content"] == "t5"  # last original turn preserved
-        assert "[System Note]" in out.messages[-2]["content"]
+        assert out.messages[-2]["content"] == "t4"
+        assert out.messages[-1]["content"] == "t5"
+        assert "[System Note]" in out.messages[-3]["content"]
 
     def test_messages_voice_preserves_turn_order(self):
         turns = tuple(

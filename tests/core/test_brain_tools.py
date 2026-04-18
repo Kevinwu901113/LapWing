@@ -621,8 +621,11 @@ class TestBrainTools:
 
             routed_messages = brain.router.complete_with_tools.call_args.args[0]
             system_messages = [m for m in routed_messages if m.get("role") == "system"]
+            # v2.0 Step 3: state_view_builder renders the base system
+            # prompt; shell task state is appended in the same system
+            # message rather than as a second one.
             assert len(system_messages) == 1
-            assert "基础人格prompt" in system_messages[0]["content"]
+            assert "## 当前状态" in system_messages[0]["content"]
             assert "## 当前 Shell 任务状态" in system_messages[0]["content"]
 
     async def test_write_task_does_not_return_last_stdout_when_unfinished(self):

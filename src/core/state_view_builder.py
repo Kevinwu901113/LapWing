@@ -109,8 +109,15 @@ class StateViewBuilder:
         actor_name: str | None = None,
         auth_level: int = 3,
         group_id: str | None = None,
+        trajectory_turns_override: tuple[TrajectoryTurn, ...] | None = None,
     ) -> StateView:
-        """Build the snapshot a user-facing ``think_*`` call will render."""
+        """Build the snapshot a user-facing ``think_*`` call will render.
+
+        ``trajectory_turns_override`` lets brain hand in an already-
+        prepared window (trust-tagged, effective-user-message-swapped).
+        When ``None``, the builder queries ``TrajectoryStore`` itself —
+        used by call paths that have no pre-processing need.
+        """
         identity_docs = self._load_identity_docs()
         attention_context = self._build_attention_context(
             channel=channel,
@@ -119,7 +126,10 @@ class StateViewBuilder:
             auth_level=auth_level,
             group_id=group_id,
         )
-        trajectory_window = await self._build_trajectory_for_chat(chat_id)
+        if trajectory_turns_override is not None:
+            trajectory_window = TrajectoryWindow(turns=trajectory_turns_override)
+        else:
+            trajectory_window = await self._build_trajectory_for_chat(chat_id)
         commitments_active = await self._build_commitments_active(chat_id=chat_id)
         memory_snippets = MemorySnippets(snippets=())  # wired in Step 4+
 
@@ -131,12 +141,17 @@ class StateViewBuilder:
             commitments_active=commitments_active,
         )
 
-    async def build_for_inner(self) -> StateView:
+    async def build_for_inner(
+        self,
+        *,
+        trajectory_turns_override: tuple[TrajectoryTurn, ...] | None = None,
+    ) -> StateView:
         """Build the snapshot the consciousness-loop render will use.
 
         No current speaker, no channel — the inner loop is Lapwing alone.
         Channel tag is ``""`` to match the pre-Step-3 ``adapter=""``
-        convention used at the consciousness entry point.
+        convention used at the consciousness entry point. The optional
+        ``trajectory_turns_override`` parallels ``build_for_chat``.
         """
         identity_docs = self._load_identity_docs()
         attention_context = self._build_attention_context(
@@ -146,7 +161,10 @@ class StateViewBuilder:
             auth_level=3,
             group_id=None,
         )
-        trajectory_window = await self._build_trajectory_for_inner()
+        if trajectory_turns_override is not None:
+            trajectory_window = TrajectoryWindow(turns=trajectory_turns_override)
+        else:
+            trajectory_window = await self._build_trajectory_for_inner()
         commitments_active = await self._build_commitments_active(chat_id=None)
         memory_snippets = MemorySnippets(snippets=())
 

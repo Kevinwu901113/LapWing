@@ -228,19 +228,26 @@ def _inject_voice(
     # Effective total matches legacy count: [system] + recent_messages.
     total = len(messages) + 1
 
+    # Insert position: the legacy helper operated on
+    # [system, *recent] and used ``len(messages) - 2`` so the note
+    # landed between the second-to-last and last original messages.
+    # Converting to the recent-only view brain hands us, that becomes
+    # ``len(messages) - 2`` still (because we lost one "system" slot on
+    # both sides of the arithmetic). Keep the two-from-end behaviour
+    # so two real turns follow the note, matching pre-Step-3 output.
+    insert_at = max(0, len(messages) - 2)
+
     if total >= 6:
         note = (
             f"[System Note]\n{voice}\n\n{_PERSONA_ANCHOR}\n\n{time_anchor}\n"
             "[/System Note]"
         )
-        insert_at = max(0, len(messages) - 1)
         new_messages = list(messages)
         new_messages.insert(insert_at, {"role": "user", "content": note})
         return system_prompt, new_messages
 
     if total >= 4:
         note = f"[System Note]\n{voice}\n\n{time_anchor}\n[/System Note]"
-        insert_at = max(0, len(messages) - 1)
         new_messages = list(messages)
         new_messages.insert(insert_at, {"role": "user", "content": note})
         return system_prompt, new_messages

@@ -196,9 +196,10 @@ class AppContainer:
                         self.durable_scheduler.run_loop(),
                         name="durable-scheduler",
                     )
-                    # 更新 PromptBuilder 的 reminder_source
-                    if self.brain.prompt_builder is not None:
-                        self.brain.prompt_builder.reminder_source = self.durable_scheduler
+                    # 更新 StateViewBuilder 的 reminder_source：DurableScheduler
+                    # 上线前用 ConversationMemory 的 compat 接口，上线后切到 scheduler
+                    # 本身（后者才是提醒的权威存储）。
+                    self.brain.state_view_builder._reminders = self.durable_scheduler
                     logger.info("DurableScheduler 循环已启动，已连接意识循环 urgency queue")
             else:
                 # DurableScheduler 在非意识模式下也启动
@@ -322,14 +323,24 @@ class AppContainer:
 
         self.brain.vector_store = VectorStore(self._data_dir / "chroma")
 
-        # PromptBuilder（Phase 2：4 层）
-        from src.core.prompt_builder import PromptBuilder
+        # v2.0 Step 3: StateViewBuilder — single prompt-assembly entry.
+        # Reminder source starts as ConversationMemory (compat layer); the
+        # DurableScheduler-driven reminder_source swap still happens in
+        # ``start()`` once the scheduler is constructed, matching the
+        # pre-Step-3 ordering.
+        from src.core.state_view_builder import StateViewBuilder
+        from src.core.vitals import get_previous_state
         from config.settings import IDENTITY_DIR
-        self.brain.prompt_builder = PromptBuilder(
+        self.brain.state_view_builder = StateViewBuilder(
             soul_path=IDENTITY_DIR / "soul.md",
             constitution_path=IDENTITY_DIR / "constitution.md",
-            voice_path="lapwing_voice",
+            voice_prompt_name="lapwing_voice",
+            attention_manager=self.brain.attention_manager,
+            trajectory_store=self.brain.trajectory_store,
+            commitment_store=None,  # wired when CommitmentStore lands in flow
+            task_store=None,  # Phase 1 TaskStore wiring below
             reminder_source=self.brain.memory,
+            previous_state_reader=get_previous_state,
         )
 
         # SoulManager + soul 工具
