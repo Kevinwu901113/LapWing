@@ -20,15 +20,6 @@ logger = logging.getLogger("lapwing.memory.conversation")
 _VALID_RECURRENCE_TYPES = {"once", "daily", "weekly", "interval"}
 _TIME_OF_DAY_PATTERN = re.compile(r"^\d{2}:\d{2}$")
 
-# CJK 字符范围：基本汉字 + 扩展 A + 兼容汉字
-_CJK_RE = re.compile(r"([\u4e00-\u9fff\u3400-\u4dbf\uf900-\ufaff])")
-
-
-def _cjk_tokenize(text: str) -> str:
-    """在 CJK 字符之间插入空格，使 FTS5 unicode61 tokenizer 能正确分词。"""
-    return _CJK_RE.sub(r" \1 ", text).strip()
-
-
 class ConversationMemory:
     """管理对话历史的存取。
 
