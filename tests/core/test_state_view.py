@@ -29,7 +29,7 @@ from src.core.state_view import (
 def _minimal_state() -> StateView:
     """Build the smallest legal StateView for structural tests."""
     return StateView(
-        identity_docs=IdentityDocs(soul="", constitution=""),
+        identity_docs=IdentityDocs(soul="", constitution="", voice=""),
         attention_context=AttentionContext(
             channel="desktop",
             actor_id=None,
@@ -67,7 +67,7 @@ class TestStateViewConstruction:
             due_at="2026-04-18T15:00:00+08:00",
         )
         sv = StateView(
-            identity_docs=IdentityDocs(soul="SOUL", constitution="CONST"),
+            identity_docs=IdentityDocs(soul="SOUL", constitution="CONST", voice="VOICE"),
             attention_context=AttentionContext(
                 channel="qq_group",
                 actor_id="u1",
@@ -97,7 +97,7 @@ class TestFrozenSemantics:
             sv.commitments_active = ()  # type: ignore[misc]
 
     def test_identity_docs_immutable(self):
-        docs = IdentityDocs(soul="a", constitution="b")
+        docs = IdentityDocs(soul="a", constitution="b", voice="c")
         with pytest.raises(FrozenInstanceError):
             docs.soul = "changed"  # type: ignore[misc]
 

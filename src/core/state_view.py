@@ -28,13 +28,19 @@ class IdentityDocs:
 
     ``soul`` = ``data/identity/soul.md`` (who Lapwing is).
     ``constitution`` = ``data/identity/constitution.md`` (the rules she
-    cannot violate). Both are injected verbatim. Empty string means the
-    file was missing at build time — the serializer treats that as a no-
-    layer rather than a failure, matching pre-Step-3 behaviour.
+    cannot violate).
+    ``voice`` = ``prompts/lapwing_voice.md`` (how she speaks — depth-
+    injected into the message tail by the serializer, not into the
+    system layer).
+
+    All three are injected verbatim. Empty string means the file was
+    missing at build time — the serializer treats that as a no-layer
+    rather than a failure, matching pre-Step-3 behaviour.
     """
 
     soul: str
     constitution: str
+    voice: str
 
 
 # ── Attention ────────────────────────────────────────────────────────
