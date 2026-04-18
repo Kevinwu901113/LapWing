@@ -234,3 +234,76 @@ class TestLifeV2TimelineTrajectory:
             resp = await client.get("/api/v2/life/timeline", params={"limit": 50})
 
         assert resp.json()["next_before_ts"] is None
+
+
+from datetime import datetime, timezone
+
+
+def _write_summary(dir_path, name: str, body: str = "abc"):
+    p = dir_path / name
+    p.write_text(f"# 对话摘要 x\n\n{body}\n", encoding="utf-8")
+    return p
+
+
+@pytest.mark.asyncio
+class TestLifeV2TimelineSummaries:
+    async def test_summary_is_merged(self, client, mock_brain, tmp_path, monkeypatch):
+        summaries = tmp_path / "summaries"
+        summaries.mkdir(exist_ok=True)
+        _write_summary(summaries, "2026-04-18_074024.md", body="aaa")
+
+        # Point route module at our temp dir (fixture already did, but re-apply for clarity)
+        from src.api.routes import life_v2
+        monkeypatch.setattr(life_v2, "_summaries_dir_override", summaries)
+
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[])
+
+        async with client:
+            resp = await client.get("/api/v2/life/timeline")
+
+        items = resp.json()["items"]
+        summary_items = [i for i in items if i["kind"] == "summary"]
+        assert len(summary_items) == 1
+        expected_ts = datetime(2026, 4, 18, 7, 40, 24, tzinfo=timezone.utc).timestamp()
+        assert summary_items[0]["timestamp"] == expected_ts
+        assert summary_items[0]["id"].startswith("summary_")
+        assert summary_items[0]["metadata"]["date"] == "2026-04-18"
+        assert summary_items[0]["metadata"]["char_count"] == len("aaa\n") + len("# 对话摘要 x\n\n")
+
+    async def test_bad_filename_skipped(self, client, mock_brain, tmp_path, monkeypatch):
+        summaries = tmp_path / "summaries"
+        summaries.mkdir(exist_ok=True)
+        _write_summary(summaries, "junk.md")
+        _write_summary(summaries, "2026-04-18_074024.md")
+
+        from src.api.routes import life_v2
+        monkeypatch.setattr(life_v2, "_summaries_dir_override", summaries)
+
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[])
+
+        async with client:
+            resp = await client.get("/api/v2/life/timeline")
+
+        summary_items = [i for i in resp.json()["items"] if i["kind"] == "summary"]
+        assert len(summary_items) == 1  # junk.md skipped, no exception
+
+    async def test_summaries_merged_in_timestamp_order(self, client, mock_brain, tmp_path, monkeypatch):
+        summaries = tmp_path / "summaries"
+        summaries.mkdir(exist_ok=True)
+        _write_summary(summaries, "2026-04-18_074024.md")
+
+        summary_ts = datetime(2026, 4, 18, 7, 40, 24, tzinfo=timezone.utc).timestamp()
+        # Traj row immediately after the summary
+        mock_brain.trajectory_store.list_for_timeline = AsyncMock(return_value=[
+            _make_entry(id=1, timestamp=summary_ts + 10, content={"text": "after"}),
+            _make_entry(id=2, timestamp=summary_ts - 10, content={"text": "before"}),
+        ])
+
+        from src.api.routes import life_v2
+        monkeypatch.setattr(life_v2, "_summaries_dir_override", summaries)
+
+        async with client:
+            resp = await client.get("/api/v2/life/timeline")
+
+        kinds = [i["kind"] for i in resp.json()["items"]]
+        assert kinds == ["assistant_text", "summary", "assistant_text"]

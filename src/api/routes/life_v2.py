@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from fastapi import APIRouter
@@ -112,6 +114,57 @@ _ALL_TRAJECTORY_TYPES_EXCEPT_INNER = [
     t for t in TrajectoryEntryType if t != TrajectoryEntryType.INNER_THOUGHT
 ]
 
+_SUMMARY_FILENAME_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})_(\d{2})(\d{2})(\d{2})\.md$")
+
+
+def _load_summaries(dir_path: Path | None, *, before_ts: float | None, limit: int) -> list[dict]:
+    """Scan summaries dir, parse filenames, return serialized items newest→oldest."""
+    if dir_path is None or not dir_path.exists():
+        return []
+
+    items: list[dict] = []
+    for path in dir_path.iterdir():
+        if not path.is_file():
+            continue
+        m = _SUMMARY_FILENAME_RE.match(path.name)
+        if not m:
+            continue
+        date_str = m.group(1)
+        try:
+            dt = datetime.strptime(
+                f"{date_str}_{m.group(2)}{m.group(3)}{m.group(4)}",
+                "%Y-%m-%d_%H%M%S",
+            ).replace(tzinfo=timezone.utc)
+        except ValueError:
+            logger.warning("summary filename parse failed: %s", path.name)
+            continue
+
+        ts = dt.timestamp()
+        if before_ts is not None and ts >= before_ts:
+            continue
+
+        try:
+            content = path.read_text(encoding="utf-8")
+        except Exception as exc:
+            logger.warning("summary read failed %s: %s", path.name, exc)
+            continue
+
+        rel_path = f"memory/conversations/summaries/{path.name}"
+        items.append({
+            "kind": "summary",
+            "timestamp": ts,
+            "id": f"summary_{path.stem}",
+            "content": content,
+            "metadata": {
+                "date": date_str,
+                "file_path": rel_path,
+                "char_count": len(content),
+            },
+        })
+
+    items.sort(key=lambda i: i["timestamp"], reverse=True)
+    return items[:limit]
+
 
 @router.get("/timeline")
 async def get_timeline(
@@ -141,6 +194,12 @@ async def get_timeline(
         )
 
     items = [_serialize_trajectory(r) for r in trajectory_rows]
+
+    # Source 2 — summaries. Only merged when the caller did not pin
+    # entry_types to a trajectory-only set (summary is a virtual kind, not
+    # a TrajectoryEntryType value).
+    if parsed_types is None:
+        items.extend(_load_summaries(_resolved_summaries_dir(), before_ts=before_ts, limit=limit))
 
     # Merge cutoff: DESC by timestamp, truncate to `limit`.
     items.sort(key=lambda i: i["timestamp"], reverse=True)
