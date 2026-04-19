@@ -99,6 +99,13 @@ OPERATION_AUTH: dict[str, AuthLevel] = {
     "browser_close_tab": AuthLevel.OWNER,
     "browser_wait": AuthLevel.OWNER,
     "browser_login": AuthLevel.OWNER,
+    # 技能系统
+    "create_skill": AuthLevel.OWNER,
+    "run_skill": AuthLevel.OWNER,
+    "edit_skill": AuthLevel.OWNER,
+    "list_skills": AuthLevel.OWNER,
+    "promote_skill": AuthLevel.OWNER,
+    "delete_skill": AuthLevel.OWNER,
 }
 
 # 未注册工具的默认权限（保守策略）
