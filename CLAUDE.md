@@ -243,9 +243,7 @@ data/
   vitals.json        Boot/shutdown state for restart awareness
   lapwing.pid        Process lock
 desktop-v2/          Tauri v2 + React 19 frontend (active)
-scripts/             deploy.sh, diagnose_schedule.py, qq_export.py, setup_browser.sh,
-                     migrations/mvp_drop_legacy_tables.py (one-shot; will be archived
-                     after the 2026-04-19 cleanup branch merges)
+scripts/             deploy.sh, diagnose_schedule.py, qq_export.py, setup_browser.sh
 tests/               ~1257 cases (pytest + pytest-asyncio auto mode); mirrors src/ layout
 docs/
   archive/           Superseded designs, historical audits, frontend v1 blueprints
@@ -274,7 +272,7 @@ Deliberately absent (either never-existed or retired during the 2026-04-19 MVP c
 - **Import style**: Absolute imports from project root (`from src.core.brain import ...`).
 - **Config**: All config via env vars in `config/.env`, read in `config/settings.py`.
 - **Feature flags** (live; all default true unless noted):
-  `QQ_ENABLED` · `BROWSER_ENABLED` (default false) · `BROWSE_ENABLED` ·
+  `QQ_ENABLED` · `BROWSER_ENABLED` (default false) ·
   `BROWSER_VISION_ENABLED` · `MINIMAX_VLM_ENABLED` (default false) ·
   `SHELL_ENABLED` · `LOOP_DETECTION_ENABLED` · `CHAT_WEB_TOOLS_ENABLED` ·
   `AGENT_TEAM_ENABLED` · `EPISODIC_EXTRACT_ENABLED` · `SEMANTIC_DISTILL_ENABLED` ·
@@ -398,8 +396,9 @@ psutil) and desktop environment sensing (current app, user state, 10-minute TTL)
 
 ### Search providers
 
-`SEARCH_PROVIDER`: `"auto"` (default — Tavily if `TAVILY_API_KEY`, else DDG) /
-`"tavily"` / `"ddg"`. `TAVILY_SEARCH_DEPTH` chooses `basic` vs `advanced`.
+`TAVILY_API_KEY` + `BOCHA_API_KEY` configure the two search backends
+(Tavily for international, Bocha for domestic Chinese). Both run in
+parallel when keys are present; results are merged by the research engine.
 
 ## Extension patterns
 

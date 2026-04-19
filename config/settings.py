@@ -104,16 +104,6 @@ CONSCIOUSNESS_MAX_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_MAX_INTERVAL", "1
 CONSCIOUSNESS_AFTER_CHAT_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_AFTER_CHAT_INTERVAL", "120"))
 CONSCIOUSNESS_CONVERSATION_END_DELAY: int = int(os.getenv("CONSCIOUSNESS_CONVERSATION_END_DELAY", "300"))
 
-# 自主浏览配置
-BROWSE_ENABLED: bool = os.getenv("BROWSE_ENABLED", "true").lower() == "true"
-BROWSE_INTERVAL_HOURS: int = int(os.getenv("BROWSE_INTERVAL_HOURS", "2"))
-_BROWSE_SOURCES_DEFAULT = "hackernews,reddit/technology,reddit/science"
-BROWSE_SOURCES: list[str] = [
-    item.strip()
-    for item in os.getenv("BROWSE_SOURCES", _BROWSE_SOURCES_DEFAULT).split(",")
-    if item.strip()
-]
-
 # 对话设置
 MAX_HISTORY_TURNS: int = 20  # 保留最近 N 轮对话（每轮 = 1 user + 1 assistant）
 MESSAGE_BUFFER_SECONDS: float = float(os.getenv("MESSAGE_BUFFER_SECONDS", "4"))  # 消息合并等待时间
@@ -127,17 +117,6 @@ SEMANTIC_DISTILL_ENABLED: bool = os.getenv("SEMANTIC_DISTILL_ENABLED", "true").l
 SEMANTIC_DISTILL_EPISODES_WINDOW: int = int(os.getenv("SEMANTIC_DISTILL_EPISODES_WINDOW", "20"))
 SEMANTIC_DISTILL_DEDUP_THRESHOLD: float = float(os.getenv("SEMANTIC_DISTILL_DEDUP_THRESHOLD", "0.85"))
 AGENT_TEAM_ENABLED: bool = os.getenv("AGENT_TEAM_ENABLED", "true").lower() in ("true", "1", "yes")
-MESSAGE_SPLIT_FALLBACK_NEWLINE: bool = os.getenv("MESSAGE_SPLIT_FALLBACK_NEWLINE", "true").lower() in ("true", "1", "yes")
-MESSAGE_SPLIT_DELAY_BASE: float = float(os.getenv("MESSAGE_SPLIT_DELAY_BASE", "0.8"))
-MESSAGE_SPLIT_DELAY_PER_CHAR: float = float(os.getenv("MESSAGE_SPLIT_DELAY_PER_CHAR", "0.008"))
-MESSAGE_SPLIT_DELAY_MAX: float = float(os.getenv("MESSAGE_SPLIT_DELAY_MAX", "2.5"))
-MESSAGE_SPLIT_SINGLE_NL_MIN_LEN: int = int(os.getenv("MESSAGE_SPLIT_SINGLE_NL_MIN_LEN", "80"))
-
-
-# 语音转写（Whisper，可选；不填则回退到通用 LLM_* 配置）
-WHISPER_API_KEY: str = os.getenv("WHISPER_API_KEY", "")
-WHISPER_BASE_URL: str = os.getenv("WHISPER_BASE_URL", "")
-WHISPER_MODEL: str = os.getenv("WHISPER_MODEL", "whisper-1")
 
 # Shell 执行
 SHELL_ENABLED: bool = os.getenv("SHELL_ENABLED", "true").lower() == "true"
@@ -263,17 +242,11 @@ if QQ_GROUP_CONTEXT_SIZE <= 0:
 if QQ_GROUP_COOLDOWN < 0:
     raise ValueError("QQ_GROUP_COOLDOWN 不能小于 0。")
 
-# 自省与进化
 # 搜索配置
-SEARCH_MAX_RESULTS: int = int(os.getenv("SEARCH_MAX_RESULTS", "5"))
 CHAT_WEB_TOOLS_ENABLED: bool = os.getenv("CHAT_WEB_TOOLS_ENABLED", "true").lower() == "true"
 TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
-SEARCH_PROVIDER: str = os.getenv("SEARCH_PROVIDER", "auto").strip().lower()  # "auto" | "tavily" | "ddg"
-TAVILY_SEARCH_DEPTH: str = os.getenv("TAVILY_SEARCH_DEPTH", "basic").strip().lower()  # "basic" | "advanced"
 TAVILY_COUNTRY: str = os.getenv("TAVILY_COUNTRY", "china").strip().lower()  # Tavily 要完整英文国名，如 "china"
 BOCHA_API_KEY: str = os.getenv("BOCHA_API_KEY", "")  # 博查 (Bocha AI) Web Search，国内来源
-WEB_FETCH_MAX_CHARS: int = int(os.getenv("WEB_FETCH_MAX_CHARS", "8000"))
-SEARCH_CACHE_TTL_SECONDS: int = int(os.getenv("SEARCH_CACHE_TTL_SECONDS", "300"))
 
 # 本地 API Auth
 API_HOST: str = os.getenv("API_HOST", "127.0.0.1")
