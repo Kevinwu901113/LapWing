@@ -1,8 +1,7 @@
 """Tests for /api/v2/tasks/* endpoints.
 
-v2.0 Step 1 note: `/api/v2/tasks/{id}/messages` now returns an empty list
-(EventLogger-backed agent-history lookup was removed). Step 6 will wire
-it back up against StateMutationLog-derived agent events.
+`/api/v2/tasks/{id}/messages` currently returns an empty list — the
+mutation_log-derived agent-history backend is not wired back yet.
 """
 
 from unittest.mock import AsyncMock, MagicMock

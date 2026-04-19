@@ -1,9 +1,8 @@
 """任务 REST API — 桌面端任务面板。
 
-v2.0 Step 1 起，``/{task_id}/messages`` 端点暂时返回空列表：原本基于
-EventLogger 对 ``agent.*`` 历史事件的查询已随 EventLogger 撤除而失效。
-Step 6 会在 Agent Team 重构时给这个端点配上新的后端。保留路径与响应
-形状以维持桌面端兼容。
+``/{task_id}/messages`` 当前返回空列表：agent 历史事件查询的新后端
+（基于 mutation_log 的 ``agent.*`` 事件）尚未接回。保留路径和响应形状
+以维持桌面端兼容。
 """
 
 import logging

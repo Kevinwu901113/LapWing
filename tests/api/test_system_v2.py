@@ -1,8 +1,7 @@
 """Tests for /api/v2/system/* endpoints.
 
-v2.0 Step 1: /api/v2/system/events now reads from StateMutationLog
-(mutation_log.db) rather than events_v2.db. Response field names stay
-backward-compatible for the desktop frontend.
+/api/v2/system/events reads from StateMutationLog (mutation_log.db).
+Response field names are adapted for desktop-frontend compatibility.
 """
 
 from unittest.mock import AsyncMock, MagicMock

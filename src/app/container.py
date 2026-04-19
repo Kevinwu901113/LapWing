@@ -136,8 +136,8 @@ class AppContainer:
         self._credential_vault = None
         self._browser_guard = None
 
-        # Dispatcher — 内存 pub/sub 总线，给桌面端 SSE 和子系统实时广播用
-        # (v2.0 Step 1: EventLogger/events_v2.db 持久化职责已移交给 StateMutationLog)
+        # Dispatcher — 内存 pub/sub 总线，给桌面端 SSE 和子系统实时广播用。
+        # 持久化由 StateMutationLog 负责；dispatcher 只是 live stream。
         self.dispatcher: Dispatcher | None = None
 
         # v2.0 Step 1: StateMutationLog — durable append-only log of state mutations
@@ -187,9 +187,8 @@ class AppContainer:
         self.api_server._dispatcher = self.dispatcher
         logger.info("Dispatcher pub/sub 已初始化")
 
-        # v2.0 Step 1: StateMutationLog — separate SQLite log for LLM/tool/iteration
-        # mutations, independent from the legacy events_v2.db (which is scheduled
-        # for archival in Step 1g). See Blueprint v2.0 §2.1.
+        # StateMutationLog — 独立 SQLite 文件记录 LLM/tool/iteration/system
+        # 生命周期的状态变更。与 lapwing.db 的业务表分离。见 Blueprint v2.0 §2.1。
         mutation_db = self._data_dir / "mutation_log.db"
         mutation_logs_dir = self._data_dir / "logs"
         self.mutation_log = StateMutationLog(mutation_db, logs_dir=mutation_logs_dir)

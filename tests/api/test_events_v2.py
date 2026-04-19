@@ -1,11 +1,8 @@
 """Tests for /api/v2/events SSE endpoint + StateMutationLog pub/sub.
 
-v2.0 Step 1: EventLogger + events_v2.db have been removed. Dispatcher is
-pure in-memory pub/sub.
-
-v2.0 Step 4 M5: SSE now subscribes to StateMutationLog directly. The
-Dispatcher tests below stay because Dispatcher is still used elsewhere
-(trajectory_appended fanout); only SSE moved off it.
+SSE subscribes to StateMutationLog directly (durable writes fan out to
+subscribers). Dispatcher is a separate pure-in-memory pub/sub still used
+for trajectory_appended fanout; the tests below exercise both tracks.
 """
 
 import asyncio

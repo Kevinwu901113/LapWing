@@ -1,14 +1,11 @@
 """SSE 事件推送 — 桌面端实时事件流。
 
-事件来源：v2.0 Step 4 M5 起改为订阅 :class:`StateMutationLog`。先前
-（Step 1-3 转型期）路由订阅的是 :class:`Dispatcher`，但 dispatcher 的
-``message.*`` 事件本来就是 mutation_log 信息的二级镜像；改为直接订阅
-``mutation_log`` 让 SSE 与持久化记录的真值保持一致，省掉了
-"dispatcher 不发某事件就丢" 的盲区。
+事件来源：订阅 :class:`StateMutationLog`。mutation_log 先把事件持久化
+再 fan-out 给订阅者，因此 SSE 看到的一定是 durable 的记录，没有
+"live stream 和持久化脱节" 的盲区。
 
-断线重连仍未实现（EventLogger 已撤除）。客户端可以传 Last-Event-ID，
-服务端忽略并只推送新事件。Step 5+ 会用 mutation_log 的
-``after_id`` 查询补回 history-replay。
+断线重连仍未实现：客户端可以传 Last-Event-ID，服务端忽略并只推送新事件。
+Step 5+ 会用 mutation_log 的 ``after_id`` 查询补回 history-replay。
 """
 
 import asyncio
