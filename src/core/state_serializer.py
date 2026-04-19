@@ -32,6 +32,7 @@ from typing import Final
 from src.core.state_view import (
     CommitmentView,
     SerializedPrompt,
+    SkillSummary,
     StateView,
     TrajectoryTurn,
 )
@@ -195,6 +196,23 @@ def _render_runtime_state(state: StateView) -> str:
         lines.append("⚠️ 已超时的承诺（必须处理：重试 / 告诉用户 / abandon）：\n" + "\n".join(promise_overdue[:8]))
     if promise_active:
         lines.append("我对用户的承诺：\n" + "\n".join(promise_active[:5]))
+
+    # Skill summary
+    if state.skill_summary is not None:
+        ss = state.skill_summary
+        total = ss.stable_count + ss.testing_count + ss.draft_count + ss.broken_count
+        if total > 0:
+            skill_lines = [f"stable: {ss.stable_count} 个"]
+            if ss.stable_names:
+                skill_lines[0] += f"（{'、'.join(ss.stable_names)}）"
+            if ss.testing_count:
+                detail = f"（{'、'.join(ss.testing_details)}）" if ss.testing_details else ""
+                skill_lines.append(f"testing: {ss.testing_count} 个{detail}")
+            if ss.draft_count:
+                skill_lines.append(f"draft: {ss.draft_count} 个")
+            if ss.broken_count:
+                skill_lines.append(f"broken: {ss.broken_count} 个")
+            lines.append("我的技能：\n" + "\n".join(f"  - {l}" for l in skill_lines))
 
     return "## 当前状态\n\n" + "\n".join(lines)
 

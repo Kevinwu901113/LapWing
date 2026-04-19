@@ -37,6 +37,7 @@ from src.core.state_view import (
     IdentityDocs,
     MemorySnippet,
     MemorySnippets,
+    SkillSummary,
     StateView,
     TrajectoryTurn,
     TrajectoryWindow,
@@ -104,6 +105,7 @@ class StateViewBuilder:
         self._inner_history_turns = inner_history_turns
         self._memory_top_k = memory_top_k
         self._memory_query_chat_turns = memory_query_chat_turns
+        self._skill_store = None  # set by container when skill system is enabled
 
     # ── Entry points ─────────────────────────────────────────────────
 
@@ -139,6 +141,7 @@ class StateViewBuilder:
             trajectory_window = await self._build_trajectory_for_chat(chat_id)
         commitments_active = await self._build_commitments_active(chat_id=chat_id)
         memory_snippets = await self._build_memory_snippets(trajectory_window)
+        skill_summary = self._build_skill_summary()
 
         return StateView(
             identity_docs=identity_docs,
@@ -146,6 +149,7 @@ class StateViewBuilder:
             trajectory_window=trajectory_window,
             memory_snippets=memory_snippets,
             commitments_active=commitments_active,
+            skill_summary=skill_summary,
         )
 
     async def build_for_inner(
@@ -174,6 +178,7 @@ class StateViewBuilder:
             trajectory_window = await self._build_trajectory_for_inner()
         commitments_active = await self._build_commitments_active(chat_id=None)
         memory_snippets = await self._build_memory_snippets(trajectory_window)
+        skill_summary = self._build_skill_summary()
 
         return StateView(
             identity_docs=identity_docs,
@@ -181,6 +186,7 @@ class StateViewBuilder:
             trajectory_window=trajectory_window,
             memory_snippets=memory_snippets,
             commitments_active=commitments_active,
+            skill_summary=skill_summary,
         )
 
     # ── Identity ─────────────────────────────────────────────────────
@@ -375,6 +381,38 @@ class StateViewBuilder:
                 logger.debug("task_store.list_active failed", exc_info=True)
 
         return tuple(views)
+
+    def _build_skill_summary(self) -> SkillSummary | None:
+        if self._skill_store is None:
+            return None
+        try:
+            all_skills = self._skill_store.list_skills()
+        except Exception:
+            return None
+        if not all_skills:
+            return None
+
+        counts = {"draft": 0, "testing": 0, "stable": 0, "broken": 0}
+        stable_names = []
+        testing_details = []
+        for s in all_skills:
+            m = s.get("maturity", "draft")
+            counts[m] = counts.get(m, 0) + 1
+            if m == "stable":
+                stable_names.append(s.get("name", s.get("id", "")))
+            elif m == "testing":
+                usage = s.get("usage_count", 0)
+                success = s.get("success_count", 0)
+                testing_details.append(f"{s.get('name', '')}（成功率 {success}/{usage}）")
+
+        return SkillSummary(
+            stable_count=counts["stable"],
+            testing_count=counts["testing"],
+            draft_count=counts["draft"],
+            broken_count=counts["broken"],
+            stable_names=tuple(stable_names),
+            testing_details=tuple(testing_details),
+        )
 
 
 # ── Module-private helpers ──────────────────────────────────────────

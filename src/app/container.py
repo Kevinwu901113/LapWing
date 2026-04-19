@@ -730,6 +730,7 @@ class AppContainer:
             )
             self.brain._skill_store = skill_store
             self.brain._skill_executor = skill_executor
+            self.brain.state_view_builder._skill_store = skill_store
 
             # Register stable skills as first-class tools
             for stable_skill in skill_store.get_stable_skills():

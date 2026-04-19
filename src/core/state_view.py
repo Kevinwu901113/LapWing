@@ -159,6 +159,19 @@ class CommitmentView:
     is_overdue: bool = False
 
 
+# ── Skills ──────────────────────────────────────────────────────────
+
+@dataclass(frozen=True, slots=True)
+class SkillSummary:
+    """Snapshot of Lapwing's learned skills for prompt injection."""
+    stable_count: int
+    testing_count: int
+    draft_count: int
+    broken_count: int
+    stable_names: tuple[str, ...]
+    testing_details: tuple[str, ...]  # "name (success_rate N/M)"
+
+
 # ── Top-level view ───────────────────────────────────────────────────
 
 @dataclass(frozen=True, slots=True)
@@ -182,6 +195,7 @@ class StateView:
     trajectory_window: TrajectoryWindow
     memory_snippets: MemorySnippets
     commitments_active: tuple[CommitmentView, ...]
+    skill_summary: SkillSummary | None = None
 
 
 # ── Serializer output ────────────────────────────────────────────────
