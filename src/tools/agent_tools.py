@@ -1,12 +1,21 @@
-"""Agent Team 工具：delegate + delegate_to_agent。"""
+"""Agent Team 工具：delegate + delegate_to_agent。
+
+v2.0 Step 6 对齐：delegate 执行完全依赖 ``BaseAgent`` 的 mutation_log
+埋点（``AGENT_STARTED`` / ``AGENT_TOOL_CALL`` / ``AGENT_COMPLETED`` /
+``AGENT_FAILED``），tool executor 自身不再重复 emit 事件——Phase 6 的
+``dispatcher.submit(event_type="agent.task_*")`` 双层 emit 已删除，
+Desktop SSE 通过 mutation_log 直接拿到完整生命周期。
+
+工具 description + enum 从 ``AgentRegistry`` 动态填充，避免硬编码
+Agent 名称和描述漂移（Step 6 改动 5）。
+"""
 
 from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
 
-from src.agents.types import AgentMessage, AgentResult
+from src.agents.types import AgentMessage
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult, ToolSpec
 
 logger = logging.getLogger("lapwing.tools.agent_tools")
@@ -27,7 +36,6 @@ async def delegate_executor(
         return ToolExecutionResult(success=False, payload={}, reason="请求不能为空")
 
     agent_registry = ctx.services.get("agent_registry")
-    dispatcher = ctx.services.get("dispatcher")
 
     if not agent_registry:
         return ToolExecutionResult(success=False, payload={}, reason="Agent Team 未就绪")
@@ -38,14 +46,6 @@ async def delegate_executor(
 
     task_id = _generate_task_id()
 
-    if dispatcher:
-        await dispatcher.submit(
-            event_type="agent.task_created",
-            actor="lapwing",
-            task_id=task_id,
-            payload={"request": request, "assigned_to": "team_lead"},
-        )
-
     message = AgentMessage(
         from_agent="lapwing",
         to_agent="team_lead",
@@ -55,14 +55,6 @@ async def delegate_executor(
     )
 
     result = await team_lead.execute(message)
-
-    if dispatcher:
-        await dispatcher.submit(
-            event_type=f"agent.task_{result.status}",
-            actor="team_lead",
-            task_id=task_id,
-            payload={"result": result.result[:500] if result.result else ""},
-        )
 
     if result.status == "done":
         return ToolExecutionResult(
@@ -96,7 +88,6 @@ async def delegate_to_agent_executor(
         )
 
     agent_registry = ctx.services.get("agent_registry")
-    dispatcher = ctx.services.get("dispatcher")
 
     if not agent_registry:
         return ToolExecutionResult(success=False, payload={}, reason="Agent Team 未就绪")
@@ -111,14 +102,6 @@ async def delegate_to_agent_executor(
 
     subtask_id = _generate_task_id()
 
-    if dispatcher:
-        await dispatcher.submit(
-            event_type="agent.task_assigned",
-            actor="team_lead",
-            task_id=subtask_id,
-            payload={"agent": agent_name, "instruction": instruction},
-        )
-
     message = AgentMessage(
         from_agent="team_lead",
         to_agent=agent_name,
@@ -128,17 +111,6 @@ async def delegate_to_agent_executor(
     )
 
     result = await agent.execute(message)
-
-    if dispatcher:
-        await dispatcher.submit(
-            event_type=f"agent.task_{result.status}",
-            actor=agent_name,
-            task_id=subtask_id,
-            payload={
-                "result": result.result[:500] if result.result else "",
-                "evidence": result.evidence,
-            },
-        )
 
     if result.status == "done":
         return ToolExecutionResult(
@@ -158,12 +130,58 @@ async def delegate_to_agent_executor(
         )
 
 
-def register_agent_tools(registry) -> None:
-    """注册 Agent Team 工具到 ToolRegistry。"""
+def _build_delegate_description(agent_registry) -> str:
+    """从 AgentRegistry 动态生成团队成员列表。"""
+    base = "把任务交给你的工作团队。告诉 Team Lead 你需要什么。"
+    if agent_registry is None:
+        return base
+    specs = agent_registry.list_specs()
+    if not specs:
+        return base
+    lines = [base, "", "团队成员："]
+    for spec in specs:
+        lines.append(f"- {spec['name']}: {spec['description']}")
+    return "\n".join(lines)
+
+
+def _build_delegate_to_agent_description(agent_registry) -> str:
+    base = "把子任务派给一个具体的 Agent。"
+    if agent_registry is None:
+        return base
+    specs = agent_registry.list_specs()
+    if not specs:
+        return base
+    lines = [base, "", "可用 Agent："]
+    for spec in specs:
+        lines.append(f"- {spec['name']}: {spec['description']}")
+    return "\n".join(lines)
+
+
+def _agent_enum(agent_registry) -> list[str]:
+    if agent_registry is None:
+        return []
+    return [s["name"] for s in agent_registry.list_specs()]
+
+
+def register_agent_tools(registry, agent_registry=None) -> None:
+    """注册 Agent Team 工具到 ToolRegistry。
+
+    ``agent_registry`` 用于动态生成工具 description 与 ``agent`` enum。
+    container 在组装 AgentRegistry 后调用这里注册，description 随当前
+    成员列表生效——新增/删除 Agent 不用改工具 schema。
+    """
+
+    enum = _agent_enum(agent_registry)
+    to_agent_schema_agent: dict = {
+        "type": "string",
+        "description": "Agent 名称",
+    }
+    if enum:
+        to_agent_schema_agent["enum"] = enum
 
     registry.register(ToolSpec(
         name="delegate",
-        description="把任务交给你的工作团队。告诉 Team Lead 你需要什么。",
+        description=_build_delegate_description(agent_registry),
         json_schema={
             "type": "object",
             "properties": {
@@ -186,14 +204,11 @@ def register_agent_tools(registry) -> None:
 
     registry.register(ToolSpec(
         name="delegate_to_agent",
-        description="把子任务派给一个具体的 Agent。",
+        description=_build_delegate_to_agent_description(agent_registry),
         json_schema={
             "type": "object",
             "properties": {
-                "agent": {
-                    "type": "string",
-                    "description": "Agent 名称 (researcher / coder)",
-                },
+                "agent": to_agent_schema_agent,
                 "instruction": {
                     "type": "string",
                     "description": "给 Agent 的指令",

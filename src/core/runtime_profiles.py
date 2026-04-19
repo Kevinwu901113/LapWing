@@ -67,6 +67,36 @@ FILE_OPS_PROFILE = RuntimeProfile(
     include_internal=False,
 )
 
+# Step 6: Agent Team profiles — 注意不含 ``communication`` / ``commitment``
+# 能力，因此也拿不到 tell_user / commit_promise——只有 Lapwing 能对用户
+# 说话，Agent 的产出只作为返回值给编排层（delegate 工具）消费。
+AGENT_RESEARCHER_PROFILE = RuntimeProfile(
+    name="agent_researcher",
+    capabilities=frozenset(),
+    tool_names=frozenset({"research", "browse"}),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
+AGENT_CODER_PROFILE = RuntimeProfile(
+    name="agent_coder",
+    capabilities=frozenset(),
+    tool_names=frozenset({
+        "ws_file_read", "ws_file_write", "ws_file_list",
+        "execute_shell", "run_python_code",
+    }),
+    include_internal=True,  # ws_file_* 注册为 internal；Agent 需要显式放行
+    shell_policy_enabled=False,  # Agent 的 shell 由 _noop_shell 阻断（见 base.py）
+)
+
+AGENT_TEAM_LEAD_PROFILE = RuntimeProfile(
+    name="agent_team_lead",
+    capabilities=frozenset(),
+    tool_names=frozenset({"delegate_to_agent"}),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
 _PROFILES = {
     profile.name: profile
     for profile in (
@@ -74,6 +104,9 @@ _PROFILES = {
         CODER_SNIPPET_PROFILE,
         CODER_WORKSPACE_PROFILE,
         FILE_OPS_PROFILE,
+        AGENT_RESEARCHER_PROFILE,
+        AGENT_CODER_PROFILE,
+        AGENT_TEAM_LEAD_PROFILE,
     )
 }
 

@@ -1,13 +1,11 @@
 """BaseAgent tool loop 测试。"""
 
 import asyncio
-import json
 from unittest.mock import AsyncMock, MagicMock
 
-import pytest
-
 from src.agents.base import BaseAgent
-from src.agents.types import AgentMessage, AgentResult, AgentSpec
+from src.agents.types import AgentMessage, AgentSpec
+from src.logging.state_mutation_log import MutationType
 
 
 def _make_spec(**overrides):
@@ -36,8 +34,8 @@ def _make_message(content="do something", task_id="t1"):
 
 
 def _make_deps(tool_turn_result=None, tool_exec_result=None):
-    """Create mock llm_router, tool_registry, dispatcher."""
-    from src.core.llm_types import ToolCallRequest, ToolTurnResult
+    """Create mock llm_router, tool_registry, mutation_log."""
+    from src.core.llm_types import ToolTurnResult
 
     router = MagicMock()
     if tool_turn_result is None:
@@ -45,14 +43,22 @@ def _make_deps(tool_turn_result=None, tool_exec_result=None):
             text="Done.", tool_calls=[], continuation_message=None,
         )
     router.complete_with_tools = AsyncMock(return_value=tool_turn_result)
-    router.build_tool_result_message = MagicMock(return_value={"role": "user", "content": "tool result"})
+    router.build_tool_result_message = MagicMock(
+        return_value={"role": "user", "content": "tool result"},
+    )
 
     registry = MagicMock()
     tool_spec = MagicMock()
     tool_spec.name = "web_search"
     tool_spec.description = "Search the web"
     tool_spec.json_schema = {"type": "object", "properties": {}}
+    tool_spec.to_function_tool = MagicMock(
+        return_value={"type": "function", "function": {"name": "web_search"}},
+    )
     registry.get = MagicMock(return_value=tool_spec)
+    registry.function_tools = MagicMock(
+        return_value=[{"type": "function", "function": {"name": "web_search"}}],
+    )
 
     if tool_exec_result is None:
         from src.tools.types import ToolExecutionResult
@@ -61,32 +67,38 @@ def _make_deps(tool_turn_result=None, tool_exec_result=None):
         )
     registry.execute = AsyncMock(return_value=tool_exec_result)
 
-    dispatcher = AsyncMock()
-    dispatcher.submit = AsyncMock(return_value="evt_001")
+    mutation_log = AsyncMock()
+    mutation_log.record = AsyncMock(return_value=1)
 
-    return router, registry, dispatcher
+    return router, registry, mutation_log
+
+
+def _event_types_called(mutation_log):
+    """Collect MutationType values passed as first positional arg to record()."""
+    return [
+        call.args[0] if call.args else call.kwargs.get("event_type")
+        for call in mutation_log.record.call_args_list
+    ]
 
 
 class TestBaseAgentNoCalls:
     async def test_returns_done(self):
         spec = _make_spec()
-        router, registry, dispatcher = _make_deps()
-        agent = BaseAgent(spec, router, registry, dispatcher)
+        router, registry, mutation_log = _make_deps()
+        agent = BaseAgent(spec, router, registry, mutation_log)
         result = await agent.execute(_make_message())
         assert result.status == "done"
         assert result.result == "Done."
 
-    async def test_publishes_start_event(self):
+    async def test_emits_started_and_completed_mutations(self):
         spec = _make_spec()
-        router, registry, dispatcher = _make_deps()
-        agent = BaseAgent(spec, router, registry, dispatcher)
+        router, registry, mutation_log = _make_deps()
+        agent = BaseAgent(spec, router, registry, mutation_log)
         await agent.execute(_make_message())
-        # Verify at least one call with agent.task_started
-        started_calls = [
-            c for c in dispatcher.submit.call_args_list
-            if c.kwargs.get("event_type") == "agent.task_started"
-        ]
-        assert len(started_calls) >= 1
+        types = _event_types_called(mutation_log)
+        assert MutationType.AGENT_STARTED in types
+        assert MutationType.AGENT_COMPLETED in types
+        assert MutationType.AGENT_FAILED not in types
 
 
 class TestBaseAgentWithToolCalls:
@@ -102,16 +114,16 @@ class TestBaseAgentWithToolCalls:
             text="Found results.", tool_calls=[], continuation_message=None,
         )
 
-        router, registry, dispatcher = _make_deps()
+        router, registry, mutation_log = _make_deps()
         router.complete_with_tools = AsyncMock(side_effect=[round1, round2])
 
-        agent = BaseAgent(_make_spec(), router, registry, dispatcher)
+        agent = BaseAgent(_make_spec(), router, registry, mutation_log)
         result = await agent.execute(_make_message())
         assert result.status == "done"
         assert result.result == "Found results."
         assert registry.execute.await_count == 1
 
-    async def test_publishes_tool_called_event(self):
+    async def test_emits_tool_call_mutation(self):
         from src.core.llm_types import ToolCallRequest, ToolTurnResult
 
         round1 = ToolTurnResult(
@@ -121,17 +133,41 @@ class TestBaseAgentWithToolCalls:
         )
         round2 = ToolTurnResult(text="ok", tool_calls=[], continuation_message=None)
 
-        router, registry, dispatcher = _make_deps()
+        router, registry, mutation_log = _make_deps()
         router.complete_with_tools = AsyncMock(side_effect=[round1, round2])
 
-        agent = BaseAgent(_make_spec(), router, registry, dispatcher)
+        agent = BaseAgent(_make_spec(), router, registry, mutation_log)
         await agent.execute(_make_message())
 
-        tool_events = [
-            c for c in dispatcher.submit.call_args_list
-            if c.kwargs.get("event_type") == "agent.tool_called"
+        types = _event_types_called(mutation_log)
+        assert MutationType.AGENT_TOOL_CALL in types
+
+    async def test_tool_call_count_in_completed_payload(self):
+        """AGENT_COMPLETED payload 带 tool_calls_made 与 duration。"""
+        from src.core.llm_types import ToolCallRequest, ToolTurnResult
+
+        round1 = ToolTurnResult(
+            text="",
+            tool_calls=[ToolCallRequest(id="tc1", name="web_search", arguments={})],
+            continuation_message={"role": "assistant", "content": ""},
+        )
+        round2 = ToolTurnResult(text="done", tool_calls=[], continuation_message=None)
+
+        router, registry, mutation_log = _make_deps()
+        router.complete_with_tools = AsyncMock(side_effect=[round1, round2])
+
+        agent = BaseAgent(_make_spec(), router, registry, mutation_log)
+        await agent.execute(_make_message())
+
+        completed_calls = [
+            call for call in mutation_log.record.call_args_list
+            if call.args and call.args[0] == MutationType.AGENT_COMPLETED
         ]
-        assert len(tool_events) >= 1
+        assert len(completed_calls) == 1
+        payload = completed_calls[0].kwargs.get("payload") or completed_calls[0].args[1]
+        assert payload["tool_calls_made"] == 1
+        assert "duration_seconds" in payload
+        assert payload["agent_name"] == "test_agent"
 
 
 class TestBaseAgentMaxRounds:
@@ -144,23 +180,61 @@ class TestBaseAgentMaxRounds:
             continuation_message={"role": "assistant", "content": ""},
         )
 
-        router, registry, dispatcher = _make_deps()
+        router, registry, mutation_log = _make_deps()
         router.complete_with_tools = AsyncMock(return_value=always_calls)
 
         spec = _make_spec(max_rounds=3)
-        agent = BaseAgent(spec, router, registry, dispatcher)
+        agent = BaseAgent(spec, router, registry, mutation_log)
         result = await agent.execute(_make_message())
         assert result.status == "failed"
         assert "3" in result.reason
+        types = _event_types_called(mutation_log)
+        assert MutationType.AGENT_FAILED in types
 
 
 class TestBaseAgentTimeout:
     async def test_timeout_returns_failed(self):
-        router, registry, dispatcher = _make_deps()
+        router, registry, mutation_log = _make_deps()
         router.complete_with_tools = AsyncMock(side_effect=asyncio.TimeoutError)
 
         spec = _make_spec(timeout_seconds=1)
-        agent = BaseAgent(spec, router, registry, dispatcher)
+        agent = BaseAgent(spec, router, registry, mutation_log)
         result = await agent.execute(_make_message())
         assert result.status == "failed"
         assert "超时" in result.reason or "timeout" in result.reason.lower()
+        types = _event_types_called(mutation_log)
+        assert MutationType.AGENT_FAILED in types
+
+
+class TestBaseAgentRuntimeProfile:
+    """Step 6 改动 2：_get_tools 走 RuntimeProfile 过滤。"""
+
+    async def test_profile_drives_tool_filtering(self):
+        from src.core.runtime_profiles import AGENT_RESEARCHER_PROFILE
+
+        spec = _make_spec(
+            tools=[],
+            runtime_profile=AGENT_RESEARCHER_PROFILE,
+        )
+        router, registry, mutation_log = _make_deps()
+
+        agent = BaseAgent(spec, router, registry, mutation_log)
+        await agent.execute(_make_message())
+
+        # 走 profile 路径：function_tools(capabilities=None, tool_names={research,browse})
+        assert registry.function_tools.called
+        call_kwargs = registry.function_tools.call_args.kwargs
+        assert call_kwargs.get("tool_names") == {"research", "browse"}
+        assert call_kwargs.get("include_internal") is False
+
+    async def test_legacy_tools_fallback(self):
+        """没有 profile 时走 tools 列表——仅为过渡期 fixtures 服务。"""
+        spec = _make_spec(tools=["web_search"], runtime_profile=None)
+        router, registry, mutation_log = _make_deps()
+
+        agent = BaseAgent(spec, router, registry, mutation_log)
+        await agent.execute(_make_message())
+
+        # 走 legacy 路径：registry.get(tool_name) 按名取 spec
+        assert registry.get.called
+        assert not registry.function_tools.called

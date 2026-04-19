@@ -122,6 +122,15 @@ class MutationType(str, Enum):
     # 已移除——结构性 fix（tell_user + commit_promise）取代了启发式观测。
     # Audit trail 现在是 CommitmentStore + TELL_USER mutation 的组合。
 
+    # --- Step 6: Agent Team 生命周期 ---
+    # 事件字符串保留 Phase 6 Dispatcher 时代的语义（`agent.task_*`
+    # / `agent.tool_called`）——Desktop SSE 消费者直接认这些字符串，
+    # 没有转译层。
+    AGENT_STARTED = "agent.task_started"
+    AGENT_COMPLETED = "agent.task_done"
+    AGENT_FAILED = "agent.task_failed"
+    AGENT_TOOL_CALL = "agent.tool_called"
+
 
 @dataclass
 class Mutation:
