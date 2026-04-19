@@ -908,7 +908,7 @@ class LapwingBrain:
                 current_conversation=chat_id, mode="conversing"
             )
 
-        logger.info("[%s] incoming: %s", chat_id, user_message[:200])
+        logger.debug("[%s] incoming: %s", chat_id, user_message[:200])
 
         ctx = await self._prepare_think(
             chat_id, user_message, send_fn=send_fn, images=images,

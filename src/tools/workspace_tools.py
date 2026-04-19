@@ -7,7 +7,7 @@ from pathlib import Path
 
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult
 
-logger = logging.getLogger("lapwing.tools.workspace")
+logger = logging.getLogger("lapwing.tools.workspace_tools")
 
 AGENT_WORKSPACE = Path("data/agent_workspace")
 

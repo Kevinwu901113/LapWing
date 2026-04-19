@@ -24,7 +24,7 @@ from config.settings import (
     OPENAI_CODEX_AUTH_PROXY_URL,
 )
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger("lapwing.core.codex_oauth_client")
 
 _client: "CodexOAuthClient | None" = None
 _initialized: bool = False
@@ -180,26 +180,26 @@ class CodexOAuthClient:
         if self._account_id:
             headers["ChatGPT-Account-ID"] = self._account_id
         payload_meta = _payload_summary(payload)
-        log.debug(
+        logger.debug(
             "[codex_oauth] POST %s (token len=%d payload=%s)",
             API_URL,
             len(self._access_token),
             payload_meta,
         )
         async with self._http.stream("POST", API_URL, json=payload, headers=headers) as resp:
-            log.debug("[codex_oauth] 响应 status=%d url=%s", resp.status_code, resp.url)
+            logger.debug("[codex_oauth] 响应 status=%d url=%s", resp.status_code, resp.url)
             if resp.status_code == 401:
                 await resp.aclose()
-                log.warning("[codex_oauth] API 返回 401，尝试刷新 token...")
+                logger.warning("[codex_oauth] API 返回 401，尝试刷新 token...")
                 await self._do_refresh()
                 # 用新 token 重试
                 headers["Authorization"] = f"Bearer {self._access_token}"
-                log.debug("[codex_oauth] 重试 POST %s (new token len=%d)", API_URL, len(self._access_token))
+                logger.debug("[codex_oauth] 重试 POST %s (new token len=%d)", API_URL, len(self._access_token))
                 async with self._http.stream("POST", API_URL, json=payload, headers=headers) as retry_resp:
-                    log.debug("[codex_oauth] 重试响应 status=%d", retry_resp.status_code)
+                    logger.debug("[codex_oauth] 重试响应 status=%d", retry_resp.status_code)
                     if retry_resp.status_code >= 400:
                         detail = (await retry_resp.aread()).decode("utf-8", errors="replace")
-                        log.error(
+                        logger.error(
                             "[codex_oauth] 重试失败 status=%d detail=%s payload=%s",
                             retry_resp.status_code,
                             detail[:1200],
@@ -211,7 +211,7 @@ class CodexOAuthClient:
                 return
             if resp.status_code >= 400:
                 detail = (await resp.aread()).decode("utf-8", errors="replace")
-                log.error(
+                logger.error(
                     "[codex_oauth] 请求失败 status=%d detail=%s payload=%s",
                     resp.status_code,
                     detail[:1200],
@@ -233,12 +233,12 @@ class CodexOAuthClient:
             try:
                 yield json.loads(raw)
             except json.JSONDecodeError:
-                log.warning("[codex_oauth] SSE JSON 解析失败: %r", raw[:200])
+                logger.warning("[codex_oauth] SSE JSON 解析失败: %r", raw[:200])
 
     async def _do_refresh(self) -> None:
         """用 refresh_token 刷新 access_token，写回 auth.json。"""
         async with self._refresh_lock:
-            log.info("[codex_oauth] 刷新 access_token (refresh_token len=%d)...", len(self._refresh_token))
+            logger.info("[codex_oauth] 刷新 access_token (refresh_token len=%d)...", len(self._refresh_token))
             async with httpx.AsyncClient(
                 proxy=OPENAI_CODEX_AUTH_PROXY_URL or None,
                 timeout=15.0,
@@ -251,7 +251,7 @@ class CodexOAuthClient:
                         "refresh_token": self._refresh_token,
                     },
                 )
-                log.debug("[codex_oauth] refresh 响应 status=%d url=%s", resp.status_code, resp.url)
+                logger.debug("[codex_oauth] refresh 响应 status=%d url=%s", resp.status_code, resp.url)
                 if resp.status_code == 401:
                     # 尝试从磁盘恢复更新过的 token（例如被其他进程刷新过）。
                     disk_access, disk_refresh, disk_account = _read_auth_json_tokens()
@@ -265,7 +265,7 @@ class CodexOAuthClient:
                         self._refresh_token = disk_refresh
                         if disk_account:
                             self._account_id = disk_account
-                        log.warning("[codex_oauth] refresh 401，已从 auth.json 重载更新 token。")
+                        logger.warning("[codex_oauth] refresh 401，已从 auth.json 重载更新 token。")
                         return
 
                     profile_access, profile_refresh, profile_account = _read_lapwing_oauth_tokens()
@@ -279,10 +279,10 @@ class CodexOAuthClient:
                         if profile_account:
                             self._account_id = profile_account
                         _write_auth_json_tokens(profile_access, profile_refresh, profile_account)
-                        log.warning("[codex_oauth] refresh 401，已从 Lapwing profile 恢复 token。")
+                        logger.warning("[codex_oauth] refresh 401，已从 Lapwing profile 恢复 token。")
                         return
 
-                    log.error(
+                    logger.error(
                         "[codex_oauth] refresh_token 无效（401）。"
                         "请重新登录: python main.py auth login openai-codex"
                     )
@@ -313,7 +313,7 @@ class CodexOAuthClient:
                     json.dumps(auth_data, indent=2, ensure_ascii=False),
                     encoding="utf-8",
                 )
-            log.info("[codex_oauth] Token 已刷新并写回 auth.json")
+            logger.info("[codex_oauth] Token 已刷新并写回 auth.json")
 
 
 async def get_client() -> CodexOAuthClient:
@@ -344,7 +344,7 @@ async def get_client() -> CodexOAuthClient:
                 fallback_account,
             )
             _write_auth_json_tokens(access_token, refresh_token, account_id)
-            log.warning("[codex_oauth] 检测到 auth.json 为测试/无效 token，已从 Lapwing profile 自动修复。")
+            logger.warning("[codex_oauth] 检测到 auth.json 为测试/无效 token，已从 Lapwing profile 自动修复。")
 
     if not access_token:
         raise ValueError(f"auth.json 中 tokens.access_token 为空: {AUTH_JSON_PATH}")
@@ -352,7 +352,7 @@ async def get_client() -> CodexOAuthClient:
     client = CodexOAuthClient(access_token, refresh_token, account_id)
     _client = client
     _initialized = True
-    log.info("[codex_oauth] CodexOAuthClient 已初始化（token 来自 %s）", AUTH_JSON_PATH)
+    logger.info("[codex_oauth] CodexOAuthClient 已初始化（token 来自 %s）", AUTH_JSON_PATH)
     return _client
 
 
@@ -366,7 +366,7 @@ async def reset_client() -> None:
             pass
     _client = None
     _initialized = False
-    log.info("[codex_oauth] 客户端已重置，下次调用将重新初始化")
+    logger.info("[codex_oauth] 客户端已重置，下次调用将重新初始化")
 
 
 def is_available() -> bool:

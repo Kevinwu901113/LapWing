@@ -1,10 +1,9 @@
 """系统信息 REST API — 桌面端状态面板。
 
-v2.0 Step 1 起，``/events`` 端点改为查询 StateMutationLog.mutation_log.db
-而不是已撤除的 events_v2.db。响应字段保持兼容：
+``/events`` 端点查询 ``mutation_log.db``。响应字段为桌面端适配而扁平化：
 ``event_id`` / ``event_type`` / ``timestamp`` / ``actor`` / ``task_id`` /
-``payload``。``actor`` 在新表里没有对应列，返回固定占位 ``"system"``；
-``task_id`` 在 payload 里可能存在，由 payload 抽取；若无则返回 None。
+``payload``。``actor`` 在 mutation_log schema 里没有对应列，返回固定占位
+``"system"``；``task_id`` 从 payload 抽取，若无则为 None。
 """
 
 import asyncio

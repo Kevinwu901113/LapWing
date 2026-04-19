@@ -60,9 +60,6 @@ def setup_logging() -> logging.Logger:
         "lapwing.core.task_runtime",
         "lapwing.core.llm_router",
         "lapwing.core.llm_protocols",
-        "lapwing.core.prompt_builder",
-        "lapwing.core.heartbeat",
-        "lapwing.core.consciousness",
         "lapwing.memory",
         "lapwing.tools",
         "lapwing.core.channel_manager",
@@ -71,7 +68,6 @@ def setup_logging() -> logging.Logger:
 
     # 保持 INFO 的模块（启动/关闭等关键流程）
     logging.getLogger("lapwing.app.container").setLevel(logging.INFO)
-    logging.getLogger("lapwing.event_logger").setLevel(logging.INFO)
 
     # ── Root logger (third-party libraries) ──
     # Separate handlers — never share with lapwing logger
