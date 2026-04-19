@@ -555,9 +555,9 @@ class TaskRuntime:
             step_runner=lambda round_index: self._run_step(ctx, round_index),
         )
 
-        # ── Loop 完成摘要日志 ──
+        # ── Loop 完成摘要日志 —— 结构化版由 MutationLog ITERATION_ENDED 提供 ──
         recovery = ctx.recovery
-        logger.info(
+        logger.debug(
             "[runtime] Tool loop completed: turns=%d compact=%d output_recovery=%d "
             "api_retries=%d total_result_chars=%d reason=%s",
             recovery.turn_count,
@@ -809,7 +809,7 @@ class TaskRuntime:
             )
 
         if len(turn.tool_calls) > 1:
-            logger.info(
+            logger.debug(
                 "[runtime] 模型返回了 %s 个 tool calls，当前按顺序串行执行。",
                 len(turn.tool_calls),
             )
@@ -1067,7 +1067,7 @@ class TaskRuntime:
             ctx.last_payload = payload
 
             last_tool_name = tool_call.name
-            logger.info(
+            logger.debug(
                 "[runtime] 第 %s 轮完成 tool call %s/%s: %s",
                 round_index + 1,
                 tool_index + 1,
@@ -1143,10 +1143,10 @@ class TaskRuntime:
         # the tool loop is unnecessary. The pre-Step-3 helper that lived
         # here was a silently-swallowed no-op and has been removed.
 
-        # ── Loop turn 日志 ──
+        # ── Loop turn 日志 —— 结构化版由 MutationLog TOOL_* 事件提供 ──
         result_chars = sum(len(t[1]) for t in tool_results) if tool_results else 0
         ctx.recovery.total_result_chars += result_chars
-        logger.info(
+        logger.debug(
             "[runtime] Loop turn=%d transition=%s tool_calls=%d result_chars=%d total_chars=%d",
             ctx.recovery.turn_count,
             ctx.recovery.transition_reason,
@@ -1553,7 +1553,7 @@ class TaskRuntime:
 
         preview = payload_str[:TOOL_RESULT_PREVIEW_CHARS]
         original_len = len(payload_str)
-        logger.info(
+        logger.debug(
             "[runtime] Tool result budgeted: %s, %d chars → preview %d chars, saved to %s",
             tool_name, original_len, len(preview), filepath,
         )
