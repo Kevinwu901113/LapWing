@@ -99,13 +99,21 @@ class DurableScheduler:
         dispatcher=None,
         trajectory_store=None,
         mutation_log=None,
+        event_queue=None,
     ) -> None:
         # urgency_callback: async def callback(reminder: Reminder)
         # send_fn: async def send(text: str)
-        # brain: LapwingBrain 引用，用于 agent 模式执行
+        # brain: LapwingBrain 引用 — kept only as a fallback for agent
+        # mode when no event_queue is wired (unit tests, phase-0). In
+        # production agent-mode fires route through MainLoop via the
+        # shared EventQueue, not direct brain calls.
         # trajectory_store / mutation_log: optional — passed to
         # ``send_system_message`` so reminder fires record into the
         # standard audit trail (mirror of ``tell_user``).
+        # event_queue: optional — when wired, agent-mode fires push a
+        # MessageEvent with done_future so MainLoop's preempt rules
+        # (OWNER interruption) apply to scheduled agent runs just like
+        # to adapter-driven ones.
         self._db_path = str(db_path)
         self._urgency_callback = urgency_callback
         self._send_fn = send_fn
@@ -113,6 +121,7 @@ class DurableScheduler:
         self.dispatcher = dispatcher
         self._trajectory_store = trajectory_store
         self._mutation_log = mutation_log
+        self._event_queue = event_queue
         self._running = False
 
     # ── 公开接口 ────────────────────────────────────────────────────
@@ -410,28 +419,64 @@ class DurableScheduler:
         )
 
     async def _fire_agent(self, reminder: Reminder) -> None:
-        """agent 模式：通过 brain 执行完整对话循环。"""
-        if self._brain is None:
-            logger.warning("agent 模式缺少 brain 引用，fallback 到 notify: %s", reminder.reminder_id)
+        """agent 模式：通过 MainLoop 执行完整对话循环。
+
+        Flow: build a MessageEvent with a silent send_fn (tool-loop
+        chatter should not echo directly — only the final reply goes
+        to the user) + a ``done_future`` for the result. Push onto the
+        shared ``EventQueue``; MainLoop dispatches via
+        ``_handle_message``, so OWNER preempt rules apply here the same
+        way they do for adapter-driven messages. Await the future, then
+        system_send-route the final reply so trajectory + mutation_log
+        capture the user-visible byte.
+
+        Fallbacks: if no event_queue is wired (unit tests, phase-0) the
+        scheduler falls back to a direct brain call for parity.
+        """
+        from src.core.system_send import send_system_message
+
+        if self._event_queue is None and self._brain is None:
+            logger.warning(
+                "agent 模式缺少 event_queue 和 brain，fallback 到 notify: %s",
+                reminder.reminder_id,
+            )
             await self._fire_notify(reminder)
             return
 
-        from src.core.system_send import send_system_message
+        async def _silent_send(text: str) -> None:
+            logger.debug("DurableScheduler agent 中间输出（不发送）: %s", text[:80])
+
+        user_message = f"[定时任务] {reminder.content}"
 
         try:
-            # 静默中间输出，只收集最终结果
-            async def _silent_send(text: str) -> None:
-                logger.debug("DurableScheduler agent 中间输出（不发送）: %s", text[:80])
+            if self._event_queue is not None:
+                from src.core.authority_gate import AuthLevel
+                from src.core.events import MessageEvent
 
-            result = await self._brain.think_conversational(
-                chat_id="__scheduler__",
-                user_message=f"[定时任务] {reminder.content}",
-                send_fn=_silent_send,
-                adapter="system",
-                user_id="__scheduler__",
-            )
+                done = asyncio.get_running_loop().create_future()
+                event = MessageEvent.from_message(
+                    chat_id="__scheduler__",
+                    user_id="__scheduler__",
+                    text=user_message,
+                    adapter="system",
+                    send_fn=_silent_send,
+                    auth_level=int(AuthLevel.TRUSTED),
+                    done_future=done,
+                )
+                await self._event_queue.put(event)
+                result = await done
+            else:
+                # Fallback path for contexts without MainLoop (tests /
+                # phase-0). Kept strictly for parity; production flows
+                # always wire event_queue via AppContainer.
+                result = await self._brain.think_conversational(
+                    chat_id="__scheduler__",
+                    user_message=user_message,
+                    send_fn=_silent_send,
+                    adapter="system",
+                    user_id="__scheduler__",
+                )
 
-            # 将最终结果通过 send_fn 发出
             if result and self._send_fn is not None:
                 await send_system_message(
                     self._send_fn,
@@ -444,8 +489,10 @@ class DurableScheduler:
                 )
 
         except Exception as exc:
-            logger.error("agent 模式执行失败，fallback 到 notify: %s err=%s", reminder.reminder_id, exc)
-            # 执行失败时降级为简单通知
+            logger.error(
+                "agent 模式执行失败，fallback 到 notify: %s err=%s",
+                reminder.reminder_id, exc,
+            )
             if self._send_fn is not None:
                 await send_system_message(
                     self._send_fn,
