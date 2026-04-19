@@ -245,3 +245,61 @@ $ python -m pytest tests/ -x -q
 - `lapwing.db`：9 张表（去掉了 `event_log`），收缩 ~155 KB
 - 测试：1282 → 1282（零净变化）
 - Git：5 个逻辑 commit + 1 个 cleanup report commit，全部在 `refactor/logging-overhaul` 分支
+
+## §11 Addendum — 合入后发现的两处审计盲区（2026-04-19 晚）
+
+合入 master 并清理 `data/logs/` 下日志后，用户追问"根目录 logs 文件夹呢？"——才发现本次原审计有两处关键遗漏。
+
+### §11.1 审计 Miss #1：根目录 `logs/` 整个没扫到
+
+**根因**：审计 A1 阶段的 `find data/ -name '*.log' ...` 只搜 `data/` 下，漏了 `config/settings.py:17` 声明的 `LOGS_DIR = ROOT_DIR / "logs"`——**这才是 Python `logging` 和 `src/tools/shell_executor.py:42 _LOG_FILE` 的真实写入目标**。
+
+发现时根目录 `logs/` 下有 13 个文件：
+
+| 文件 | 状态 | 最后写入 | 大小 | 来源 |
+|---|---|---|---|---|
+| `lapwing.log` | 活跃 | 2026-04-19 18:42 | 247 KB | Python `logging` RotatingFileHandler |
+| `libraries.log` | 活跃 | 2026-04-12 | 0 B | root logger（第三方库静默） |
+| `shell_execution.log` | 活跃 | 2026-04-19 17:41 | 476 KB | `src/tools/shell_executor.py` |
+| `consciousness.log` | 死 | 2026-04-15 | 31 KB | Step 4 已删的 consciousness 子系统 |
+| `conversation.log` | 死 | 2026-04-16 | 176 KB | v29 EventLogger 分类输出 |
+| `evolution.log` | 死 | 2026-04-15 | 79 KB | v29 evolution 日志 |
+| `llm_call.log` | 死 | 2026-04-16 | 193 KB | v29 EventLogger |
+| `memory.log` | 死 | 2026-04-16 | 84 KB | v29 |
+| `system.log` | 死 | 2026-04-16 | 90 KB | v29 |
+| `thinking.log` | 死 | 2026-04-16 | 60 KB | v29 |
+| `tool_call.log` | 死 | 2026-04-16 | 941 KB | v29 |
+| `tool_loop.log` | 死 | 2026-04-16 | 1.4 MB | v29 |
+| `frontend.log` | 死/外来 | 2026-04-14 | 699 B | vite dev server 的 nohup 输出，root 所有 |
+
+**处置**（已完成）：
+1. 全部 13 个文件 snapshot 到 `~/lapwing-backups/pre_logging_overhaul_20260419_170430/root_logs_snapshot/`
+2. 停进程（SIGTERM 2s 内优雅退出）
+3. 删除 12 个 kevin-owned 文件 + 1 个 `sudo rm` frontend.log（root-owned）
+4. 删除 `data/logs/lapwing.log`（见 §11.2）和当前 `mutations_2026-04-19.log`（291B 新启动数据，一并清）
+5. 通过 `scripts/deploy.sh` 重启，新进程 PID 1268361
+6. 重启后 `logs/` 下只剩 2 个活跃文件：`lapwing.log`（~3.6 KB 启动日志）、`libraries.log`（0 B）
+
+**审计方法学补丁**：未来类似扫描应该从 `ROOT_DIR` 而不是 `data/` 起搜，或先解析 `config/settings.py` 中所有 `*_DIR` 常量再扫每个目录。
+
+### §11.2 审计 Miss #2：两个 `lapwing.log`（架构重复）
+
+Python logging 把 `lapwing.log` 写到 `LOGS_DIR`（根目录 `logs/lapwing.log`）。但 `scripts/deploy.sh:9` 也声明 `LOG_FILE="$LAPWING_DIR/data/logs/lapwing.log"` 并用 `nohup "$VENV_PYTHON" main.py >> "$LOG_FILE" 2>&1 &` 把 stdout/stderr 追加到 `data/logs/lapwing.log`。
+
+结果：两条路径写近乎相同的内容——`setup_logging()` 的 `StreamHandler(sys.stdout)` 把日志行发给终端，deploy.sh 的 nohup 把 stdout 捕获到 `data/logs/lapwing.log`，同一日志行同时落在两个路径。
+
+**不在本次修复范围**，但记入遗留债务：
+
+- 方案 A：`deploy.sh` 改为 `nohup ... > /dev/null 2>&1`，完全依赖 Python logging 写根目录 `logs/lapwing.log`。简单但失去"启动期 Python 还没 setup_logging 就 crash"的最后救援日志。
+- 方案 B：`deploy.sh` 重定向到 `logs/nohup.out` 或 `logs/stderr.log`，明确它只是 stdout 兜底，不再叫 `lapwing.log`，消除命名歧义。
+- 方案 C：保持现状，在 `cleanup_report` / 文档里显式记录"这两个是不同来源，命名冲突而已"。
+
+推荐 B（一行改动，零歧义，保留兜底）。留给下次触碰 deploy.sh 时一并做。
+
+### §11.3 补充后的最终状态
+
+- `/home/kevin/lapwing/logs/`：2 个活跃文件（Python logging），13 个旧文件清空
+- `/home/kevin/lapwing/data/logs/`：StateMutationLog 的 JSONL 镜像 + deploy.sh 的 nohup 兜底（暂留，见 §11.2）
+- 备份：`pre_logging_overhaul_20260419_170430/`，含原 `data/logs/` + `logs_at_cleanup/` + `root_logs_snapshot/`（13 文件） + `event_log.csv`
+
+*—— addendum end ——*
