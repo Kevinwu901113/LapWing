@@ -117,7 +117,7 @@ SEMANTIC_DISTILL_ENABLED: bool = os.getenv("SEMANTIC_DISTILL_ENABLED", "true").l
 SEMANTIC_DISTILL_EPISODES_WINDOW: int = int(os.getenv("SEMANTIC_DISTILL_EPISODES_WINDOW", "20"))
 SEMANTIC_DISTILL_DEDUP_THRESHOLD: float = float(os.getenv("SEMANTIC_DISTILL_DEDUP_THRESHOLD", "0.85"))
 AGENT_TEAM_ENABLED: bool = os.getenv("AGENT_TEAM_ENABLED", "true").lower() in ("true", "1", "yes")
-SKILL_SYSTEM_ENABLED: bool = os.getenv("SKILL_SYSTEM_ENABLED", "true").lower() in ("true", "1", "yes")
+SKILL_SYSTEM_ENABLED: bool = os.getenv("SKILL_SYSTEM_ENABLED", "false").lower() in ("true", "1", "yes")
 SKILL_SANDBOX_IMAGE: str = os.getenv("SKILL_SANDBOX_IMAGE", "lapwing-sandbox")
 SKILL_SANDBOX_TIMEOUT: int = int(os.getenv("SKILL_SANDBOX_TIMEOUT", "30"))
 

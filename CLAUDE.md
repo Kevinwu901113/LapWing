@@ -205,6 +205,8 @@ src/
                        conversation (in-memory cache + trajectory mirror)
   models/            RichMessage shared data model
   research/          ResearchEngine (scope_router → fetcher → refiner → backends)
+  skills/            Skill Growth Model: skill_store.py (YAML+md CRUD),
+                       skill_executor.py (Docker sandbox / host routing)
   tools/             Tool registry + executors:
                        tell_user.py  — SOLE user-visible output
                        commitments.py (commit / fulfill / abandon)
@@ -212,6 +214,7 @@ src/
                        personal_tools.py (get_time / send_message / send_image / browse / view_image)
                        agent_tools.py (delegate, delegate_to_agent)
                        browser_tools.py (13 browser actions)
+                       skill_tools.py (create / run / edit / list / promote / delete skill)
                        research_tool.py
                        soul_tools.py (read_soul / edit_soul — OWNER only)
                        shell_executor / file_editor / code_runner / workspace_tools /
@@ -257,7 +260,7 @@ Deliberately absent (either never-existed or retired during the 2026-04-19 MVP c
 `src/core/evolution.py`, `src/core/delegation.py`, `src/core/session.py`,
 `src/core/heartbeat.py`, `src/core/prompt_builder.py`, `src/heartbeat/`,
 `src/guards/skill_guard.py`, `src/guards/browser_guard.py`, `data/evolution/`,
-`data/memory/notes/`, `data/workspace/`, `skills/`, `skill_traces/`, `desktop/`,
+`data/memory/notes/`, `data/workspace/`, `skill_traces/`, `desktop/`,
 `user_facts` / `interest_topics` / `discoveries` / `todos` / `reminders` SQLite tables.
 
 ## Development conventions
@@ -276,7 +279,8 @@ Deliberately absent (either never-existed or retired during the 2026-04-19 MVP c
   `BROWSER_VISION_ENABLED` · `MINIMAX_VLM_ENABLED` (default false) ·
   `SHELL_ENABLED` · `LOOP_DETECTION_ENABLED` · `CHAT_WEB_TOOLS_ENABLED` ·
   `AGENT_TEAM_ENABLED` · `EPISODIC_EXTRACT_ENABLED` · `SEMANTIC_DISTILL_ENABLED` ·
-  `DESKTOP_DEFAULT_OWNER` · `SHELL_ALLOW_SUDO` (default false).
+  `DESKTOP_DEFAULT_OWNER` · `SHELL_ALLOW_SUDO` (default false) ·
+  `SKILL_SYSTEM_ENABLED` (default false).
 - **Logging**: dual logger setup in `main.py` — `lapwing` project logger + separate root
   library logger. Use `logging.getLogger("lapwing.module_name")`.
 - **Type modules**: core types live in dedicated modules — `task_types.py` (task runtime),
@@ -481,6 +485,10 @@ resolved:
   `MessageEvent` into the shared `EventQueue` (the only consumers of
   `brain.think_conversational` in production are the MainLoop handler and
   the scheduler fallback).
-- Dormant skill subsystem — resolved by O3 (removed).
+- Dormant skill subsystem — resolved by O3 (removed), then
+  re-implemented as the Skill Growth Model (2026-04-20). Skills live
+  under `src/skills/` (SkillStore + SkillExecutor) with 6 LLM-facing
+  tools in `src/tools/skill_tools.py`. Gated by `SKILL_SYSTEM_ENABLED`
+  (default false).
 
 If a new invariant-level gap is found, add it back here.

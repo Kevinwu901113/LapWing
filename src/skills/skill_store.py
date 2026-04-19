@@ -13,8 +13,14 @@ class SkillStore:
         self.skills_dir = Path(skills_dir) if skills_dir else Path("data/skills")
         self.skills_dir.mkdir(parents=True, exist_ok=True)
 
+    @staticmethod
+    def _validate_skill_id(skill_id: str) -> None:
+        if not skill_id or "/" in skill_id or "\\" in skill_id or ".." in skill_id:
+            raise ValueError(f"Invalid skill_id: {skill_id}")
+
     def create(self, skill_id: str, name: str, description: str, code: str,
                dependencies: list[str] | None = None, tags: list[str] | None = None) -> dict:
+        self._validate_skill_id(skill_id)
         now = datetime.now(tz=_TZ)
         meta = {
             "id": skill_id, "name": name, "description": description,
@@ -28,6 +34,7 @@ class SkillStore:
         return {"skill_id": skill_id, "file_path": str(file_path.resolve())}
 
     def read(self, skill_id: str) -> dict | None:
+        self._validate_skill_id(skill_id)
         file_path = self.skills_dir / f"{skill_id}.md"
         if not file_path.exists():
             return None
@@ -109,6 +116,7 @@ class SkillStore:
         return results
 
     def delete(self, skill_id: str) -> dict:
+        self._validate_skill_id(skill_id)
         file_path = self.skills_dir / f"{skill_id}.md"
         if not file_path.exists():
             return {"success": False, "reason": "技能不存在"}
