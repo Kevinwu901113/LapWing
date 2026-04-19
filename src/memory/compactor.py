@@ -57,10 +57,9 @@ def _format_for_summary(messages: list[dict]) -> str:
 class ConversationCompactor:
     """监控对话窗口，在接近上限时触发压缩。"""
 
-    def __init__(self, memory, router, *, auto_memory_extractor=None):
+    def __init__(self, memory, router):
         self._memory = memory
         self._router = router
-        self._auto_memory_extractor = auto_memory_extractor
         self._trajectory = None  # Set via set_trajectory() after AppContainer init (Step 2g)
         self._compacting: set[str] = set()
         CONVERSATION_SUMMARIES_DIR.mkdir(parents=True, exist_ok=True)
@@ -112,17 +111,6 @@ class ConversationCompactor:
 
         to_compact = history[:compact_count]
         to_keep = history[compact_count:]
-
-        # 压缩前记忆冲刷：让 AutoMemoryExtractor 从即将被压缩的消息中提取记忆
-        if self._auto_memory_extractor is not None:
-            try:
-                await self._auto_memory_extractor.extract_from_messages(to_compact)
-                logger.debug(
-                    "[%s] Pre-compression memory flush completed for %d messages",
-                    actual_chat_id, len(to_compact),
-                )
-            except Exception as e:
-                logger.warning("[%s] Pre-compression memory flush failed: %s", actual_chat_id, e)
 
         # 提取前次摘要（如果存在），避免重复摘要
         prior_summary = ""
