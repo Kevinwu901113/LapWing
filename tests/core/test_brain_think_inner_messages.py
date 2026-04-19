@@ -54,7 +54,6 @@ async def test_think_inner_sends_inner_prompt_as_user_turn(brain):
 
     brain._render_messages = fake_render  # type: ignore[method-assign]
     brain._complete_chat = fake_complete  # type: ignore[method-assign]
-    brain._skill_activation_tool_enabled = MagicMock(return_value=False)
 
     reply, next_interval, did_something = await brain.think_inner()
 
@@ -91,7 +90,6 @@ async def test_think_inner_urgent_items_flow_into_user_turn(brain):
 
     brain._render_messages = fake_render  # type: ignore[method-assign]
     brain._complete_chat = fake_complete  # type: ignore[method-assign]
-    brain._skill_activation_tool_enabled = MagicMock(return_value=False)
 
     await brain.think_inner(urgent_items=[
         {"type": "reminder", "content": "给 Kevin 发消息"},

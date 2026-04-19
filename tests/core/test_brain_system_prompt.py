@@ -105,27 +105,6 @@ class TestRenderMessages:
             # Phase 0 returns raw soul fallback, no runtime-state block
             assert "## 当前状态" not in out[0]["content"]
 
-    async def test_skill_context_appended_to_system(self, tmp_path):
-        soul = tmp_path / "soul.md"
-        soul.write_text("SOUL", encoding="utf-8")
-
-        with _stack(), patch("config.settings.PHASE0_MODE", ""):
-            from src.core.brain import LapwingBrain
-            from src.core.state_view_builder import StateViewBuilder
-
-            brain = LapwingBrain(db_path=Path("test.db"))
-            brain.state_view_builder = StateViewBuilder(
-                soul_path=soul,
-                constitution_path=tmp_path / "x",
-                voice_prompt_name="does_not_exist",
-            )
-            out = await brain._render_messages(
-                "c", [{"role": "user", "content": "hi"}],
-                skill_context="SKILL_BODY_XYZ",
-            )
-            assert "SKILL_BODY_XYZ" in out[0]["content"]
-            assert "显式激活技能" in out[0]["content"]
-
     async def test_adapter_drives_channel_description(self, tmp_path):
         with _stack(), patch("config.settings.PHASE0_MODE", ""):
             from src.core.brain import LapwingBrain

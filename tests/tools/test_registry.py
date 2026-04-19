@@ -143,38 +143,6 @@ async def test_internal_verify_tool_can_execute_when_directly_called():
     assert result.payload["passed"] is True
 
 
-@pytest.mark.asyncio
-async def test_activate_skill_tool_uses_skill_manager_service():
-    class FakeSkillManager:
-        def activate(self, name: str, user_input: str = ""):
-            return {
-                "skill_name": name,
-                "skill_dir": "/tmp/skills/demo",
-                "content": "body",
-                "resources": ["scripts/run.sh"],
-                "metadata": {"x": 1},
-                "wrapped_content": "<skill_content/>",
-            }
-
-    registry = build_default_tool_registry()
-    context = ToolExecutionContext(
-        execute_shell=AsyncMock(),
-        shell_default_cwd="/tmp",
-        services={"skill_manager": FakeSkillManager()},
-    )
-
-    result = await registry.execute(
-        ToolExecutionRequest(
-            name="activate_skill",
-            arguments={"name": "demo", "user_input": "test"},
-        ),
-        context=context,
-    )
-
-    assert result.success is True
-    assert result.payload["skill_name"] == "demo"
-    assert result.payload["content"] == "body"
-    assert result.payload["resources"] == ["scripts/run.sh"]
 
 
 

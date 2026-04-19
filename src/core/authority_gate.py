@@ -53,7 +53,6 @@ OPERATION_AUTH: dict[str, AuthLevel] = {
     # 信息查询类
     "research": AuthLevel.TRUSTED,
     "file_list_directory": AuthLevel.TRUSTED,
-    "activate_skill": AuthLevel.TRUSTED,
     "send_image": AuthLevel.TRUSTED,
     "session_search": AuthLevel.TRUSTED,
     # 文件和系统操作类 → OWNER

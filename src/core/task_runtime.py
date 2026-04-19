@@ -315,9 +315,8 @@ class TaskRuntime:
         shell_enabled: bool,
         *,
         web_enabled: bool = True,
-        skill_activation_enabled: bool = False,
     ) -> list[dict[str, Any]]:
-        """chat 场景工具集：按需暴露 shell / web / activate_skill。
+        """chat 场景工具集：按需暴露 shell / web。
         Phase 4: 个人工具（send_message, send_image 等）+ 提醒工具始终可用。
         Step 5: tell_user 与 commit/fulfill/abandon_promise 始终包含——
         前者是模型唯一对外说话出口，后者是承诺登记机制。
@@ -340,8 +339,6 @@ class TaskRuntime:
             tool_names.update({"execute_shell", "read_file", "write_file"})
         if web_enabled:
             tool_names.update({"research", "browse"})
-        if skill_activation_enabled:
-            tool_names.add("activate_skill")
         return self._tool_registry.function_tools(
             include_internal=False,
             tool_names=tool_names,

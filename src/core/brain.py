@@ -37,7 +37,6 @@ from config.settings import (
     SHELL_ALLOW_SUDO,
     SHELL_DEFAULT_CWD,
     SHELL_ENABLED,
-    SKILLS_DISPATCH_TOOL_WHITELIST,
     SOUL_PATH,
 )
 
@@ -93,7 +92,6 @@ class LapwingBrain:
         # render paths never have to guard against ``None``.
         self.state_view_builder: StateViewBuilder = StateViewBuilder()
         self.vector_store: VectorStore | None = None
-        self.skill_manager = None  # SkillManager | None — Phase 3 重建
         self.event_bus = None
         self._system_prompt: str | None = None
         self.reminder_scheduler = None  # Set externally (ReminderScheduler | None)
@@ -176,11 +174,6 @@ class LapwingBrain:
         reload_prompt("lapwing_voice")
         logger.info("已重新加载所有 prompt 缓存")
 
-    def reload_skills(self) -> None:
-        if self.skill_manager is None:
-            return
-        self.skill_manager.reload()
-
     def _chat_session_key(self, chat_id: str) -> str:
         return f"chat:{chat_id}"
 
@@ -205,7 +198,6 @@ class LapwingBrain:
         messages: list[dict],
         user_message: str,
         approved_directory: str | None = None,
-        include_skill_activation_tool: bool = False,
         status_callback=None,
         on_interim_text=None,
         on_typing=None,
@@ -221,7 +213,6 @@ class LapwingBrain:
         tools = self.task_runtime.chat_tools(
             shell_enabled=SHELL_ENABLED,
             web_enabled=CHAT_WEB_TOOLS_ENABLED,
-            skill_activation_enabled=include_skill_activation_tool,
         )
         services = {}
         # Step 5: 暴露 trajectory_store 给 tell_user / commitment 工具，
@@ -236,8 +227,6 @@ class LapwingBrain:
         commitment_store = getattr(self, "_commitment_store_ref", None)
         if commitment_store is not None:
             services["commitment_store"] = commitment_store
-        if include_skill_activation_tool and self.skill_manager is not None:
-            services["skill_manager"] = self.skill_manager
         if self.reminder_scheduler is not None:
             services["reminder_scheduler"] = self.reminder_scheduler
         if self.channel_manager is not None:
@@ -310,7 +299,6 @@ class LapwingBrain:
         user_id: str = "",
         auth_level: int = 3,
         group_id: str | None = None,
-        skill_context: str | None = None,
         inner: bool = False,
     ) -> list[dict]:
         """Assemble the full LLM messages list via StateSerializer.
@@ -332,10 +320,6 @@ class LapwingBrain:
         # skip the full StateView assembly entirely.
         if PHASE0_MODE:
             system_content = self.system_prompt
-            if skill_context:
-                system_content = (
-                    f"{system_content}\n\n## 显式激活技能\n\n{skill_context}"
-                )
             return [{"role": "system", "content": system_content}, *recent_messages]
 
         # Convert already-processed dicts into TrajectoryTurn values. Only
@@ -364,10 +348,6 @@ class LapwingBrain:
 
         serialized = _serialize_state(state_view)
         system_content = serialized.system_prompt
-        if skill_context:
-            system_content = (
-                f"{system_content}\n\n## 显式激活技能\n\n{skill_context}"
-            )
 
         # Rebuild with any non-string (multimodal) entries preserved in
         # their original positions: the serializer dropped them when
@@ -490,157 +470,6 @@ class LapwingBrain:
                 msg["content"] = blocks
                 break
 
-    def _skill_activation_tool_enabled(self) -> bool:
-        return self.skill_manager is not None and self.skill_manager.has_model_visible_skills()
-
-    async def run_skill_command(
-        self,
-        *,
-        chat_id: str,
-        raw_user_message: str,
-        skill_name: str,
-        user_input: str = "",
-        status_callback=None,
-    ) -> str:
-        """执行用户显式技能命令。"""
-        await self.memory.append(chat_id, "user", raw_user_message)
-
-        if self.skill_manager is None or not self.skill_manager.enabled:
-            reply = "技能系统当前未启用。"
-            await self.memory.append(chat_id, "assistant", reply)
-            return reply
-
-        skill = self.skill_manager.get(skill_name)
-        if skill is None:
-            reply = f"未找到技能 `{skill_name}`。"
-            await self.memory.append(chat_id, "assistant", reply)
-            return reply
-        if not skill.user_invocable:
-            reply = f"技能 `{skill.name}` 不允许用户直接调用。"
-            await self.memory.append(chat_id, "assistant", reply)
-            return reply
-
-        dialogue_generated = skill.command_dispatch != "tool"
-        try:
-            if skill.command_dispatch == "tool":
-                reply = await self._run_skill_direct_dispatch(skill=skill, user_input=user_input)
-            else:
-                reply = await self._run_skill_dialogue(
-                    chat_id=chat_id,
-                    raw_user_message=raw_user_message,
-                    skill=skill,
-                    user_input=user_input,
-                    status_callback=status_callback,
-                )
-        except Exception as exc:
-            logger.warning("[skills] 执行技能 `%s` 失败: %s", skill.name, exc)
-            reply = f"技能 `{skill.name}` 执行失败：{exc}"
-
-        # 仅对模型对话分支清洗，工具直派分支保留原始工具输出。
-        if dialogue_generated:
-            reply = strip_internal_thinking_tags(reply)
-
-        await self.memory.append(chat_id, "assistant", reply)
-        return reply
-
-    async def _run_skill_dialogue(
-        self,
-        *,
-        chat_id: str,
-        raw_user_message: str,
-        skill: "SkillDefinition",
-        user_input: str,
-        status_callback=None,
-    ) -> str:
-        assert self.skill_manager is not None
-        activation = self.skill_manager.activate(skill.name, user_input=user_input)
-        skill_context = str(activation.get("wrapped_content", "")).strip()
-        model_user_message = user_input.strip() or f"请按照技能 `{skill.name}` 的说明完成任务。"
-
-        history = await self._load_history(chat_id)
-        recent_messages = self._recent_messages(
-            history,
-            user_message=model_user_message,
-            original_user_message=raw_user_message,
-        )
-
-        messages = await self._render_messages(
-            chat_id,
-            recent_messages,
-            skill_context=skill_context or None,
-        )
-
-        return await self._complete_chat(
-            chat_id,
-            messages,
-            model_user_message,
-            include_skill_activation_tool=self._skill_activation_tool_enabled(),
-            status_callback=status_callback,
-        )
-
-    async def _run_skill_direct_dispatch(
-        self,
-        *,
-        skill: "SkillDefinition",
-        user_input: str,
-    ) -> str:
-        if skill.command_dispatch != "tool" or not skill.command_tool:
-            return f"技能 `{skill.name}` 未声明可直派工具。"
-
-        command_tool = skill.command_tool
-        if command_tool not in SKILLS_DISPATCH_TOOL_WHITELIST:
-            return f"技能 `{skill.name}` 请求的工具 `{command_tool}` 不在白名单中。"
-
-        command_text = user_input.strip()
-        if skill.command_arg_mode == "raw" and not command_text:
-            return f"技能 `{skill.name}` 需要参数输入。"
-
-        constraints_text = command_text or f"执行技能 `{skill.name}` 的工具直派任务"
-        constraints = extract_execution_constraints(constraints_text)
-        state = ExecutionSessionState(constraints=constraints)
-        deps = RuntimeDeps(
-            execute_shell=execute_shell,
-            policy=build_shell_runtime_policy(verify_constraints_fn=verify_constraints),
-            shell_default_cwd=SHELL_DEFAULT_CWD,
-            shell_allow_sudo=SHELL_ALLOW_SUDO,
-        )
-        result = await self.task_runtime.execute_tool(
-            request=ToolExecutionRequest(
-                name=command_tool,
-                arguments={
-                    "command": command_text,
-                    "commandName": f"/{skill.name}",
-                    "skillName": skill.name,
-                },
-            ),
-            profile="chat_shell",
-            state=state,
-            deps=deps,
-            services={"skill_manager": self.skill_manager} if self.skill_manager is not None else None,
-        )
-        return self._format_dispatched_tool_result(skill_name=skill.name, result=result.payload, success=result.success)
-
-    def _format_dispatched_tool_result(
-        self,
-        *,
-        skill_name: str,
-        result: dict,
-        success: bool,
-    ) -> str:
-        if not success:
-            reason = str(result.get("reason", "")).strip() or "工具执行失败。"
-            return f"技能 `{skill_name}` 直派执行失败：{reason}"
-
-        stdout = str(result.get("stdout", "")).strip()
-        stderr = str(result.get("stderr", "")).strip()
-        if stdout:
-            return stdout
-        if stderr:
-            return stderr
-        if "content" in result and str(result.get("content", "")).strip():
-            return str(result.get("content", "")).strip()
-        return f"技能 `{skill_name}` 已执行完成。"
-
     async def _prepare_think(
         self,
         chat_id: str,
@@ -749,7 +578,6 @@ class LapwingBrain:
                 ctx.messages,
                 ctx.effective_user_message,
                 approved_directory=ctx.approved_directory,
-                include_skill_activation_tool=self._skill_activation_tool_enabled(),
                 status_callback=status_callback,
             )
             reply = strip_internal_thinking_tags(reply)
@@ -829,7 +657,6 @@ class LapwingBrain:
                     session_key,
                     messages,
                     inner_prompt,
-                    include_skill_activation_tool=self._skill_activation_tool_enabled(),
                 ),
                 timeout=timeout_seconds,
             )
@@ -963,7 +790,6 @@ class LapwingBrain:
                 ctx.messages,
                 ctx.effective_user_message,
                 approved_directory=ctx.approved_directory,
-                include_skill_activation_tool=self._skill_activation_tool_enabled(),
                 status_callback=status_callback,
                 on_interim_text=on_inner_monologue,
                 on_typing=on_typing,
@@ -1119,7 +945,6 @@ class LapwingBrain:
             tool_specs = self.task_runtime.chat_tools(
                 shell_enabled=False,
                 web_enabled=True,
-                skill_activation_enabled=False,
             )
             # 过滤为仅允许的工具名
             allowed = set(tools)

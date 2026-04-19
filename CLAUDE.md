@@ -321,7 +321,7 @@ Runtime model switching is persisted to `data/config/model_routing.json` via
 Tools are `ToolSpec` instances registered in `build_default_tool_registry()`
 (`src/tools/registry.py`). Each has:
 
-- `capability` — one of `shell` / `web` / `file` / `memory` / `schedule` / `skill` / `code`
+- `capability` — one of `shell` / `web` / `file` / `memory` / `schedule` / `code`
   / `verify` / `general` / `browser` / `personal` / `identity` / `commitment` /
   `delegation` / `communication` / `agent`.
 - `visibility` — `"model"` (LLM sees the schema) vs `"internal"` (invoked by framework
@@ -466,7 +466,3 @@ left alone because they require deliberate refactor rather than pure deletion:
   Route these through `tell_user` in a dedicated refactor.
 - **`MainLoop` handler bodies are TODO.** Brain entry points still run directly; the
   single-consumer loop is staged but not yet load-bearing.
-- **Skill subsystem infrastructure is dormant.** `brain.skill_manager = None` in
-  production; `execute_user_skill_command` plus `_run_skill_*` helpers, the `activate_skill`
-  tool, and the `SKILLS_DISPATCH_TOOL_WHITELIST` constant remain in the tree. Repurposing
-  or removal should happen once the MVP's memory + persona loop is proven stable.
