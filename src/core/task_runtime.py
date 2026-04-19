@@ -708,8 +708,8 @@ class TaskRuntime:
         if not turn.tool_calls:
             # ── 模拟工具调用检测 ──
             model_text = (turn.text or "").strip()
+            available_tool_names = [t["function"]["name"] for t in ctx.tools]
             if ctx.simulated_tool_retries < 1 and model_text:
-                available_tool_names = [t["function"]["name"] for t in ctx.tools]
                 if self._detect_simulated_tool_call(model_text, available_tool_names):
                     ctx.simulated_tool_retries += 1
                     logger.info("[runtime] 检测到模拟工具调用，注入提醒（retry %d）", ctx.simulated_tool_retries)
@@ -721,6 +721,32 @@ class TaskRuntime:
                         ),
                     })
                     return TaskLoopStep()
+
+            # ── 裸文本但未调 tell_user ──
+            # Step 5 设计：裸文本不再 fallback 发给用户。若模型在用户面前的
+            # 首轮产出文字但既没调 tell_user 也没调任何工具，用户什么都看
+            # 不见。给模型一次机会把话真的说出来（或调工具查信息）。
+            if (
+                ctx.missing_tell_user_retries < 1
+                and model_text
+                and not ctx.has_used_tools
+                and ctx.send_fn is not None
+                and "tell_user" in available_tool_names
+            ):
+                ctx.missing_tell_user_retries += 1
+                logger.info(
+                    "[runtime] 裸文本未调 tell_user，注入提醒（retry %d）",
+                    ctx.missing_tell_user_retries,
+                )
+                ctx.messages.append({
+                    "role": "user",
+                    "content": (
+                        "[系统提醒] 你返回了文字但没调 tell_user，用户看不到。"
+                        "请重新决定：要说话就调 tell_user；要查资料就调 research 或 browse；"
+                        "两个都要就先调工具再调 tell_user。"
+                    ),
+                })
+                return TaskLoopStep()
 
             # ── No-Action Budget（仅在 LLM 曾使用工具后激活）──
             if ctx.has_used_tools and ctx.no_action_budget.consume():

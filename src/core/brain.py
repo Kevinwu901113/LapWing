@@ -798,12 +798,11 @@ class LapwingBrain:
             session_key, "user", inner_prompt, is_inner=True,
         )
 
-        history = await self._load_history(session_key)
-        recent = self._recent_messages(
-            history,
-            user_message=inner_prompt,
-            original_user_message=inner_prompt,
-        )
+        # Inner rows land with source_chat_id=NULL, so _load_history
+        # (include_inner=False) would return []. Build the recent list
+        # directly from inner_prompt — past inner thoughts aren't replayed
+        # into the message window; StateView surfaces runtime state.
+        recent = [{"role": "user", "content": inner_prompt}]
         messages = await self._render_messages(
             session_key, recent, inner=True,
         )

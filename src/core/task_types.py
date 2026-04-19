@@ -209,6 +209,7 @@ class ToolLoopContext:
     final_reply: str | None = None
     interim_parts: list[str] = field(default_factory=list)
     simulated_tool_retries: int = 0
+    missing_tell_user_retries: int = 0
     has_used_tools: bool = False
     start_time: float = field(default_factory=time.perf_counter)
 
