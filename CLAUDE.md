@@ -452,17 +452,15 @@ State: Zustand stores in `src/stores/` (`chat.ts`, `server.ts`). Types in `src/t
 
 ## Known gaps
 
-These are invariant-level issues found during the 2026-04-19 MVP cleanup but deliberately
-left alone because they require deliberate refactor rather than pure deletion:
+These are invariant-level issues surfaced during the 2026-04-19 MVP cleanup:
 
-- **`tell_user` single-exit is not fully enforced.** Five call sites still invoke
-  `await send_fn(...)` directly, bypassing `tell_user`, `mutation_log`, and
-  `trajectory_store`:
-  - `src/core/brain.py:679` (immediate confirmation reply)
-  - `src/core/brain.py:1017` (LLM call error surfacing)
-  - `src/core/durable_scheduler.py:396` (reminder notification)
-  - `src/core/durable_scheduler.py:423` (reminder agent result)
-  - `src/core/durable_scheduler.py:432` (reminder agent fallback)
-  Route these through `tell_user` in a dedicated refactor.
 - **`MainLoop` handler bodies are TODO.** Brain entry points still run directly; the
   single-consumer loop is staged but not yet load-bearing.
+
+Framework-level user-visible output (confirmations, LLM-error surfacing, reminder
+fires in `notify` / `agent` mode) does *not* go through the `tell_user` tool — the
+model is not speaking in those cases — but every one of those sites now records
+through `src/core/system_send.py`, which mirrors `tell_user`'s trajectory +
+mutation_log recording with a `source` tag (`confirmation` / `llm_error` /
+`reminder_notify` / `reminder_agent_result` / `reminder_agent_fallback`). The audit
+trail for user-visible bytes is therefore complete.

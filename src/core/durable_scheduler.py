@@ -97,15 +97,22 @@ class DurableScheduler:
         send_fn=None,
         brain=None,
         dispatcher=None,
+        trajectory_store=None,
+        mutation_log=None,
     ) -> None:
         # urgency_callback: async def callback(reminder: Reminder)
         # send_fn: async def send(text: str)
         # brain: LapwingBrain 引用，用于 agent 模式执行
+        # trajectory_store / mutation_log: optional — passed to
+        # ``send_system_message`` so reminder fires record into the
+        # standard audit trail (mirror of ``tell_user``).
         self._db_path = str(db_path)
         self._urgency_callback = urgency_callback
         self._send_fn = send_fn
         self._brain = brain
         self.dispatcher = dispatcher
+        self._trajectory_store = trajectory_store
+        self._mutation_log = mutation_log
         self._running = False
 
     # ── 公开接口 ────────────────────────────────────────────────────
@@ -391,11 +398,16 @@ class DurableScheduler:
             logger.warning("notify 模式缺少 send_fn，跳过发送: %s", reminder.reminder_id)
             return
 
+        from src.core.system_send import send_system_message
+
         message = f"⏰ {reminder.content}"
-        try:
-            await self._send_fn(message)
-        except Exception as exc:
-            logger.error("发送提醒消息失败: %s err=%s", reminder.reminder_id, exc)
+        await send_system_message(
+            self._send_fn,
+            message,
+            source="reminder_notify",
+            trajectory_store=self._trajectory_store,
+            mutation_log=self._mutation_log,
+        )
 
     async def _fire_agent(self, reminder: Reminder) -> None:
         """agent 模式：通过 brain 执行完整对话循环。"""
@@ -403,6 +415,8 @@ class DurableScheduler:
             logger.warning("agent 模式缺少 brain 引用，fallback 到 notify: %s", reminder.reminder_id)
             await self._fire_notify(reminder)
             return
+
+        from src.core.system_send import send_system_message
 
         try:
             # 静默中间输出，只收集最终结果
@@ -419,19 +433,29 @@ class DurableScheduler:
 
             # 将最终结果通过 send_fn 发出
             if result and self._send_fn is not None:
-                try:
-                    await self._send_fn(result)
-                except Exception as exc:
-                    logger.error("发送 agent 执行结果失败: %s err=%s", reminder.reminder_id, exc)
+                await send_system_message(
+                    self._send_fn,
+                    result,
+                    source="reminder_agent_result",
+                    chat_id="__scheduler__",
+                    adapter="system",
+                    trajectory_store=self._trajectory_store,
+                    mutation_log=self._mutation_log,
+                )
 
         except Exception as exc:
             logger.error("agent 模式执行失败，fallback 到 notify: %s err=%s", reminder.reminder_id, exc)
             # 执行失败时降级为简单通知
             if self._send_fn is not None:
-                try:
-                    await self._send_fn(f"⏰ {reminder.content}\n（自动执行失败，仅提醒）")
-                except Exception:
-                    pass
+                await send_system_message(
+                    self._send_fn,
+                    f"⏰ {reminder.content}\n（自动执行失败，仅提醒）",
+                    source="reminder_agent_fallback",
+                    chat_id="__scheduler__",
+                    adapter="system",
+                    trajectory_store=self._trajectory_store,
+                    mutation_log=self._mutation_log,
+                )
 
     def _calc_next(
         self,
