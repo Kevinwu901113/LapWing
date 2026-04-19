@@ -89,6 +89,11 @@ def create_app(
     _notes_v2_routes.init(_note_store, _memory_vector_store)
     app.include_router(_notes_v2_routes.router)
 
+    from src.api.routes import skills_v2 as _skills_v2_routes
+    _skill_store = getattr(brain, "_skill_store", None)
+    _skills_v2_routes.init(_skill_store)
+    app.include_router(_skills_v2_routes.router)
+
     _status_v2_routes.init(brain, app)
     app.include_router(_status_v2_routes.router)
 
