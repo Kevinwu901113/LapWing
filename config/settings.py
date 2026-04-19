@@ -131,6 +131,15 @@ INTEREST_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("INTEREST_EXTRACT_TURN_THRE
 
 # ── 功能开关 ──
 MEMORY_GUARD_ENABLED: bool = os.getenv("MEMORY_GUARD_ENABLED", "true").lower() in ("true", "1", "yes")
+
+# Step 7: 分层记忆树 (Episodic + Semantic)
+MEMORY_WORKING_SET_TOP_K: int = int(os.getenv("MEMORY_WORKING_SET_TOP_K", "10"))
+EPISODIC_EXTRACT_ENABLED: bool = os.getenv("EPISODIC_EXTRACT_ENABLED", "true").lower() in ("true", "1", "yes")
+EPISODIC_EXTRACT_MIN_TURNS: int = int(os.getenv("EPISODIC_EXTRACT_MIN_TURNS", "3"))
+EPISODIC_EXTRACT_WINDOW_SIZE: int = int(os.getenv("EPISODIC_EXTRACT_WINDOW_SIZE", "20"))
+SEMANTIC_DISTILL_ENABLED: bool = os.getenv("SEMANTIC_DISTILL_ENABLED", "true").lower() in ("true", "1", "yes")
+SEMANTIC_DISTILL_EPISODES_WINDOW: int = int(os.getenv("SEMANTIC_DISTILL_EPISODES_WINDOW", "20"))
+SEMANTIC_DISTILL_DEDUP_THRESHOLD: float = float(os.getenv("SEMANTIC_DISTILL_DEDUP_THRESHOLD", "0.85"))
 AGENT_TEAM_ENABLED: bool = os.getenv("AGENT_TEAM_ENABLED", "true").lower() in ("true", "1", "yes")
 SELF_SCHEDULE_ENABLED: bool = os.getenv("SELF_SCHEDULE_ENABLED", "true").lower() in ("true", "1", "yes")
 MESSAGE_SPLIT_ENABLED: bool = os.getenv("MESSAGE_SPLIT_ENABLED", "true").lower() in ("true", "1", "yes")

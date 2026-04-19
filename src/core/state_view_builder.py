@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from src.core.commitments import CommitmentStore
     from src.core.task_model import TaskStore
     from src.core.trajectory_store import TrajectoryStore
+    from src.memory.working_set import WorkingSet
 
 logger = logging.getLogger("lapwing.core.state_view_builder")
 
@@ -81,8 +82,11 @@ class StateViewBuilder:
         task_store: "TaskStore | None" = None,
         reminder_source: object = None,  # duck-typed: has async get_due_reminders
         previous_state_reader=None,       # callable → dict | None (vitals.get_previous_state)
+        working_set: "WorkingSet | None" = None,  # Step 7: memory retrieval
         history_turns: int = 30,
         inner_history_turns: int = 50,
+        memory_top_k: int = 10,
+        memory_query_chat_turns: int = 3,
     ) -> None:
         self._soul_path = Path(soul_path)
         self._constitution_path = Path(constitution_path)
@@ -95,8 +99,11 @@ class StateViewBuilder:
         # Indirection for the offline-gap probe keeps the builder
         # decoupled from ``src.core.vitals`` for tests.
         self._previous_state_reader = previous_state_reader
+        self._working_set = working_set
         self._history_turns = history_turns
         self._inner_history_turns = inner_history_turns
+        self._memory_top_k = memory_top_k
+        self._memory_query_chat_turns = memory_query_chat_turns
 
     # ── Entry points ─────────────────────────────────────────────────
 
@@ -131,7 +138,7 @@ class StateViewBuilder:
         else:
             trajectory_window = await self._build_trajectory_for_chat(chat_id)
         commitments_active = await self._build_commitments_active(chat_id=chat_id)
-        memory_snippets = MemorySnippets(snippets=())  # wired in Step 4+
+        memory_snippets = await self._build_memory_snippets(trajectory_window)
 
         return StateView(
             identity_docs=identity_docs,
@@ -166,7 +173,7 @@ class StateViewBuilder:
         else:
             trajectory_window = await self._build_trajectory_for_inner()
         commitments_active = await self._build_commitments_active(chat_id=None)
-        memory_snippets = MemorySnippets(snippets=())
+        memory_snippets = await self._build_memory_snippets(trajectory_window)
 
         return StateView(
             identity_docs=identity_docs,
@@ -262,6 +269,34 @@ class StateViewBuilder:
             return TrajectoryWindow(turns=())
         entries = await self._trajectory.recent(n=self._inner_history_turns)
         return TrajectoryWindow(turns=tuple(_entries_to_turns(entries)))
+
+    # ── Memory snippets (Step 7) ─────────────────────────────────────
+
+    async def _build_memory_snippets(
+        self, trajectory_window: TrajectoryWindow,
+    ) -> MemorySnippets:
+        """Retrieve relevant memory via WorkingSet.
+
+        Query text is the concatenation of the last ``memory_query_chat_turns``
+        user/assistant turns — enough lexical signal for semantic search,
+        short enough that the embedding stays focused. If no WorkingSet
+        is wired (phase-0 / unit tests without memory) or the trajectory
+        is empty, returns empty snippets — serializer skips the layer.
+        """
+        if self._working_set is None:
+            return MemorySnippets(snippets=())
+        query_text = _trajectory_query_text(
+            trajectory_window, self._memory_query_chat_turns,
+        )
+        if not query_text:
+            return MemorySnippets(snippets=())
+        try:
+            return await self._working_set.retrieve(
+                query_text, top_k=self._memory_top_k,
+            )
+        except Exception:
+            logger.debug("WorkingSet.retrieve failed", exc_info=True)
+            return MemorySnippets(snippets=())
 
     # ── Commitments / reminders / tasks ──────────────────────────────
 
@@ -398,6 +433,25 @@ def _entries_to_turns(
             continue
         out.append(TrajectoryTurn(role=role, content=text))
     return out
+
+
+def _trajectory_query_text(
+    window: TrajectoryWindow, last_n_turns: int,
+) -> str:
+    """Concatenate the last N user/assistant turn contents.
+
+    Step 7: WorkingSet uses this as the semantic-retrieval query. ``system``
+    turns (voice reminders, summaries) are excluded to keep the query
+    close to the *actual* topic rather than the scaffolding. Empty string
+    when the window has no user/assistant rows.
+    """
+    if not window.turns:
+        return ""
+    usable = [t for t in window.turns if t.role in ("user", "assistant")]
+    if not usable:
+        return ""
+    tail = usable[-last_n_turns:]
+    return "\n".join(t.content for t in tail if t.content).strip()
 
 
 def _extract_entry_text(entry: TrajectoryEntry) -> str | None:

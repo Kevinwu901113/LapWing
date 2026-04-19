@@ -173,6 +173,18 @@ class MaintenanceTimer:
         except Exception:
             logger.debug("daily maintenance load failed", exc_info=True)
 
+        # Step 7: semantic distillation — runs once per day after the
+        # heartbeat actions so the distiller sees any episodes those
+        # actions may have written. Failure is logged; no retry (next
+        # day's cycle will catch up).
+        distiller = getattr(self._brain, "_semantic_distiller", None)
+        if distiller is not None:
+            try:
+                written = await distiller.distill_recent()
+                logger.info("daily semantic distillation wrote %d facts", written)
+            except Exception:
+                logger.warning("daily semantic distillation failed", exc_info=True)
+
     def _build_context(self, beat_type: str) -> SenseContext:
         from src.core.vitals import now_taipei
         now = now_taipei()
