@@ -9,11 +9,7 @@ __pycache__/
 dist/
 build/
 
-# Desktop (v1 legacy)
-desktop/node_modules/
-desktop/src-tauri/target/
-
-# Desktop (v2)
+# Desktop
 desktop-v2/node_modules/
 desktop-v2/src-tauri/target/
 
@@ -21,7 +17,6 @@ desktop-v2/src-tauri/target/
 config/.env
 data/
 logs/
-skill_traces/
 
 # Testing
 .pytest_cache/
