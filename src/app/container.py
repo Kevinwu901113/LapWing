@@ -254,7 +254,7 @@ class AppContainer:
             # Step 4 M7: ConsciousnessEngine retired. Inner ticks live on
             # InnerTickScheduler; periodic maintenance lives on
             # MaintenanceTimer (this block).
-            self.maintenance_timer = MaintenanceTimer(self.brain, send_fn=send_fn)
+            self.maintenance_timer = MaintenanceTimer(self.brain)
             await self.maintenance_timer.start()
 
             # DurableScheduler always starts when send_fn is wired.
