@@ -150,13 +150,6 @@ TASK_MAX_TOOL_ROUNDS: int = int(os.getenv("TASK_MAX_TOOL_ROUNDS", "32"))
 TASK_NO_ACTION_BUDGET: int = int(os.getenv("TASK_NO_ACTION_BUDGET", "3"))
 TASK_ERROR_BURST_THRESHOLD: int = int(os.getenv("TASK_ERROR_BURST_THRESHOLD", "3"))
 
-# Skills — 用户显式技能触发时可调用的工具白名单
-SKILLS_DISPATCH_TOOL_WHITELIST: set[str] = {
-    item.strip()
-    for item in os.getenv("SKILLS_DISPATCH_TOOL_WHITELIST", "execute_shell").split(",")
-    if item.strip()
-}
-
 # Latency / 体感 SLO（监控+告警）
 TOOL_LOOP_SLO_SHELL_P95_MS: int = int(os.getenv("TOOL_LOOP_SLO_SHELL_P95_MS", "2000"))
 TOOL_LOOP_SLO_WEB_P95_MS: int = int(os.getenv("TOOL_LOOP_SLO_WEB_P95_MS", "5000"))

@@ -8,7 +8,6 @@ from typing import Any
 
 from src.tools.handlers import (
     _blocked_payload,
-    activate_skill_tool,
     apply_workspace_patch_tool,
     execute_shell_tool,
     file_append_tool,
@@ -255,27 +254,6 @@ def build_default_tool_registry() -> ToolRegistry:
             executor=write_file_tool,
             capability="shell",
             risk_level="high",
-        )
-    )
-
-    registry.register(
-        ToolSpec(
-            name="activate_skill",
-            description=(
-                "按名称激活一个已发现的 Skill，返回去 frontmatter 的正文与资源清单。"
-                "当任务需要某个技能的详细步骤时先调用此工具。"
-            ),
-            json_schema={
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "description": "技能名称（必须来自 system prompt 的可用技能目录）"},
-                    "user_input": {"type": "string", "description": "用户对该技能的附加输入（可选）"},
-                },
-                "required": ["name"],
-            },
-            executor=activate_skill_tool,
-            capability="skill",
-            risk_level="low",
         )
     )
 

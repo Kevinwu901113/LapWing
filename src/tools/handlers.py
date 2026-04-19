@@ -134,43 +134,6 @@ async def write_file_tool(
     )
 
 
-async def activate_skill_tool(
-    request: ToolExecutionRequest,
-    context: ToolExecutionContext,
-) -> ToolExecutionResult:
-    skill_manager = context.services.get("skill_manager")
-    if skill_manager is None:
-        payload = {"success": False, "reason": "skill_manager 不可用", "skill_name": "", "content": "", "resources": [], "metadata": {}}
-        return ToolExecutionResult(success=False, payload=payload, reason="skill_manager 不可用")
-
-    name = str(request.arguments.get("name", "")).strip().lower()
-    user_input = str(request.arguments.get("user_input", "")).strip()
-    if not name:
-        payload = {"success": False, "reason": "缺少 name 参数", "skill_name": "", "content": "", "resources": [], "metadata": {}}
-        return ToolExecutionResult(success=False, payload=payload, reason="缺少 name 参数")
-
-    try:
-        activated = skill_manager.activate(name, user_input=user_input)
-    except KeyError:
-        payload = {"success": False, "reason": f"技能不存在: {name}", "skill_name": name, "content": "", "resources": [], "metadata": {}}
-        return ToolExecutionResult(success=False, payload=payload, reason=f"技能不存在: {name}")
-    except Exception as exc:
-        payload = {"success": False, "reason": f"激活技能失败: {exc}", "skill_name": name, "content": "", "resources": [], "metadata": {}}
-        return ToolExecutionResult(success=False, payload=payload, reason=f"激活技能失败: {exc}")
-
-    payload = {
-        "success": True,
-        "reason": "",
-        "skill_name": activated.get("skill_name", name),
-        "skill_dir": activated.get("skill_dir", ""),
-        "content": activated.get("content", ""),
-        "resources": activated.get("resources", []),
-        "metadata": activated.get("metadata", {}),
-        "wrapped_content": activated.get("wrapped_content", ""),
-    }
-    return ToolExecutionResult(success=True, payload=payload, reason="")
-
-
 async def file_read_segment_tool(
     request: ToolExecutionRequest,
     context: ToolExecutionContext,
