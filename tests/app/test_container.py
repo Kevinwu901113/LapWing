@@ -31,8 +31,7 @@ async def test_start_and_shutdown_calls_lifecycle_components():
         api_server=api_server,  # type: ignore[arg-type]
     )
 
-    with patch.object(container, "_configure_brain_dependencies", new=AsyncMock()), \
-         patch("config.settings.CONSCIOUSNESS_ENABLED", False):
+    with patch.object(container, "_configure_brain_dependencies", new=AsyncMock()):
         await container.start(send_fn=AsyncMock())
         await container.shutdown()
 

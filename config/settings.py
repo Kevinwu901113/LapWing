@@ -42,7 +42,7 @@ load_dotenv(_env_file)
 SEARCH_PROXY_URL: str = os.getenv("SEARCH_PROXY_URL", "")
 
 # QQ (NapCat OneBot v11)
-QQ_ENABLED: bool = os.getenv("QQ_ENABLED", "false").lower() == "true"
+QQ_ENABLED: bool = os.getenv("QQ_ENABLED", "true").lower() == "true"
 QQ_WS_URL: str = os.getenv("QQ_WS_URL", "ws://127.0.0.1:3001")
 QQ_ACCESS_TOKEN: str = os.getenv("QQ_ACCESS_TOKEN", "")
 QQ_SELF_ID: str = os.getenv("QQ_SELF_ID", "")
@@ -97,13 +97,7 @@ OPENAI_CODEX_AUTH_REDIRECT_PATH: str = os.getenv("OPENAI_CODEX_AUTH_REDIRECT_PAT
 OPENAI_CODEX_AUTH_PROXY_URL: str = os.getenv("OPENAI_CODEX_AUTH_PROXY_URL", "")
 CODEX_FALLBACK_MODEL: str = os.getenv("CODEX_FALLBACK_MODEL", "gpt-5.3-codex")
 
-# 心跳配置
-HEARTBEAT_ENABLED: bool = os.getenv("HEARTBEAT_ENABLED", "true").lower() == "true"
-HEARTBEAT_FAST_INTERVAL_MINUTES: int = int(os.getenv("HEARTBEAT_FAST_INTERVAL_MINUTES", "60"))
-HEARTBEAT_SLOW_HOUR: int = int(os.getenv("HEARTBEAT_SLOW_HOUR", "3"))
-
 # 意识循环配置
-CONSCIOUSNESS_ENABLED: bool = os.getenv("CONSCIOUSNESS_ENABLED", "true").lower() == "true"
 CONSCIOUSNESS_DEFAULT_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_DEFAULT_INTERVAL", "600"))
 CONSCIOUSNESS_MIN_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_MIN_INTERVAL", "120"))
 CONSCIOUSNESS_MAX_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_MAX_INTERVAL", "14400"))
@@ -124,14 +118,6 @@ BROWSE_SOURCES: list[str] = [
 MAX_HISTORY_TURNS: int = 20  # 保留最近 N 轮对话（每轮 = 1 user + 1 assistant）
 MESSAGE_BUFFER_SECONDS: float = float(os.getenv("MESSAGE_BUFFER_SECONDS", "4"))  # 消息合并等待时间
 
-# 用户画像提取
-FACT_EXTRACT_IDLE_SECONDS: int = int(os.getenv("FACT_EXTRACT_IDLE_SECONDS", "300"))  # 空闲 N 秒后触发提取
-FACT_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("FACT_EXTRACT_TURN_THRESHOLD", "3"))  # 满 N 轮触发提取
-INTEREST_EXTRACT_TURN_THRESHOLD: int = int(os.getenv("INTEREST_EXTRACT_TURN_THRESHOLD", "5"))
-
-# ── 功能开关 ──
-MEMORY_GUARD_ENABLED: bool = os.getenv("MEMORY_GUARD_ENABLED", "true").lower() in ("true", "1", "yes")
-
 # Step 7: 分层记忆树 (Episodic + Semantic)
 MEMORY_WORKING_SET_TOP_K: int = int(os.getenv("MEMORY_WORKING_SET_TOP_K", "10"))
 EPISODIC_EXTRACT_ENABLED: bool = os.getenv("EPISODIC_EXTRACT_ENABLED", "true").lower() in ("true", "1", "yes")
@@ -141,8 +127,6 @@ SEMANTIC_DISTILL_ENABLED: bool = os.getenv("SEMANTIC_DISTILL_ENABLED", "true").l
 SEMANTIC_DISTILL_EPISODES_WINDOW: int = int(os.getenv("SEMANTIC_DISTILL_EPISODES_WINDOW", "20"))
 SEMANTIC_DISTILL_DEDUP_THRESHOLD: float = float(os.getenv("SEMANTIC_DISTILL_DEDUP_THRESHOLD", "0.85"))
 AGENT_TEAM_ENABLED: bool = os.getenv("AGENT_TEAM_ENABLED", "true").lower() in ("true", "1", "yes")
-SELF_SCHEDULE_ENABLED: bool = os.getenv("SELF_SCHEDULE_ENABLED", "true").lower() in ("true", "1", "yes")
-MESSAGE_SPLIT_ENABLED: bool = os.getenv("MESSAGE_SPLIT_ENABLED", "true").lower() in ("true", "1", "yes")
 MESSAGE_SPLIT_FALLBACK_NEWLINE: bool = os.getenv("MESSAGE_SPLIT_FALLBACK_NEWLINE", "true").lower() in ("true", "1", "yes")
 MESSAGE_SPLIT_DELAY_BASE: float = float(os.getenv("MESSAGE_SPLIT_DELAY_BASE", "0.8"))
 MESSAGE_SPLIT_DELAY_PER_CHAR: float = float(os.getenv("MESSAGE_SPLIT_DELAY_PER_CHAR", "0.008"))
@@ -166,15 +150,7 @@ TASK_MAX_TOOL_ROUNDS: int = int(os.getenv("TASK_MAX_TOOL_ROUNDS", "32"))
 TASK_NO_ACTION_BUDGET: int = int(os.getenv("TASK_NO_ACTION_BUDGET", "3"))
 TASK_ERROR_BURST_THRESHOLD: int = int(os.getenv("TASK_ERROR_BURST_THRESHOLD", "3"))
 
-# Skills（AgentSkills）
-SKILLS_WORKSPACE_DIR: str = os.getenv("SKILLS_WORKSPACE_DIR", str(ROOT_DIR / "skills"))
-SKILLS_MANAGED_DIR: str = os.getenv("SKILLS_MANAGED_DIR", str(Path.home() / ".lapwing" / "skills"))
-SKILLS_BUNDLED_DIR: str = os.getenv("SKILLS_BUNDLED_DIR", str(ROOT_DIR / "bundled_skills"))
-SKILLS_EXTRA_DIRS: list[str] = [
-    item.strip()
-    for item in os.getenv("SKILLS_EXTRA_DIRS", "").split(",")
-    if item.strip()
-]
+# Skills — 用户显式技能触发时可调用的工具白名单
 SKILLS_DISPATCH_TOOL_WHITELIST: set[str] = {
     item.strip()
     for item in os.getenv("SKILLS_DISPATCH_TOOL_WHITELIST", "execute_shell").split(",")
