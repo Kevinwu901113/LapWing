@@ -42,7 +42,7 @@ from src.core.events import InnerTickEvent
 if TYPE_CHECKING:  # pragma: no cover
     from src.core.event_queue import EventQueue
 
-logger = logging.getLogger("lapwing.inner_tick_scheduler")
+logger = logging.getLogger("lapwing.core.inner_tick_scheduler")
 
 
 _NEXT_PATTERN = re.compile(r"\[T?NEXT:\s*(\d+)\s*(s|m|h|min)\]", re.IGNORECASE)

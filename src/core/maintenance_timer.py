@@ -29,7 +29,7 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable
 if TYPE_CHECKING:  # pragma: no cover
     from src.core.brain import LapwingBrain
 
-logger = logging.getLogger("lapwing.maintenance_timer")
+logger = logging.getLogger("lapwing.core.maintenance_timer")
 
 
 # Re-imported here so callers don't have to fish it out of the legacy

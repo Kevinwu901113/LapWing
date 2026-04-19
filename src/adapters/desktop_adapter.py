@@ -7,7 +7,7 @@ import logging
 from src.adapters.base import BaseAdapter, ChannelType
 from src.models.message import RichMessage, SegmentType
 
-logger = logging.getLogger("lapwing.adapters.desktop")
+logger = logging.getLogger("lapwing.adapters.desktop_adapter")
 
 
 class DesktopChannelAdapter(BaseAdapter):

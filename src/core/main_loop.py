@@ -38,7 +38,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-only imports
     from src.core.event_queue import EventQueue
     from src.core.inner_tick_scheduler import InnerTickScheduler
 
-logger = logging.getLogger("lapwing.main_loop")
+logger = logging.getLogger("lapwing.core.main_loop")
 
 
 class MainLoop:
