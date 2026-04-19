@@ -338,11 +338,23 @@ repeat, bounded by `TASK_MAX_TOOL_ROUNDS`. Loop detection and circuit breaker ar
 ### Single-consumer MainLoop (Blueprint v2.0 Step 4)
 
 `MainLoop` is the single consumer of `EventQueue`. Events carry a priority
-(OWNER > TRUSTED > SYSTEM > INNER); the queue exposes a priority-aware `peek` so that an
-OWNER message can preempt an inner-tick turn. **Status: skeleton is in place; M2/M3/M4
-handler bodies are still TODO** (tracked in `docs/refactor_v2/cleanup_report_step4.md`).
-Today Brain entry points (`think_conversational`, `think_inner`) run directly — the
-consolidation onto MainLoop is a future task.
+(OWNER > TRUSTED > SYSTEM > INNER); a concurrent watcher cancels the in-flight
+handler the moment an OWNER message lands, so inner ticks and reminder-driven
+agent runs yield to Kevin immediately. Handlers dispatch by event class:
+
+- `MessageEvent` → `_handle_message` → `brain.think_conversational`. Producers:
+  QQ adapter (`main.py`) and Desktop WebSocket (`src/api/routes/chat_ws.py`);
+  also `DurableScheduler._fire_agent` for agent-mode reminder fires, so those
+  inherit the same preemption rules.
+- `InnerTickEvent` → `_handle_inner_tick` → `brain.think_inner`. Producer:
+  `InnerTickScheduler` (adaptive backoff, urgency pushed by
+  `DurableScheduler` when a reminder fires).
+- `SystemEvent` → `_handle_system` (currently handles `shutdown`).
+
+`done_future` on `MessageEvent` lets producers await the handler's reply — the
+Desktop WS channel uses this for synchronous request/response turns; the
+scheduler uses it to relay the agent-mode final reply through
+`send_system_message`.
 
 ### RAPTOR two-layer memory
 
@@ -452,15 +464,24 @@ State: Zustand stores in `src/stores/` (`chat.ts`, `server.ts`). Types in `src/t
 
 ## Known gaps
 
-These are invariant-level issues surfaced during the 2026-04-19 MVP cleanup:
+As of the 2026-04-19 MVP cleanup + its O1/O2/O3 follow-ups, there are no
+outstanding invariant-level gaps. Earlier documentation flagged three, all now
+resolved:
 
-- **`MainLoop` handler bodies are TODO.** Brain entry points still run directly; the
-  single-consumer loop is staged but not yet load-bearing.
+- `tell_user` single-exit — resolved by O1. All user-visible bytes
+  (LLM-mediated through the `tell_user` tool, and framework-mediated
+  through `src/core/system_send.py:send_system_message`) record into
+  `trajectory_store` + `mutation_log`. The invariant stays intact: the LLM
+  has only one exit (`tell_user`); the framework has a distinct, audited
+  exit that carries a `source` tag (`confirmation` / `llm_error` /
+  `reminder_notify` / `reminder_agent_result` / `reminder_agent_fallback`).
+- `MainLoop` not load-bearing — resolved. The earlier note was wrong: the
+  handler bodies in `src/core/main_loop.py:_handle_message` /
+  `_handle_inner_tick` / `_handle_system` are fully implemented, and the QQ
+  adapter (`main.py`) + Desktop WebSocket (`src/api/routes/chat_ws.py`) push
+  `MessageEvent` into the shared `EventQueue` (the only consumers of
+  `brain.think_conversational` in production are the MainLoop handler and
+  the scheduler fallback).
+- Dormant skill subsystem — resolved by O3 (removed).
 
-Framework-level user-visible output (confirmations, LLM-error surfacing, reminder
-fires in `notify` / `agent` mode) does *not* go through the `tell_user` tool — the
-model is not speaking in those cases — but every one of those sites now records
-through `src/core/system_send.py`, which mirrors `tell_user`'s trajectory +
-mutation_log recording with a `source` tag (`confirmation` / `llm_error` /
-`reminder_notify` / `reminder_agent_result` / `reminder_agent_fallback`). The audit
-trail for user-visible bytes is therefore complete.
+If a new invariant-level gap is found, add it back here.
