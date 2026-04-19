@@ -20,16 +20,19 @@ export function useSSEv2() {
 
     if (type.startsWith("agent.")) {
       const tasksStore = useTasksStore.getState();
+      const payload = event.payload as Record<string, unknown>;
+      // Step 4 M5 起 SSE 不再携带 top-level task_id/actor——consumer
+      // 从 payload 读。Step 6 的 agent.* mutations 在 payload 里统一带上。
+      const taskId = (payload.task_id as string | undefined) ?? event.task_id;
+
       if (type === "agent.task_queued" || type === "agent.task_started" ||
           type === "agent.task_done" || type === "agent.task_failed") {
-        // Upsert task from event payload
-        const payload = event.payload as Record<string, unknown>;
         const status = type === "agent.task_queued" ? "queued"
           : type === "agent.task_started" ? "running"
           : type === "agent.task_done" ? "done"
           : "failed";
         tasksStore.upsertTask({
-          task_id: (payload.task_id as string) ?? event.task_id ?? "",
+          task_id: taskId ?? "",
           parent_task_id: payload.parent_task_id as string | undefined,
           title: (payload.title as string) ?? (payload.request as string) ?? "",
           status,
@@ -38,9 +41,8 @@ export function useSSEv2() {
           updated_at: event.timestamp,
         });
       }
-      if (event.task_id && (type === "agent.message" || type === "agent.tool_called")) {
-        const payload = event.payload as Record<string, unknown>;
-        tasksStore.addAgentMessage(event.task_id, {
+      if (taskId && (type === "agent.message" || type === "agent.tool_called")) {
+        tasksStore.addAgentMessage(taskId, {
           event_id: event.event_id,
           timestamp: event.timestamp,
           actor: (payload.actor as string) ?? event.actor ?? "unknown",

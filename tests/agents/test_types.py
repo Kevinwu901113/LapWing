@@ -17,15 +17,29 @@ class TestAgentSpec:
         assert spec.name == "test"
         assert spec.model_slot == "agent_execution"
         assert spec.tools == ["web_search"]
+        assert spec.runtime_profile is None
 
     def test_defaults(self):
         spec = AgentSpec(
             name="t", description="t", system_prompt="t",
-            model_slot="agent_execution", tools=[],
+            model_slot="agent_execution",
         )
+        assert spec.tools == []
+        assert spec.runtime_profile is None
         assert spec.max_rounds == 15
         assert spec.max_tokens == 30000
         assert spec.timeout_seconds == 180
+
+    def test_runtime_profile_field(self):
+        """Step 6 对齐：runtime_profile 取代 tools 列表。"""
+        from src.core.runtime_profiles import AGENT_RESEARCHER_PROFILE
+
+        spec = AgentSpec(
+            name="r", description="r", system_prompt="r",
+            model_slot="agent_execution",
+            runtime_profile=AGENT_RESEARCHER_PROFILE,
+        )
+        assert spec.runtime_profile is AGENT_RESEARCHER_PROFILE
 
 
 class TestAgentMessage:

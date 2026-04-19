@@ -1,17 +1,29 @@
-"""Agent 基类：所有 Agent 的 tool loop 实现。"""
+"""Agent 基类：所有 Agent 的 tool loop 实现。
+
+v2.0 Step 6：观测改由 ``StateMutationLog`` 承担——每个 Agent 执行发射
+``AGENT_STARTED`` / ``AGENT_TOOL_CALL`` / ``AGENT_COMPLETED`` / ``AGENT_FAILED``
+四类 mutation。Phase 6 原本的 ``dispatcher.submit(event_type="agent.*")``
+已全部移除；Desktop SSE（``/api/v2/events``）在 Step 4 M5 起直接订阅
+mutation_log，所以语义字符串保持 ``agent.task_*`` 以零成本兼容现有
+``useSSEv2.ts`` 消费逻辑。
+"""
 
 from __future__ import annotations
 
 import asyncio
 import json
 import logging
+import time
 from typing import TYPE_CHECKING, Any
+
+from src.logging.state_mutation_log import MutationType
 
 from .types import AgentMessage, AgentResult, AgentSpec
 
 if TYPE_CHECKING:
-    from src.core.dispatcher import Dispatcher
     from src.core.llm_router import LLMRouter
+    from src.core.runtime_profiles import RuntimeProfile
+    from src.logging.state_mutation_log import StateMutationLog
     from src.tools.registry import ToolRegistry
 
 logger = logging.getLogger("lapwing.agents.base")
@@ -25,23 +37,31 @@ class BaseAgent:
         spec: AgentSpec,
         llm_router: "LLMRouter",
         tool_registry: "ToolRegistry",
-        dispatcher: "Dispatcher",
+        mutation_log: "StateMutationLog | None",
         services: dict[str, Any] | None = None,
     ):
         self.spec = spec
         self.llm_router = llm_router
         self.tool_registry = tool_registry
-        self.dispatcher = dispatcher
+        self.mutation_log = mutation_log
         self._services = services or {}
 
     async def execute(self, message: AgentMessage) -> AgentResult:
         """执行任务：独立 tool loop。"""
 
-        await self.dispatcher.submit(
-            event_type="agent.task_started",
-            actor=self.spec.name,
-            task_id=message.task_id,
-            payload={"task_request": "", "message": message.content},
+        start_ts = time.perf_counter()
+        tool_calls_made = 0
+
+        await self._emit(
+            MutationType.AGENT_STARTED,
+            payload={
+                "task_id": message.task_id,
+                "agent_name": self.spec.name,
+                "actor": self.spec.name,
+                "parent_task_id": None if message.from_agent == "lapwing" else message.from_agent,
+                "title": message.content[:200],
+                "request": message.content,
+            },
         )
 
         messages: list[dict[str, Any]] = [
@@ -64,28 +84,20 @@ class BaseAgent:
                     timeout=self.spec.timeout_seconds,
                 )
             except asyncio.TimeoutError:
-                return AgentResult(
-                    task_id=message.task_id,
-                    status="failed",
-                    result="",
-                    reason="LLM 调用超时",
+                return await self._finalize_failed(
+                    message, "LLM 调用超时", start_ts, tool_calls_made,
                 )
             except Exception as exc:
                 logger.exception("Agent '%s' LLM 调用失败", self.spec.name)
-                return AgentResult(
-                    task_id=message.task_id,
-                    status="failed",
-                    result="",
-                    reason=f"LLM error: {exc}",
+                return await self._finalize_failed(
+                    message, f"LLM error: {exc}", start_ts, tool_calls_made,
                 )
 
             # 无 tool_calls → 任务完成
             if not response.tool_calls:
-                return AgentResult(
-                    task_id=message.task_id,
-                    status="done",
-                    result=response.text,
-                    evidence=self._extract_evidence(messages),
+                return await self._finalize_done(
+                    message, response.text, self._extract_evidence(messages),
+                    start_ts, tool_calls_made,
                 )
 
             # 追加 assistant continuation
@@ -97,17 +109,19 @@ class BaseAgent:
             for tc in response.tool_calls:
                 output = await self._execute_tool(tc, message)
                 tool_results.append((tc, output))
+                tool_calls_made += 1
 
                 preview = output if len(output) <= 800 else output[:800] + "...（截断）"
-                await self.dispatcher.submit(
-                    event_type="agent.tool_called",
-                    actor=self.spec.name,
-                    task_id=message.task_id,
+                await self._emit(
+                    MutationType.AGENT_TOOL_CALL,
                     payload={
-                        "tool": tc.name,
-                        "arguments": tc.arguments,
+                        "task_id": message.task_id,
+                        "agent_name": self.spec.name,
+                        "actor": self.spec.name,
+                        "tool_name": tc.name,
+                        "tool_args": tc.arguments,
                         "success": True,
-                        "result_preview": preview,
+                        "content": preview,
                     },
                 )
 
@@ -121,12 +135,75 @@ class BaseAgent:
                 messages.append(result_msg)
 
         # 超出 max_rounds
+        return await self._finalize_failed(
+            message, f"超过最大轮数 {self.spec.max_rounds}",
+            start_ts, tool_calls_made,
+        )
+
+    async def _finalize_done(
+        self,
+        message: AgentMessage,
+        text: str,
+        evidence: list[dict],
+        start_ts: float,
+        tool_calls_made: int,
+    ) -> AgentResult:
+        duration = time.perf_counter() - start_ts
+        await self._emit(
+            MutationType.AGENT_COMPLETED,
+            payload={
+                "task_id": message.task_id,
+                "agent_name": self.spec.name,
+                "actor": self.spec.name,
+                "summary": text[:500],
+                "content": text[:500],
+                "duration_seconds": round(duration, 3),
+                "tool_calls_made": tool_calls_made,
+            },
+        )
+        return AgentResult(
+            task_id=message.task_id,
+            status="done",
+            result=text,
+            evidence=evidence,
+        )
+
+    async def _finalize_failed(
+        self,
+        message: AgentMessage,
+        reason: str,
+        start_ts: float,
+        tool_calls_made: int,
+    ) -> AgentResult:
+        duration = time.perf_counter() - start_ts
+        await self._emit(
+            MutationType.AGENT_FAILED,
+            payload={
+                "task_id": message.task_id,
+                "agent_name": self.spec.name,
+                "actor": self.spec.name,
+                "reason": reason,
+                "content": reason,
+                "duration_seconds": round(duration, 3),
+                "tool_calls_made": tool_calls_made,
+            },
+        )
         return AgentResult(
             task_id=message.task_id,
             status="failed",
             result="",
-            reason=f"超过最大轮数 {self.spec.max_rounds}",
+            reason=reason,
         )
+
+    async def _emit(self, event_type: MutationType, payload: dict[str, Any]) -> None:
+        if self.mutation_log is None:
+            return
+        try:
+            await self.mutation_log.record(event_type, payload)
+        except Exception:
+            logger.warning(
+                "Agent mutation_log emit 失败 (%s)", event_type.value, exc_info=True,
+            )
 
     def _build_system_prompt(self, message: AgentMessage) -> str:
         return f"""{self.spec.system_prompt}
@@ -139,18 +216,25 @@ Task ID: {message.task_id}
 请完成任务后直接返回结果文本。不需要再调用工具时，输出最终结果即可。"""
 
     def _get_tools(self) -> list[dict]:
+        """根据 runtime_profile 或 tools 白名单返回 OpenAI function 列表。
+
+        优先用 ``runtime_profile``（Step 6 对齐）；兼容读取旧字段仅为了
+        在迁移过渡期间让 legacy fixtures 继续工作——代码库内没有剩余
+        的 legacy callsite。
+        """
+        profile = self.spec.runtime_profile
+        if profile is not None:
+            return self.tool_registry.function_tools(
+                capabilities=set(profile.capabilities) if profile.capabilities else None,
+                tool_names=set(profile.tool_names) if profile.tool_names else None,
+                include_internal=profile.include_internal,
+            )
+        # Legacy path（仅为过渡期的 test fixtures 保留；生产代码用 profile）
         tools = []
-        for tool_name in self.spec.tools:
+        for tool_name in self.spec.tools or []:
             spec = self.tool_registry.get(tool_name)
             if spec:
-                tools.append({
-                    "type": "function",
-                    "function": {
-                        "name": spec.name,
-                        "description": spec.description,
-                        "parameters": spec.json_schema,
-                    },
-                })
+                tools.append(spec.to_function_tool())
         return tools
 
     async def _execute_tool(self, tool_call, message: AgentMessage) -> str:

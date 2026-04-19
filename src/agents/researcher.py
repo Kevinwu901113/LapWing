@@ -4,12 +4,14 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from src.core.runtime_profiles import AGENT_RESEARCHER_PROFILE
+
 from .base import BaseAgent
 from .types import AgentSpec
 
 if TYPE_CHECKING:
-    from src.core.dispatcher import Dispatcher
     from src.core.llm_router import LLMRouter
+    from src.logging.state_mutation_log import StateMutationLog
     from src.tools.registry import ToolRegistry
 
 RESEARCHER_SYSTEM_PROMPT = """你是 Lapwing 团队的 Researcher。你用 research 工具做调研。
@@ -39,6 +41,8 @@ RESEARCHER_SYSTEM_PROMPT = """你是 Lapwing 团队的 Researcher。你用 resea
 - 不做主观判断，只整理事实
 - 每个结论都要有来源支持
 - 找不到的信息直接说"没找到"
+- 你没有 tell_user 权限——你的输出是交给 Lapwing 的内部报告，
+  由她决定怎么跟用户说
 
 ## 输出格式
 
@@ -53,7 +57,7 @@ class Researcher(BaseAgent):
         cls,
         llm_router: "LLMRouter",
         tool_registry: "ToolRegistry",
-        dispatcher: "Dispatcher",
+        mutation_log: "StateMutationLog | None",
         services: dict | None = None,
     ) -> "Researcher":
         spec = AgentSpec(
@@ -61,9 +65,9 @@ class Researcher(BaseAgent):
             description="搜索和调研",
             system_prompt=RESEARCHER_SYSTEM_PROMPT,
             model_slot="agent_execution",
-            tools=["research", "browse"],
+            runtime_profile=AGENT_RESEARCHER_PROFILE,
             max_rounds=15,
             max_tokens=40000,
             timeout_seconds=300,
         )
-        return cls(spec, llm_router, tool_registry, dispatcher, services)
+        return cls(spec, llm_router, tool_registry, mutation_log, services)
