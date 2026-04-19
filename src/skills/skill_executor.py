@@ -4,7 +4,7 @@ import logging
 import shutil
 import sys
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 logger = logging.getLogger("lapwing.skills.skill_executor")
