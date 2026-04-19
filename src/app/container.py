@@ -512,6 +512,72 @@ class AppContainer:
         register_memory_tools_v2(self.brain.tool_registry)
         logger.info("Phase 3 记忆系统已装配（NoteStore + MemoryVectorStore + 9 工具）")
 
+        # Step 7: Episodic/Semantic stores + WorkingSet + extractor/distiller
+        #
+        # Episodic / Semantic 共享 MemoryVectorStore 底层 ChromaDB collection，
+        # 用 metadata.note_type 区分。WorkingSet 把两层合并喂给 StateView。
+        # 提取管线：conversation_end 触发 episodic；maintenance daily 触发 semantic。
+        from config.settings import (
+            EPISODIC_EXTRACT_ENABLED,
+            EPISODIC_EXTRACT_MIN_TURNS,
+            EPISODIC_EXTRACT_WINDOW_SIZE,
+            MEMORY_DIR,
+            MEMORY_WORKING_SET_TOP_K,
+            SEMANTIC_DISTILL_DEDUP_THRESHOLD,
+            SEMANTIC_DISTILL_ENABLED,
+            SEMANTIC_DISTILL_EPISODES_WINDOW,
+        )
+        from src.memory.episodic_extractor import EpisodicExtractor
+        from src.memory.episodic_store import EpisodicStore
+        from src.memory.semantic_distiller import SemanticDistiller
+        from src.memory.semantic_store import SemanticStore
+        from src.memory.working_set import WorkingSet
+        episodic_store = EpisodicStore(
+            memory_dir=MEMORY_DIR / "episodic",
+            vector_store=memory_vector_store,
+        )
+        semantic_store = SemanticStore(
+            memory_dir=MEMORY_DIR / "semantic",
+            vector_store=memory_vector_store,
+            dedup_threshold=SEMANTIC_DISTILL_DEDUP_THRESHOLD,
+        )
+        self.brain._episodic_store = episodic_store
+        self.brain._semantic_store = semantic_store
+        self.brain._working_set = WorkingSet(
+            episodic_store=episodic_store,
+            semantic_store=semantic_store,
+        )
+        self.brain.state_view_builder._working_set = self.brain._working_set
+        self.brain.state_view_builder._memory_top_k = MEMORY_WORKING_SET_TOP_K
+
+        if EPISODIC_EXTRACT_ENABLED and self.trajectory_store is not None:
+            self.brain._episodic_extractor = EpisodicExtractor(
+                router=self.brain.router,
+                trajectory_store=self.trajectory_store,
+                episodic_store=episodic_store,
+                window_size=EPISODIC_EXTRACT_WINDOW_SIZE,
+                min_turns=EPISODIC_EXTRACT_MIN_TURNS,
+            )
+        else:
+            self.brain._episodic_extractor = None
+
+        if SEMANTIC_DISTILL_ENABLED:
+            self.brain._semantic_distiller = SemanticDistiller(
+                router=self.brain.router,
+                episodic_store=episodic_store,
+                semantic_store=semantic_store,
+                episodes_window=SEMANTIC_DISTILL_EPISODES_WINDOW,
+            )
+        else:
+            self.brain._semantic_distiller = None
+
+        logger.info(
+            "Step 7 记忆树已装配（Episodic + Semantic + WorkingSet + "
+            "extractor=%s + distiller=%s）",
+            self.brain._episodic_extractor is not None,
+            self.brain._semantic_distiller is not None,
+        )
+
         # ── Agent Team 系统（Phase 6） ──────────────────────────────────
         from config.settings import AGENT_TEAM_ENABLED
         if AGENT_TEAM_ENABLED:

@@ -158,7 +158,12 @@ class VectorStore:
 
 @dataclass
 class RecallResult:
-    """recall() 返回的单条记忆检索结果。"""
+    """recall() 返回的单条记忆检索结果。
+
+    ``metadata`` (Step 7) 保留写入时的完整元数据 dict，让上层子系统（Episodic /
+    Semantic）能读回它们在 ``add`` 时附加的自定义字段（date / title /
+    source_trajectory_ids / category 等）而不用二次查询 collection。
+    """
     note_id: str
     file_path: str
     content: str
@@ -168,6 +173,11 @@ class RecallResult:
     trust: str
     created_at: str
     parent_note: str | None
+    metadata: dict = None  # type: ignore[assignment]
+
+    def __post_init__(self):
+        if self.metadata is None:
+            object.__setattr__(self, "metadata", {})
 
 
 class MemoryVectorStore:
@@ -213,8 +223,19 @@ class MemoryVectorStore:
             )
         logger.debug(f"[memory_vector] upsert note_id={note_id}")
 
-    async def recall(self, query: str, top_k: int = 10) -> list[RecallResult]:
-        """语义检索 + 综合评分 + 簇去重，返回 top_k 条。"""
+    async def recall(
+        self,
+        query: str,
+        top_k: int = 10,
+        *,
+        where: dict | None = None,
+    ) -> list[RecallResult]:
+        """语义检索 + 综合评分 + 簇去重，返回 top_k 条。
+
+        ``where`` 是 ChromaDB 元数据 filter（Step 7 新增）。None 表示查全量；
+        例如 ``{"note_type": "episodic"}`` 限定只查情景层。Filter 应用在
+        Chroma 侧，比 Python 端 post-filter 更高效。
+        """
         # 空库保护
         async with self._lock:
             count = await asyncio.to_thread(self.collection.count)
@@ -223,12 +244,18 @@ class MemoryVectorStore:
 
         n_fetch = min(top_k * 3, 50, count)
 
+        query_kwargs: dict = {
+            "query_texts": [query],
+            "n_results": n_fetch,
+            "include": ["documents", "metadatas", "distances"],
+        }
+        if where:
+            query_kwargs["where"] = where
+
         async with self._lock:
             raw = await asyncio.to_thread(
                 self.collection.query,
-                query_texts=[query],
-                n_results=n_fetch,
-                include=["documents", "metadatas", "distances"],
+                **query_kwargs,
             )
 
         ids = (raw.get("ids") or [[]])[0]
@@ -326,6 +353,7 @@ class MemoryVectorStore:
                 trust=meta.get("trust", ""),
                 created_at=meta.get("created_at", ""),
                 parent_note=meta.get("parent_note") or None,
+                metadata=dict(meta),
             ))
         return results
 

@@ -381,22 +381,31 @@ class LapwingBrain:
 
         return [{"role": "system", "content": system_content}, *rendered]
 
-    def _schedule_conversation_end(self) -> None:
+    def _schedule_conversation_end(self, chat_id: str | None = None) -> None:
         """延迟判定对话结束。用户最后一条消息后 N 秒无新消息算结束。
 
         Step 4 M6: closes the AttentionManager session window and
         notifies the InnerTickScheduler so inner ticks resume on the
         post-chat schedule.
+
+        Step 7 M3.a: when ``chat_id`` is provided and an episodic
+        extractor is wired, trigger one extraction. Runs *after* the
+        end-of-conversation bookkeeping so the trajectory view used for
+        extraction sees a stable conversation slice (no race with
+        incoming messages).
         """
         if (
             self.inner_tick_scheduler is None
             and self.attention_manager is None
+            and getattr(self, "_episodic_extractor", None) is None
         ):
             return
         if self._conversation_end_task is not None:
             self._conversation_end_task.cancel()
 
         from config.settings import CONSCIOUSNESS_CONVERSATION_END_DELAY
+
+        extractor = getattr(self, "_episodic_extractor", None)
 
         async def _delayed_end():
             await asyncio.sleep(CONSCIOUSNESS_CONVERSATION_END_DELAY)
@@ -407,6 +416,13 @@ class LapwingBrain:
                     await self.attention_manager.end_session()
                 except Exception:
                     logger.warning("attention_manager.end_session failed", exc_info=True)
+            if extractor is not None and chat_id:
+                try:
+                    await extractor.extract_from_chat(chat_id)
+                except Exception:
+                    logger.warning(
+                        "episodic extraction failed for %s", chat_id, exc_info=True,
+                    )
 
         self._conversation_end_task = asyncio.create_task(_delayed_end())
 
@@ -899,7 +915,7 @@ class LapwingBrain:
             adapter=adapter, user_id=user_id,
         )
         if ctx.early_reply is not None:
-            self._schedule_conversation_end()  # ← ADD THIS
+            self._schedule_conversation_end(chat_id)
             return ctx.early_reply
 
         # Step 5: tell_user 缓冲——tell_user 工具每次调用 append 一条文本。
@@ -1001,7 +1017,7 @@ class LapwingBrain:
             await send_fn(error_msg)
             return error_msg
         finally:
-            self._schedule_conversation_end()
+            self._schedule_conversation_end(chat_id)
 
     async def _persist_interrupted(
         self,
