@@ -265,6 +265,13 @@ class LapwingBrain:
         research_engine = getattr(self, "_research_engine", None)
         if research_engine is not None:
             services["research_engine"] = research_engine
+        skill_store = getattr(self, "_skill_store", None)
+        if skill_store is not None:
+            services["skill_store"] = skill_store
+        skill_executor = getattr(self, "_skill_executor", None)
+        if skill_executor is not None:
+            services["skill_executor"] = skill_executor
+        services["tool_registry"] = self.tool_registry
 
         deps = RuntimeDeps(
             execute_shell=execute_shell,

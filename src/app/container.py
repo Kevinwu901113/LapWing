@@ -715,6 +715,39 @@ class AppContainer:
         register_research_tool(self.brain.tool_registry)
         logger.info("Research 子系统已装配（research 工具 + ResearchEngine）")
 
+        # Skill Growth Model
+        from config.settings import SKILL_SYSTEM_ENABLED
+        if SKILL_SYSTEM_ENABLED:
+            from src.skills.skill_store import SkillStore
+            from src.skills.skill_executor import SkillExecutor
+            from src.tools.skill_tools import register_skill_tools, _register_skill_as_tool
+            from config.settings import SKILL_SANDBOX_IMAGE
+
+            skill_store = SkillStore()
+            skill_executor = SkillExecutor(
+                skill_store=skill_store,
+                sandbox_image=SKILL_SANDBOX_IMAGE,
+            )
+            self.brain._skill_store = skill_store
+            self.brain._skill_executor = skill_executor
+
+            # Register stable skills as first-class tools
+            for stable_skill in skill_store.get_stable_skills():
+                _register_skill_as_tool(
+                    self.brain.tool_registry,
+                    skill_store,
+                    skill_executor,
+                    stable_skill["meta"]["id"],
+                )
+
+            # Register the 6 management tools
+            register_skill_tools(self.brain.tool_registry)
+
+            logger.info(
+                "Skill Growth Model 已装配（%d stable skills registered as tools）",
+                len(skill_store.get_stable_skills()),
+            )
+
         # Phase 4: 注册 DurableScheduler 提醒工具
         from src.core.durable_scheduler import DURABLE_SCHEDULER_EXECUTORS
         from src.tools.types import ToolSpec
