@@ -60,5 +60,4 @@ recover source.
 - **Outcome**: Dropped 5 tables (`user_facts`, `interest_topics`,
   `discoveries`, `todos`, `reminders`) — 321 rows total, all backed up to
   `~/lapwing-backups/pre_mvp_cleanup_20260419_194749/`
-- **Status**: Will be deleted after the 2026-04-19 MVP cleanup branch
-  merges. The script is retained until merge as a re-run safety net.
+- **Status**: Deleted 2026-04-19. Source recoverable via `git log --follow`.
