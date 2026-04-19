@@ -505,7 +505,16 @@ class LapwingBrain:
         if immediate_reply is not None:
             await self.memory.append(chat_id, "assistant", immediate_reply)
             if send_fn is not None:
-                await send_fn(immediate_reply)
+                from src.core.system_send import send_system_message
+                await send_system_message(
+                    send_fn,
+                    immediate_reply,
+                    source="confirmation",
+                    chat_id=chat_id,
+                    adapter=adapter,
+                    trajectory_store=self.trajectory_store,
+                    mutation_log=getattr(self, "_mutation_log_ref", None),
+                )
             return _ThinkCtx(messages=[], effective_user_message=effective_user_message,
                              approved_directory=approved_directory, early_reply=immediate_reply)
 
@@ -840,7 +849,16 @@ class LapwingBrain:
             logger.error(f"LLM 调用失败（conversational）: {e}")
             await self.memory.remove_last(chat_id)
             error_msg = f"LLM 调用失败：{e}"
-            await send_fn(error_msg)
+            from src.core.system_send import send_system_message
+            await send_system_message(
+                send_fn,
+                error_msg,
+                source="llm_error",
+                chat_id=chat_id,
+                adapter=adapter,
+                trajectory_store=self.trajectory_store,
+                mutation_log=getattr(self, "_mutation_log_ref", None),
+            )
             return error_msg
         finally:
             self._schedule_conversation_end(chat_id)

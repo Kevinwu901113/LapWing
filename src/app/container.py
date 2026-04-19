@@ -677,6 +677,8 @@ class AppContainer:
         self.durable_scheduler = DurableScheduler(
             db_path=self._db_path,
             dispatcher=self.dispatcher,
+            trajectory_store=getattr(self, "trajectory_store", None),
+            mutation_log=getattr(self, "mutation_log", None),
         )
         self.brain._durable_scheduler_ref = self.durable_scheduler
 
