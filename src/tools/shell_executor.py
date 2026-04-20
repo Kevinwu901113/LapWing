@@ -21,6 +21,7 @@ from config.settings import (
     SHELL_TIMEOUT,
 )
 from src.core.credential_sanitizer import redact_secrets, truncate_head_tail
+from src.core.execution_sandbox import ExecutionSandbox, SandboxTier
 
 # Docker sandbox 配置（可选）
 _SHELL_BACKEND = "local"  # "local" | "docker"
@@ -36,6 +37,7 @@ def _load_docker_config():
     _DOCKER_WORKSPACE = os.getenv("SHELL_DOCKER_WORKSPACE", "/home/lapwing/workspace")
 
 _load_docker_config()
+_sandbox = ExecutionSandbox(docker_image=_DOCKER_IMAGE)
 
 logger = logging.getLogger("lapwing.tools.shell_executor")
 
@@ -200,77 +202,27 @@ async def _log_execution(command: str, result: ShellResult) -> None:
 
 async def _execute_docker(command: str) -> ShellResult:
     """在 Docker 容器中执行命令（沙箱隔离）。"""
-    docker_cmd = [
-        "docker", "run", "--rm",
-        "--read-only",                                    # 只读根文件系统
-        "--cap-drop=ALL",                                 # 移除所有 capabilities
-        "--network=lapwing-sandbox",                      # 隔离 bridge 网络
-        "-v", f"{_DOCKER_WORKSPACE}:/workspace",          # 挂载工作目录
-        "-w", "/workspace",
-        "--memory=512m",                                  # 内存限制
-        "--cpus=1.0",                                     # CPU 限制
-        "--tmpfs", "/tmp:rw,size=64m",                    # 可写临时目录
-        _DOCKER_IMAGE,
-        "bash", "-c", command,
-    ]
-
-    try:
-        proc = await asyncio.create_subprocess_exec(
-            *docker_cmd,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-
-        try:
-            raw_stdout, raw_stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=SHELL_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            raw_stdout, raw_stderr = await proc.communicate()
-            result = ShellResult(
-                stdout="", stderr=f"Docker 命令执行超时（{SHELL_TIMEOUT}s）。",
-                return_code=-1, timed_out=True,
-                reason=f"Docker 命令执行超时（{SHELL_TIMEOUT}s）。",
-                cwd="/workspace",
-            )
-            await _log_execution(f"[docker] {command}", result)
-            return result
-
-        stdout, stdout_truncated = _truncate_output(
-            raw_stdout.decode("utf-8", errors="replace")
-        )
-        stderr, stderr_truncated = _truncate_output(
-            raw_stderr.decode("utf-8", errors="replace")
-        )
-        return_code = proc.returncode if proc.returncode is not None else -1
-        result = ShellResult(
-            stdout=stdout, stderr=stderr,
-            return_code=return_code,
-            reason="" if return_code == 0 else f"Docker 命令以退出码 {return_code} 结束。",
-            cwd="/workspace",
-            stdout_truncated=stdout_truncated,
-            stderr_truncated=stderr_truncated,
-        )
-        await _log_execution(f"[docker] {command}", result)
-        return result
-
-    except FileNotFoundError:
-        result = ShellResult(
-            stdout="", stderr="docker 命令未找到。请确认 Docker 已安装。",
-            return_code=-1, reason="Docker 不可用。",
-            cwd="/workspace",
-        )
-        await _log_execution(f"[docker] {command}", result)
-        return result
-    except Exception as exc:
-        result = ShellResult(
-            stdout="", stderr=str(exc),
-            return_code=-1, reason="Docker 执行异常。",
-            cwd="/workspace",
-        )
-        await _log_execution(f"[docker] {command}", result)
-        return result
+    result = await _sandbox.run(
+        ["bash", "-c", command],
+        tier=SandboxTier.STANDARD,
+        timeout=SHELL_TIMEOUT,
+        workspace=_DOCKER_WORKSPACE,
+    )
+    shell_result = ShellResult(
+        stdout=result.stdout,
+        stderr=result.stderr,
+        return_code=result.exit_code,
+        timed_out=result.timed_out,
+        reason="" if result.exit_code == 0 else (
+            f"Docker 命令执行超时（{SHELL_TIMEOUT}s）。" if result.timed_out
+            else f"Docker 命令以退出码 {result.exit_code} 结束。"
+        ),
+        cwd="/workspace",
+        stdout_truncated=len(result.stdout) >= SHELL_MAX_OUTPUT_CHARS,
+        stderr_truncated=len(result.stderr) >= SHELL_MAX_OUTPUT_CHARS,
+    )
+    await _log_execution(f"[docker] {command}", shell_result)
+    return shell_result
 
 
 async def execute(command: str) -> ShellResult:
