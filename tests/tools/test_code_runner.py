@@ -52,7 +52,8 @@ async def test_stdout_truncated():
     """超过 2000 字符的 stdout 被截断。"""
     result = await run_python("print('A' * 3000)")
     assert result.exit_code == 0
-    assert len(result.stdout) <= 2000
+    assert len(result.stdout) < 3000
+    assert "truncated" in result.stdout.lower()
 
 
 @pytest.mark.asyncio
@@ -73,3 +74,28 @@ async def test_tmp_dir_isolated():
     cwd = result.stdout.strip()
     # 临时目录应该不再存在（已清理）
     assert not os.path.exists(cwd)
+
+
+@pytest.mark.asyncio
+async def test_env_vars_sanitized():
+    """Subprocess must not see parent's API keys."""
+    import os
+    os.environ["LLM_API_KEY"] = "sk-test-secret-key-for-testing"
+    try:
+        result = await run_python(
+            "import os; print(os.environ.get('LLM_API_KEY', 'NOT_FOUND'))"
+        )
+        assert result.exit_code == 0
+        assert "NOT_FOUND" in result.stdout
+        assert "sk-test" not in result.stdout
+    finally:
+        del os.environ["LLM_API_KEY"]
+
+
+@pytest.mark.asyncio
+async def test_output_redacts_secrets():
+    """If code prints a secret pattern, output should be redacted."""
+    result = await run_python('print("my key is ghp_ABCDEFghijklmnopqrstuvwxyz0123456789ABCDEF")')
+    assert result.exit_code == 0
+    assert "ghp_" not in result.stdout
+    assert "REDACTED" in result.stdout

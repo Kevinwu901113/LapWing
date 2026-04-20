@@ -2,11 +2,14 @@
 
 import asyncio
 import logging
+import os
 import shutil
 import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
+
+from src.core.credential_sanitizer import sanitize_env, redact_secrets, truncate_head_tail
 
 logger = logging.getLogger("lapwing.tools.code_runner")
 
@@ -38,11 +41,13 @@ async def run_python(code: str, timeout: int = 10) -> CodeResult:
     try:
         script_path.write_text(code, encoding="utf-8")
 
+        clean_env = sanitize_env(dict(os.environ))
         proc = await asyncio.create_subprocess_exec(
             sys.executable, str(script_path),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=tmp_dir,
+            env=clean_env,
         )
 
         try:
@@ -55,8 +60,12 @@ async def run_python(code: str, timeout: int = 10) -> CodeResult:
             logger.warning(f"[code_runner] 执行超时（{timeout}s）")
             return CodeResult(stdout="", stderr="", exit_code=-1, timed_out=True)
 
-        stdout = raw_out.decode("utf-8", errors="replace")[:_MAX_OUTPUT]
-        stderr = raw_err.decode("utf-8", errors="replace")[:_MAX_OUTPUT]
+        stdout = redact_secrets(truncate_head_tail(
+            raw_out.decode("utf-8", errors="replace"), _MAX_OUTPUT
+        ))
+        stderr = redact_secrets(truncate_head_tail(
+            raw_err.decode("utf-8", errors="replace"), _MAX_OUTPUT
+        ))
         exit_code = proc.returncode if proc.returncode is not None else -1
 
         logger.info(f"[code_runner] 执行完成 exit_code={exit_code}, stdout={len(stdout)}字节")
