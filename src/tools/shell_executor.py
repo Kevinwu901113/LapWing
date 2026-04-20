@@ -203,7 +203,7 @@ async def _execute_docker(command: str) -> ShellResult:
         "docker", "run", "--rm",
         "--read-only",                                    # 只读根文件系统
         "--cap-drop=ALL",                                 # 移除所有 capabilities
-        "--network=host",                                 # 共享主机网络（搜索需要）
+        "--network=lapwing-sandbox",                      # 隔离 bridge 网络
         "-v", f"{_DOCKER_WORKSPACE}:/workspace",          # 挂载工作目录
         "-w", "/workspace",
         "--memory=512m",                                  # 内存限制
@@ -280,16 +280,15 @@ async def execute(command: str) -> ShellResult:
         await _log_execution(command, result)
         return result
 
-    # Docker 后端：跳过本地安全检查（容器就是安全边界）
-    if _SHELL_BACKEND == "docker":
-        return await _execute_docker(command)
-
     reason = _blocked_reason(command)
     if reason is not None:
         logger.warning(f"[shell] 拒绝执行命令: {command!r} — {reason}")
         result = _build_blocked_result(reason)
         await _log_execution(command, result)
         return result
+
+    if _SHELL_BACKEND == "docker":
+        return await _execute_docker(command)
 
     try:
         proc = await asyncio.create_subprocess_exec(

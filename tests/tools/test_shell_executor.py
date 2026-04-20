@@ -1,6 +1,7 @@
 """shell_executor 集成测试（真实子进程执行）。"""
 
 import pytest
+from unittest.mock import patch, AsyncMock
 
 from src.tools import shell_executor
 
@@ -101,3 +102,47 @@ async def test_execute_still_blocks_dangerous_sudo_commands(monkeypatch, isolate
 
     assert result.blocked is True
     assert "删除根目录" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_docker_backend_blocks_dangerous_command(monkeypatch, isolated_shell_log):
+    """Docker backend must still block dangerous commands (fork bomb, rm -rf /)."""
+    monkeypatch.setattr(shell_executor, "_SHELL_BACKEND", "docker")
+
+    result = await shell_executor.execute("rm -rf /")
+
+    assert result.blocked is True
+    assert "删除根目录" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_docker_backend_blocks_interactive_command(monkeypatch, isolated_shell_log):
+    """Docker backend must still block interactive commands."""
+    monkeypatch.setattr(shell_executor, "_SHELL_BACKEND", "docker")
+
+    result = await shell_executor.execute("vim README.md")
+
+    assert result.blocked is True
+    assert "交互式编辑器" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_docker_backend_uses_bridge_network(monkeypatch, isolated_shell_log):
+    """Docker backend must NOT use --network=host."""
+    monkeypatch.setattr(shell_executor, "_SHELL_BACKEND", "docker")
+
+    captured_cmd = []
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured_cmd.extend(args)
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b'output', b'')
+        mock_proc.returncode = 0
+        return mock_proc
+
+    with patch("asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
+        await shell_executor.execute("echo hello")
+
+    cmd_str = " ".join(captured_cmd)
+    assert "--network=host" not in cmd_str, "Must not use --network=host"
+    assert "--network" in cmd_str, "Must specify a network"
