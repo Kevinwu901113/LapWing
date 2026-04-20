@@ -140,3 +140,54 @@ class TestRunOnHost:
         )
         assert result.success is False
         assert result.timed_out is True
+
+
+class TestSandboxDockerFlags:
+    async def test_sandbox_docker_command_includes_resource_limits(self, executor):
+        """Verify the Docker command includes --memory, --cpus, --cap-drop."""
+        from unittest.mock import patch, AsyncMock
+
+        captured_cmd = []
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            captured_cmd.extend(args)
+            mock_proc = AsyncMock()
+            mock_proc.communicate.return_value = (b'{"ok": true}', b'')
+            mock_proc.returncode = 0
+            return mock_proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
+            await executor._run_in_sandbox(
+                'def run():\n    return {"ok": True}',
+                {},
+                [],
+                timeout=30,
+            )
+
+        cmd_str = " ".join(captured_cmd)
+        assert "--memory" in cmd_str, "Missing --memory flag"
+        assert "--cpus" in cmd_str, "Missing --cpus flag"
+        assert "--cap-drop" in cmd_str, "Missing --cap-drop flag"
+
+    async def test_sandbox_docker_command_memory_256m(self, executor):
+        """Verify memory limit is 256m for sandbox mode."""
+        from unittest.mock import patch, AsyncMock
+
+        captured_cmd = []
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            captured_cmd.extend(args)
+            mock_proc = AsyncMock()
+            mock_proc.communicate.return_value = (b'{}', b'')
+            mock_proc.returncode = 0
+            return mock_proc
+
+        with patch("asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
+            await executor._run_in_sandbox('def run():\n    return {}', {}, [], timeout=30)
+
+        for i, arg in enumerate(captured_cmd):
+            if arg == "--memory":
+                assert captured_cmd[i + 1] == "256m"
+                break
+        else:
+            pytest.fail("--memory flag not found")

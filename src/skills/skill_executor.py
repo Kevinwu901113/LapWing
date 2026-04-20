@@ -78,6 +78,9 @@ class SkillExecutor:
             cmd = [
                 "docker", "run", "--rm",
                 "--network", "none",
+                "--cap-drop=ALL",
+                "--memory", "256m",
+                "--cpus", "0.5",
                 "-v", f"{tmp_dir}:/workspace:ro",
                 "--user", "sandboxuser",
                 self._sandbox_image,
