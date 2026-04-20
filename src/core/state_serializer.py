@@ -200,19 +200,19 @@ def _render_runtime_state(state: StateView) -> str:
     # Skill summary
     if state.skill_summary is not None:
         ss = state.skill_summary
-        total = ss.stable_count + ss.testing_count + ss.draft_count + ss.broken_count
+        # broken 不计入可用数量，不影响提示词可见性判断
+        total = ss.stable_count + ss.testing_count + ss.draft_count
         if total > 0:
-            skill_lines = [f"stable: {ss.stable_count} 个"]
-            if ss.stable_names:
-                skill_lines[0] += f"（{'、'.join(ss.stable_names)}）"
-            if ss.testing_count:
-                detail = f"（{'、'.join(ss.testing_details)}）" if ss.testing_details else ""
-                skill_lines.append(f"testing: {ss.testing_count} 个{detail}")
+            skill_lines = []
+            for name in ss.stable_names:
+                skill_lines.append(f"  - [stable] {name}")
+            for name in ss.testing_details:
+                skill_lines.append(f"  - [testing] {name}")
             if ss.draft_count:
-                skill_lines.append(f"draft: {ss.draft_count} 个")
+                skill_lines.append(f"  - draft: {ss.draft_count} 个")
             if ss.broken_count:
-                skill_lines.append(f"broken: {ss.broken_count} 个")
-            lines.append("我的技能：\n" + "\n".join(f"  - {l}" for l in skill_lines))
+                skill_lines.append(f"  - broken: {ss.broken_count} 个（需修复）")
+            lines.append("我的技能：\n" + "\n".join(skill_lines))
 
     return "## 当前状态\n\n" + "\n".join(lines)
 

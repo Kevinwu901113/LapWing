@@ -386,24 +386,26 @@ class StateViewBuilder:
         if self._skill_store is None:
             return None
         try:
-            all_skills = self._skill_store.list_skills()
+            # 使用轻量级缓存索引，避免读取所有技能文件
+            index = self._skill_store.get_skill_index()
         except Exception:
             return None
-        if not all_skills:
+        if not index:
             return None
 
         counts = {"draft": 0, "testing": 0, "stable": 0, "broken": 0}
         stable_names = []
         testing_details = []
-        for s in all_skills:
+        for s in index:
             m = s.get("maturity", "draft")
+            if m == "broken":
+                counts["broken"] += 1
+                continue
             counts[m] = counts.get(m, 0) + 1
             if m == "stable":
                 stable_names.append(s.get("name", s.get("id", "")))
             elif m == "testing":
-                usage = s.get("usage_count", 0)
-                success = s.get("success_count", 0)
-                testing_details.append(f"{s.get('name', '')}（成功率 {success}/{usage}）")
+                testing_details.append(s.get("name", s.get("id", "")))
 
         return SkillSummary(
             stable_count=counts["stable"],
