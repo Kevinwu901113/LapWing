@@ -1,4 +1,3 @@
-import asyncio
 import json
 import logging
 import shutil
@@ -7,7 +6,7 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.core.credential_sanitizer import redact_secrets, truncate_head_tail
+from src.core.execution_sandbox import ExecutionSandbox, SandboxTier
 
 logger = logging.getLogger("lapwing.skills.skill_executor")
 
@@ -30,6 +29,7 @@ class SkillExecutor:
     def __init__(self, skill_store, sandbox_image: str = "lapwing-sandbox"):
         self._store = skill_store
         self._sandbox_image = sandbox_image
+        self._sandbox = ExecutionSandbox(docker_image=sandbox_image)
 
     async def execute(
         self,
@@ -72,65 +72,26 @@ class SkillExecutor:
         try:
             skill_path = Path(tmp_dir) / "skill.py"
             skill_path.write_text(code, encoding="utf-8")
-
             runner_code = self._build_runner(arguments, dependencies)
             runner_path = Path(tmp_dir) / "runner.py"
             runner_path.write_text(runner_code, encoding="utf-8")
 
-            cmd = [
-                "docker", "run", "--rm",
-                "--network", "none",
-                "--cap-drop=ALL",
-                "--memory", "256m",
-                "--cpus", "0.5",
-                "-v", f"{tmp_dir}:/workspace:ro",
-                "--user", "sandboxuser",
-                self._sandbox_image,
-                "python3", "/workspace/runner.py",
-            ]
-
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            result = await self._sandbox.run(
+                ["python3", "/workspace/runner.py"],
+                tier=SandboxTier.STRICT,
+                timeout=timeout,
+                workspace=tmp_dir,
             )
-
-            try:
-                raw_out, raw_err = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout,
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.communicate()
-                return SkillResult(
-                    success=False, output="", error="沙盒执行超时", exit_code=-1, timed_out=True,
-                )
-
-            stdout = redact_secrets(truncate_head_tail(
-                raw_out.decode("utf-8", errors="replace"), _MAX_OUTPUT
-            ))
-            stderr = redact_secrets(truncate_head_tail(
-                raw_err.decode("utf-8", errors="replace"), _MAX_OUTPUT
-            ))
-            exit_code = proc.returncode if proc.returncode is not None else -1
-
             return SkillResult(
-                success=(exit_code == 0),
-                output=stdout,
-                error=stderr,
-                exit_code=exit_code,
-            )
-
-        except FileNotFoundError:
-            return SkillResult(
-                success=False, output="",
-                error="Docker 未安装或不可用", exit_code=-1,
+                success=(result.exit_code == 0),
+                output=result.stdout,
+                error=result.stderr,
+                exit_code=result.exit_code,
+                timed_out=result.timed_out,
             )
         except Exception as e:
             logger.error("沙盒执行异常: %s", e)
-            return SkillResult(
-                success=False, output="", error=str(e), exit_code=-1,
-            )
+            return SkillResult(success=False, output="", error=str(e), exit_code=-1)
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -145,48 +106,25 @@ class SkillExecutor:
         try:
             skill_path = Path(tmp_dir) / "skill.py"
             skill_path.write_text(code, encoding="utf-8")
-
             runner_code = self._build_runner(arguments, [])
             runner_path = Path(tmp_dir) / "runner.py"
             runner_path.write_text(runner_code, encoding="utf-8")
 
-            proc = await asyncio.create_subprocess_exec(
-                sys.executable, str(runner_path),
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            result = await self._sandbox.run_local(
+                [sys.executable, str(runner_path)],
+                timeout=timeout,
                 cwd=tmp_dir,
             )
-
-            try:
-                raw_out, raw_err = await asyncio.wait_for(
-                    proc.communicate(), timeout=timeout,
-                )
-            except asyncio.TimeoutError:
-                proc.kill()
-                await proc.communicate()
-                return SkillResult(
-                    success=False, output="", error="主机执行超时", exit_code=-1, timed_out=True,
-                )
-
-            stdout = redact_secrets(truncate_head_tail(
-                raw_out.decode("utf-8", errors="replace"), _MAX_OUTPUT
-            ))
-            stderr = redact_secrets(truncate_head_tail(
-                raw_err.decode("utf-8", errors="replace"), _MAX_OUTPUT
-            ))
-            exit_code = proc.returncode if proc.returncode is not None else -1
-
             return SkillResult(
-                success=(exit_code == 0),
-                output=stdout,
-                error=stderr,
-                exit_code=exit_code,
+                success=(result.exit_code == 0),
+                output=result.stdout,
+                error=result.stderr,
+                exit_code=result.exit_code,
+                timed_out=result.timed_out,
             )
         except Exception as e:
             logger.error("主机执行异常: %s", e)
-            return SkillResult(
-                success=False, output="", error=str(e), exit_code=-1,
-            )
+            return SkillResult(success=False, output="", error=str(e), exit_code=-1)
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 

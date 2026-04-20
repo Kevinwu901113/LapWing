@@ -156,7 +156,7 @@ class TestSandboxDockerFlags:
             mock_proc.returncode = 0
             return mock_proc
 
-        with patch("asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
+        with patch("src.core.execution_sandbox.asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
             await executor._run_in_sandbox(
                 'def run():\n    return {"ok": True}',
                 {},
@@ -182,7 +182,7 @@ class TestSandboxDockerFlags:
             mock_proc.returncode = 0
             return mock_proc
 
-        with patch("asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
+        with patch("src.core.execution_sandbox.asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
             await executor._run_in_sandbox('def run():\n    return {}', {}, [], timeout=30)
 
         for i, arg in enumerate(captured_cmd):
