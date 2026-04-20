@@ -68,8 +68,9 @@ async def test_execute_truncates_long_output(monkeypatch, isolated_shell_log):
     result = await shell_executor.execute("printf '123456789012345'")
 
     assert result.return_code == 0
-    assert result.stdout == "1234567890"
     assert result.stdout_truncated is True
+    assert result.stdout.startswith("123")
+    assert "truncated" in result.stdout.lower()
 
 
 @pytest.mark.asyncio

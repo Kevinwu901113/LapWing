@@ -7,6 +7,8 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
+from src.core.credential_sanitizer import redact_secrets, truncate_head_tail
+
 logger = logging.getLogger("lapwing.skills.skill_executor")
 
 _MAX_OUTPUT = 4000
@@ -104,8 +106,12 @@ class SkillExecutor:
                     success=False, output="", error="沙盒执行超时", exit_code=-1, timed_out=True,
                 )
 
-            stdout = raw_out.decode("utf-8", errors="replace")[:_MAX_OUTPUT]
-            stderr = raw_err.decode("utf-8", errors="replace")[:_MAX_OUTPUT]
+            stdout = redact_secrets(truncate_head_tail(
+                raw_out.decode("utf-8", errors="replace"), _MAX_OUTPUT
+            ))
+            stderr = redact_secrets(truncate_head_tail(
+                raw_err.decode("utf-8", errors="replace"), _MAX_OUTPUT
+            ))
             exit_code = proc.returncode if proc.returncode is not None else -1
 
             return SkillResult(
@@ -162,8 +168,12 @@ class SkillExecutor:
                     success=False, output="", error="主机执行超时", exit_code=-1, timed_out=True,
                 )
 
-            stdout = raw_out.decode("utf-8", errors="replace")[:_MAX_OUTPUT]
-            stderr = raw_err.decode("utf-8", errors="replace")[:_MAX_OUTPUT]
+            stdout = redact_secrets(truncate_head_tail(
+                raw_out.decode("utf-8", errors="replace"), _MAX_OUTPUT
+            ))
+            stderr = redact_secrets(truncate_head_tail(
+                raw_err.decode("utf-8", errors="replace"), _MAX_OUTPUT
+            ))
             exit_code = proc.returncode if proc.returncode is not None else -1
 
             return SkillResult(

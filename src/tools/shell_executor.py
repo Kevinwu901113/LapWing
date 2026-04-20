@@ -20,6 +20,7 @@ from config.settings import (
     SHELL_MAX_OUTPUT_CHARS,
     SHELL_TIMEOUT,
 )
+from src.core.credential_sanitizer import redact_secrets, truncate_head_tail
 
 # Docker sandbox 配置（可选）
 _SHELL_BACKEND = "local"  # "local" | "docker"
@@ -118,8 +119,8 @@ class ShellResult:
 def _truncate_output(text: str) -> tuple[str, bool]:
     limit = max(SHELL_MAX_OUTPUT_CHARS, 1)
     if len(text) <= limit:
-        return text, False
-    return text[:limit], True
+        return redact_secrets(text), False
+    return redact_secrets(truncate_head_tail(text, limit)), True
 
 
 def _looks_like_write_command(command: str) -> bool:
