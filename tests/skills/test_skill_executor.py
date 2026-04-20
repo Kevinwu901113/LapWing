@@ -142,6 +142,19 @@ class TestRunOnHost:
         assert result.timed_out is True
 
 
+class TestScriptsDirectoryAccess:
+    async def test_skill_dir_path_available(self, executor, skill_store):
+        """Executor should know where the skill directory is."""
+        skill_store.create(
+            "skill_dir_exec",
+            "目录执行",
+            "测试目录路径",
+            'def run():\n    return {"ok": True}',
+        )
+        skill = skill_store.read("skill_dir_exec")
+        assert "skill_dir_exec/SKILL.md" in skill["file_path"]
+
+
 class TestSandboxDockerFlags:
     async def test_sandbox_docker_command_includes_resource_limits(self, executor):
         """Verify the Docker command includes --memory, --cpus, --cap-drop."""

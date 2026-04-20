@@ -49,10 +49,12 @@ class SkillExecutor:
         dependencies = meta.get("dependencies") or []
         args = arguments or {}
 
+        skill_dir = self._store.skills_dir / skill_id
+
         if maturity in _SANDBOX_MATURITIES:
-            result = await self._run_in_sandbox(code, args, dependencies, timeout)
+            result = await self._run_in_sandbox(code, args, dependencies, timeout, skill_dir=skill_dir)
         else:
-            result = await self._run_on_host(code, args, dependencies, timeout)
+            result = await self._run_on_host(code, args, dependencies, timeout, skill_dir=skill_dir)
 
         self._store.record_execution(
             skill_id,
@@ -67,6 +69,7 @@ class SkillExecutor:
         arguments: dict,
         dependencies: list[str],
         timeout: int,
+        skill_dir: Path | None = None,
     ) -> SkillResult:
         tmp_dir = tempfile.mkdtemp(prefix="lapwing_skill_")
         try:
@@ -75,6 +78,11 @@ class SkillExecutor:
             runner_code = self._build_runner(arguments, dependencies)
             runner_path = Path(tmp_dir) / "runner.py"
             runner_path.write_text(runner_code, encoding="utf-8")
+
+            if skill_dir and (skill_dir / "scripts").is_dir():
+                scripts_src = skill_dir / "scripts"
+                scripts_dst = Path(tmp_dir) / "scripts"
+                shutil.copytree(scripts_src, scripts_dst)
 
             result = await self._sandbox.run(
                 ["python3", "/workspace/runner.py"],
@@ -101,6 +109,7 @@ class SkillExecutor:
         arguments: dict,
         dependencies: list[str],
         timeout: int,
+        skill_dir: Path | None = None,
     ) -> SkillResult:
         tmp_dir = tempfile.mkdtemp(prefix="lapwing_skill_host_")
         try:
@@ -109,6 +118,11 @@ class SkillExecutor:
             runner_code = self._build_runner(arguments, [])
             runner_path = Path(tmp_dir) / "runner.py"
             runner_path.write_text(runner_code, encoding="utf-8")
+
+            if skill_dir and (skill_dir / "scripts").is_dir():
+                scripts_src = skill_dir / "scripts"
+                scripts_dst = Path(tmp_dir) / "scripts"
+                shutil.copytree(scripts_src, scripts_dst)
 
             result = await self._sandbox.run_local(
                 [sys.executable, str(runner_path)],
