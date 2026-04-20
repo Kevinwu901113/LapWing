@@ -169,7 +169,7 @@ class SkillSummary:
     draft_count: int
     broken_count: int
     stable_names: tuple[str, ...]
-    testing_details: tuple[str, ...]  # "name (success_rate N/M)"
+    testing_details: tuple[str, ...]  # skill names
 
 
 # ── Top-level view ───────────────────────────────────────────────────

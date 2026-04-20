@@ -459,13 +459,22 @@ async def search_skill_executor(
     )
 
 
+_MAX_SKILL_DOWNLOAD_BYTES = 512 * 1024
+
+
 async def _fetch_skill_content(url: str) -> str:
-    """从 URL 下载 SKILL.md 内容。"""
+    """从 URL 下载 SKILL.md 内容。调用前应先校验 URL 安全性。"""
     import httpx
-    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=False) as client:
         resp = await client.get(url)
         resp.raise_for_status()
-        return resp.text
+        content_length = resp.headers.get("content-length")
+        if content_length and int(content_length) > _MAX_SKILL_DOWNLOAD_BYTES:
+            raise ValueError(f"响应过大（{content_length} 字节，上限 {_MAX_SKILL_DOWNLOAD_BYTES}）")
+        text = resp.text
+        if len(text.encode("utf-8")) > _MAX_SKILL_DOWNLOAD_BYTES:
+            raise ValueError(f"响应过大（超过 {_MAX_SKILL_DOWNLOAD_BYTES} 字节）")
+        return text
 
 
 async def install_skill_executor(
@@ -488,6 +497,16 @@ async def install_skill_executor(
             success=False,
             payload={"installed": False, "reason": "source_url 和 skill_id 不能为空"},
             reason="install_skill: 缺少参数",
+        )
+
+    # SSRF 防护：校验 URL
+    from src.tools.personal_tools import _check_browse_safety
+    safety = _check_browse_safety(source_url)
+    if not safety["allowed"]:
+        return ToolExecutionResult(
+            success=False,
+            payload={"installed": False, "reason": f"URL 被拒绝: {safety['reason']}"},
+            reason=f"install_skill: URL 被拒绝: {safety['reason']}",
         )
 
     # 下载 SKILL.md
@@ -556,7 +575,15 @@ async def install_skill_executor(
         )
 
     # 安装完成后将状态设为 testing（而非 draft）
-    store.update_meta(skill_id, maturity="testing")
+    try:
+        store.update_meta(skill_id, maturity="testing")
+    except Exception:
+        store.delete(skill_id)
+        return ToolExecutionResult(
+            success=False,
+            payload={"installed": False, "reason": "设置 maturity 失败，已回滚"},
+            reason="install_skill: update_meta 失败",
+        )
 
     return ToolExecutionResult(
         success=True,
@@ -599,7 +626,7 @@ def _register_skill_as_tool(tool_registry, skill_store, skill_executor, skill_id
 
 
 def register_skill_tools(tool_registry) -> None:
-    """Register the 6 skill management tools into the registry."""
+    """Register the 8 skill management tools into the registry."""
     tool_registry.register(ToolSpec(
         name="create_skill",
         description=CREATE_SKILL_DESCRIPTION,
