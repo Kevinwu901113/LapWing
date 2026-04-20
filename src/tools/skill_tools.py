@@ -35,6 +35,14 @@ CREATE_SKILL_SCHEMA = {
             "type": "array", "items": {"type": "string"},
             "description": "分类标签（可选）",
         },
+        "category": {
+            "type": "string",
+            "description": "技能分类，如 entertainment/utility/research 等（可选，默认 general）",
+        },
+        "derived_from": {
+            "type": "string",
+            "description": "如果是从已有技能衍生，填入父技能 ID（可选）",
+        },
     },
     "required": ["skill_id", "name", "description", "code"],
     "additionalProperties": False,
@@ -174,6 +182,8 @@ async def create_skill_executor(
 
     dependencies = request.arguments.get("dependencies") or []
     tags = request.arguments.get("tags") or []
+    category = str(request.arguments.get("category", "general")).strip() or "general"
+    derived_from = request.arguments.get("derived_from")
 
     try:
         result = store.create(
@@ -183,6 +193,8 @@ async def create_skill_executor(
             code=code,
             dependencies=dependencies,
             tags=tags,
+            category=category,
+            derived_from=derived_from,
         )
     except Exception as exc:
         return ToolExecutionResult(

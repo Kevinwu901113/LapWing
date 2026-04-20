@@ -145,6 +145,41 @@ class TestDeleteSkill:
         assert skill_store.read("skill_del") is None
 
 
+class TestCreateSkillNewFields:
+    async def test_create_with_category(self, skill_store):
+        from src.tools.skill_tools import create_skill_executor
+        ctx = _make_ctx(services={"skill_store": skill_store})
+        req = _make_req("create_skill", {
+            "skill_id": "skill_cat",
+            "name": "分类测试",
+            "description": "测试 category",
+            "code": 'def run():\n    return {}',
+            "category": "entertainment",
+        })
+        result = await create_skill_executor(req, ctx)
+        assert result.success is True
+        skill = skill_store.read("skill_cat")
+        assert skill["meta"]["category"] == "entertainment"
+
+    async def test_create_with_derived_from(self, skill_store):
+        from src.tools.skill_tools import create_skill_executor
+        skill_store.create("skill_parent", "父技能", "原版", 'def run(): return {}')
+        ctx = _make_ctx(services={"skill_store": skill_store})
+        req = _make_req("create_skill", {
+            "skill_id": "skill_child",
+            "name": "子技能",
+            "description": "衍生版",
+            "code": 'def run():\n    return {"v": 2}',
+            "derived_from": "skill_parent",
+        })
+        result = await create_skill_executor(req, ctx)
+        assert result.success is True
+        skill = skill_store.read("skill_child")
+        assert skill["meta"].get("derived_from") == "skill_parent"
+        assert len(skill["meta"]["evolution_history"]) == 1
+        assert skill["meta"]["evolution_history"][0]["type"] == "derived"
+
+
 class TestSearchSkill:
     async def test_search_local(self, skill_store):
         from src.tools.skill_tools import search_skill_executor
