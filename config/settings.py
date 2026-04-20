@@ -1,16 +1,19 @@
-"""项目配置，统一管理环境变量和常量。"""
+"""
+向后兼容层 — 所有值来自 src.config.get_settings()。
 
-import os
+现有代码继续 ``from config.settings import X``；新代码建议直接用
+``from src.config import get_settings``。
+"""
+
+import os as _os
 from pathlib import Path
 
-try:
-    from dotenv import load_dotenv
-except ModuleNotFoundError:
-    def load_dotenv(*args, **kwargs):  # type: ignore[no-redef]
-        return False
+from src.config import get_settings as _get_settings
 
+_s = _get_settings()
 
-# 项目根目录
+# ── 路径常量（不走 TOML，从代码计算） ───────
+
 ROOT_DIR = Path(__file__).parent.parent
 CONFIG_DIR = ROOT_DIR / "config"
 PROMPTS_DIR = ROOT_DIR / "prompts"
@@ -18,220 +21,225 @@ LOGS_DIR = ROOT_DIR / "logs"
 DATA_DIR = ROOT_DIR / "data"
 DB_PATH = DATA_DIR / "lapwing.db"
 
-# 文件记忆路径
 IDENTITY_DIR = DATA_DIR / "identity"
 MEMORY_DIR = DATA_DIR / "memory"
 CONVERSATION_SUMMARIES_DIR = MEMORY_DIR / "conversations" / "summaries"
 CONSTITUTION_PATH = IDENTITY_DIR / "constitution.md"
 SOUL_PATH = IDENTITY_DIR / "soul.md"
 
-# Compaction 配置
-COMPACTION_TRIGGER_RATIO = float(os.getenv("COMPACTION_TRIGGER_RATIO", "0.8"))
-COMPACTION_SUMMARY_MAX_TOKENS = 300
-
-LAPWING_HOME = Path(os.getenv("LAPWING_HOME", str(Path.home() / ".lapwing")))
+LAPWING_HOME = Path(_os.getenv("LAPWING_HOME", str(Path.home() / ".lapwing")))
 AUTH_DIR = LAPWING_HOME / "auth"
 AUTH_PROFILES_PATH = AUTH_DIR / "auth-profiles.json"
 API_BOOTSTRAP_TOKEN_PATH = AUTH_DIR / "api-bootstrap-token"
 
-# 加载环境变量（支持 ENV_FILE 覆盖）
-_env_file = os.getenv("ENV_FILE", str(CONFIG_DIR / ".env"))
-load_dotenv(_env_file)
+# ── Compaction ───────────────────────────────
 
-# 网络代理
-SEARCH_PROXY_URL: str = os.getenv("SEARCH_PROXY_URL", "")
+COMPACTION_TRIGGER_RATIO: float = _s.compaction.trigger_ratio
+COMPACTION_SUMMARY_MAX_TOKENS: int = _s.compaction.summary_max_tokens
 
-# QQ (NapCat OneBot v11)
-QQ_ENABLED: bool = os.getenv("QQ_ENABLED", "true").lower() == "true"
-QQ_WS_URL: str = os.getenv("QQ_WS_URL", "ws://127.0.0.1:3001")
-QQ_ACCESS_TOKEN: str = os.getenv("QQ_ACCESS_TOKEN", "")
-QQ_SELF_ID: str = os.getenv("QQ_SELF_ID", "")
-QQ_KEVIN_ID: str = os.getenv("QQ_KEVIN_ID", "")
+# ── 网络代理 ─────────────────────────────────
 
-# QQ 群聊
-QQ_GROUP_IDS: list[str] = [
-    g.strip() for g in os.getenv("QQ_GROUP_IDS", "").split(",") if g.strip()
-]
-QQ_GROUP_CONTEXT_SIZE: int = int(os.getenv("QQ_GROUP_CONTEXT_SIZE", "30"))
-QQ_GROUP_COOLDOWN: int = int(os.getenv("QQ_GROUP_COOLDOWN", "60"))
-QQ_GROUP_INTEREST_KEYWORDS: list[str] = [
-    k.strip() for k in os.getenv("QQ_GROUP_INTEREST_KEYWORDS", "").split(",") if k.strip()
-]
+SEARCH_PROXY_URL: str = _s.proxy.search_url
 
-# LLM（OpenAI 兼容格式）
-LLM_API_KEY: str = os.getenv("LLM_API_KEY", "")
-LLM_BASE_URL: str = os.getenv("LLM_BASE_URL", "")
-LLM_MODEL: str = os.getenv("LLM_MODEL", "glm-4-flash")
-LLM_PROVIDER: str = os.getenv("LLM_PROVIDER", "").strip().lower()
+# ── QQ ───────────────────────────────────────
 
-# 多模型路由配置（可选，不配置时回退到通用 LLM_* 配置）
-LLM_CHAT_API_KEY: str = os.getenv("LLM_CHAT_API_KEY", "")
-LLM_CHAT_BASE_URL: str = os.getenv("LLM_CHAT_BASE_URL", "")
-LLM_CHAT_MODEL: str = os.getenv("LLM_CHAT_MODEL", "")
-LLM_CHAT_PROVIDER: str = os.getenv("LLM_CHAT_PROVIDER", "").strip().lower()
+QQ_ENABLED: bool = _s.qq.enabled
+QQ_WS_URL: str = _s.qq.ws_url
+QQ_ACCESS_TOKEN: str = _s.qq.access_token
+QQ_SELF_ID: str = _s.qq.self_id
+QQ_KEVIN_ID: str = _s.qq.kevin_id
+QQ_GROUP_IDS: list[str] = _s.qq.group_ids
+QQ_GROUP_CONTEXT_SIZE: int = _s.qq.group_context_size
+QQ_GROUP_COOLDOWN: int = _s.qq.group_cooldown
+QQ_GROUP_INTEREST_KEYWORDS: list[str] = _s.qq.group_interest_keywords
 
-LLM_TOOL_API_KEY: str = os.getenv("LLM_TOOL_API_KEY", "")
-LLM_TOOL_BASE_URL: str = os.getenv("LLM_TOOL_BASE_URL", "")
-LLM_TOOL_MODEL: str = os.getenv("LLM_TOOL_MODEL", "")
-LLM_TOOL_PROVIDER: str = os.getenv("LLM_TOOL_PROVIDER", "").strip().lower()
+# ── LLM ──────────────────────────────────────
 
-# NVIDIA NIM（心跳专用模型，可选）
-NIM_API_KEY: str = os.getenv("NIM_API_KEY", "")
-NIM_BASE_URL: str = os.getenv("NIM_BASE_URL", "https://integrate.api.nvidia.com/v1")
-NIM_MODEL: str = os.getenv("NIM_MODEL", "meta/llama-3.1-8b-instruct")
-NIM_PROVIDER: str = os.getenv("NIM_PROVIDER", "").strip().lower()
-LLM_HEARTBEAT_PROVIDER: str = (
-    os.getenv("LLM_HEARTBEAT_PROVIDER", "").strip().lower()
-    or NIM_PROVIDER
+LLM_API_KEY: str = _s.llm.api_key
+LLM_BASE_URL: str = _s.llm.base_url
+LLM_MODEL: str = _s.llm.model
+LLM_PROVIDER: str = _s.llm.provider.strip().lower() if _s.llm.provider else ""
+
+LLM_CHAT_API_KEY: str = _s.llm.chat.api_key
+LLM_CHAT_BASE_URL: str = _s.llm.chat.base_url
+LLM_CHAT_MODEL: str = _s.llm.chat.model
+LLM_CHAT_PROVIDER: str = _s.llm.chat.provider.strip().lower() if _s.llm.chat.provider else ""
+
+LLM_TOOL_API_KEY: str = _s.llm.tool.api_key
+LLM_TOOL_BASE_URL: str = _s.llm.tool.base_url
+LLM_TOOL_MODEL: str = _s.llm.tool.model
+LLM_TOOL_PROVIDER: str = _s.llm.tool.provider.strip().lower() if _s.llm.tool.provider else ""
+
+# ── NVIDIA NIM ───────────────────────────────
+
+NIM_API_KEY: str = _s.nim.api_key
+NIM_BASE_URL: str = _s.nim.base_url
+NIM_MODEL: str = _s.nim.model
+NIM_PROVIDER: str = _s.nim.provider.strip().lower() if _s.nim.provider else ""
+LLM_HEARTBEAT_PROVIDER: str = _s.llm.heartbeat.provider.strip().lower() or NIM_PROVIDER
+
+# ── OAuth ────────────────────────────────────
+
+AUTH_REFRESH_SKEW_SECONDS: int = _s.auth.refresh_skew_seconds
+OPENAI_CODEX_AUTH_AUTHORIZE_URL: str = _s.codex.auth_authorize_url
+OPENAI_CODEX_AUTH_TOKEN_URL: str = _s.codex.auth_token_url
+OPENAI_CODEX_AUTH_CLIENT_ID: str = _s.codex.auth_client_id
+OPENAI_CODEX_AUTH_REDIRECT_HOST: str = _s.codex.auth_redirect_host
+OPENAI_CODEX_AUTH_REDIRECT_PORT: int = _s.codex.auth_redirect_port
+OPENAI_CODEX_AUTH_REDIRECT_PATH: str = _s.codex.auth_redirect_path
+OPENAI_CODEX_AUTH_PROXY_URL: str = _s.codex.auth_proxy_url
+CODEX_FALLBACK_MODEL: str = _s.codex.fallback_model
+
+# ── 意识循环 ─────────────────────────────────
+
+CONSCIOUSNESS_DEFAULT_INTERVAL: int = _s.consciousness.default_interval
+CONSCIOUSNESS_MIN_INTERVAL: int = _s.consciousness.min_interval
+CONSCIOUSNESS_MAX_INTERVAL: int = _s.consciousness.max_interval
+CONSCIOUSNESS_AFTER_CHAT_INTERVAL: int = _s.consciousness.after_chat_interval
+CONSCIOUSNESS_CONVERSATION_END_DELAY: int = _s.consciousness.conversation_end_delay
+
+# ── 对话设置 ─────────────────────────────────
+
+MAX_HISTORY_TURNS: int = 20
+MESSAGE_BUFFER_SECONDS: float = _s.message.buffer_seconds
+
+# ── 记忆 ─────────────────────────────────────
+
+MEMORY_WORKING_SET_TOP_K: int = _s.memory.working_set_top_k
+EPISODIC_EXTRACT_ENABLED: bool = _s.memory.episodic_extract_enabled
+EPISODIC_EXTRACT_MIN_TURNS: int = _s.memory.episodic_extract_min_turns
+EPISODIC_EXTRACT_WINDOW_SIZE: int = _s.memory.episodic_extract_window_size
+SEMANTIC_DISTILL_ENABLED: bool = _s.memory.semantic_distill_enabled
+SEMANTIC_DISTILL_EPISODES_WINDOW: int = _s.memory.semantic_distill_episodes_window
+SEMANTIC_DISTILL_DEDUP_THRESHOLD: float = _s.memory.semantic_distill_dedup_threshold
+AGENT_TEAM_ENABLED: bool = _s.agent_team.enabled
+SKILL_SYSTEM_ENABLED: bool = _s.skill.enabled
+SKILL_SANDBOX_IMAGE: str = _s.skill.sandbox_image
+SKILL_SANDBOX_TIMEOUT: int = _s.skill.sandbox_timeout
+
+# ── Sandbox (unified) ───────────────────────
+SANDBOX_DOCKER_IMAGE: str = _s.sandbox.docker_image
+SANDBOX_NETWORK: str = _s.sandbox.network
+SANDBOX_STRICT_MEMORY_MB: int = _s.sandbox.strict.memory_mb
+SANDBOX_STRICT_CPUS: float = _s.sandbox.strict.cpus
+SANDBOX_STRICT_TIMEOUT: int = _s.sandbox.strict.timeout
+SANDBOX_STANDARD_MEMORY_MB: int = _s.sandbox.standard.memory_mb
+SANDBOX_STANDARD_CPUS: float = _s.sandbox.standard.cpus
+SANDBOX_STANDARD_TIMEOUT: int = _s.sandbox.standard.timeout
+SANDBOX_PRIVILEGED_MEMORY_MB: int = _s.sandbox.privileged.memory_mb
+SANDBOX_PRIVILEGED_CPUS: float = _s.sandbox.privileged.cpus
+SANDBOX_PRIVILEGED_TIMEOUT: int = _s.sandbox.privileged.timeout
+
+# ── Shell ────────────────────────────────────
+
+SHELL_ENABLED: bool = _s.shell.enabled
+SHELL_ALLOW_SUDO: bool = _s.shell.allow_sudo
+SHELL_TIMEOUT: int = _s.shell.timeout
+SHELL_DEFAULT_CWD: str = _s.shell.default_cwd or str(ROOT_DIR)
+SHELL_MAX_OUTPUT_CHARS: int = _s.shell.max_output_chars
+SHELL_BACKEND: str = _s.shell.backend
+TASK_MAX_TOOL_ROUNDS: int = _s.task.max_tool_rounds
+TASK_NO_ACTION_BUDGET: int = _s.task.no_action_budget
+TASK_ERROR_BURST_THRESHOLD: int = _s.task.error_burst_threshold
+
+# ── SLO ──────────────────────────────────────
+
+TOOL_LOOP_SLO_SHELL_P95_MS: int = _s.slo.shell_p95_ms
+TOOL_LOOP_SLO_WEB_P95_MS: int = _s.slo.web_p95_ms
+TOOL_LOOP_LONG_COMMAND_CUTOFF_MS: int = _s.slo.long_command_cutoff_ms
+TOOL_EVENT_START_TO_UI_P95_MS: int = _s.slo.event_start_to_ui_p95_ms
+TOOL_EVENT_UPDATE_THROTTLE_MS: int = _s.slo.event_update_throttle_ms
+TOOL_LATENCY_WINDOW_SIZE: int = _s.slo.latency_window_size
+TOOL_LATENCY_MIN_SAMPLES_FOR_SLO: int = _s.slo.latency_min_samples
+
+# ── Loop detection ───────────────────────────
+
+LOOP_DETECTION_ENABLED: bool = _s.loop_detection.enabled
+LOOP_DETECTION_HISTORY_SIZE: int = _s.loop_detection.history_size
+LOOP_DETECTION_WARNING_THRESHOLD: int = _s.loop_detection.warning_threshold
+LOOP_DETECTION_CRITICAL_THRESHOLD: int = _s.loop_detection.critical_threshold
+LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD: int = _s.loop_detection.global_circuit_breaker_threshold
+LOOP_DETECTION_DETECTOR_GENERIC_REPEAT: bool = _s.loop_detection.detector_generic_repeat
+LOOP_DETECTION_DETECTOR_PING_PONG: bool = _s.loop_detection.detector_ping_pong
+LOOP_DETECTION_DETECTOR_KNOWN_POLL_NO_PROGRESS: bool = _s.loop_detection.detector_known_poll_no_progress
+
+# ── 浏览器 ───────────────────────────────────
+
+BROWSER_ENABLED: bool = _s.browser.enabled
+BROWSER_HEADLESS: bool = _s.browser.headless
+BROWSER_USER_DATA_DIR: str = _s.browser.user_data_dir or str(DATA_DIR / "browser" / "profile")
+BROWSER_MAX_TABS: int = _s.browser.max_tabs
+BROWSER_PAGE_TEXT_MAX_CHARS: int = _s.browser.page_text_max_chars
+BROWSER_NAVIGATION_TIMEOUT_MS: int = _s.browser.navigation_timeout_ms
+BROWSER_ACTION_TIMEOUT_MS: int = _s.browser.action_timeout_ms
+BROWSER_SCREENSHOT_DIR: str = _s.browser.screenshot_dir or str(DATA_DIR / "browser" / "screenshots")
+BROWSER_SCREENSHOT_RETAIN_DAYS: int = _s.browser.screenshot_retain_days
+BROWSER_VIEWPORT_WIDTH: int = _s.browser.viewport_width
+BROWSER_VIEWPORT_HEIGHT: int = _s.browser.viewport_height
+BROWSER_LOCALE: str = _s.browser.locale
+BROWSER_TIMEZONE: str = _s.browser.timezone
+BROWSER_MAX_ELEMENT_COUNT: int = _s.browser.max_element_count
+BROWSER_WAIT_AFTER_ACTION_MS: int = _s.browser.wait_after_action_ms
+BROWSER_URL_BLACKLIST: list[str] = _s.browser.url_blacklist
+BROWSER_URL_WHITELIST: list[str] = _s.browser.url_whitelist
+BROWSER_BLOCK_INTERNAL_NETWORK: bool = _s.browser.block_internal_network
+BROWSER_SENSITIVE_ACTION_WORDS: list[str] = _s.browser.sensitive_action_words
+
+BROWSER_VISION_ENABLED: bool = _s.browser.vision.enabled
+BROWSER_VISION_SLOT: str = _s.browser.vision.slot
+BROWSER_VISION_MAX_DESCRIPTION_CHARS: int = _s.browser.vision.max_description_chars
+BROWSER_VISION_CACHE_TTL_SECONDS: int = _s.browser.vision.cache_ttl_seconds
+BROWSER_VISION_IMG_THRESHOLD: int = _s.browser.vision.img_threshold
+BROWSER_VISION_ALT_RATIO_THRESHOLD: float = _s.browser.vision.alt_ratio_threshold
+
+MINIMAX_VLM_ENABLED: bool = _s.browser.minimax_vlm.enabled
+MINIMAX_VLM_API_KEY: str = (
+    _s.browser.minimax_vlm.api_key or LLM_CHAT_API_KEY or LLM_API_KEY
 )
-# OAuth 刷新提前量
-AUTH_REFRESH_SKEW_SECONDS: int = int(os.getenv("AUTH_REFRESH_SKEW_SECONDS", "300"))
+MINIMAX_VLM_HOST: str = _s.browser.minimax_vlm.host
 
-# OpenAI Codex OAuth PKCE
-OPENAI_CODEX_AUTH_AUTHORIZE_URL: str = os.getenv("OPENAI_CODEX_AUTH_AUTHORIZE_URL", "https://auth.openai.com/oauth/authorize")
-OPENAI_CODEX_AUTH_TOKEN_URL: str = os.getenv("OPENAI_CODEX_AUTH_TOKEN_URL", "https://auth.openai.com/oauth/token")
-OPENAI_CODEX_AUTH_CLIENT_ID: str = os.getenv("OPENAI_CODEX_AUTH_CLIENT_ID", "app_EMoamEEZ73f0CkXaXp7hrann")
-OPENAI_CODEX_AUTH_REDIRECT_HOST: str = os.getenv("OPENAI_CODEX_AUTH_REDIRECT_HOST", "localhost")
-OPENAI_CODEX_AUTH_REDIRECT_PORT: int = int(os.getenv("OPENAI_CODEX_AUTH_REDIRECT_PORT", "1455"))
-OPENAI_CODEX_AUTH_REDIRECT_PATH: str = os.getenv("OPENAI_CODEX_AUTH_REDIRECT_PATH", "/auth/callback")
-OPENAI_CODEX_AUTH_PROXY_URL: str = os.getenv("OPENAI_CODEX_AUTH_PROXY_URL", "")
-CODEX_FALLBACK_MODEL: str = os.getenv("CODEX_FALLBACK_MODEL", "gpt-5.3-codex")
+# ── 凭据保险柜 ───────────────────────────────
 
-# 意识循环配置
-CONSCIOUSNESS_DEFAULT_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_DEFAULT_INTERVAL", "600"))
-CONSCIOUSNESS_MIN_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_MIN_INTERVAL", "120"))
-CONSCIOUSNESS_MAX_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_MAX_INTERVAL", "14400"))
-CONSCIOUSNESS_AFTER_CHAT_INTERVAL: int = int(os.getenv("CONSCIOUSNESS_AFTER_CHAT_INTERVAL", "120"))
-CONSCIOUSNESS_CONVERSATION_END_DELAY: int = int(os.getenv("CONSCIOUSNESS_CONVERSATION_END_DELAY", "300"))
-
-# 对话设置
-MAX_HISTORY_TURNS: int = 20  # 保留最近 N 轮对话（每轮 = 1 user + 1 assistant）
-MESSAGE_BUFFER_SECONDS: float = float(os.getenv("MESSAGE_BUFFER_SECONDS", "4"))  # 消息合并等待时间
-
-# Step 7: 分层记忆树 (Episodic + Semantic)
-MEMORY_WORKING_SET_TOP_K: int = int(os.getenv("MEMORY_WORKING_SET_TOP_K", "10"))
-EPISODIC_EXTRACT_ENABLED: bool = os.getenv("EPISODIC_EXTRACT_ENABLED", "true").lower() in ("true", "1", "yes")
-EPISODIC_EXTRACT_MIN_TURNS: int = int(os.getenv("EPISODIC_EXTRACT_MIN_TURNS", "3"))
-EPISODIC_EXTRACT_WINDOW_SIZE: int = int(os.getenv("EPISODIC_EXTRACT_WINDOW_SIZE", "20"))
-SEMANTIC_DISTILL_ENABLED: bool = os.getenv("SEMANTIC_DISTILL_ENABLED", "true").lower() in ("true", "1", "yes")
-SEMANTIC_DISTILL_EPISODES_WINDOW: int = int(os.getenv("SEMANTIC_DISTILL_EPISODES_WINDOW", "20"))
-SEMANTIC_DISTILL_DEDUP_THRESHOLD: float = float(os.getenv("SEMANTIC_DISTILL_DEDUP_THRESHOLD", "0.85"))
-AGENT_TEAM_ENABLED: bool = os.getenv("AGENT_TEAM_ENABLED", "true").lower() in ("true", "1", "yes")
-SKILL_SYSTEM_ENABLED: bool = os.getenv("SKILL_SYSTEM_ENABLED", "false").lower() in ("true", "1", "yes")
-SKILL_SANDBOX_IMAGE: str = os.getenv("SKILL_SANDBOX_IMAGE", "lapwing-sandbox")
-SKILL_SANDBOX_TIMEOUT: int = int(os.getenv("SKILL_SANDBOX_TIMEOUT", "30"))
-
-# Shell 执行
-SHELL_ENABLED: bool = os.getenv("SHELL_ENABLED", "true").lower() == "true"
-SHELL_ALLOW_SUDO: bool = os.getenv("SHELL_ALLOW_SUDO", "false").lower() == "true"
-SHELL_TIMEOUT: int = int(os.getenv("SHELL_TIMEOUT", "30"))
-SHELL_DEFAULT_CWD: str = os.getenv("SHELL_DEFAULT_CWD", str(ROOT_DIR))
-SHELL_MAX_OUTPUT_CHARS: int = int(os.getenv("SHELL_MAX_OUTPUT_CHARS", "4000"))
-SHELL_BACKEND: str = os.getenv("SHELL_BACKEND", "local")
-TASK_MAX_TOOL_ROUNDS: int = int(os.getenv("TASK_MAX_TOOL_ROUNDS", "32"))
-TASK_NO_ACTION_BUDGET: int = int(os.getenv("TASK_NO_ACTION_BUDGET", "3"))
-TASK_ERROR_BURST_THRESHOLD: int = int(os.getenv("TASK_ERROR_BURST_THRESHOLD", "3"))
-
-# Latency / 体感 SLO（监控+告警）
-TOOL_LOOP_SLO_SHELL_P95_MS: int = int(os.getenv("TOOL_LOOP_SLO_SHELL_P95_MS", "2000"))
-TOOL_LOOP_SLO_WEB_P95_MS: int = int(os.getenv("TOOL_LOOP_SLO_WEB_P95_MS", "5000"))
-TOOL_LOOP_LONG_COMMAND_CUTOFF_MS: int = int(os.getenv("TOOL_LOOP_LONG_COMMAND_CUTOFF_MS", "10000"))
-TOOL_EVENT_START_TO_UI_P95_MS: int = int(os.getenv("TOOL_EVENT_START_TO_UI_P95_MS", "200"))
-TOOL_EVENT_UPDATE_THROTTLE_MS: int = int(os.getenv("TOOL_EVENT_UPDATE_THROTTLE_MS", "500"))
-TOOL_LATENCY_WINDOW_SIZE: int = int(os.getenv("TOOL_LATENCY_WINDOW_SIZE", "200"))
-TOOL_LATENCY_MIN_SAMPLES_FOR_SLO: int = int(os.getenv("TOOL_LATENCY_MIN_SAMPLES_FOR_SLO", "20"))
-
-# 工具循环检测
-LOOP_DETECTION_ENABLED: bool = os.getenv("LOOP_DETECTION_ENABLED", "true").lower() == "true"
-LOOP_DETECTION_HISTORY_SIZE: int = int(os.getenv("LOOP_DETECTION_HISTORY_SIZE", "30"))
-LOOP_DETECTION_WARNING_THRESHOLD: int = int(os.getenv("LOOP_DETECTION_WARNING_THRESHOLD", "10"))
-LOOP_DETECTION_CRITICAL_THRESHOLD: int = int(os.getenv("LOOP_DETECTION_CRITICAL_THRESHOLD", "20"))
-LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD: int = int(
-    os.getenv("LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD", "30")
-)
-LOOP_DETECTION_DETECTOR_GENERIC_REPEAT: bool = (
-    os.getenv("LOOP_DETECTION_DETECTOR_GENERIC_REPEAT", "true").lower() == "true"
-)
-LOOP_DETECTION_DETECTOR_PING_PONG: bool = (
-    os.getenv("LOOP_DETECTION_DETECTOR_PING_PONG", "true").lower() == "true"
-)
-LOOP_DETECTION_DETECTOR_KNOWN_POLL_NO_PROGRESS: bool = (
-    os.getenv("LOOP_DETECTION_DETECTOR_KNOWN_POLL_NO_PROGRESS", "true").lower() == "true"
+CREDENTIAL_VAULT_PATH: str = _s.credential_vault_path or str(
+    DATA_DIR / "credentials" / "vault.enc"
 )
 
-# ── 浏览器子系统 ──
-BROWSER_ENABLED: bool = os.getenv("BROWSER_ENABLED", "true").lower() in ("true", "1", "yes")
-BROWSER_HEADLESS: bool = os.getenv("BROWSER_HEADLESS", "true").lower() in ("true", "1", "yes")
-BROWSER_USER_DATA_DIR: str = os.getenv("BROWSER_USER_DATA_DIR", str(DATA_DIR / "browser" / "profile"))
-BROWSER_MAX_TABS: int = int(os.getenv("BROWSER_MAX_TABS", "8"))
-BROWSER_PAGE_TEXT_MAX_CHARS: int = int(os.getenv("BROWSER_PAGE_TEXT_MAX_CHARS", "4000"))
-BROWSER_NAVIGATION_TIMEOUT_MS: int = int(os.getenv("BROWSER_NAVIGATION_TIMEOUT_MS", "30000"))
-BROWSER_ACTION_TIMEOUT_MS: int = int(os.getenv("BROWSER_ACTION_TIMEOUT_MS", "10000"))
-BROWSER_SCREENSHOT_DIR: str = os.getenv("BROWSER_SCREENSHOT_DIR", str(DATA_DIR / "browser" / "screenshots"))
-BROWSER_SCREENSHOT_RETAIN_DAYS: int = int(os.getenv("BROWSER_SCREENSHOT_RETAIN_DAYS", "7"))
-BROWSER_VIEWPORT_WIDTH: int = int(os.getenv("BROWSER_VIEWPORT_WIDTH", "1280"))
-BROWSER_VIEWPORT_HEIGHT: int = int(os.getenv("BROWSER_VIEWPORT_HEIGHT", "720"))
-BROWSER_LOCALE: str = os.getenv("BROWSER_LOCALE", "zh-CN")
-BROWSER_TIMEZONE: str = os.getenv("BROWSER_TIMEZONE", "Asia/Shanghai")
-BROWSER_MAX_ELEMENT_COUNT: int = int(os.getenv("BROWSER_MAX_ELEMENT_COUNT", "50"))
-BROWSER_WAIT_AFTER_ACTION_MS: int = int(os.getenv("BROWSER_WAIT_AFTER_ACTION_MS", "1000"))
-BROWSER_URL_BLACKLIST: list[str] = [
-    item.strip()
-    for item in os.getenv("BROWSER_URL_BLACKLIST", "").split(",")
-    if item.strip()
-]
-BROWSER_URL_WHITELIST: list[str] = [
-    item.strip()
-    for item in os.getenv("BROWSER_URL_WHITELIST", "").split(",")
-    if item.strip()
-]
-BROWSER_BLOCK_INTERNAL_NETWORK: bool = os.getenv("BROWSER_BLOCK_INTERNAL_NETWORK", "true").lower() in ("true", "1", "yes")
-BROWSER_SENSITIVE_ACTION_WORDS: list[str] = [
-    item.strip()
-    for item in os.getenv(
-        "BROWSER_SENSITIVE_ACTION_WORDS",
-        "delete,remove,pay,purchase,buy,submit order,删除,移除,支付,购买,确认订单,提交订单",
-    ).split(",")
-    if item.strip()
-]
-# 浏览器视觉理解
-BROWSER_VISION_ENABLED: bool = os.getenv("BROWSER_VISION_ENABLED", "true").lower() in ("true", "1", "yes")
-BROWSER_VISION_SLOT: str = os.getenv("BROWSER_VISION_SLOT", "browser_vision")
-BROWSER_VISION_MAX_DESCRIPTION_CHARS: int = int(os.getenv("BROWSER_VISION_MAX_DESCRIPTION_CHARS", "500"))
-BROWSER_VISION_CACHE_TTL_SECONDS: int = int(os.getenv("BROWSER_VISION_CACHE_TTL_SECONDS", "30"))
-BROWSER_VISION_IMG_THRESHOLD: int = int(os.getenv("BROWSER_VISION_IMG_THRESHOLD", "5"))
-BROWSER_VISION_ALT_RATIO_THRESHOLD: float = float(os.getenv("BROWSER_VISION_ALT_RATIO_THRESHOLD", "0.3"))
-# MiniMax VLM 端点（浏览器视觉理解的替代方案，优先于 LLMRouter vision slot）
-MINIMAX_VLM_ENABLED: bool = os.getenv("MINIMAX_VLM_ENABLED", "false").lower() in ("true", "1", "yes")
-MINIMAX_VLM_API_KEY: str = os.getenv("MINIMAX_VLM_API_KEY", "") or LLM_CHAT_API_KEY or LLM_API_KEY
-MINIMAX_VLM_HOST: str = os.getenv("MINIMAX_VLM_HOST", "https://api.minimaxi.com")
-# 凭据保险柜
-CREDENTIAL_VAULT_PATH: str = os.getenv("CREDENTIAL_VAULT_PATH", str(DATA_DIR / "credentials" / "vault.enc"))
+# ── 搜索 ─────────────────────────────────────
 
-if TASK_MAX_TOOL_ROUNDS <= 0:
-    raise ValueError("TASK_MAX_TOOL_ROUNDS 必须是正整数。")
-if TOOL_LOOP_SLO_SHELL_P95_MS <= 0:
-    raise ValueError("TOOL_LOOP_SLO_SHELL_P95_MS 必须是正整数。")
-if TOOL_LOOP_SLO_WEB_P95_MS <= 0:
-    raise ValueError("TOOL_LOOP_SLO_WEB_P95_MS 必须是正整数。")
-if TOOL_LOOP_LONG_COMMAND_CUTOFF_MS <= 0:
-    raise ValueError("TOOL_LOOP_LONG_COMMAND_CUTOFF_MS 必须是正整数。")
-if TOOL_EVENT_START_TO_UI_P95_MS <= 0:
-    raise ValueError("TOOL_EVENT_START_TO_UI_P95_MS 必须是正整数。")
-if TOOL_EVENT_UPDATE_THROTTLE_MS <= 0:
-    raise ValueError("TOOL_EVENT_UPDATE_THROTTLE_MS 必须是正整数。")
-if TOOL_LATENCY_WINDOW_SIZE <= 0:
-    raise ValueError("TOOL_LATENCY_WINDOW_SIZE 必须是正整数。")
-if TOOL_LATENCY_MIN_SAMPLES_FOR_SLO <= 0:
-    raise ValueError("TOOL_LATENCY_MIN_SAMPLES_FOR_SLO 必须是正整数。")
-if LOOP_DETECTION_HISTORY_SIZE <= 0:
-    raise ValueError("LOOP_DETECTION_HISTORY_SIZE 必须是正整数。")
-if LOOP_DETECTION_WARNING_THRESHOLD <= 0:
-    raise ValueError("LOOP_DETECTION_WARNING_THRESHOLD 必须是正整数。")
-if LOOP_DETECTION_CRITICAL_THRESHOLD <= 0:
-    raise ValueError("LOOP_DETECTION_CRITICAL_THRESHOLD 必须是正整数。")
-if LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD <= 0:
-    raise ValueError("LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD 必须是正整数。")
+CHAT_WEB_TOOLS_ENABLED: bool = _s.search.chat_web_tools_enabled
+TAVILY_API_KEY: str = _s.search.tavily_api_key
+TAVILY_COUNTRY: str = _s.search.tavily_country
+BOCHA_API_KEY: str = _s.search.bocha_api_key
+
+# ── API ──────────────────────────────────────
+
+API_HOST: str = _s.api.host
+API_PORT: int = _s.api.port
+API_SESSION_COOKIE_NAME: str = _s.api.session_cookie_name
+API_SESSION_TTL_SECONDS: int = _s.api.session_ttl_seconds
+API_ALLOWED_ORIGINS: list[str] = _s.api.allowed_origins
+
+# ── 日志 ─────────────────────────────────────
+
+LOG_LEVEL: str = _s.log.level
+
+# ── 权限 ─────────────────────────────────────
+
+OWNER_IDS: set[str] = set(_s.auth.owner_ids)
+if QQ_KEVIN_ID:
+    OWNER_IDS.add(QQ_KEVIN_ID)
+
+TRUSTED_IDS: set[str] = set(_s.auth.trusted_ids)
+
+# ── 其他 ─────────────────────────────────────
+
+PHASE0_MODE: str = _s.phase0_mode.strip().upper()
+DESKTOP_DEFAULT_OWNER: bool = _s.desktop.default_owner
+DESKTOP_WS_CHAT_ID_PREFIX: str = _s.desktop.ws_chat_id_prefix
+DESKTOP_AUTH_TOKENS_PATH: Path = AUTH_DIR / "desktop-tokens.json"
+
+# ── 验证（保留原有约束） ─────────────────────
+
 if LOOP_DETECTION_WARNING_THRESHOLD >= LOOP_DETECTION_CRITICAL_THRESHOLD:
     raise ValueError(
         "LOOP_DETECTION_WARNING_THRESHOLD 必须小于 LOOP_DETECTION_CRITICAL_THRESHOLD。"
@@ -240,58 +248,3 @@ if LOOP_DETECTION_CRITICAL_THRESHOLD >= LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_TH
     raise ValueError(
         "LOOP_DETECTION_CRITICAL_THRESHOLD 必须小于 LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD。"
     )
-if QQ_GROUP_CONTEXT_SIZE <= 0:
-    raise ValueError("QQ_GROUP_CONTEXT_SIZE 必须是正整数。")
-if QQ_GROUP_COOLDOWN < 0:
-    raise ValueError("QQ_GROUP_COOLDOWN 不能小于 0。")
-
-# 搜索配置
-CHAT_WEB_TOOLS_ENABLED: bool = os.getenv("CHAT_WEB_TOOLS_ENABLED", "true").lower() == "true"
-TAVILY_API_KEY: str = os.getenv("TAVILY_API_KEY", "")
-TAVILY_COUNTRY: str = os.getenv("TAVILY_COUNTRY", "china").strip().lower()  # Tavily 要完整英文国名，如 "china"
-BOCHA_API_KEY: str = os.getenv("BOCHA_API_KEY", "")  # 博查 (Bocha AI) Web Search，国内来源
-
-# 本地 API Auth
-API_HOST: str = os.getenv("API_HOST", "127.0.0.1")
-API_PORT: int = int(os.getenv("API_PORT", "8765"))
-API_SESSION_COOKIE_NAME: str = os.getenv("API_SESSION_COOKIE_NAME", "lapwing_session")
-API_SESSION_TTL_SECONDS: int = int(os.getenv("API_SESSION_TTL_SECONDS", str(12 * 60 * 60)))
-_API_ALLOWED_ORIGINS_DEFAULT = "http://localhost:1420,http://127.0.0.1:1420,http://127.0.0.1:8765"
-API_ALLOWED_ORIGINS: list[str] = [
-    item.strip()
-    for item in os.getenv(
-        "API_ALLOWED_ORIGINS",
-        (
-            _API_ALLOWED_ORIGINS_DEFAULT
-            + ",tauri://localhost,http://tauri.localhost,https://tauri.localhost"
-        ),
-    ).split(",")
-    if item.strip()
-]
-
-# 日志
-LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")
-
-# 权限认证 (AuthorityGate)
-# OWNER_IDS：合并环境变量 + QQ Kevin ID
-OWNER_IDS: set[str] = {
-    item.strip()
-    for item in os.getenv("OWNER_IDS", "").split(",")
-    if item.strip()
-}
-if QQ_KEVIN_ID:
-    OWNER_IDS.add(QQ_KEVIN_ID)
-
-TRUSTED_IDS: set[str] = {
-    item.strip()
-    for item in os.getenv("TRUSTED_IDS", "").split(",")
-    if item.strip()
-}
-
-# Phase 0 最小可行测试模式（""=关闭, "A"=纯对话, "B"=加基础工具）
-PHASE0_MODE: str = os.getenv("PHASE0_MODE", "").strip().upper()
-
-# 桌面连接是否默认视为 OWNER（本地连接不做身份验证）
-DESKTOP_DEFAULT_OWNER: bool = os.getenv("DESKTOP_DEFAULT_OWNER", "true").lower() == "true"
-DESKTOP_WS_CHAT_ID_PREFIX: str = os.getenv("DESKTOP_WS_CHAT_ID_PREFIX", "desktop")
-DESKTOP_AUTH_TOKENS_PATH: Path = AUTH_DIR / "desktop-tokens.json"

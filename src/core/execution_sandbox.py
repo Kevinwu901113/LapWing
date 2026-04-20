@@ -45,6 +45,38 @@ _TIER_DEFAULTS: dict[SandboxTier, dict] = {
 }
 
 
+def _load_tier_defaults() -> dict[SandboxTier, dict]:
+    try:
+        from config.settings import (
+            SANDBOX_NETWORK,
+            SANDBOX_STRICT_MEMORY_MB, SANDBOX_STRICT_CPUS,
+            SANDBOX_STANDARD_MEMORY_MB, SANDBOX_STANDARD_CPUS,
+            SANDBOX_PRIVILEGED_MEMORY_MB, SANDBOX_PRIVILEGED_CPUS,
+        )
+        return {
+            SandboxTier.STRICT: {
+                "memory": f"{SANDBOX_STRICT_MEMORY_MB}m",
+                "cpus": str(SANDBOX_STRICT_CPUS),
+                "network": "none",
+                "workspace_ro": True,
+            },
+            SandboxTier.STANDARD: {
+                "memory": f"{SANDBOX_STANDARD_MEMORY_MB}m",
+                "cpus": str(SANDBOX_STANDARD_CPUS),
+                "network": SANDBOX_NETWORK,
+                "workspace_ro": False,
+            },
+            SandboxTier.PRIVILEGED: {
+                "memory": f"{SANDBOX_PRIVILEGED_MEMORY_MB}m",
+                "cpus": str(SANDBOX_PRIVILEGED_CPUS),
+                "network": "host",
+                "workspace_ro": False,
+            },
+        }
+    except ImportError:
+        return _TIER_DEFAULTS
+
+
 @dataclass
 class SandboxResult:
     stdout: str
@@ -64,7 +96,7 @@ class ExecutionSandbox:
         tier: SandboxTier,
         workspace: str | None,
     ) -> list[str]:
-        cfg = _TIER_DEFAULTS[tier]
+        cfg = _load_tier_defaults()[tier]
         flags = [
             "--rm",
             "--cap-drop=ALL",

@@ -1,0 +1,211 @@
+# ============================================================
+# Lapwing 配置文件
+# 所有非敏感配置集中管理，敏感凭据请放 config/.env
+# env 变量可覆盖此文件中的任何值（嵌套路径用 _ 连接并大写）
+# ============================================================
+
+[proxy]
+search_url = ""
+
+[qq]
+enabled = true
+ws_url = "ws://127.0.0.1:3001"
+# self_id, kevin_id, access_token 从 .env 读取
+group_ids = []
+group_context_size = 30
+group_cooldown = 60
+group_interest_keywords = []
+
+[llm]
+model = "MiniMax-M2.7"
+provider = "minimax"
+
+[llm.chat]
+model = ""
+provider = ""
+
+[llm.tool]
+model = ""
+provider = ""
+
+[llm.heartbeat]
+provider = "nvidia"
+
+[nim]
+base_url = "https://integrate.api.nvidia.com/v1"
+model = "moonshotai/kimi-k2-instruct"
+provider = ""
+
+[consciousness]
+default_interval = 600
+min_interval = 120
+max_interval = 14400
+after_chat_interval = 120
+conversation_end_delay = 300
+
+[message]
+buffer_seconds = 4.0
+
+[memory]
+episodic_extract_enabled = true
+episodic_extract_min_turns = 3
+episodic_extract_window_size = 20
+semantic_distill_enabled = true
+semantic_distill_episodes_window = 20
+semantic_distill_dedup_threshold = 0.85
+working_set_top_k = 10
+
+[shell]
+enabled = true
+allow_sudo = false
+timeout = 30
+default_cwd = "/home/kevin/lapwing"
+max_output_chars = 4000
+backend = "local"
+docker_image = "lapwing-sandbox:latest"
+docker_workspace = "/home/lapwing/workspace"
+
+[task]
+max_tool_rounds = 32
+no_action_budget = 3
+error_burst_threshold = 3
+
+[slo]
+shell_p95_ms = 2000
+web_p95_ms = 5000
+long_command_cutoff_ms = 10000
+event_start_to_ui_p95_ms = 200
+event_update_throttle_ms = 500
+latency_window_size = 200
+latency_min_samples = 20
+
+[loop_detection]
+enabled = true
+history_size = 30
+warning_threshold = 10
+critical_threshold = 20
+global_circuit_breaker_threshold = 30
+detector_generic_repeat = true
+detector_ping_pong = true
+detector_known_poll_no_progress = true
+
+[search]
+max_results = 5
+provider = "auto"
+cache_ttl_seconds = 300
+chat_web_tools_enabled = true
+tavily_search_depth = "basic"
+tavily_country = "china"
+web_fetch_max_chars = 8000
+
+[browse]
+enabled = false
+interval_hours = 2
+sources = ["hackernews", "reddit/technology", "reddit/science"]
+
+[api]
+host = "0.0.0.0"
+port = 8765
+session_cookie_name = "lapwing_session"
+session_ttl_seconds = 43200
+allowed_origins = [
+    "http://localhost:1420",
+    "http://127.0.0.1:1420",
+    "http://127.0.0.1:8765",
+    "tauri://localhost",
+    "http://tauri.localhost",
+    "https://tauri.localhost",
+]
+
+[browser]
+enabled = false
+headless = true
+max_tabs = 8
+page_text_max_chars = 4000
+navigation_timeout_ms = 30000
+action_timeout_ms = 10000
+screenshot_retain_days = 7
+viewport_width = 1280
+viewport_height = 720
+locale = "zh-CN"
+timezone = "Asia/Shanghai"
+max_element_count = 50
+wait_after_action_ms = 1000
+url_blacklist = []
+url_whitelist = []
+block_internal_network = true
+sensitive_action_words = [
+    "delete", "remove", "pay", "purchase", "buy", "submit order",
+    "删除", "移除", "支付", "购买", "确认订单", "提交订单",
+]
+
+[browser.vision]
+enabled = true
+slot = "browser_vision"
+max_description_chars = 500
+cache_ttl_seconds = 30
+img_threshold = 5
+alt_ratio_threshold = 0.3
+
+[browser.minimax_vlm]
+enabled = false
+host = "https://api.minimaxi.com"
+
+[auth]
+owner_ids = []
+trusted_ids = []
+refresh_skew_seconds = 300
+
+[desktop]
+default_owner = true
+ws_chat_id_prefix = "desktop"
+
+[skill]
+enabled = false
+sandbox_image = "lapwing-sandbox"
+sandbox_timeout = 30
+
+[agent_team]
+enabled = true
+
+[whisper]
+base_url = "https://api.openai.com/v1"
+model = "whisper-1"
+
+[codex]
+auth_authorize_url = "https://auth.openai.com/oauth/authorize"
+auth_token_url = "https://auth.openai.com/oauth/token"
+auth_client_id = "app_EMoamEEZ73f0CkXaXp7hrann"
+auth_redirect_host = "localhost"
+auth_redirect_port = 1455
+auth_redirect_path = "/auth/callback"
+fallback_model = "gpt-5.3-codex"
+runtime_base_url = "https://chatgpt.com/backend-api/codex"
+runtime_client_version = "0.116.0-alpha.10"
+runtime_timeout_seconds = 60
+
+[compaction]
+trigger_ratio = 0.8
+summary_max_tokens = 300
+
+[log]
+level = "INFO"
+
+[sandbox]
+docker_image = "lapwing-sandbox:latest"
+network = "lapwing-sandbox"
+
+[sandbox.strict]
+memory_mb = 256
+cpus = 0.5
+timeout = 30
+
+[sandbox.standard]
+memory_mb = 512
+cpus = 1.0
+timeout = 60
+
+[sandbox.privileged]
+memory_mb = 1024
+cpus = 2.0
+timeout = 300

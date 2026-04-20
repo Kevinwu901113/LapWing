@@ -184,6 +184,29 @@ class TestSandboxRun:
         assert "Docker" in result.stderr
 
 
+class TestSandboxConfig:
+    def test_default_config_loads(self):
+        from src.config.settings import SandboxConfig
+        cfg = SandboxConfig()
+        assert cfg.strict.memory_mb == 256
+        assert cfg.strict.cpus == 0.5
+        assert cfg.standard.memory_mb == 512
+        assert cfg.standard.cpus == 1.0
+        assert cfg.privileged.memory_mb == 1024
+        assert cfg.privileged.cpus == 2.0
+        assert cfg.network == "lapwing-sandbox"
+
+    def test_settings_expose_sandbox_values(self):
+        from config.settings import (
+            SANDBOX_DOCKER_IMAGE, SANDBOX_NETWORK,
+            SANDBOX_STRICT_MEMORY_MB, SANDBOX_STANDARD_MEMORY_MB,
+        )
+        assert SANDBOX_DOCKER_IMAGE == "lapwing-sandbox:latest"
+        assert SANDBOX_NETWORK == "lapwing-sandbox"
+        assert SANDBOX_STRICT_MEMORY_MB == 256
+        assert SANDBOX_STANDARD_MEMORY_MB == 512
+
+
 class TestSandboxRunLocal:
     async def test_run_local_basic(self):
         sb = ExecutionSandbox()
