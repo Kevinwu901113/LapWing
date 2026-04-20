@@ -110,6 +110,40 @@ DELETE_SKILL_SCHEMA = {
     "additionalProperties": False,
 }
 
+SEARCH_SKILL_DESCRIPTION = (
+    "搜索技能。可以搜索本地已安装的技能，也可以搜索网上可安装的技能。"
+    "搜索时会匹配技能的名称、描述和标签。"
+)
+SEARCH_SKILL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "query": {"type": "string", "description": "搜索关键词"},
+        "source": {
+            "type": "string",
+            "enum": ["local", "web", "all"],
+            "description": "搜索范围：local 本地 / web 网络 / all 全部（默认 all）",
+            "default": "all",
+        },
+    },
+    "required": ["query"],
+    "additionalProperties": False,
+}
+
+INSTALL_SKILL_DESCRIPTION = (
+    "从 URL 安装一个技能。下载 SKILL.md 文件并安装到本地。"
+    "安装前会进行安全检查，拒绝包含危险代码的技能。"
+    "安装后的技能初始状态为 testing。"
+)
+INSTALL_SKILL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "source_url": {"type": "string", "description": "SKILL.md 的 URL（GitHub raw URL 等）"},
+        "skill_id": {"type": "string", "description": "本地安装名，格式 skill_{简短描述}"},
+    },
+    "required": ["source_url", "skill_id"],
+    "additionalProperties": False,
+}
+
 
 # ── Executors ────────────────────────────────────────────────────────
 
@@ -360,6 +394,182 @@ async def delete_skill_executor(
     )
 
 
+async def search_skill_executor(
+    request: ToolExecutionRequest,
+    context: ToolExecutionContext,
+) -> ToolExecutionResult:
+    services = context.services or {}
+    store = services.get("skill_store")
+    if store is None:
+        return ToolExecutionResult(
+            success=False,
+            payload={"results": [], "reason": "SkillStore 未挂载"},
+            reason="search_skill: SkillStore 不可用",
+        )
+
+    query = str(request.arguments.get("query", "")).strip()
+    source = str(request.arguments.get("source", "all")).strip()
+    if not query:
+        return ToolExecutionResult(
+            success=False,
+            payload={"results": [], "reason": "query 不能为空"},
+            reason="search_skill: 缺少 query",
+        )
+
+    results = []
+
+    # 本地技能搜索
+    if source in ("local", "all"):
+        query_lower = query.lower()
+        for skill_meta in store.get_skill_index():
+            text = f"{skill_meta.get('name', '')} {skill_meta.get('description', '')} {' '.join(skill_meta.get('tags', []))}".lower()
+            if query_lower in text:
+                results.append({
+                    "source": "local",
+                    "id": skill_meta["id"],
+                    "name": skill_meta.get("name", ""),
+                    "description": skill_meta.get("description", ""),
+                    "maturity": skill_meta.get("maturity", ""),
+                    "tags": skill_meta.get("tags", []),
+                })
+
+    # 网络搜索（仅在本地无结果时触发）
+    if source in ("web", "all") and not results:
+        research_engine = services.get("research_engine")
+        tavily = getattr(research_engine, "tavily", None) if research_engine else None
+        if tavily is not None:
+            try:
+                web_results = await tavily.search(
+                    f"{query} agent skill SKILL.md github",
+                    max_results=5,
+                )
+                for item in web_results:
+                    results.append({
+                        "source": "web",
+                        "url": item.get("url", ""),
+                        "title": item.get("title", ""),
+                        "snippet": item.get("snippet", ""),
+                    })
+            except Exception as exc:
+                logger.warning("search_skill web search failed: %s", exc)
+
+    return ToolExecutionResult(
+        success=True,
+        payload={"results": results, "query": query, "source": source},
+    )
+
+
+async def _fetch_skill_content(url: str) -> str:
+    """从 URL 下载 SKILL.md 内容。"""
+    import httpx
+    async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+        resp = await client.get(url)
+        resp.raise_for_status()
+        return resp.text
+
+
+async def install_skill_executor(
+    request: ToolExecutionRequest,
+    context: ToolExecutionContext,
+) -> ToolExecutionResult:
+    services = context.services or {}
+    store = services.get("skill_store")
+    if store is None:
+        return ToolExecutionResult(
+            success=False,
+            payload={"installed": False, "reason": "SkillStore 未挂载"},
+            reason="install_skill: SkillStore 不可用",
+        )
+
+    source_url = str(request.arguments.get("source_url", "")).strip()
+    skill_id = str(request.arguments.get("skill_id", "")).strip()
+    if not source_url or not skill_id:
+        return ToolExecutionResult(
+            success=False,
+            payload={"installed": False, "reason": "source_url 和 skill_id 不能为空"},
+            reason="install_skill: 缺少参数",
+        )
+
+    # 下载 SKILL.md
+    try:
+        content = await _fetch_skill_content(source_url)
+    except Exception as exc:
+        return ToolExecutionResult(
+            success=False,
+            payload={"installed": False, "reason": f"下载失败: {exc}"},
+            reason=f"install_skill: 下载失败: {exc}",
+        )
+
+    # 解析文件（静态方法，直接通过类调用）
+    from src.skills.skill_store import SkillStore
+    meta, body = SkillStore._parse(content)
+    if meta is None:
+        return ToolExecutionResult(
+            success=False,
+            payload={"installed": False, "reason": "无法解析 SKILL.md 格式"},
+            reason="install_skill: SKILL.md 解析失败",
+        )
+
+    code = SkillStore._extract_code(body)
+
+    # 安全检查
+    from src.skills.skill_security import check_skill_safety
+    code_check = check_skill_safety(code)
+    if not code_check["safe"]:
+        return ToolExecutionResult(
+            success=False,
+            payload={"installed": False, "reason": f"安全检查未通过: {code_check['reason']}"},
+            reason=f"install_skill: 代码安全检查失败: {code_check['reason']}",
+        )
+    md_check = check_skill_safety(content, check_markdown=True)
+    if not md_check["safe"]:
+        return ToolExecutionResult(
+            success=False,
+            payload={"installed": False, "reason": f"安全检查未通过: {md_check['reason']}"},
+            reason=f"install_skill: 文档安全检查失败: {md_check['reason']}",
+        )
+
+    # 写入技能
+    name = meta.get("name", skill_id)
+    description = meta.get("description", "")
+    dependencies = meta.get("dependencies", [])
+    tags = meta.get("tags", [])
+    category = meta.get("category", "general")
+
+    try:
+        result = store.create(
+            skill_id=skill_id,
+            name=name,
+            description=description,
+            code=code,
+            dependencies=dependencies,
+            tags=tags,
+            category=category,
+            origin="installed",
+            source_url=source_url,
+        )
+    except Exception as exc:
+        return ToolExecutionResult(
+            success=False,
+            payload={"installed": False, "reason": str(exc)},
+            reason=f"install_skill: 写入失败: {exc}",
+        )
+
+    # 安装完成后将状态设为 testing（而非 draft）
+    store.update_meta(skill_id, maturity="testing")
+
+    return ToolExecutionResult(
+        success=True,
+        payload={
+            "installed": True,
+            "skill_id": result["skill_id"],
+            "name": name,
+            "source_url": source_url,
+            "maturity": "testing",
+        },
+    )
+
+
 # ── Dynamic tool registration ────────────────────────────────────────
 
 def _register_skill_as_tool(tool_registry, skill_store, skill_executor, skill_id: str) -> None:
@@ -435,6 +645,22 @@ def register_skill_tools(tool_registry) -> None:
         description=DELETE_SKILL_DESCRIPTION,
         json_schema=DELETE_SKILL_SCHEMA,
         executor=delete_skill_executor,
+        capability="skill",
+        risk_level="medium",
+    ))
+    tool_registry.register(ToolSpec(
+        name="search_skill",
+        description=SEARCH_SKILL_DESCRIPTION,
+        json_schema=SEARCH_SKILL_SCHEMA,
+        executor=search_skill_executor,
+        capability="skill",
+        risk_level="low",
+    ))
+    tool_registry.register(ToolSpec(
+        name="install_skill",
+        description=INSTALL_SKILL_DESCRIPTION,
+        json_schema=INSTALL_SKILL_SCHEMA,
+        executor=install_skill_executor,
         capability="skill",
         risk_level="medium",
     ))
