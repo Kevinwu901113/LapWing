@@ -135,7 +135,7 @@ class TestOperationAuthTable:
         """高风险工具都应需要 OWNER 权限。"""
         high_risk_tools = [
             "execute_shell", "write_file", "file_write", "file_append",
-            "apply_workspace_patch", "run_python_code", "memory_note",
+            "apply_workspace_patch", "run_python_code", "write_note",
         ]
         for tool in high_risk_tools:
             level = OPERATION_AUTH.get(tool)

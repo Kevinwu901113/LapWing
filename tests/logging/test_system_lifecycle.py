@@ -27,9 +27,6 @@ async def _open(path: Path) -> StateMutationLog:
 async def test_container_records_system_started_and_stopped(tmp_path):
     brain = MagicMock()
     brain.init_db = AsyncMock()
-    brain.memory = MagicMock()
-    brain.memory.close = AsyncMock()
-    brain.memory.get_all_chat_ids = AsyncMock(return_value=[])
     api_server = SimpleNamespace(start=AsyncMock(), shutdown=AsyncMock(), _app=None)
     event_bus = DesktopEventBus()
     task_view_store = TaskViewStore()

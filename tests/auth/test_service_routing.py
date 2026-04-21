@@ -8,8 +8,13 @@ from unittest.mock import patch
 
 def _clear_auth_modules() -> None:
     for mod in list(sys.modules.keys()):
-        if mod.startswith("src.auth.") or mod == "config.settings":
+        if mod.startswith("src.auth.") or mod in ("config.settings", "src.config", "src.config.settings"):
             del sys.modules[mod]
+    try:
+        from src.config.settings import get_settings
+        get_settings.cache_clear()
+    except ImportError:
+        pass
 
 
 def test_resolve_candidates_falls_back_to_env_when_binding_provider_mismatches(tmp_path):

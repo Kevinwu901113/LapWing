@@ -57,10 +57,9 @@ def _format_for_summary(messages: list[dict]) -> str:
 class ConversationCompactor:
     """监控对话窗口，在接近上限时触发压缩。"""
 
-    def __init__(self, memory, router):
-        self._memory = memory
+    def __init__(self, router, *, trajectory=None):
         self._router = router
-        self._trajectory = None  # Set via set_trajectory() after AppContainer init (Step 2g)
+        self._trajectory = trajectory
         self._compacting: set[str] = set()
         CONVERSATION_SUMMARIES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -91,7 +90,7 @@ class ConversationCompactor:
             )
             history = trajectory_entries_to_messages(rows)
         else:
-            history = await self._memory.get(chat_id)
+            return False
         if not self.should_compact(len(history)):
             return False
 
@@ -164,11 +163,6 @@ class ConversationCompactor:
             "content": f"[之前的对话摘要] {SUMMARY_PREFIX}{summary}",
         }
         new_history = [summary_message] + to_keep
-
-        # v2.0 Step 2j: session lineage removed with sessions. Cache update
-        # is cache-only in 2h+ since reads come from TrajectoryStore; this
-        # call is retained so the phase-0 / unit-test path stays coherent.
-        self._memory.replace_history(chat_id, new_history)
 
         logger.info(
             f"[{actual_chat_id}] Compaction 完成：压缩 {compact_count} 条 → 保留 {len(to_keep)} 条 + 1 条摘要"

@@ -3,8 +3,7 @@
 包含 9 个工具执行器 + register_memory_tools_v2() 注册函数。
 依赖通过 ctx.services 注入：
   - "note_store"          NoteStore 实例
-  - "vector_store"        MemoryVectorStore 实例（可选）
-  - "conversation_memory" ConversationMemory 实例（可选）
+  - "vector_store"        MemoryVectorStore 实例（��选）
 """
 
 from __future__ import annotations

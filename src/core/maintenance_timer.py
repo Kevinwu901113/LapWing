@@ -20,8 +20,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
 from typing import TYPE_CHECKING
+
+from src.core.time_utils import now
 
 if TYPE_CHECKING:  # pragma: no cover
     from src.core.brain import LapwingBrain
@@ -73,7 +74,7 @@ class MaintenanceTimer:
                 await asyncio.sleep(30)
 
     async def _maybe_run_daily(self) -> None:
-        hour = datetime.now().hour
+        hour = now().hour
         if hour == self.DAILY_HOUR and not self._daily_done_today:
             self._daily_done_today = True
             await self._run_daily()
@@ -82,10 +83,33 @@ class MaintenanceTimer:
 
     async def _run_daily(self) -> None:
         distiller = getattr(self._brain, "_semantic_distiller", None)
-        if distiller is None:
+        if distiller is not None:
+            try:
+                written = await distiller.distill_recent()
+                logger.info("daily semantic distillation wrote %d facts", written)
+            except Exception:
+                logger.warning("daily semantic distillation failed", exc_info=True)
+
+        await self._maybe_capture_skills()
+
+    async def _maybe_capture_skills(self) -> None:
+        from config.settings import SKILL_SYSTEM_ENABLED
+        if not SKILL_SYSTEM_ENABLED:
+            return
+        trajectory = getattr(self._brain, "trajectory_store", None)
+        skill_store = getattr(self._brain, "_skill_store", None)
+        router = getattr(self._brain, "router", None)
+        if trajectory is None or skill_store is None or router is None:
             return
         try:
-            written = await distiller.distill_recent()
-            logger.info("daily semantic distillation wrote %d facts", written)
+            from src.skills.skill_capturer import SkillCapturer
+            capturer = SkillCapturer()
+            new_skills = await capturer.maybe_capture_skills(
+                trajectory, skill_store, router,
+            )
+            if new_skills:
+                logger.info(
+                    "自动捕获了 %d 个新技能: %s", len(new_skills), new_skills,
+                )
         except Exception:
-            logger.warning("daily semantic distillation failed", exc_info=True)
+            logger.warning("skill capture failed", exc_info=True)

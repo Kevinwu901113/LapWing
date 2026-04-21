@@ -7,11 +7,11 @@ Phase 1 简化版：只保护 constitution + config/.env + src/。
 from __future__ import annotations
 
 import asyncio
+import os
 import re
 import shlex
 import shutil
 import logging
-from datetime import datetime
 from enum import Enum
 from pathlib import Path
 from typing import NamedTuple
@@ -60,8 +60,12 @@ BLOCK_PATTERNS: tuple[str, ...] = (
 
 
 def _is_locked(p: Path) -> bool:
-    """检查路径是否在锁定范围内。"""
-    resolved = p.resolve()
+    """检查路径是否在锁定范围内。使用 realpath 解析符号链接防绕过。"""
+    try:
+        resolved = Path(os.path.realpath(str(p)))
+    except (OSError, ValueError):
+        logger.warning("路径解析失败，按受保护处理: %s", p)
+        return True  # fail-closed
     if resolved in LOCKED_PATHS:
         return True
     for prefix in LOCKED_PREFIXES:
@@ -130,13 +134,13 @@ def extract_vital_shell_targets(command: str) -> list[Path]:
 
 
 def _resolve_paths(tokens: list[str]) -> list[Path]:
-    """从 tokens 中提取路径参数。"""
+    """从 tokens 中提取路径参数。使用 realpath 解析符号链接。"""
     paths: list[Path] = []
     for t in tokens:
         if t.startswith("-"):
             continue
         try:
-            paths.append(Path(t).expanduser().resolve())
+            paths.append(Path(os.path.realpath(str(Path(t).expanduser()))))
         except (ValueError, OSError):
             continue
     return paths
@@ -144,7 +148,8 @@ def _resolve_paths(tokens: list[str]) -> list[Path]:
 
 async def auto_backup(paths: list[Path]) -> Path:
     """备份文件到 data/backups/vital_guard/{timestamp}/。"""
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    from src.core.time_utils import now
+    timestamp = now().strftime("%Y%m%d_%H%M%S")
     backup_path = BACKUP_DIR / timestamp
     backup_path.mkdir(parents=True, exist_ok=True)
 

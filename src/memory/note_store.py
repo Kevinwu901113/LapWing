@@ -1,9 +1,12 @@
+import logging
 import re
 import uuid
 import yaml
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+logger = logging.getLogger("lapwing.memory.note_store")
 
 # 时区：台北
 _TZ = ZoneInfo("Asia/Taipei")
@@ -120,7 +123,8 @@ class NoteStore:
                 meta, _ = self._parse_note(raw)
                 if meta and meta.get("id") == note_id_or_path:
                     return md_file
-            except Exception:
+            except Exception as e:
+                logger.warning("笔记操作失败 [_resolve_path 遍历 %s]: %s", md_file, e, exc_info=True)
                 continue
 
         return None
@@ -174,8 +178,8 @@ class NoteStore:
                     meta, _ = self._parse_note(raw)
                     if meta:
                         note_id = meta.get("id")
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.warning("笔记操作失败 [list_notes 读取 %s]: %s", item, e, exc_info=True)
                 entries.append({"name": item.name, "type": "file", "note_id": note_id})
 
         return entries
@@ -221,7 +225,8 @@ class NoteStore:
                         "file_path": str(md_file.resolve()),
                         "snippet": snippet,
                     })
-            except Exception:
+            except Exception as e:
+                logger.warning("笔记操作失败 [search_keyword %s]: %s", md_file, e, exc_info=True)
                 continue
 
         return results
@@ -242,7 +247,8 @@ class NoteStore:
                         "content": content,
                         "meta": meta,
                     })
-            except Exception:
+            except Exception as e:
+                logger.warning("笔记操作失败 [get_all_for_embedding %s]: %s", md_file, e, exc_info=True)
                 continue
         return results
 

@@ -44,20 +44,36 @@ class TestCreate:
         assert skill["meta"]["dependencies"] == ["requests", "beautifulsoup4"]
         assert skill["meta"]["tags"] == ["web_scraping"]
 
-    def test_create_duplicate_id_overwrites(self, skill_store):
+    def test_create_duplicate_id_rejected_without_overwrite(self, skill_store):
         skill_store.create(
             skill_id="skill_dup",
             name="原始",
             description="原始描述",
             code='def run():\n    return 1',
         )
+        with pytest.raises(FileExistsError):
+            skill_store.create(
+                skill_id="skill_dup",
+                name="更新",
+                description="新描述",
+                code='def run():\n    return 2',
+            )
+
+    def test_create_duplicate_id_overwrites_with_flag(self, skill_store):
         skill_store.create(
-            skill_id="skill_dup",
+            skill_id="skill_dup2",
+            name="原始",
+            description="原始描述",
+            code='def run():\n    return 1',
+        )
+        skill_store.create(
+            skill_id="skill_dup2",
             name="更新",
             description="新描述",
             code='def run():\n    return 2',
+            overwrite=True,
         )
-        skill = skill_store.read("skill_dup")
+        skill = skill_store.read("skill_dup2")
         assert skill["meta"]["name"] == "更新"
 
 
@@ -377,22 +393,13 @@ class TestSkillIndex:
         assert entry["description"] == "描述A"
         assert entry["maturity"] == "draft"
         assert entry["tags"] == ["game"]
-        # Should NOT contain code
         assert "code" not in entry
 
-    def test_rebuild_index_creates_index_file(self, skill_store):
-        skill_store.create("skill_ridx", "重建索引", "测试", 'def run(): return {}')
-        skill_store.rebuild_index()
-        index_path = skill_store.skills_dir / "_index.json"
-        assert index_path.exists()
-
-    def test_get_skill_index_uses_cache(self, skill_store):
-        skill_store.create("skill_cache", "缓存", "测试缓存", 'def run(): return {}')
-        skill_store.rebuild_index()
-        # Read index from cache (should not need to scan directories)
-        index = skill_store.get_skill_index()
-        assert len(index) == 1
-        assert index[0]["id"] == "skill_cache"
+    def test_get_skill_index_reflects_mutations(self, skill_store):
+        skill_store.create("skill_mut", "变更", "测试即时反映", 'def run(): return {}')
+        assert len(skill_store.get_skill_index()) == 1
+        skill_store.delete("skill_mut")
+        assert len(skill_store.get_skill_index()) == 0
 
     def test_load_skill_full_returns_complete_content(self, skill_store):
         skill_store.create(

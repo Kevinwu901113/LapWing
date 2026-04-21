@@ -2,6 +2,17 @@
 
 from datetime import datetime, timezone
 from typing import Any
+from zoneinfo import ZoneInfo
+
+
+def now() -> datetime:
+    """统一时间入口，时区由配置决定。"""
+    from src.config import get_settings
+    tz_name = getattr(get_settings(), 'browser', None)
+    tz_str = "Asia/Shanghai"
+    if tz_name is not None:
+        tz_str = getattr(tz_name, 'timezone', "Asia/Shanghai") or "Asia/Shanghai"
+    return datetime.now(ZoneInfo(tz_str))
 
 
 def parse_iso_datetime(value: Any) -> datetime | None:

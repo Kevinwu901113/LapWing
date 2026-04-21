@@ -199,11 +199,8 @@ class TestCase2HallucinationFiltered:
         from src.core.brain import _ThinkCtx, LapwingBrain
 
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
-             patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+             patch("src.core.brain.LLMRouter"):
             brain = LapwingBrain(db_path=Path("test.db"))
-        brain.memory.append = AsyncMock()
-        brain.memory.remove_last = AsyncMock()
         brain.fact_extractor = AsyncMock()
         brain.trajectory_store = AsyncMock()
         brain.trajectory_store.append = AsyncMock(return_value=1)

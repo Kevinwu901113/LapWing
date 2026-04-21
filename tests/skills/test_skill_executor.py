@@ -142,6 +142,63 @@ class TestRunOnHost:
         assert result.timed_out is True
 
 
+class TestStableUsesDockerStandard:
+    async def test_stable_uses_standard_tier_docker(self, executor):
+        """Stable skills must run in Docker STANDARD, not run_local."""
+        from unittest.mock import patch, AsyncMock
+
+        captured_cmd = []
+
+        async def fake_create_subprocess_exec(*args, **kwargs):
+            captured_cmd.extend(args)
+            mock_proc = AsyncMock()
+            mock_proc.communicate.return_value = (b'{"ok": true}', b'')
+            mock_proc.returncode = 0
+            return mock_proc
+
+        with patch("src.core.execution_sandbox.asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
+            await executor._run_on_host(
+                'def run():\n    return {"ok": True}',
+                {},
+                [],
+                timeout=30,
+            )
+
+        cmd_str = " ".join(captured_cmd)
+        assert "docker" in cmd_str, "Must run via Docker"
+        assert "--network none" not in cmd_str, "STANDARD must not use --network none"
+        assert "--memory" in cmd_str, "Must have memory limit"
+
+    async def test_stable_passes_dependencies(self, executor):
+        """Stable skills must pass dependencies to the runner for pip install."""
+        from unittest.mock import patch, AsyncMock
+        import tempfile, os
+
+        written_runner = []
+
+        original_run = executor._sandbox.run
+
+        async def spy_run(*args, workspace=None, **kwargs):
+            if workspace:
+                runner_path = os.path.join(workspace, "runner.py")
+                if os.path.exists(runner_path):
+                    with open(runner_path) as f:
+                        written_runner.append(f.read())
+            return await original_run(*args, workspace=workspace, **kwargs)
+
+        with patch.object(executor._sandbox, "run", side_effect=spy_run):
+            await executor._run_on_host(
+                'def run():\n    return {}',
+                {},
+                ["requests"],
+                timeout=30,
+            )
+
+        assert written_runner, "Runner script should have been written"
+        assert "pip" in written_runner[0], "Runner must contain pip install for dependencies"
+        assert "requests" in written_runner[0]
+
+
 class TestScriptsDirectoryAccess:
     async def test_skill_dir_path_available(self, executor, skill_store):
         """Executor should know where the skill directory is."""

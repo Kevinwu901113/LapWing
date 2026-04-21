@@ -44,12 +44,20 @@ class MiniMaxVLM:
             "image_source": image_source,
         }
 
-        try:
+        return await self._do_request(url, headers, payload)
+
+    async def _do_request(self, url: str, headers: dict, payload: dict) -> str:
+        from src.utils.retry import async_retry
+
+        @async_retry(max_attempts=2, base_delay=2.0)
+        async def _request():
             resp = await self._client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
-            # 根据实际响应格式取值（优先 result，回退 text，最后 str(data)）
             return data.get("result", data.get("text", str(data)))
+
+        try:
+            return await _request()
         except httpx.HTTPStatusError as e:
             logger.error("VLM API 错误: %d — %s", e.response.status_code, e.response.text[:200])
             raise

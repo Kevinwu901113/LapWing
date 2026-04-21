@@ -522,6 +522,11 @@ class BrowserManager:
 
     async def navigate(self, url: str, tab_id: str | None = None) -> PageState:
         """导航到指定 URL。tab_id 为 None 时创建新 Tab。等待加载完成后返回 PageState。"""
+        from src.utils.url_safety import check_url_safety
+        safety = check_url_safety(url)
+        if not safety.safe:
+            raise ValueError(f"URL 安全检查未通过: {safety.reason}")
+
         async with self._lock:
             self._ensure_started()
 
@@ -702,7 +707,8 @@ class BrowserManager:
             screenshot_dir = Path(BROWSER_SCREENSHOT_DIR)
             screenshot_dir.mkdir(parents=True, exist_ok=True)
 
-            ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+            from src.core.time_utils import now as _tz_now
+            ts = _tz_now().strftime("%Y%m%d_%H%M%S")
             filename = f"screenshot_{tab_id}_{ts}.png"
             filepath = screenshot_dir / filename
 

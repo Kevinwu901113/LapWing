@@ -78,8 +78,8 @@ def _resolve_git_commit() -> str:
         )
         if result.returncode == 0:
             return result.stdout.strip()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger("lapwing.app.container").debug("Git 版本检测失败: %s", e)
     return "unknown"
 
 
@@ -199,15 +199,10 @@ class AppContainer:
         self.api_server._mutation_log = self.mutation_log
         logger.info("StateMutationLog 已初始化：%s", mutation_db)
 
-        # v2.0 Step 2: TrajectoryStore — separate aiosqlite connection to the
-        # same lapwing.db (WAL mode allows multi-writer). Must come before the
-        # ConversationMemory dual-write wiring so brain.memory sees the
-        # trajectory target at first-write time.
         self.trajectory_store = TrajectoryStore(
             self._data_dir / "lapwing.db", self.mutation_log,
         )
         await self.trajectory_store.init()
-        self.brain.memory.set_trajectory(self.trajectory_store)
         self.brain.compactor.set_trajectory(self.trajectory_store)
         self.brain.trajectory_store = self.trajectory_store
         _wire_trajectory_to_dispatcher(self.brain.trajectory_store, self.dispatcher)
@@ -375,8 +370,8 @@ class AppContainer:
         if hasattr(self, "_vlm_client") and self._vlm_client is not None:
             try:
                 await self._vlm_client.close()
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("VLM 客户端关闭失败: %s", e)
 
         # 浏览器子系统关闭
         if self._browser_manager is not None:
@@ -427,7 +422,6 @@ class AppContainer:
                 logger.warning("mutation_log close failed", exc_info=True)
             self.mutation_log = None
 
-        await self.brain.memory.close()
         self._started = False
         logger.info("应用容器资源清理完成")
 
@@ -440,11 +434,6 @@ class AppContainer:
 
         self.brain.vector_store = VectorStore(self._data_dir / "chroma")
 
-        # v2.0 Step 3: StateViewBuilder — single prompt-assembly entry.
-        # Reminder source starts as ConversationMemory (compat layer); the
-        # DurableScheduler-driven reminder_source swap still happens in
-        # ``start()`` once the scheduler is constructed, matching the
-        # pre-Step-3 ordering.
         from src.core.state_view_builder import StateViewBuilder
         from src.core.vitals import get_previous_state
         from config.settings import IDENTITY_DIR
@@ -454,9 +443,9 @@ class AppContainer:
             voice_prompt_name="lapwing_voice",
             attention_manager=self.brain.attention_manager,
             trajectory_store=self.brain.trajectory_store,
-            commitment_store=self.commitment_store,  # Step 5: wired
-            task_store=None,  # Phase 1 TaskStore wiring below
-            reminder_source=self.brain.memory,
+            commitment_store=self.commitment_store,
+            task_store=None,
+            reminder_source=None,
             previous_state_reader=get_previous_state,
         )
 

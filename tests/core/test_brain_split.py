@@ -35,15 +35,11 @@ def reset_module_cache():
 
 def _make_brain():
     with patch("src.core.brain.load_prompt", return_value="prompt"), \
-         patch("src.core.brain.LLMRouter"), \
-         patch("src.core.brain.ConversationMemory"):
+         patch("src.core.brain.LLMRouter"):
         from src.core.brain import LapwingBrain
         brain = LapwingBrain(db_path=Path("test.db"))
-    brain.memory.append = AsyncMock()
-    brain.memory.remove_last = AsyncMock()
     brain.fact_extractor = MagicMock()
     brain.fact_extractor.notify = MagicMock()
-    # Step 5: trajectory_store 用于 inner_monologue 留痕
     brain.trajectory_store = MagicMock()
     brain.trajectory_store.append = AsyncMock(return_value=1)
     return brain
@@ -162,9 +158,7 @@ class TestStep5InnerMonologueContract:
              patch.object(brain, "_complete_chat", fake_complete):
             result = await brain.think_conversational("chat1", "hi", send_fn=send_fn)
 
-        # 没有 tell_user 调用 → memory_text 为空，memory.append 不会被调用
         assert result == ""
-        brain.memory.append.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -200,12 +194,12 @@ class TestStep5TellUserContract:
 
         assert send_calls == ["第一条", "第二条", "第三条"]
 
-    async def test_memory_records_joined_tell_user_text(self):
+    async def test_trajectory_records_joined_tell_user_text(self):
         brain = _make_brain()
         ctx, fake_complete = _make_ctx_for_tell_user(["一", "二"])
-        memory_calls: list[tuple] = []
-        brain.memory.append = AsyncMock(
-            side_effect=lambda *a, **kw: memory_calls.append((a, kw))
+        traj_calls: list[tuple] = []
+        brain.trajectory_store.append = AsyncMock(
+            side_effect=lambda *a, **kw: traj_calls.append((a, kw))
         )
 
         async def send_fn(text: str) -> None:
@@ -215,9 +209,9 @@ class TestStep5TellUserContract:
              patch.object(brain, "_complete_chat", fake_complete):
             result = await brain.think_conversational("chat1", "hi", send_fn=send_fn)
 
-        # memory_text 由 tell_user buffer 拼接得到
         assert result == "一\n\n二"
-        assert len(memory_calls) == 1
-        args, _ = memory_calls[0]
-        assert args[1] == "assistant"
-        assert args[2] == "一\n\n二"
+        assistant_calls = [
+            c for c in traj_calls
+            if len(c[0]) >= 4 and c[0][3].get("text") == "一\n\n二"
+        ]
+        assert len(assistant_calls) == 1

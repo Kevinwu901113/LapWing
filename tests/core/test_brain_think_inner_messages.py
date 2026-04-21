@@ -24,12 +24,9 @@ def brain(tmp_path):
     with patch("src.core.brain.AuthManager"), \
          patch("src.core.brain.LLMRouter"), \
          patch("src.core.brain.build_default_tool_registry"), \
-         patch("src.core.brain.ConversationMemory"), \
          patch("src.core.brain.TaskRuntime"):
         from src.core.brain import LapwingBrain
         b = LapwingBrain(db_path=tmp_path / "x.db")
-    b.memory.append = AsyncMock()
-    b.memory.get = AsyncMock(return_value=[])
     return b
 
 

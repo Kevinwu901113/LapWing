@@ -147,3 +147,29 @@ async def test_docker_backend_uses_bridge_network(monkeypatch, isolated_shell_lo
     cmd_str = " ".join(captured_cmd)
     assert "--network=host" not in cmd_str, "Must not use --network=host"
     assert "--network" in cmd_str, "Must specify a network"
+
+
+@pytest.mark.asyncio
+async def test_local_backend_sanitizes_env(monkeypatch, isolated_shell_log):
+    """Local backend must sanitize env vars (no API keys leak)."""
+    import os
+    monkeypatch.setattr(shell_executor, "_SHELL_BACKEND", "local")
+    monkeypatch.setenv("FAKE_API_KEY", "secret-test-value")
+
+    result = await shell_executor.execute("env")
+
+    assert result.return_code == 0
+    assert "FAKE_API_KEY" not in result.stdout
+    assert "secret-test-value" not in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_local_backend_redacts_secrets_in_output(monkeypatch, isolated_shell_log):
+    """Local backend must redact secret patterns in output."""
+    monkeypatch.setattr(shell_executor, "_SHELL_BACKEND", "local")
+
+    result = await shell_executor.execute('echo "ghp_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"')
+
+    assert result.return_code == 0
+    assert "ghp_" not in result.stdout
+    assert "REDACTED" in result.stdout

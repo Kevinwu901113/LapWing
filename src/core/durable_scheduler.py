@@ -249,7 +249,7 @@ class DurableScheduler:
     ) -> list[dict]:
         """PromptBuilder 兼容接口：返回近期到期提醒的简化字典列表。
 
-        兼容旧版 ConversationMemory 的 get_due_reminders 签名，使 DurableScheduler
+        兼容 StateViewBuilder 的 duck-typed reminder_source 签名，使 DurableScheduler
         可直接作为 PromptBuilder 的 reminder_source 使用。
         """
         if now is None:

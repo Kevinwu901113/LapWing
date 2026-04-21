@@ -20,7 +20,6 @@ from config.settings import (
     SHELL_MAX_OUTPUT_CHARS,
     SHELL_TIMEOUT,
 )
-from src.core.credential_sanitizer import redact_secrets, truncate_head_tail
 from src.core.execution_sandbox import ExecutionSandbox, SandboxTier
 
 # Docker sandbox 配置（可选）
@@ -118,13 +117,6 @@ class ShellResult:
         }
 
 
-def _truncate_output(text: str) -> tuple[str, bool]:
-    limit = max(SHELL_MAX_OUTPUT_CHARS, 1)
-    if len(text) <= limit:
-        return redact_secrets(text), False
-    return redact_secrets(truncate_head_tail(text, limit)), True
-
-
 def _looks_like_write_command(command: str) -> bool:
     lowered = command.lower()
     if ">" in lowered:
@@ -202,11 +194,14 @@ async def _log_execution(command: str, result: ShellResult) -> None:
 
 async def _execute_docker(command: str) -> ShellResult:
     """在 Docker 容器中执行命令（沙箱隔离）。"""
+    # TODO(recast): 长期方案是在 TaskRuntime 的 tool_result 处理层统一截断，
+    # 参考 Claude Code applyToolResultBudget 模式，避免各工具各自管理截断。
     result = await _sandbox.run(
         ["bash", "-c", command],
         tier=SandboxTier.STANDARD,
         timeout=SHELL_TIMEOUT,
         workspace=_DOCKER_WORKSPACE,
+        max_output=max(SHELL_MAX_OUTPUT_CHARS, 1),
     )
     shell_result = ShellResult(
         stdout=result.stdout,
@@ -244,33 +239,20 @@ async def execute(command: str) -> ShellResult:
         return await _execute_docker(command)
 
     try:
-        proc = await asyncio.create_subprocess_exec(
-            "/bin/bash",
-            "-lc",
-            command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
+        sb_result = await _sandbox.run_local(
+            ["/bin/bash", "-lc", command],
+            timeout=SHELL_TIMEOUT,
             cwd=_DEFAULT_CWD,
+            max_output=max(SHELL_MAX_OUTPUT_CHARS, 1),
         )
 
-        try:
-            raw_stdout, raw_stderr = await asyncio.wait_for(
-                proc.communicate(),
-                timeout=SHELL_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            proc.kill()
-            raw_stdout, raw_stderr = await proc.communicate()
+        stdout_truncated = "truncated" in sb_result.stdout and len(sb_result.stdout) >= max(SHELL_MAX_OUTPUT_CHARS, 1) - 100
+        stderr_truncated = "truncated" in sb_result.stderr and len(sb_result.stderr) >= max(SHELL_MAX_OUTPUT_CHARS, 1) - 100
 
-            stdout, stdout_truncated = _truncate_output(
-                raw_stdout.decode("utf-8", errors="replace")
-            )
-            stderr, stderr_truncated = _truncate_output(
-                raw_stderr.decode("utf-8", errors="replace")
-            )
+        if sb_result.timed_out:
             result = ShellResult(
-                stdout=stdout,
-                stderr=stderr,
+                stdout=sb_result.stdout,
+                stderr=sb_result.stderr,
                 return_code=-1,
                 timed_out=True,
                 reason=f"命令执行超时（{SHELL_TIMEOUT}s）。",
@@ -279,26 +261,18 @@ async def execute(command: str) -> ShellResult:
                 stderr_truncated=stderr_truncated,
             )
             logger.warning(f"[shell] 命令超时: {command!r}")
-            await _log_execution(command, result)
-            return result
+        else:
+            result = ShellResult(
+                stdout=sb_result.stdout,
+                stderr=sb_result.stderr,
+                return_code=sb_result.exit_code,
+                reason="" if sb_result.exit_code == 0 else f"命令以退出码 {sb_result.exit_code} 结束。",
+                cwd=_DEFAULT_CWD,
+                stdout_truncated=stdout_truncated,
+                stderr_truncated=stderr_truncated,
+            )
+            logger.info(f"[shell] 命令执行完成 exit={sb_result.exit_code}: {command!r}")
 
-        stdout, stdout_truncated = _truncate_output(
-            raw_stdout.decode("utf-8", errors="replace")
-        )
-        stderr, stderr_truncated = _truncate_output(
-            raw_stderr.decode("utf-8", errors="replace")
-        )
-        return_code = proc.returncode if proc.returncode is not None else -1
-        result = ShellResult(
-            stdout=stdout,
-            stderr=stderr,
-            return_code=return_code,
-            reason="" if return_code == 0 else f"命令以退出码 {return_code} 结束。",
-            cwd=_DEFAULT_CWD,
-            stdout_truncated=stdout_truncated,
-            stderr_truncated=stderr_truncated,
-        )
-        logger.info(f"[shell] 命令执行完成 exit={return_code}: {command!r}")
         await _log_execution(command, result)
         return result
 

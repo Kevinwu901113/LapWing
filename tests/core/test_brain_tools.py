@@ -71,16 +71,11 @@ def reset_module_cache():
 class TestBrainTools:
     async def test_normal_chat_without_tool_calls_returns_text(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
-             patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+             patch("src.core.brain.LLMRouter"):
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.router.complete_with_tools = AsyncMock(
                 return_value=_tool_turn(text="LLM 回复")
             )
@@ -91,20 +86,14 @@ class TestBrainTools:
 
             assert result == "LLM 回复"
             brain.router.complete_with_tools.assert_called_once()
-            brain.memory.append.assert_any_call("chat1", "assistant", "LLM 回复")
 
     async def test_think_strips_internal_thinking_tags_before_store_and_return(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
-             patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"):
+             patch("src.core.brain.LLMRouter"):
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
             brain.router.complete_with_tools = AsyncMock(
@@ -116,21 +105,15 @@ class TestBrainTools:
             assert "<think>" not in result.lower()
             assert "内部思考" not in result
             assert result == "可见内容"
-            brain.memory.append.assert_any_call("chat1", "assistant", "可见内容")
 
     async def test_openai_style_tool_loop_executes_shell_and_returns_final_text(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
 
@@ -176,21 +159,15 @@ class TestBrainTools:
             tool_results = brain.router.build_tool_result_message.call_args.kwargs["tool_results"]
             assert tool_results[0][0].name == "execute_shell"
             assert '"command": "pwd"' in tool_results[0][1]
-            brain.memory.append.assert_any_call("chat1", "assistant", "当前目录在项目根目录。")
 
     async def test_anthropic_style_tool_loop_uses_provider_continuation_message(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
 
@@ -241,17 +218,12 @@ class TestBrainTools:
         """shell 和 web 禁用时，system prompt 中包含禁用状态说明，工具循环仍可用于 memory_note。"""
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.SHELL_ENABLED", False), \
              patch("src.core.brain.CHAT_WEB_TOOLS_ENABLED", False):
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.compactor.try_compact = AsyncMock()
             brain.task_runtime.complete_chat = AsyncMock(return_value="普通回复")
 
@@ -265,7 +237,6 @@ class TestBrainTools:
 
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.SHELL_ENABLED", False), \
              patch("src.core.brain.CHAT_WEB_TOOLS_ENABLED", True):
             from src.core.brain import LapwingBrain
@@ -281,10 +252,6 @@ class TestBrainTools:
             ))
             brain._research_engine = fake_engine
 
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
 
@@ -325,16 +292,11 @@ class TestBrainTools:
     async def test_blocked_shell_result_returns_non_fabricated_fallback(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
 
@@ -383,16 +345,11 @@ class TestBrainTools:
     async def test_tool_loop_limit_returns_fallback_reply(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
 
@@ -444,17 +401,12 @@ class TestBrainTools:
         # （仅在 SHELL_ALLOW_SUDO=False 时生效）
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.SHELL_ALLOW_SUDO", False), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
 
@@ -513,17 +465,12 @@ class TestBrainTools:
     async def test_confirmation_reply_resumes_with_approved_directory_and_verifies_success(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute, \
              patch("src.core.brain.verify_constraints") as mock_verify:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
             brain.task_runtime._pending_shell_confirmations["chat1"] = PendingShellConfirmation(
@@ -601,16 +548,11 @@ class TestBrainTools:
     async def test_shell_state_context_merges_into_single_system_message(self):
         with patch("src.core.brain.load_prompt", return_value="基础人格prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.SOUL_PATH", Path("/nonexistent/soul.md")):
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
             brain.router.complete_with_tools = AsyncMock(
@@ -631,7 +573,6 @@ class TestBrainTools:
     async def test_write_task_does_not_return_last_stdout_when_unfinished(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute, \
              patch("src.core.brain.extract_execution_constraints") as mock_constraints:
             from src.core.brain import LapwingBrain
@@ -646,10 +587,6 @@ class TestBrainTools:
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
 
@@ -729,7 +666,6 @@ class TestBrainTools:
         # 权限拒绝时，consent 消息应该包含真实的 stderr 错误，而不是通用的"退出码 1"
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute, \
              patch("src.core.brain.extract_execution_constraints") as mock_constraints:
             from src.core.brain import LapwingBrain
@@ -744,10 +680,6 @@ class TestBrainTools:
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
 
@@ -790,17 +722,12 @@ class TestBrainTools:
         # SHELL_ALLOW_SUDO=True 时，权限拒绝不触发 consent，让 LLM 自己决定是否 sudo
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.SHELL_ALLOW_SUDO", True), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
 
@@ -864,16 +791,11 @@ class TestBrainTools:
         current_home = str(_Path.home())
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
 
@@ -925,16 +847,11 @@ class TestBrainTools:
     async def test_task_events_emitted_for_successful_tool_loop(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
             from src.core.brain import LapwingBrain
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
             brain.event_bus = MagicMock()
@@ -995,7 +912,6 @@ class TestBrainTools:
     async def test_task_blocked_event_emitted_when_consent_required(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.SHELL_ALLOW_SUDO", False), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute, \
              patch("src.core.brain.extract_execution_constraints") as mock_constraints:
@@ -1011,10 +927,6 @@ class TestBrainTools:
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
             brain.event_bus = MagicMock()
@@ -1068,7 +980,6 @@ class TestBrainTools:
     async def test_task_failed_event_emitted_when_write_objective_unfinished(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
-             patch("src.core.brain.ConversationMemory"), \
              patch("src.core.brain.extract_execution_constraints") as mock_constraints:
             from src.core.brain import LapwingBrain
             from src.core.shell_policy import ExecutionConstraints
@@ -1082,10 +993,6 @@ class TestBrainTools:
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.memory.append = AsyncMock()
-            brain.memory.get = AsyncMock(return_value=[])
-            brain.memory.get_user_facts = AsyncMock(return_value=[])
-            brain.memory.remove_last = AsyncMock()
             brain.fact_extractor = MagicMock()
             brain.fact_extractor.notify = MagicMock()
             brain.event_bus = MagicMock()

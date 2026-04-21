@@ -1,4 +1,3 @@
-import json
 import logging
 import shutil
 import yaml
@@ -25,7 +24,6 @@ class SkillStore:
     def __init__(self, skills_dir=None):
         self.skills_dir = Path(skills_dir) if skills_dir else Path("data/skills")
         self.skills_dir.mkdir(parents=True, exist_ok=True)
-        self._index_cache: list[dict] | None = None
 
     @staticmethod
     def _validate_skill_id(skill_id: str) -> None:
@@ -37,8 +35,21 @@ class SkillStore:
     def create(self, skill_id: str, name: str, description: str, code: str,
                dependencies: list[str] | None = None, tags: list[str] | None = None,
                category: str = "general", origin: str = "self-created",
-               source_url: str | None = None, derived_from: str | None = None) -> dict:
+               source_url: str | None = None, derived_from: str | None = None,
+               overwrite: bool = False, force: bool = False) -> dict:
         self._validate_skill_id(skill_id)
+        skill_dir = self.skills_dir / skill_id
+        if skill_dir.exists():
+            if not overwrite and not force:
+                raise FileExistsError(f"技能 '{skill_id}' 已存在")
+            meta_path = skill_dir / "SKILL.md"
+            if meta_path.exists() and not force:
+                existing = self.read(skill_id)
+                if existing and existing["meta"].get("maturity") in ("stable", "mature"):
+                    raise PermissionError(
+                        f"技能 '{skill_id}' 已为 {existing['meta']['maturity']} 状态，"
+                        f"拒绝覆盖。如确需覆盖请传入 force=True"
+                    )
         now = datetime.now(tz=_TZ)
         meta = {
             "id": skill_id, "name": name, "description": description,
@@ -60,7 +71,7 @@ class SkillStore:
         skill_dir.mkdir(parents=True, exist_ok=True)
         (skill_dir / "scripts").mkdir(exist_ok=True)
         self._write_skill_md(skill_dir / "SKILL.md", meta, code)
-        self._invalidate_index()
+
         return {"skill_id": skill_id, "file_path": str((skill_dir / "SKILL.md").resolve())}
 
     def read(self, skill_id: str) -> dict | None:
@@ -85,7 +96,7 @@ class SkillStore:
         meta["updated_at"] = datetime.now(tz=_TZ).isoformat()
         skill_md = self.skills_dir / skill_id / "SKILL.md"
         self._write_skill_md(skill_md, meta, new_code)
-        self._invalidate_index()
+
         return {"success": True, "reason": ""}
 
     def update_meta(self, skill_id: str, **fields) -> dict:
@@ -98,7 +109,7 @@ class SkillStore:
         meta["updated_at"] = datetime.now(tz=_TZ).isoformat()
         skill_md = self.skills_dir / skill_id / "SKILL.md"
         self._write_skill_md(skill_md, meta, skill["code"])
-        self._invalidate_index()
+
         return {"success": True, "reason": ""}
 
     def record_execution(self, skill_id: str, success: bool, error: str = None) -> dict:
@@ -121,7 +132,7 @@ class SkillStore:
         meta["updated_at"] = now.isoformat()
         skill_md = self.skills_dir / skill_id / "SKILL.md"
         self._write_skill_md(skill_md, meta, skill["code"])
-        self._invalidate_index()
+
         return {"success": True, "meta": meta}
 
     def delete(self, skill_id: str) -> dict:
@@ -129,13 +140,13 @@ class SkillStore:
         skill_dir = self.skills_dir / skill_id
         if skill_dir.is_dir():
             shutil.rmtree(skill_dir)
-            self._invalidate_index()
+    
             return {"success": True, "reason": ""}
         # Also handle legacy single-file
         legacy = self.skills_dir / f"{skill_id}.md"
         if legacy.exists():
             legacy.unlink()
-            self._invalidate_index()
+    
             return {"success": True, "reason": ""}
         return {"success": False, "reason": "技能不存在"}
 
@@ -167,19 +178,18 @@ class SkillStore:
 
     def get_skill_index(self) -> list[dict]:
         """Lightweight index: id, name, description, maturity, tags, category. No code."""
-        if self._index_cache is not None:
-            return self._index_cache
-        # Try loading from _index.json
-        index_path = self.skills_dir / "_index.json"
-        if index_path.exists():
-            try:
-                self._index_cache = json.loads(index_path.read_text(encoding="utf-8"))
-                return self._index_cache
-            except (json.JSONDecodeError, OSError):
-                pass
-        # Rebuild from disk
-        self.rebuild_index()
-        return self._index_cache or []
+        return [
+            {
+                "id": meta.get("id", ""),
+                "name": meta.get("name", ""),
+                "description": meta.get("description", ""),
+                "maturity": meta.get("maturity", "draft"),
+                "tags": meta.get("tags", []),
+                "category": meta.get("category", "general"),
+                "origin": meta.get("origin", "self-created"),
+            }
+            for meta in self._scan_all_meta()
+        ]
 
     def load_skill_full(self, skill_id: str) -> str | None:
         """Return complete SKILL.md content (Level 1 load)."""
@@ -195,26 +205,6 @@ class SkillStore:
             if skill_md.exists():
                 return skill_md.read_text(encoding="utf-8")
         return None
-
-    def rebuild_index(self) -> None:
-        """Scan all skill directories and write _index.json."""
-        entries = []
-        for meta in self._scan_all_meta():
-            entries.append({
-                "id": meta.get("id", ""),
-                "name": meta.get("name", ""),
-                "description": meta.get("description", ""),
-                "maturity": meta.get("maturity", "draft"),
-                "tags": meta.get("tags", []),
-                "category": meta.get("category", "general"),
-                "origin": meta.get("origin", "self-created"),
-            })
-        self._index_cache = entries
-        index_path = self.skills_dir / "_index.json"
-        index_path.write_text(
-            json.dumps(entries, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
 
     # ── Legacy migration ────────────────────────────────────────────
 
@@ -241,14 +231,14 @@ class SkillStore:
         self._write_skill_md(skill_md, meta, code)
         # Remove old file
         legacy_path.unlink()
-        self._invalidate_index()
+
         logger.info("迁移旧格式技能: %s → %s/SKILL.md", legacy_path.name, skill_id)
         return {"meta": meta, "code": code, "file_path": str(skill_md.resolve())}
 
     # ── Internal helpers ────────────────────────────────────────────
 
     def _iter_skill_dirs(self) -> list[Path]:
-        """Return sorted list of skill directories (exclude _index.json, legacy .md files)."""
+        """Return sorted list of skill directories (exclude legacy .md files)."""
         dirs = []
         for entry in sorted(self.skills_dir.iterdir()):
             if entry.is_dir() and not entry.name.startswith("_"):
@@ -292,12 +282,6 @@ class SkillStore:
         frontmatter = yaml.dump(meta, allow_unicode=True, sort_keys=False)
         body = f"## 代码\n\n```python\n{code}\n```"
         file_path.write_text(f"---\n{frontmatter}---\n{body}", encoding="utf-8")
-
-    def _invalidate_index(self) -> None:
-        self._index_cache = None
-        index_path = self.skills_dir / "_index.json"
-        if index_path.exists():
-            index_path.unlink(missing_ok=True)
 
     @staticmethod
     def _parse(raw: str) -> tuple[dict | None, str]:

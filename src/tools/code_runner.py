@@ -1,13 +1,12 @@
-"""Python 代码执行沙箱 — 在临时目录中安全运行用户代码。"""
+"""Python 代码执行沙箱 — 在 Docker STRICT 容器中运行 LLM 生成的代码。"""
 
 import logging
 import shutil
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from src.core.execution_sandbox import ExecutionSandbox
+from src.core.execution_sandbox import ExecutionSandbox, SandboxTier
 
 logger = logging.getLogger("lapwing.tools.code_runner")
 
@@ -25,16 +24,17 @@ class CodeResult:
 
 
 async def run_python(code: str, timeout: int = 10) -> CodeResult:
-    """在隔离的临时目录中执行 Python 代码。"""
+    """在 Docker STRICT 沙盒中执行 Python 代码。"""
     tmp_dir = tempfile.mkdtemp(prefix="lapwing_coder_")
     script_path = Path(tmp_dir) / "script.py"
     try:
         script_path.write_text(code, encoding="utf-8")
 
-        result = await _sandbox.run_local(
-            [sys.executable, str(script_path)],
+        result = await _sandbox.run(
+            ["python3", "/workspace/script.py"],
+            tier=SandboxTier.STRICT,
             timeout=timeout,
-            cwd=tmp_dir,
+            workspace=tmp_dir,
             max_output=_MAX_OUTPUT,
         )
 

@@ -1,7 +1,6 @@
 """本地 API auth 测试。"""
 
-from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -50,11 +49,6 @@ class StubAuthManager:
 def protected_brain():
     brain = MagicMock()
     brain.auth_manager = StubAuthManager()
-    brain.memory = MagicMock()
-    brain.memory.get_all_chat_ids = AsyncMock(return_value=["c1"])
-    brain.memory.get_last_interaction = AsyncMock(
-        return_value=datetime(2026, 3, 27, 10, 0, tzinfo=timezone.utc)
-    )
     return brain
 
 

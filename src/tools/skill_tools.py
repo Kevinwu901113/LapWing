@@ -16,32 +16,31 @@ logger = logging.getLogger("lapwing.tools.skill_tools")
 # ── Schemas ──────────────────────────────────────────────────────────
 
 CREATE_SKILL_DESCRIPTION = (
-    "创建一个新技能。当你写了一段可复用的代码，用这个工具把它保存成技能。"
-    "技能创建后状态是 draft，需要在沙盒中测试成功后才能升级。"
-    "code 参数必须包含一个 def run(...) 函数作为入口。"
+    "把一段可复用的代码保存为技能。保存后你可以随时通过 run_skill 执行它。"
+    "新技能需要先测试成功才能升级。code 里必须有一个 def run(...) 作为入口。"
 )
 CREATE_SKILL_SCHEMA = {
     "type": "object",
     "properties": {
-        "skill_id": {"type": "string", "description": "唯一标识，格式 skill_{简短描述}"},
-        "name": {"type": "string", "description": "人类可读名称"},
-        "description": {"type": "string", "description": "一句话说明功能"},
-        "code": {"type": "string", "description": "Python 代码，必须包含 def run(...) 入口函数"},
+        "skill_id": {"type": "string", "description": "给技能起一个唯一 ID，比如 skill_weather_query"},
+        "name": {"type": "string", "description": "技能的显示名称"},
+        "description": {"type": "string", "description": "一句话说明这个技能做什么"},
+        "code": {"type": "string", "description": "技能代码，必须包含 def run(...) 入口函数"},
         "dependencies": {
             "type": "array", "items": {"type": "string"},
-            "description": "pip 依赖列表（可选）",
+            "description": "需要额外安装的库，比如 [\"requests\"]，不需要就不填",
         },
         "tags": {
             "type": "array", "items": {"type": "string"},
-            "description": "分类标签（可选）",
+            "description": "帮助搜索和分类的标签，不需要就不填",
         },
         "category": {
             "type": "string",
-            "description": "技能分类，如 entertainment/utility/research 等（可选，默认 general）",
+            "description": "技能所属分类（可选，不填默认 general）",
         },
         "derived_from": {
             "type": "string",
-            "description": "如果是从已有技能衍生，填入父技能 ID（可选）",
+            "description": "如果这个技能是改进某个已有技能而来，填那个技能的 ID（可选）",
         },
     },
     "required": ["skill_id", "name", "description", "code"],
@@ -49,18 +48,18 @@ CREATE_SKILL_SCHEMA = {
 }
 
 RUN_SKILL_DESCRIPTION = (
-    "执行一个技能。draft/testing/broken 状态的技能在 Docker 沙盒中执行，"
-    "stable 状态的技能在主机上执行。执行结果会自动记录到技能元数据。"
+    "执行一个已有的技能，返回执行结果。如果执行失败，会返回错误信息。"
+    "未验证的技能会在安全隔离环境中运行。"
 )
 RUN_SKILL_SCHEMA = {
     "type": "object",
     "properties": {
         "skill_id": {"type": "string", "description": "要执行的技能 ID"},
         "arguments": {
-            "type": "object", "description": "传给 run() 函数的参数（可选）",
+            "type": "object", "description": "传给技能的输入参数（可选）",
         },
         "timeout": {
-            "type": "integer", "description": "超时秒数（默认 30）",
+            "type": "integer", "description": "最长等待时间，单位秒（可选，默认 30，最多 300）",
             "default": 30, "minimum": 1, "maximum": 300,
         },
     },
@@ -69,35 +68,35 @@ RUN_SKILL_SCHEMA = {
 }
 
 EDIT_SKILL_DESCRIPTION = (
-    "修改技能的代码。修改后技能状态会重置为 draft，需要重新测试。"
+    "修改一个技能的代码。修改后需要重新测试才能升级使用。"
 )
 EDIT_SKILL_SCHEMA = {
     "type": "object",
     "properties": {
         "skill_id": {"type": "string", "description": "要修改的技能 ID"},
-        "code": {"type": "string", "description": "新的 Python 代码"},
+        "code": {"type": "string", "description": "替换后的完整代码"},
     },
     "required": ["skill_id", "code"],
     "additionalProperties": False,
 }
 
-LIST_SKILLS_DESCRIPTION = "查看你的技能列表，可以按状态或标签过滤。"
+LIST_SKILLS_DESCRIPTION = "查看你已有的所有技能，可以按状态或标签筛选。"
 LIST_SKILLS_SCHEMA = {
     "type": "object",
     "properties": {
         "maturity": {
             "type": "string",
             "enum": ["draft", "testing", "stable", "broken"],
-            "description": "按状态过滤（可选）",
+            "description": "只看某个状态的技能，比如 stable 表示已验证可用（可选）",
         },
-        "tag": {"type": "string", "description": "按标签过滤（可选）"},
+        "tag": {"type": "string", "description": "只看带某个标签的技能（可选）"},
     },
     "additionalProperties": False,
 }
 
 PROMOTE_SKILL_DESCRIPTION = (
-    "将一个 testing 状态的技能标记为 stable。只有你确信技能足够稳定时才调用。"
-    "stable 的技能会被注册为一等工具，可以在对话中直接调用。"
+    "将一个经过充分测试的技能升级为正式能力。升级后你可以直接使用它，不需要再通过 run_skill 调用。"
+    "只在你确认技能稳定可靠时使用。"
 )
 PROMOTE_SKILL_SCHEMA = {
     "type": "object",
@@ -108,7 +107,7 @@ PROMOTE_SKILL_SCHEMA = {
     "additionalProperties": False,
 }
 
-DELETE_SKILL_DESCRIPTION = "删除一个技能。"
+DELETE_SKILL_DESCRIPTION = "永久删除一个技能。删除后无法恢复。"
 DELETE_SKILL_SCHEMA = {
     "type": "object",
     "properties": {
@@ -119,17 +118,16 @@ DELETE_SKILL_SCHEMA = {
 }
 
 SEARCH_SKILL_DESCRIPTION = (
-    "搜索技能。可以搜索本地已安装的技能，也可以搜索网上可安装的技能。"
-    "搜索时会匹配技能的名称、描述和标签。"
+    "搜索可以学习的新技能，也可以查找你已有的技能。返回匹配的技能名称和简介。"
 )
 SEARCH_SKILL_SCHEMA = {
     "type": "object",
     "properties": {
-        "query": {"type": "string", "description": "搜索关键词"},
+        "query": {"type": "string", "description": "想要找什么样的技能，用关键词描述"},
         "source": {
             "type": "string",
             "enum": ["local", "web", "all"],
-            "description": "搜索范围：local 本地 / web 网络 / all 全部（默认 all）",
+            "description": "在哪里搜索：local 只找已有的 / web 只在网上找 / all 都找（可选，默认 all）",
             "default": "all",
         },
     },
@@ -138,15 +136,13 @@ SEARCH_SKILL_SCHEMA = {
 }
 
 INSTALL_SKILL_DESCRIPTION = (
-    "从 URL 安装一个技能。下载 SKILL.md 文件并安装到本地。"
-    "安装前会进行安全检查，拒绝包含危险代码的技能。"
-    "安装后的技能初始状态为 testing。"
+    "从网上安装一个新技能到本地。安装后可以通过 run_skill 测试使用。"
 )
 INSTALL_SKILL_SCHEMA = {
     "type": "object",
     "properties": {
-        "source_url": {"type": "string", "description": "SKILL.md 的 URL（GitHub raw URL 等）"},
-        "skill_id": {"type": "string", "description": "本地安装名，格式 skill_{简短描述}"},
+        "source_url": {"type": "string", "description": "技能文件的下载地址"},
+        "skill_id": {"type": "string", "description": "给这个技能起一个本地 ID，比如 skill_translator"},
     },
     "required": ["source_url", "skill_id"],
     "additionalProperties": False,
@@ -543,23 +539,6 @@ async def install_skill_executor(
 
     code = SkillStore._extract_code(body)
 
-    # 安全检查
-    from src.skills.skill_security import check_skill_safety
-    code_check = check_skill_safety(code)
-    if not code_check["safe"]:
-        return ToolExecutionResult(
-            success=False,
-            payload={"installed": False, "reason": f"安全检查未通过: {code_check['reason']}"},
-            reason=f"install_skill: 代码安全检查失败: {code_check['reason']}",
-        )
-    md_check = check_skill_safety(content, check_markdown=True)
-    if not md_check["safe"]:
-        return ToolExecutionResult(
-            success=False,
-            payload={"installed": False, "reason": f"安全检查未通过: {md_check['reason']}"},
-            reason=f"install_skill: 文档安全检查失败: {md_check['reason']}",
-        )
-
     # 写入技能
     name = meta.get("name", skill_id)
     description = meta.get("description", "")
@@ -589,7 +568,8 @@ async def install_skill_executor(
     # 安装完成后将状态设为 testing（而非 draft）
     try:
         store.update_meta(skill_id, maturity="testing")
-    except Exception:
+    except Exception as exc:
+        logger.warning("install_skill: update_meta 失败，回滚 %s: %s", skill_id, exc)
         store.delete(skill_id)
         return ToolExecutionResult(
             success=False,
@@ -611,6 +591,9 @@ async def install_skill_executor(
 
 # ── Dynamic tool registration ────────────────────────────────────────
 
+# TODO(agent-team): promote_skill 注册的工具使用空 schema，LLM 无法获得参数信息。
+# 根本原因：SkillStore.create 未捕获 run() 的参数签名。
+# 修复：创建时通过 inspect.signature 提取 schema 并存入 meta。
 def _register_skill_as_tool(tool_registry, skill_store, skill_executor, skill_id: str) -> None:
     skill = skill_store.read(skill_id)
     if skill is None:

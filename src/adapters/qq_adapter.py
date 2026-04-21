@@ -409,31 +409,40 @@ class QQAdapter(BaseAdapter):
                         urls.append(url)
         return urls
 
-    async def _download_image_as_base64(self, url: str) -> dict | None:
-        """下载图片并转为 base64 格式 dict（供 LLM 多模态调用）。
+    _MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
-        Returns:
-            {"base64": str, "media_type": str} 或 None（下载失败时）
-        """
+    async def _download_image_as_base64(self, url: str) -> dict | None:
+        """下载图片并转为 base64 格式 dict（供 LLM 多模态调用）。限制 10MB 防止内存耗尽。"""
         import base64
         import httpx
 
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                content_type = resp.headers.get("content-type", "image/jpeg")
-                # 规范化 media_type
-                if "png" in content_type:
-                    media_type = "image/png"
-                elif "gif" in content_type:
-                    media_type = "image/gif"
-                elif "webp" in content_type:
-                    media_type = "image/webp"
-                else:
-                    media_type = "image/jpeg"
-                b64 = base64.b64encode(resp.content).decode("ascii")
-                return {"base64": b64, "media_type": media_type}
+                async with client.stream("GET", url) as response:
+                    response.raise_for_status()
+                    content_length = response.headers.get("content-length")
+                    if content_length and int(content_length) > self._MAX_IMAGE_BYTES:
+                        logger.warning("图片 Content-Length %s 超限，跳过: %s", content_length, url[:100])
+                        return None
+                    chunks = []
+                    total = 0
+                    async for chunk in response.aiter_bytes(chunk_size=65536):
+                        total += len(chunk)
+                        if total > self._MAX_IMAGE_BYTES:
+                            logger.warning("图片流式下载超 %d 限制，中断: %s", self._MAX_IMAGE_BYTES, url[:100])
+                            return None
+                        chunks.append(chunk)
+                    content_type = response.headers.get("content-type", "image/jpeg")
+                    if "png" in content_type:
+                        media_type = "image/png"
+                    elif "gif" in content_type:
+                        media_type = "image/gif"
+                    elif "webp" in content_type:
+                        media_type = "image/webp"
+                    else:
+                        media_type = "image/jpeg"
+                    b64 = base64.b64encode(b"".join(chunks)).decode("ascii")
+                    return {"base64": b64, "media_type": media_type}
         except Exception as e:
             logger.warning("下载图片失败 %s: %s", url[:80], e)
             return None

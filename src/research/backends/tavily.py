@@ -23,6 +23,19 @@ class TavilyBackend(SearchBackend):
         self.api_key = api_key
         self.country = country
 
+    @staticmethod
+    async def _do_search(payload: dict) -> dict:
+        from src.utils.retry import async_retry
+
+        @async_retry(max_attempts=3)
+        async def _request(p):
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                response = await client.post(_API_URL, json=p)
+                response.raise_for_status()
+                return response.json()
+
+        return await _request(payload)
+
     async def search(self, query: str, max_results: int = 5) -> list[dict[str, Any]]:
         if not self.api_key:
             logger.debug("Tavily api_key 为空，跳过")
@@ -37,12 +50,9 @@ class TavilyBackend(SearchBackend):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-                response = await client.post(_API_URL, json=payload)
-                response.raise_for_status()
-                data = response.json()
+            data = await self._do_search(payload)
         except Exception as exc:
-            logger.warning("Tavily 请求失败: %s", exc)
+            logger.warning("Tavily 请求失败（重试耗尽）: %s", exc)
             return []
 
         results: list[dict[str, Any]] = []

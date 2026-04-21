@@ -8,7 +8,6 @@ import re
 import shutil
 import tempfile
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -48,11 +47,11 @@ class TransactionResult:
 
 
 def _resolve_path(path: str, root_dir: Path | str = ROOT_DIR) -> Path:
-    root = Path(root_dir).resolve()
+    root = Path(os.path.realpath(str(root_dir)))
     candidate = Path(path)
     if not candidate.is_absolute():
         candidate = root / candidate
-    resolved = candidate.resolve()
+    resolved = Path(os.path.realpath(str(candidate)))
 
     try:
         common = os.path.commonpath([str(resolved), str(root)])
@@ -86,7 +85,8 @@ def _backup_file(path: Path) -> str | None:
         return None
 
     _BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    from src.core.time_utils import now
+    timestamp = now().strftime("%Y%m%d_%H%M%S_%f")
     safe_name = str(path).lstrip("/").replace("/", "__")
     backup_path = _BACKUP_DIR / f"{safe_name}.{timestamp}.bak"
     shutil.copy2(path, backup_path)

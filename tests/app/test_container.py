@@ -15,9 +15,6 @@ from src.app.task_view import TaskViewStore
 async def test_start_and_shutdown_calls_lifecycle_components():
     brain = MagicMock()
     brain.init_db = AsyncMock()
-    brain.memory = MagicMock()
-    brain.memory.close = AsyncMock()
-    brain.memory.get_all_chat_ids = AsyncMock(return_value=[])
     api_server = SimpleNamespace(start=AsyncMock(), shutdown=AsyncMock(), _app=None)
     event_bus = DesktopEventBus()
     task_view_store = TaskViewStore()
@@ -38,14 +35,12 @@ async def test_start_and_shutdown_calls_lifecycle_components():
     brain.init_db.assert_awaited_once()
     api_server.start.assert_awaited_once()
     api_server.shutdown.assert_awaited_once()
-    brain.memory.close.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_event_bus_listener_updates_task_view_store():
     brain = MagicMock()
     brain.init_db = AsyncMock()
-    brain.memory = SimpleNamespace(close=AsyncMock())
     api_server = SimpleNamespace(start=AsyncMock(), shutdown=AsyncMock())
 
     event_bus = DesktopEventBus()

@@ -299,6 +299,19 @@ class LLMRouter:
         self._setup_routing()
         self._setup_model_options()
 
+    @staticmethod
+    def _clamp_provider_params(params: dict, is_anthropic_compat: bool) -> dict:
+        """Provider-specific 参数边界检查。MiniMax 要求 temperature ∈ (0.0, 1.0]。"""
+        temperature = params.get("temperature")
+        if temperature is not None and is_anthropic_compat:
+            if temperature <= 0:
+                logger.warning("temperature=%.2f 超出 MiniMax 范围 (0,1]，钳制为 0.01", temperature)
+                params["temperature"] = 0.01
+            elif temperature > 1.0:
+                logger.warning("temperature=%.2f 超出 MiniMax 范围 (0,1]，钳制为 1.0", temperature)
+                params["temperature"] = 1.0
+        return params
+
     def set_mutation_log(self, mutation_log: StateMutationLog | None) -> None:
         """Install the mutation log after construction.
 
@@ -961,6 +974,9 @@ class LLMRouter:
                 if _is_native_anthropic(base_url):
                     _mark_last_user_message_cache(anthropic_messages)
 
+                is_compat = not _is_native_anthropic(base_url)
+                self._clamp_provider_params(request_kwargs, is_compat)
+
                 response = await self._tracked_call(
                     "anthropic",
                     self._anthropic_request_snapshot(
@@ -1171,6 +1187,9 @@ class LLMRouter:
                 base_url = self._base_urls.get(effective_key, "")
                 if _is_native_anthropic(base_url):
                     _mark_last_user_message_cache(anthropic_messages)
+
+                is_compat = not _is_native_anthropic(base_url)
+                self._clamp_provider_params(request_kwargs, is_compat)
 
                 response = await self._tracked_call(
                     "anthropic",

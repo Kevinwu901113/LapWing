@@ -58,9 +58,8 @@ _OFFLINE_THRESHOLD_HOURS = 4.0
 
 
 # Types accepted as a "reminder source" — we only require the async
-# ``get_due_reminders`` method. DurableScheduler and (legacy)
-# ConversationMemory both satisfy this. Kept as a duck-typed Protocol
-# to keep the builder decoupled from the specific subsystem.
+# ``get_due_reminders`` method. DurableScheduler satisfies this.
+# Kept as a duck-typed Protocol to keep the builder decoupled.
 
 
 class StateViewBuilder:

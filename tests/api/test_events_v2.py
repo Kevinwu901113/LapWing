@@ -7,7 +7,7 @@ for trajectory_appended fanout; the tests below exercise both tracks.
 
 import asyncio
 from datetime import datetime, timezone
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -24,9 +24,6 @@ def mock_brain():
     mock_auth.api_sessions.cookie_name = "lapwing_session"
     mock_auth.validate_api_session = MagicMock(return_value=True)
     brain.auth_manager = mock_auth
-    brain.memory = MagicMock()
-    brain.memory.get_all_chat_ids = AsyncMock(return_value=[])
-    brain.memory.get_last_interaction = AsyncMock(return_value=None)
     brain._note_store = None
     brain._memory_vector_store = None
     return brain

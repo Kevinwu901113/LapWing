@@ -34,7 +34,6 @@ def _stack():
     stack = ExitStack()
     stack.enter_context(patch("src.core.brain.load_prompt", return_value="SOUL_FALLBACK"))
     stack.enter_context(patch("src.core.brain.LLMRouter"))
-    stack.enter_context(patch("src.core.brain.ConversationMemory"))
     stack.enter_context(patch("src.core.brain.SOUL_PATH", _NONEXISTENT / "soul.md"))
     return stack
 

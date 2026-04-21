@@ -296,44 +296,16 @@ _INTERNAL_IP_RE = re.compile(
 
 
 def _check_browse_safety(url: str) -> dict[str, Any]:
-    """检查 URL 是否允许被 browse 工具访问。
+    """检查 URL 是否允许被 browse 工具访问。含 DNS 解析级检查。
 
     Returns:
         dict with keys: allowed (bool), reason (str, only when denied)
     """
-    try:
-        parsed = urllib.parse.urlparse(url)
-    except Exception as exc:
-        return {"allowed": False, "reason": f"URL 解析失败：{exc}"}
-
-    # 只允许 http/https
-    if parsed.scheme not in ("http", "https"):
-        return {
-            "allowed": False,
-            "reason": f"不支持的 URL 协议 '{parsed.scheme}'，只允许 http 和 https。",
-        }
-
-    hostname = parsed.hostname or ""
-
-    # 拒绝 localhost / 内网地址
-    if _INTERNAL_IP_RE.match(hostname):
-        return {
-            "allowed": False,
-            "reason": f"禁止访问内网地址：{hostname}",
-        }
-
-    # 尝试解析为 IP，检查是否内网段
-    try:
-        addr = ipaddress.ip_address(hostname)
-        if addr.is_private or addr.is_loopback or addr.is_link_local:
-            return {
-                "allowed": False,
-                "reason": f"禁止访问内网 IP：{hostname}",
-            }
-    except ValueError:
-        pass  # 不是裸 IP，是域名，不处理
-
-    return {"allowed": True}
+    from src.utils.url_safety import check_url_safety
+    result = check_url_safety(url)
+    if result.safe:
+        return {"allowed": True}
+    return {"allowed": False, "reason": result.reason}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

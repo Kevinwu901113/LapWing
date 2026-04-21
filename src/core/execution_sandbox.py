@@ -91,6 +91,28 @@ class ExecutionSandbox:
     def __init__(self, docker_image: str = _DEFAULT_IMAGE):
         self._image = docker_image
 
+    @staticmethod
+    async def ensure_sandbox_network(network_name: str = _BRIDGE_NETWORK) -> None:
+        """启动时确保 Docker 沙箱网络存在。"""
+        import shutil
+        import subprocess
+        if not shutil.which("docker"):
+            logger.info("Docker 未安装，跳过沙箱网络检查")
+            return
+        try:
+            result = await asyncio.to_thread(
+                subprocess.run, ["docker", "network", "inspect", network_name],
+                capture_output=True)
+            if result.returncode != 0:
+                logger.info("创建 Docker 沙箱网络: %s", network_name)
+                cr = await asyncio.to_thread(
+                    subprocess.run, ["docker", "network", "create", network_name],
+                    capture_output=True, text=True)
+                if cr.returncode != 0:
+                    logger.warning("沙箱网络创建失败: %s", cr.stderr.strip())
+        except FileNotFoundError:
+            logger.info("Docker 不可用，跳过")
+
     def _build_docker_flags(
         self,
         tier: SandboxTier,
@@ -102,6 +124,7 @@ class ExecutionSandbox:
             "--cap-drop=ALL",
             "--user", "sandboxuser",
             "--memory", cfg["memory"],
+            "--memory-swap", cfg["memory"],
             "--cpus", cfg["cpus"],
         ]
 
@@ -137,6 +160,11 @@ class ExecutionSandbox:
         """Run a command in a Docker container with the given tier."""
         allow_network = tier != SandboxTier.STRICT
         clean_env = sanitize_env(env, allow_network=allow_network) if env else None
+
+        if clean_env and "PATH" in clean_env:
+            _container_dirs = "/usr/local/bin:/usr/local/sbin"
+            if _container_dirs not in clean_env["PATH"]:
+                clean_env["PATH"] = _container_dirs + ":" + clean_env["PATH"]
 
         docker_flags = self._build_docker_flags(tier, workspace)
 

@@ -28,6 +28,19 @@ class BochaBackend(SearchBackend):
     def __init__(self, api_key: str) -> None:
         self.api_key = api_key
 
+    @staticmethod
+    async def _do_search(payload: dict, headers: dict) -> dict:
+        from src.utils.retry import async_retry
+
+        @async_retry(max_attempts=3)
+        async def _request(p, h):
+            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
+                response = await client.post(_API_URL, json=p, headers=h)
+                response.raise_for_status()
+                return response.json()
+
+        return await _request(payload, headers)
+
     async def search(self, query: str, max_results: int = 5) -> list[dict[str, Any]]:
         if not self.api_key:
             logger.debug("Bocha api_key 为空，跳过")
@@ -45,12 +58,9 @@ class BochaBackend(SearchBackend):
         }
 
         try:
-            async with httpx.AsyncClient(timeout=_TIMEOUT) as client:
-                response = await client.post(_API_URL, json=payload, headers=headers)
-                response.raise_for_status()
-                data = response.json()
+            data = await self._do_search(payload, headers)
         except Exception as exc:
-            logger.warning("Bocha 请求失败: %s", exc)
+            logger.warning("Bocha 请求失败（重试耗尽）: %s", exc)
             return []
 
         # 博查返回结构：{"code": 200, "msg": "ok", "data": {"webPages": {"value": [...]}}}

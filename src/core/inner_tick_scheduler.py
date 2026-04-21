@@ -66,10 +66,10 @@ def build_inner_prompt(urgent_items: list[dict] | None = None) -> str:
     string to ``brain.think_inner`` exactly as the consciousness loop
     used to hand it to ``brain.think``.
     """
-    from datetime import datetime
     from pathlib import Path
+    from src.core.time_utils import now as _now
 
-    now = datetime.now().strftime("%Y-%m-%d %H:%M %A")
+    now = _now().strftime("%Y-%m-%d %H:%M %A")
     parts = [
         f"[内部意识 tick — {now}]",
         "",

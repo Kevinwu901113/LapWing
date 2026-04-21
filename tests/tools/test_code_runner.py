@@ -1,6 +1,7 @@
-"""code_runner 集成测试（真实子进程执行）。"""
+"""code_runner 集成测试（Docker STRICT 沙盒执行）。"""
 
 import pytest
+from unittest.mock import patch, AsyncMock
 from src.tools.code_runner import run_python
 
 
@@ -99,3 +100,35 @@ async def test_output_redacts_secrets():
     assert result.exit_code == 0
     assert "ghp_" not in result.stdout
     assert "REDACTED" in result.stdout
+
+
+@pytest.mark.asyncio
+async def test_uses_docker_strict_sandbox():
+    """run_python must use Docker STRICT tier, not run_local."""
+    captured_cmd = []
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        captured_cmd.extend(args)
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b'hello\n', b'')
+        mock_proc.returncode = 0
+        return mock_proc
+
+    with patch("src.core.execution_sandbox.asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
+        await run_python('print("hello")')
+
+    cmd_str = " ".join(captured_cmd)
+    assert "docker" in cmd_str, "Must run via Docker"
+    assert "--network none" in cmd_str or "--network\nnone" in " ".join(f"\n{a}" for a in captured_cmd), "STRICT must use --network none"
+    assert "--cap-drop" in cmd_str, "Must drop all capabilities"
+
+
+@pytest.mark.asyncio
+async def test_network_blocked_in_strict():
+    """Code running in STRICT sandbox must not have network access."""
+    result = await run_python(
+        'import socket\ntry:\n    socket.create_connection(("8.8.8.8", 53), timeout=3)\n    print("CONNECTED")\nexcept Exception as e:\n    print(f"BLOCKED: {e}")',
+        timeout=10,
+    )
+    assert "CONNECTED" not in result.stdout
+    assert "BLOCKED" in result.stdout

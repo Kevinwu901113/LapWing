@@ -1,7 +1,7 @@
 """Phase 5: /api/v2/notes/* 端点测试。"""
 
 import asyncio
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import httpx
 import pytest
@@ -18,9 +18,6 @@ def mock_brain():
     mock_auth.validate_api_session = MagicMock(return_value=True)
     mock_auth.bootstrap_token = MagicMock(return_value="test-token")
     brain.auth_manager = mock_auth
-    brain.memory = MagicMock()
-    brain.memory.get_all_chat_ids = AsyncMock(return_value=[])
-    brain.memory.get_last_interaction = AsyncMock(return_value=None)
 
     # NoteStore mock
     note_store = MagicMock()

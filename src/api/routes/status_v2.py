@@ -41,21 +41,7 @@ async def get_status():
     else:
         state = "idle"
 
-    # 最近交互
     last_msg_ts = None
-    if _brain is not None:
-        try:
-            last_interaction = await _brain.memory.get_last_interaction("desktop_kevin")
-            if last_interaction is None:
-                # 尝试 OWNER_IDS
-                from config.settings import OWNER_IDS
-                if OWNER_IDS:
-                    owner_id = next(iter(OWNER_IDS))
-                    last_interaction = await _brain.memory.get_last_interaction(owner_id)
-            if last_interaction is not None:
-                last_msg_ts = last_interaction.isoformat()
-        except Exception:
-            pass
 
     # 意识循环下次 tick
     next_tick = None

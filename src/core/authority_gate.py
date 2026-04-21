@@ -43,9 +43,13 @@ def identify(adapter: str, user_id: str) -> AuthLevel:
 
 
 # 工具名 → 最低所需权限
+# TODO(recast-v1.1): 重构为工具自声明权限模式。
+# 工具注册时携带 required_auth，OPERATION_AUTH 从注册表自动生成而非手动维护。
+# 参考 Claude Code 的 per-tool permissionMode 模式（每个 tool 在 buildTool() 中
+# 声明 checkPermissions/isReadOnly/isDestructive）。
 OPERATION_AUTH: dict[str, AuthLevel] = {
     "chat": AuthLevel.GUEST,
-    # Step 5：基础通讯能力——所有人都可以让 Lapwing 说话/承诺
+    # 基础通讯能力——所有人都可以让 Lapwing 说话/承诺
     "tell_user": AuthLevel.GUEST,
     "commit_promise": AuthLevel.GUEST,
     "fulfill_promise": AuthLevel.GUEST,
@@ -54,7 +58,7 @@ OPERATION_AUTH: dict[str, AuthLevel] = {
     "research": AuthLevel.TRUSTED,
     "file_list_directory": AuthLevel.TRUSTED,
     "send_image": AuthLevel.TRUSTED,
-    "session_search": AuthLevel.TRUSTED,
+    "get_time": AuthLevel.GUEST,
     # 文件和系统操作类 → OWNER
     "execute_shell": AuthLevel.OWNER,
     "read_file": AuthLevel.OWNER,
@@ -66,25 +70,25 @@ OPERATION_AUTH: dict[str, AuthLevel] = {
     "run_python_code": AuthLevel.OWNER,
     "verify_code_result": AuthLevel.OWNER,
     "verify_workspace": AuthLevel.OWNER,
-    "memory_note": AuthLevel.OWNER,
-    "memory_list": AuthLevel.OWNER,
-    "memory_read": AuthLevel.OWNER,
-    "memory_edit": AuthLevel.OWNER,
-    "memory_delete": AuthLevel.OWNER,
-    "memory_search": AuthLevel.OWNER,
-    "schedule_task": AuthLevel.OWNER,
-    "list_scheduled_tasks": AuthLevel.OWNER,
-    "cancel_scheduled_task": AuthLevel.OWNER,
-    "delegate_task": AuthLevel.OWNER,
-    "report_incident": AuthLevel.OWNER,
-    "self_status": AuthLevel.OWNER,
-    "trace_mark": AuthLevel.OWNER,
-    "send_proactive_message": AuthLevel.OWNER,
-    # 后台进程
-    "process_spawn": AuthLevel.OWNER,
-    "process_status": AuthLevel.OWNER,
-    "process_kill": AuthLevel.OWNER,
-    "process_logs": AuthLevel.OWNER,
+    # memory_tools_v2 实际注册名
+    "recall": AuthLevel.OWNER,
+    "write_note": AuthLevel.OWNER,
+    "edit_note": AuthLevel.OWNER,
+    "search_notes": AuthLevel.OWNER,
+    # 调度（durable_scheduler 实际注册名）
+    "set_reminder": AuthLevel.OWNER,
+    "view_reminders": AuthLevel.OWNER,
+    "cancel_reminder": AuthLevel.OWNER,
+    # 委派（agent_tools 实际注册名）
+    "delegate": AuthLevel.OWNER,
+    "delegate_to_agent": AuthLevel.OWNER,
+    # 个人工具
+    "send_message": AuthLevel.OWNER,
+    "view_image": AuthLevel.OWNER,
+    "browse": AuthLevel.OWNER,
+    # 灵魂编辑
+    "read_soul": AuthLevel.OWNER,
+    "edit_soul": AuthLevel.OWNER,
     # 浏览器操作
     "browser_open": AuthLevel.OWNER,
     "browser_click": AuthLevel.OWNER,

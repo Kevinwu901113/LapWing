@@ -1,7 +1,6 @@
 import json
 import logging
 import shutil
-import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -50,6 +49,16 @@ class SkillExecutor:
         args = arguments or {}
 
         skill_dir = self._store.skills_dir / skill_id
+
+        if maturity in _SANDBOX_MATURITIES and dependencies:
+            return SkillResult(
+                success=False, output="",
+                error=(
+                    f"技能 '{skill_id}' 声明了外部依赖 {dependencies}，"
+                    f"但 STRICT 沙箱禁止网络和写入。请改用 STANDARD 沙箱或预装依赖。"
+                ),
+                exit_code=-1,
+            )
 
         if maturity in _SANDBOX_MATURITIES:
             result = await self._run_in_sandbox(code, args, dependencies, timeout, skill_dir=skill_dir)
@@ -115,7 +124,7 @@ class SkillExecutor:
         try:
             skill_path = Path(tmp_dir) / "skill.py"
             skill_path.write_text(code, encoding="utf-8")
-            runner_code = self._build_runner(arguments, [])
+            runner_code = self._build_runner(arguments, dependencies)
             runner_path = Path(tmp_dir) / "runner.py"
             runner_path.write_text(runner_code, encoding="utf-8")
 
@@ -124,10 +133,11 @@ class SkillExecutor:
                 scripts_dst = Path(tmp_dir) / "scripts"
                 shutil.copytree(scripts_src, scripts_dst)
 
-            result = await self._sandbox.run_local(
-                [sys.executable, str(runner_path)],
+            result = await self._sandbox.run(
+                ["python3", "/workspace/runner.py"],
+                tier=SandboxTier.STANDARD,
                 timeout=timeout,
-                cwd=tmp_dir,
+                workspace=tmp_dir,
             )
             return SkillResult(
                 success=(result.exit_code == 0),
@@ -137,7 +147,7 @@ class SkillExecutor:
                 timed_out=result.timed_out,
             )
         except Exception as e:
-            logger.error("主机执行异常: %s", e)
+            logger.error("STANDARD 沙盒执行异常: %s", e)
             return SkillResult(success=False, output="", error=str(e), exit_code=-1)
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -148,8 +158,11 @@ class SkillExecutor:
         if dependencies:
             dep_install = f"""
 import subprocess, sys
-subprocess.check_call([sys.executable, "-m", "pip", "install", "-q"] + {repr(dependencies)},
-                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+_r = subprocess.run([sys.executable, "-m", "pip", "install", "-q"] + {repr(dependencies)},
+                    capture_output=True, text=True)
+if _r.returncode != 0:
+    print("依赖安装失败: " + _r.stderr[:500], file=sys.stderr)
+    sys.exit(1)
 """
         return f'''import json
 import sys

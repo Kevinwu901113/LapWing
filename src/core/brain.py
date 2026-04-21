@@ -27,7 +27,7 @@ from src.core.shell_policy import (
     extract_execution_constraints,
 )
 from src.core.verifier import verify_shell_constraints_status as verify_constraints
-from src.memory.conversation import ConversationMemory
+from src.core.trajectory_store import TrajectoryEntryType
 from src.tools.registry import build_default_tool_registry
 from src.tools.shell_executor import execute as execute_shell
 from src.tools.types import ToolExecutionRequest
@@ -73,17 +73,16 @@ class LapwingBrain:
             self.tool_registry = ToolRegistry()  # Phase 0: 空注册表
         else:
             self.tool_registry = build_default_tool_registry()
-        self.memory = ConversationMemory(db_path)
+        self._db_path = db_path
         from config.settings import TASK_NO_ACTION_BUDGET, TASK_ERROR_BURST_THRESHOLD
         self.task_runtime = TaskRuntime(
             router=self.router,
             tool_registry=self.tool_registry,
-            memory=self.memory,
             no_action_budget=TASK_NO_ACTION_BUDGET,
             error_burst_threshold=TASK_ERROR_BURST_THRESHOLD,
         )
         from src.memory.compactor import ConversationCompactor
-        self.compactor = ConversationCompactor(self.memory, self.router)
+        self.compactor = ConversationCompactor(self.router)
         # v2.0 Step 3: StateViewBuilder is the sole prompt-assembly entry.
         # Default builder has no store wiring — every section but identity
         # docs collapses to empty. AppContainer replaces this at prepare()
@@ -104,36 +103,74 @@ class LapwingBrain:
         self._conversation_end_task: asyncio.Task | None = None
 
     async def init_db(self) -> None:
-        """初始化数据库连接和表结构。"""
-        await self.memory.init_db()
+        """Ensure the data directory exists.
+
+        Table creation lives in the individual stores (TrajectoryStore /
+        CommitmentStore / DurableScheduler).
+        """
+        self._db_path.parent.mkdir(parents=True, exist_ok=True)
+
+    async def _record_turn(
+        self,
+        chat_id: str,
+        role: str,
+        content: str,
+        *,
+        is_inner: bool = False,
+    ) -> None:
+        """Write a conversation turn directly to TrajectoryStore."""
+        if self.trajectory_store is None:
+            return
+        try:
+            if is_inner:
+                entry_type = TrajectoryEntryType.INNER_THOUGHT
+                source_chat_id = None
+                actor = "lapwing" if role == "assistant" else "system"
+                payload: dict = {"text": content, "trigger_type": "brain_direct"}
+            elif role == "user":
+                entry_type = TrajectoryEntryType.USER_MESSAGE
+                source_chat_id = chat_id
+                actor = "user"
+                payload = {"text": content}
+            elif role == "assistant":
+                entry_type = TrajectoryEntryType.ASSISTANT_TEXT
+                source_chat_id = chat_id
+                actor = "lapwing"
+                payload = {"text": content}
+            else:
+                return
+            await self.trajectory_store.append(
+                entry_type, source_chat_id, actor, payload,
+            )
+        except Exception:
+            logger.warning(
+                "trajectory write failed for chat %s (role=%s)",
+                chat_id, role, exc_info=True,
+            )
 
     async def _load_history(self, chat_id: str) -> list[dict]:
         """Legacy-shape conversation history for the LLM context.
 
         Reads from ``TrajectoryStore.relevant_to_chat`` and projects via
-        ``trajectory_entries_to_messages``; falls back to the in-memory
-        ConversationMemory cache when the trajectory store isn't wired
-        (unit tests, phase-0, pre-container boot). ``include_inner=False``
+        ``trajectory_entries_to_messages``. Returns empty when the store
+        isn't wired (unit tests, phase-0). ``include_inner=False``
         preserves the legacy semantics — consciousness-loop rows stay
         out of the user-facing exchange.
         """
         if self.trajectory_store is not None:
-            # Legacy cap: MAX_HISTORY_TURNS rounds × 2 messages/round
             rows = await self.trajectory_store.relevant_to_chat(
                 chat_id, n=MAX_HISTORY_TURNS * 2, include_inner=False,
             )
             return trajectory_entries_to_messages(rows)
-        return await self.memory.get(chat_id)
+        return []
 
     async def clear_short_term_memory(self, chat_id: str) -> None:
         """仅清除短期对话记忆。"""
         self.task_runtime.clear_chat_state(chat_id)
-        await self.memory.clear(chat_id)
 
     async def clear_all_memory(self, chat_id: str) -> None:
         """清除指定 chat 的长短期记忆。"""
         self.task_runtime.clear_chat_state(chat_id)
-        await self.memory.clear_chat_all(chat_id)
 
         if self.vector_store is not None:
             try:
@@ -248,7 +285,6 @@ class LapwingBrain:
         memory_vector_store = getattr(self, "_memory_vector_store", None)
         if memory_vector_store is not None:
             services["vector_store"] = memory_vector_store
-        services["conversation_memory"] = self.memory
         # Phase 4: DurableScheduler + 个人工具所需服务
         durable_scheduler = getattr(self, "_durable_scheduler_ref", None)
         if durable_scheduler is not None:
@@ -499,18 +535,13 @@ class LapwingBrain:
             img_tag = f"[用户发送了{len(images)}张图片]" if len(images) > 1 else "[用户发送了图片]"
             stored_text = f"{user_message}\n{img_tag}" if user_message.strip() else img_tag
 
-        await self.memory.append(chat_id, "user", stored_text)
-
-        # Step 4 M5: dispatcher emits for message.received / message.sent
-        # used to feed SSE; SSE now subscribes to StateMutationLog (which
-        # already records TRAJECTORY_APPENDED for both directions). No
-        # other consumers — the emits have been removed.
+        await self._record_turn(chat_id, "user", stored_text)
 
         effective_user_message, approved_directory, immediate_reply = (
             self.task_runtime.resolve_pending_confirmation(chat_id, user_message)
         )
         if immediate_reply is not None:
-            await self.memory.append(chat_id, "assistant", immediate_reply)
+            await self._record_turn(chat_id, "assistant", immediate_reply)
             if send_fn is not None:
                 from src.core.system_send import send_system_message
                 await send_system_message(
@@ -598,9 +629,8 @@ class LapwingBrain:
             )
             reply = strip_internal_thinking_tags(reply)
 
-            # ── 后处理：reply 已生成，失败不应返回"走神了" ──
             try:
-                await self.memory.append(chat_id, "assistant", reply)
+                await self._record_turn(chat_id, "assistant", reply)
                 logger.debug(f"[{chat_id}] 回复生成成功，长度: {len(reply)}")
             except Exception as post_exc:
                 logger.warning(
@@ -611,7 +641,6 @@ class LapwingBrain:
 
         except Exception as e:
             logger.error(f"LLM 调用失败: {e}")
-            await self.memory.remove_last(chat_id)
             # 内部调用（意识循环等）不应返回面向用户的 fallback，直接抛出让调用方处理
             if chat_id.startswith("__"):
                 raise
@@ -654,7 +683,7 @@ class LapwingBrain:
         # sentinel literal.
         session_key = "_inner_tick"
 
-        await self.memory.append(
+        await self._record_turn(
             session_key, "user", inner_prompt, is_inner=True,
         )
 
@@ -698,7 +727,7 @@ class LapwingBrain:
         reply = strip_internal_thinking_tags(reply or "")
 
         try:
-            await self.memory.append(
+            await self._record_turn(
                 session_key, "assistant", reply, is_inner=True,
             )
         except Exception:
@@ -827,7 +856,7 @@ class LapwingBrain:
             memory_text = "\n\n".join(tell_user_buffer) if tell_user_buffer else ""
             try:
                 if memory_text:
-                    await self.memory.append(chat_id, "assistant", memory_text)
+                    await self._record_turn(chat_id, "assistant", memory_text)
                 logger.debug(
                     "[%s] tell_user 累计 %d 条；裸文本字数=%d",
                     chat_id, len(tell_user_buffer), len(tail),
@@ -854,7 +883,6 @@ class LapwingBrain:
             raise
         except Exception as e:
             logger.error(f"LLM 调用失败（conversational）: {e}")
-            await self.memory.remove_last(chat_id)
             error_msg = f"LLM 调用失败：{e}"
             from src.core.system_send import send_system_message
             await send_system_message(

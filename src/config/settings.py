@@ -134,8 +134,6 @@ _ENV_MAP: dict[str, list[str]] = {
     "SHELL_DEFAULT_CWD": ["shell", "default_cwd"],
     "SHELL_MAX_OUTPUT_CHARS": ["shell", "max_output_chars"],
     "SHELL_BACKEND": ["shell", "backend"],
-    "SHELL_DOCKER_IMAGE": ["shell", "docker_image"],
-    "SHELL_DOCKER_WORKSPACE": ["shell", "docker_workspace"],
     # ── task ──
     "TASK_MAX_TOOL_ROUNDS": ["task", "max_tool_rounds"],
     "TASK_NO_ACTION_BUDGET": ["task", "no_action_budget"],
@@ -158,19 +156,10 @@ _ENV_MAP: dict[str, list[str]] = {
     "LOOP_DETECTION_DETECTOR_PING_PONG": ["loop_detection", "detector_ping_pong"],
     "LOOP_DETECTION_DETECTOR_KNOWN_POLL_NO_PROGRESS": ["loop_detection", "detector_known_poll_no_progress"],
     # ── search ──
-    "SEARCH_MAX_RESULTS": ["search", "max_results"],
-    "SEARCH_PROVIDER": ["search", "provider"],
-    "SEARCH_CACHE_TTL_SECONDS": ["search", "cache_ttl_seconds"],
     "CHAT_WEB_TOOLS_ENABLED": ["search", "chat_web_tools_enabled"],
     "TAVILY_API_KEY": ["search", "tavily_api_key"],
-    "TAVILY_SEARCH_DEPTH": ["search", "tavily_search_depth"],
     "TAVILY_COUNTRY": ["search", "tavily_country"],
-    "WEB_FETCH_MAX_CHARS": ["search", "web_fetch_max_chars"],
     "BOCHA_API_KEY": ["search", "bocha_api_key"],
-    # ── browse ──
-    "BROWSE_ENABLED": ["browse", "enabled"],
-    "BROWSE_INTERVAL_HOURS": ["browse", "interval_hours"],
-    "BROWSE_SOURCES": ["browse", "sources"],
     # ── api ──
     "API_HOST": ["api", "host"],
     "API_PORT": ["api", "port"],
@@ -231,10 +220,6 @@ _ENV_MAP: dict[str, list[str]] = {
     "SANDBOX_PRIVILEGED_TIMEOUT": ["sandbox", "privileged", "timeout"],
     # ── agent_team ──
     "AGENT_TEAM_ENABLED": ["agent_team", "enabled"],
-    # ── whisper ──
-    "WHISPER_API_KEY": ["whisper", "api_key"],
-    "WHISPER_BASE_URL": ["whisper", "base_url"],
-    "WHISPER_MODEL": ["whisper", "model"],
     # ── codex ──
     "OPENAI_CODEX_AUTH_AUTHORIZE_URL": ["codex", "auth_authorize_url"],
     "OPENAI_CODEX_AUTH_TOKEN_URL": ["codex", "auth_token_url"],
@@ -244,16 +229,11 @@ _ENV_MAP: dict[str, list[str]] = {
     "OPENAI_CODEX_AUTH_REDIRECT_PATH": ["codex", "auth_redirect_path"],
     "OPENAI_CODEX_AUTH_PROXY_URL": ["codex", "auth_proxy_url"],
     "CODEX_FALLBACK_MODEL": ["codex", "fallback_model"],
-    "CODEX_RUNTIME_BASE_URL": ["codex", "runtime_base_url"],
-    "CODEX_RUNTIME_PROXY_URL": ["codex", "runtime_proxy_url"],
-    "CODEX_RUNTIME_CLIENT_VERSION": ["codex", "runtime_client_version"],
-    "CODEX_RUNTIME_TIMEOUT_SECONDS": ["codex", "runtime_timeout_seconds"],
     # ── compaction ──
     "COMPACTION_TRIGGER_RATIO": ["compaction", "trigger_ratio"],
     # ── log ──
     "LOG_LEVEL": ["log", "level"],
     # ── top-level ──
-    "CREDENTIAL_VAULT_KEY": ["credential_vault_key"],
     "CREDENTIAL_VAULT_PATH": ["credential_vault_path"],
     "PHASE0_MODE": ["phase0_mode"],
 }
@@ -334,8 +314,6 @@ class ShellConfig(BaseModel):
     default_cwd: str = ""
     max_output_chars: int = 4000
     backend: str = "local"
-    docker_image: str = "lapwing-sandbox:latest"
-    docker_workspace: str = "/home/lapwing/workspace"
 
 
 class TaskConfig(BaseModel):
@@ -366,23 +344,10 @@ class LoopDetectionConfig(BaseModel):
 
 
 class SearchConfig(BaseModel):
-    max_results: int = 5
-    provider: str = "auto"
-    cache_ttl_seconds: int = 300
     chat_web_tools_enabled: bool = True
     tavily_api_key: str = ""
-    tavily_search_depth: str = "basic"
     tavily_country: str = "china"
-    web_fetch_max_chars: int = 8000
     bocha_api_key: str = ""
-
-
-class BrowseConfig(BaseModel):
-    enabled: bool = False
-    interval_hours: int = 2
-    sources: CsvList = Field(
-        default_factory=lambda: ["hackernews", "reddit/technology", "reddit/science"]
-    )
 
 
 class APIConfig(BaseModel):
@@ -445,7 +410,7 @@ class AuthConfig(BaseModel):
 
 
 class DesktopConfig(BaseModel):
-    default_owner: bool = True
+    default_owner: bool = False
     ws_chat_id_prefix: str = "desktop"
 
 
@@ -479,12 +444,6 @@ class AgentTeamConfig(BaseModel):
     enabled: bool = True
 
 
-class WhisperConfig(BaseModel):
-    api_key: str = ""
-    base_url: str = "https://api.openai.com/v1"
-    model: str = "whisper-1"
-
-
 class CodexConfig(BaseModel):
     auth_authorize_url: str = "https://auth.openai.com/oauth/authorize"
     auth_token_url: str = "https://auth.openai.com/oauth/token"
@@ -494,10 +453,6 @@ class CodexConfig(BaseModel):
     auth_redirect_path: str = "/auth/callback"
     auth_proxy_url: str = ""
     fallback_model: str = "gpt-5.3-codex"
-    runtime_base_url: str = "https://chatgpt.com/backend-api/codex"
-    runtime_proxy_url: str = ""
-    runtime_client_version: str = "0.116.0-alpha.10"
-    runtime_timeout_seconds: int = 60
 
 
 class CompactionConfig(BaseModel):
@@ -559,7 +514,6 @@ class LapwingSettings(BaseSettings):
     slo: SLOConfig = Field(default_factory=SLOConfig)
     loop_detection: LoopDetectionConfig = Field(default_factory=LoopDetectionConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)
-    browse: BrowseConfig = Field(default_factory=BrowseConfig)
     api: APIConfig = Field(default_factory=APIConfig)
     browser: BrowserConfig = Field(default_factory=BrowserConfig)
     auth: AuthConfig = Field(default_factory=AuthConfig)
@@ -567,11 +521,9 @@ class LapwingSettings(BaseSettings):
     skill: SkillConfig = Field(default_factory=SkillConfig)
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     agent_team: AgentTeamConfig = Field(default_factory=AgentTeamConfig)
-    whisper: WhisperConfig = Field(default_factory=WhisperConfig)
     codex: CodexConfig = Field(default_factory=CodexConfig)
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
     log: LogConfig = Field(default_factory=LogConfig)
-    credential_vault_key: str = ""
     credential_vault_path: str = ""
     phase0_mode: str = ""
 

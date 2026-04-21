@@ -174,7 +174,6 @@ class TaskRuntime:
         tool_registry: ToolRegistry | None = None,
         loop_detection_config: LoopDetectionConfig | None = None,
         latency_monitor: Any | None = None,
-        memory: Any | None = None,
         no_action_budget: int | None = None,
         error_burst_threshold: int | None = None,
     ) -> None:
@@ -184,7 +183,6 @@ class TaskRuntime:
         self._pending_shell_confirmations: dict[str, PendingShellConfirmation] = {}
         self._loop_detection_config = loop_detection_config or LoopDetectionConfig()
         self._latency_monitor = latency_monitor
-        self._memory = memory
         # 从 config.settings 直接读取（支持测试时动态修改）
         import config.settings as _cfg
         self._no_action_budget = no_action_budget if no_action_budget is not None else _cfg.TASK_NO_ACTION_BUDGET
@@ -230,7 +228,7 @@ class TaskRuntime:
             user_id=f"agent:{agent_name}",
             auth_level=1,  # TRUSTED
             chat_id=f"agent-{agent_name}",
-            memory=self._memory,
+            memory=None,
             memory_index=self._memory_index,
         )
 
@@ -1397,7 +1395,7 @@ class TaskRuntime:
             user_id=user_id,
             auth_level=auth_level,
             chat_id=chat_id or "",
-            memory=self._memory,
+            memory=None,
             memory_index=self._memory_index,
             send_fn=send_fn,
         )
@@ -1537,7 +1535,8 @@ class TaskRuntime:
 
         os.makedirs(TOOL_RESULT_DIR, exist_ok=True)
 
-        ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+        from src.core.time_utils import now as _tz_now
+        ts = _tz_now().strftime("%Y%m%d_%H%M%S_%f")
         filename = f"{ts}_{tool_name}.txt"
         filepath = os.path.join(TOOL_RESULT_DIR, filename)
 

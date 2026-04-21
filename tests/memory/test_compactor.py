@@ -19,13 +19,44 @@ def summaries_dir(tmp_path):
     return d
 
 
+def _make_trajectory_rows(history: list[dict]):
+    """Build mock trajectory entries from a legacy-shape message list.
+
+    ``trajectory_entries_to_messages`` inverts these back into the
+    ``[{role, content}]`` shape that ``try_compact`` feeds into
+    ``_do_compact``.
+    """
+    from src.core.trajectory_store import TrajectoryEntry, TrajectoryEntryType
+
+    rows = []
+    for i, msg in enumerate(history):
+        role = msg.get("role", "user")
+        text = msg.get("content", "")
+        if role == "user":
+            et = TrajectoryEntryType.USER_MESSAGE.value
+            actor = "user"
+        elif role == "assistant":
+            et = TrajectoryEntryType.ASSISTANT_TEXT.value
+            actor = "lapwing"
+        else:
+            et = TrajectoryEntryType.ASSISTANT_TEXT.value
+            actor = "system"
+        rows.append(TrajectoryEntry(
+            id=i + 1, timestamp=float(i),
+            entry_type=et, source_chat_id="chat1", actor=actor,
+            content={"text": text},
+            related_commitment_id=None,
+            related_iteration_id=None,
+            related_tool_call_id=None,
+        ))
+    return rows
+
+
 @pytest.fixture
-def mock_memory():
-    memory = MagicMock()
-    memory._store = {}
-    memory.get = AsyncMock(return_value=[])
-    memory.replace_history = MagicMock(side_effect=lambda cid, h: memory._store.update({cid: h}))
-    return memory
+def mock_trajectory():
+    traj = MagicMock()
+    traj.relevant_to_chat = AsyncMock(return_value=[])
+    return traj
 
 
 @pytest.fixture
@@ -36,16 +67,15 @@ def mock_router():
 
 
 @pytest.fixture
-def compactor(mock_memory, mock_router, summaries_dir):
+def compactor(mock_trajectory, mock_router, summaries_dir):
     with patch("src.memory.compactor.CONVERSATION_SUMMARIES_DIR", summaries_dir), \
          patch("src.memory.compactor.load_prompt", return_value="压缩提示 {conversation}"):
-        c = ConversationCompactor(mock_memory, mock_router)
+        c = ConversationCompactor(mock_router, trajectory=mock_trajectory)
         yield c
 
 
 class TestShouldCompact:
     def test_returns_false_below_threshold(self, compactor):
-        # MAX_HISTORY_TURNS=20, max_messages=40, threshold=80% → 32
         assert compactor.should_compact(31) is False
 
     def test_returns_true_at_threshold(self, compactor):
@@ -57,110 +87,84 @@ class TestShouldCompact:
 
 class TestTryCompact:
     async def test_skips_when_already_compacting(self, compactor):
-        """正在压缩时不触发第二次。"""
         compactor._compacting.add("chat1")
         result = await compactor.try_compact("chat1")
         assert result is False
 
-    async def test_skips_when_history_too_short(self, compactor, mock_memory):
-        mock_memory.get.return_value = [{"role": "user", "content": "hi"}] * 5
+    async def test_skips_when_history_too_short(self, compactor, mock_trajectory):
+        history = [{"role": "user", "content": "hi"}] * 5
+        mock_trajectory.relevant_to_chat = AsyncMock(
+            return_value=_make_trajectory_rows(history)
+        )
         result = await compactor.try_compact("chat1")
         assert result is False
 
-    async def test_compacting_flag_is_cleared_after_success(self, compactor, mock_memory, summaries_dir):
+    async def test_compacting_flag_is_cleared_after_success(self, compactor, mock_trajectory, summaries_dir):
         history = [{"role": "user", "content": f"消息{i}"} for i in range(40)]
-        mock_memory.get.return_value = history
-        mock_memory._store["chat1"] = history[:]
+        mock_trajectory.relevant_to_chat = AsyncMock(
+            return_value=_make_trajectory_rows(history)
+        )
         await compactor.try_compact("chat1")
         assert "chat1" not in compactor._compacting
 
-    async def test_compacting_flag_cleared_on_llm_failure(self, compactor, mock_memory, mock_router, summaries_dir):
+    async def test_compacting_flag_cleared_on_llm_failure(self, compactor, mock_trajectory, mock_router, summaries_dir):
         history = [{"role": "user", "content": f"消息{i}"} for i in range(40)]
-        mock_memory.get.return_value = history
+        mock_trajectory.relevant_to_chat = AsyncMock(
+            return_value=_make_trajectory_rows(history)
+        )
         mock_router.complete.side_effect = RuntimeError("LLM 崩溃")
         result = await compactor.try_compact("chat1")
         assert result is False
         assert "chat1" not in compactor._compacting
 
+    async def test_returns_false_without_trajectory(self, mock_router, summaries_dir):
+        with patch("src.memory.compactor.CONVERSATION_SUMMARIES_DIR", summaries_dir):
+            c = ConversationCompactor(mock_router)
+        result = await c.try_compact("chat1")
+        assert result is False
+
 
 class TestDoCompact:
-    async def test_replaces_history_with_summary_plus_tail(self, compactor, mock_memory, summaries_dir):
-        """压缩后内存中存储：摘要消息 + 后 40% 历史。"""
-        # 需要 32+ 条消息才能触发 compaction（80% of 40）
+    async def test_writes_summary_file(self, compactor, mock_trajectory, summaries_dir):
         history = [{"role": "user", "content": f"消息{i}"} for i in range(40)]
-        mock_memory.get.return_value = history
-        mock_memory._store["chat1"] = history[:]
-
-        result = await compactor.try_compact("chat1")
-
-        assert result is True
-        new_history = mock_memory._store["chat1"]
-        # 第一条是摘要消息
-        assert new_history[0]["role"] == "system"
-        assert "[之前的对话摘要]" in new_history[0]["content"]
-        assert "今天聊了很多。" in new_history[0]["content"]
-        # 后面是保留的原历史（后 40%）
-        compact_count = int(len(history) * 0.6)
-        kept = history[compact_count:]
-        assert new_history[1:] == kept
-
-    async def test_writes_summary_file(self, compactor, mock_memory, summaries_dir):
-        """压缩后写入摘要文件。"""
-        history = [{"role": "user", "content": f"消息{i}"} for i in range(40)]
-        mock_memory.get.return_value = history
-        mock_memory._store["chat1"] = history[:]
-
+        mock_trajectory.relevant_to_chat = AsyncMock(
+            return_value=_make_trajectory_rows(history)
+        )
         await compactor.try_compact("chat1")
-
         md_files = list(summaries_dir.glob("*.md"))
         assert len(md_files) == 1
         content = md_files[0].read_text(encoding="utf-8")
         assert "对话摘要" in content
         assert "今天聊了很多。" in content
 
-    async def test_skips_when_compact_count_too_small(self, compactor, mock_memory):
-        """如果历史太短（compact_count < 4）不压缩。"""
-        # 5 条消息，compact_count = int(5 * 0.6) = 3 < 4
+    async def test_skips_when_compact_count_too_small(self, compactor, mock_trajectory):
         history = [{"role": "user", "content": f"消息{i}"} for i in range(5)]
-        mock_memory.get.return_value = history
-        # 手动触发 should_compact 通过
+        mock_trajectory.relevant_to_chat = AsyncMock(
+            return_value=_make_trajectory_rows(history)
+        )
         with patch.object(compactor, "should_compact", return_value=True):
             result = await compactor.try_compact("chat1")
         assert result is False
 
-    async def test_handles_empty_llm_response(self, compactor, mock_memory, mock_router):
-        """LLM 返回空字符串时不压缩。"""
+    async def test_handles_empty_llm_response(self, compactor, mock_trajectory, mock_router):
         mock_router.complete.return_value = "   "
         history = [{"role": "user", "content": f"消息{i}"} for i in range(20)]
-        mock_memory.get.return_value = history
+        mock_trajectory.relevant_to_chat = AsyncMock(
+            return_value=_make_trajectory_rows(history)
+        )
         with patch.object(compactor, "should_compact", return_value=True):
             result = await compactor.try_compact("chat1")
         assert result is False
 
-    async def test_summary_includes_prefix(self, compactor, mock_memory, summaries_dir):
-        """压缩后摘要消息包含安全前缀。"""
+    async def test_compaction_succeeds_with_large_history(self, compactor, mock_trajectory, mock_router, summaries_dir):
         history = [{"role": "user", "content": f"消息{i}"} for i in range(40)]
-        mock_memory.get.return_value = history
-        mock_memory._store["chat1"] = history[:]
-        await compactor.try_compact("chat1")
-        new_history = mock_memory._store["chat1"]
-        assert SUMMARY_PREFIX in new_history[0]["content"]
+        mock_trajectory.relevant_to_chat = AsyncMock(
+            return_value=_make_trajectory_rows(history)
+        )
+        result = await compactor.try_compact("chat1")
+        assert result is True
+        mock_router.complete.assert_awaited_once()
 
-    async def test_iterative_summary_preserves_prior(self, compactor, mock_memory, mock_router, summaries_dir):
-        """第二次压缩时将前次摘要作为上下文传入。"""
-        prior = {"role": "system", "content": "[之前的对话摘要] 第一次摘要内容"}
-        history = [prior] + [{"role": "user", "content": f"消息{i}"} for i in range(39)]
-        mock_memory.get.return_value = history
-        mock_memory._store["chat1"] = history[:]
-        await compactor.try_compact("chat1")
-        # 验证 LLM 收到的 prompt 包含前次摘要
-        call_args = mock_router.complete.call_args
-        prompt_content = call_args[0][0][0]["content"]
-        assert "前次摘要供参考" in prompt_content
-        assert "第一次摘要内容" in prompt_content
-
-
-# ── 工具输出修剪测试 ─────────────────────────────────────────────────────────
 
 class TestPruneToolOutputs:
     def test_short_tool_output_kept(self):
@@ -205,5 +209,4 @@ class TestFormatForSummary:
 
     def test_list_content_blocks(self):
         result = _format_for_summary([{"role": "assistant", "content": [{"text": "hello"}, {"text": "world"}]}])
-        assert "hello" in result
-        assert "world" in result
+        assert result == "Lapwing: hello world"
