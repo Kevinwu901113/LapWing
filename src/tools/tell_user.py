@@ -66,6 +66,17 @@ async def tell_user_executor(
             reason="tell_user 在没有 send_fn 的上下文中被调用（如内部 tick）",
         )
 
+    # soft gate：活跃计划有未完成步骤时，首次拦截提醒
+    plan = (context.services or {}).get("plan_state")
+    if plan is not None:
+        warning = plan.check_soft_gate()
+        if warning is not None:
+            return ToolExecutionResult(
+                success=False,
+                payload={"delivered": False, "reason": "plan_incomplete"},
+                reason=warning,
+            )
+
     try:
         await context.send_fn(text)
     except Exception as exc:
