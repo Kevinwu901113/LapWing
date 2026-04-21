@@ -91,7 +91,7 @@ class PlanState:
         return "\n".join(lines)
 
     def render_incomplete(self) -> str:
-        lines = ["## 当前计划", ""]
+        lines: list[str] = []
         for s in self.steps:
             if s.status in ("pending", "in_progress"):
                 lines.append(self._render_step(s))
