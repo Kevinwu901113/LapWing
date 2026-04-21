@@ -308,13 +308,21 @@ class TaskRuntime:
             tool_names=set(profile_obj.tool_names) if profile_obj.tool_names else None,
         )
 
+    _BROWSER_TOOL_NAMES: frozenset[str] = frozenset({
+        "browser_open", "browser_click", "browser_type", "browser_select",
+        "browser_scroll", "browser_screenshot", "browser_get_text",
+        "browser_back", "browser_tabs", "browser_switch_tab",
+        "browser_close_tab", "browser_wait", "browser_login",
+    })
+
     def chat_tools(
         self,
         shell_enabled: bool,
         *,
         web_enabled: bool = True,
+        browser_enabled: bool = False,
     ) -> list[dict[str, Any]]:
-        """chat 场景工具集：按需暴露 shell / web。
+        """chat 场景工具集：按需暴露 shell / web / browser。
         Phase 4: 个人工具（send_message, send_image 等）+ 提醒工具始终可用。
         Step 5: tell_user 与 commit/fulfill/abandon_promise 始终包含——
         前者是模型唯一对外说话出口，后者是承诺登记机制。
@@ -333,10 +341,18 @@ class TaskRuntime:
         ):
             if self._tool_registry.get(promise_tool) is not None:
                 tool_names.add(promise_tool)
+        # 任务规划工具
+        for plan_tool in ("plan_task", "update_plan"):
+            if self._tool_registry.get(plan_tool) is not None:
+                tool_names.add(plan_tool)
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
         if web_enabled:
             tool_names.update({"research", "browse"})
+        if browser_enabled:
+            for name in self._BROWSER_TOOL_NAMES:
+                if self._tool_registry.get(name) is not None:
+                    tool_names.add(name)
         return self._tool_registry.function_tools(
             include_internal=False,
             tool_names=tool_names,
@@ -643,8 +659,10 @@ class TaskRuntime:
         round_started_at = time.perf_counter()
 
         try:
+            messages_with_state = self._with_shell_state_context(ctx.messages, ctx.state)
+            messages_with_state = self._with_plan_context(messages_with_state, ctx.services)
             turn = await self._router.complete_with_tools(
-                self._with_shell_state_context(ctx.messages, ctx.state),
+                messages_with_state,
                 tools=ctx.tools,
                 slot="main_conversation",
                 session_key=f"chat:{ctx.chat_id}",
@@ -1255,6 +1273,27 @@ class TaskRuntime:
             return [merged_system, *messages[1:]]
         state_message = {"role": "system", "content": state_content}
         return [state_message, *messages]
+
+    def _with_plan_context(
+        self,
+        messages: list[dict[str, Any]],
+        services: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        if not services or "plan_state" not in services:
+            return messages
+        plan = services["plan_state"]
+        rendered = plan.render()
+        if not rendered:
+            return messages
+        if messages and messages[0].get("role") == "system":
+            merged_system = dict(messages[0])
+            base_content = str(merged_system.get("content", "")).strip()
+            merged_system["content"] = (
+                f"{base_content}\n\n{rendered}" if base_content else rendered
+            )
+            return [merged_system, *messages[1:]]
+        plan_message = {"role": "system", "content": rendered}
+        return [plan_message, *messages]
 
     def _shell_failure_reason(self, result: ShellResult) -> str:
         if result.reason and (result.blocked or result.timed_out):
