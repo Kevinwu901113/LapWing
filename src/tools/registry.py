@@ -36,6 +36,14 @@ from src.tools.commitments import (
     commit_promise_executor,
     fulfill_promise_executor,
 )
+from src.tools.plan_tools import (
+    PLAN_TASK_DESCRIPTION,
+    PLAN_TASK_SCHEMA,
+    UPDATE_PLAN_DESCRIPTION,
+    UPDATE_PLAN_SCHEMA,
+    plan_task_executor,
+    update_plan_executor,
+)
 from src.tools.types import (
     ToolExecutionContext,
     ToolExecutionRequest,
@@ -407,6 +415,28 @@ def build_default_tool_registry() -> ToolRegistry:
             capability="verify",
             capabilities=("workspace", "code"),
             visibility="internal",
+            risk_level="low",
+        )
+    )
+
+    # 任务规划工具
+    registry.register(
+        ToolSpec(
+            name="plan_task",
+            description=PLAN_TASK_DESCRIPTION,
+            json_schema=PLAN_TASK_SCHEMA,
+            executor=plan_task_executor,
+            capability="general",
+            risk_level="low",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="update_plan",
+            description=UPDATE_PLAN_DESCRIPTION,
+            json_schema=UPDATE_PLAN_SCHEMA,
+            executor=update_plan_executor,
+            capability="general",
             risk_level="low",
         )
     )
