@@ -57,20 +57,36 @@ class PlanStep:
 class PlanState:
     steps: list[PlanStep]
     created_at: float
-    _soft_gate_armed: bool = True
+    soft_gate_armed: bool = True
 ```
 
 Methods:
 
 - `has_incomplete() -> bool` — True if any step is pending or in_progress.
 - `current_step() -> PlanStep | None` — First step with status in_progress.
-- `advance(step_index, status, note="") -> PlanStep` — Set step status. If completed
-  and a next pending step exists, auto-advance it to in_progress. Validates index
-  range and transition legality.
+- `advance(step_index, status, note="") -> PlanStep` — Set step status, with
+  auto-advance and transition validation (see Transition Rules below).
 - `render() -> str` — Full plan rendering with status markers.
 - `render_incomplete() -> str` — Only pending/in_progress steps.
 - `check_soft_gate() -> str | None` — If has_incomplete() and gate is armed, disarm
   gate and return warning text. Otherwise return None.
+
+### Transition Rules
+
+Legal transitions for `advance()`:
+
+| From | To | Allowed? | Notes |
+|------|----|----------|-------|
+| in_progress | completed | Yes | Normal completion. Auto-advances next pending → in_progress. |
+| in_progress | blocked | Yes | Hit external dependency. Auto-advances next pending → in_progress. |
+| pending | blocked | Yes | Model foresees a blocker on a future step. Auto-advances next pending → in_progress if the blocked step was about to be reached. |
+| completed | any | No | Completed is terminal. |
+| blocked | any | No | Blocked is terminal. |
+| pending | completed | No | Must go through in_progress first. |
+
+Auto-advance rule: after any successful `advance()` call, if no step is currently
+in_progress, scan forward from the updated step and set the first pending step to
+in_progress.
 
 ### Lifecycle
 
@@ -188,6 +204,26 @@ Both tools registered in `build_default_tool_registry()` in `src/tools/registry.
 - No auth gating (no entry in OPERATION_AUTH).
 - Depth-0 tools: visible to Lapwing directly, not TeamLead-specific.
 
+### chat_tools() Whitelist
+
+`TaskRuntime.chat_tools()` maintains an explicit `tool_names` set — tools not in
+this set are invisible to the LLM regardless of registration. Plan tools must be
+added using the same conditional pattern as the promise tools:
+
+```python
+for plan_tool in ("plan_task", "update_plan"):
+    if self._tool_registry.get(plan_tool) is not None:
+        tool_names.add(plan_tool)
+```
+
+Inner tick isolation: `think_inner` shares `_complete_chat()` which calls
+`chat_tools()`, so the inner tick LLM will see plan tools in its schema. This
+is acceptable — the inner tick prompt doesn't ask for multi-step task execution,
+and if the model somehow calls `plan_task` during inner tick, the plan is local
+to that `complete_chat()` call and gets discarded. No special gating needed.
+The `tell_user` soft gate is also moot for inner tick because `send_fn=None`
+(tell_user already fails before reaching the gate check).
+
 ---
 
 ## 3. Per-Round Injection
@@ -248,9 +284,21 @@ if plan is not None:
 
 ### check_soft_gate() behavior
 
-- If `has_incomplete()` is True and `_soft_gate_armed` is True:
-  set `_soft_gate_armed = False`, return warning text with incomplete step list.
-- Otherwise: return None (tell_user proceeds normally).
+- If `has_incomplete()` is True and `soft_gate_armed` is True:
+  set `soft_gate_armed = False`, return warning text. Otherwise return None.
+
+Warning text format:
+
+```
+当前计划中还有未完成的步骤，请先完成再回复用户：
+[→] 判断是否需要带伞  ← 当前
+[ ] 将天气信息写入日记
+如果确实需要先告诉用户中间结果，再次调用 tell_user 即可。
+```
+
+The warning includes the incomplete step list (same symbols as `render()`) and an
+explicit instruction that retrying tell_user will succeed — this helps the model
+make an informed decision rather than getting stuck.
 
 ### "Fire once then disarm" rationale
 
@@ -279,6 +327,7 @@ tightened later (e.g., armed per-phase rather than once-per-plan).
 | `tests/core/test_plan_state.py` | PlanState unit tests |
 | `tests/tools/test_plan_tools.py` | Tool handler tests |
 | `tests/tools/test_tell_user_plan_gate.py` | Soft gate tests |
+| `tests/core/test_plan_injection.py` | Per-round injection integration tests |
 
 ### Modified files
 
@@ -286,14 +335,17 @@ tightened later (e.g., armed per-phase rather than once-per-plan).
 |------|--------|
 | `src/tools/registry.py` | Register plan_task + update_plan |
 | `src/tools/tell_user.py` | Add soft gate check (~6 lines) |
-| `src/core/task_runtime.py` | Add `_with_plan_context()` + one call in `_run_step()` |
+| `src/core/task_runtime.py` | Add `_with_plan_context()` + one call in `_run_step()`, add plan tools to `chat_tools()` whitelist |
 
 ### Not modified
 
 - `src/core/brain.py` — services dict is already mutable; plan_task writes to it.
+  `_complete_chat` assembles services and calls `chat_tools()` — no new wiring needed
+  at the brain level.
 - `src/core/state_view_builder.py`, `state_serializer.py` — plan injection is in the
   tool loop, not initial prompt assembly.
-- `src/core/main_loop.py`, `inner_tick_scheduler.py` — inner tick has no plan tools.
+- `src/core/main_loop.py`, `inner_tick_scheduler.py` — inner tick shares `chat_tools()`
+  and will see plan tools, but this is harmless (see chat_tools section above).
 - Agent team files — untouched.
 
 ---
@@ -318,6 +370,13 @@ tightened later (e.g., armed per-phase rather than once-per-plan).
 - update_plan completes step, auto-advances next.
 - update_plan fails when no plan exists.
 - update_plan rejects invalid index and transition.
+
+### test_plan_injection.py
+
+- `_with_plan_context` with no plan in services: messages returned unchanged.
+- `_with_plan_context` with active plan + existing system message: plan appended.
+- `_with_plan_context` with active plan + no system message: system message created.
+- Chaining: `_with_shell_state_context` then `_with_plan_context` both inject content.
 
 ### test_tell_user_plan_gate.py
 
