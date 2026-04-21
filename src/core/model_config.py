@@ -367,6 +367,7 @@ class ModelConfigManager:
             if p.api_key and p.api_key != "FROM_ENV":
                 continue
             # 按 provider id / base_url 推断对应的环境变量
+            # 直接读 os.getenv：运行时热切换 model 时 key 可能已被外部更新，需要最新值
             if "nvidia" in p.base_url.lower() or p.id == "nvidia":
                 p.api_key = NIM_API_KEY or os.getenv("NIM_API_KEY", "")
             else:

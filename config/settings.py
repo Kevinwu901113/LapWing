@@ -12,7 +12,7 @@ from src.config import get_settings as _get_settings
 
 _s = _get_settings()
 
-# ── 路径常量（不走 TOML，从代码计算） ───────
+# ── 路径常量（从代码计算，不走配置文件） ───────
 
 ROOT_DIR = Path(__file__).parent.parent
 CONFIG_DIR = ROOT_DIR / "config"
@@ -167,6 +167,7 @@ LOOP_DETECTION_DETECTOR_KNOWN_POLL_NO_PROGRESS: bool = _s.loop_detection.detecto
 
 BROWSER_ENABLED: bool = _s.browser.enabled
 BROWSER_HEADLESS: bool = _s.browser.headless
+BROWSER_PROXY_SERVER: str = _s.browser.proxy_server
 BROWSER_USER_DATA_DIR: str = _s.browser.user_data_dir or str(DATA_DIR / "browser" / "profile")
 BROWSER_MAX_TABS: int = _s.browser.max_tabs
 BROWSER_PAGE_TEXT_MAX_CHARS: int = _s.browser.page_text_max_chars

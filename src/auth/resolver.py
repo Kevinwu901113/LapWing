@@ -16,6 +16,7 @@ def resolve_secret_ref(secret_ref: dict[str, Any]) -> str:
         env_name = str(secret_ref.get("name") or "").strip()
         if not env_name:
             raise ValueError("env secretRef 缺少 name")
+        # 直接读 os.getenv：env_name 由 secretRef 动态指定，无法在 settings 中预定义
         value = os.getenv(env_name, "")
         if not value:
             raise ValueError(f"环境变量未配置: {env_name}")

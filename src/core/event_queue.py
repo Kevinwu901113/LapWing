@@ -32,6 +32,16 @@ class EventQueue:
     async def get(self) -> Event:
         return await self._queue.get()
 
+    def get_nowait(self) -> Event | None:
+        """Pop the highest-priority event without blocking.
+
+        Returns ``None`` when the queue is empty (instead of raising).
+        """
+        try:
+            return self._queue.get_nowait()
+        except asyncio.QueueEmpty:
+            return None
+
     def qsize(self) -> int:
         return self._queue.qsize()
 

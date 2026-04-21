@@ -58,6 +58,12 @@ class MainLoop:
     # measurable CPU on an idle loop.
     OWNER_WATCHER_POLL_SECONDS = 0.05
 
+    # When an OWNER message is dispatched, wait this long before starting
+    # the brain call so that rapid-fire follow-up messages can be merged
+    # into a single turn. 0.5 s is short enough to feel instant but long
+    # enough to catch copy-paste bursts.
+    OWNER_COALESCE_SECONDS = 0.5
+
     def __init__(
         self,
         queue: "EventQueue",
@@ -73,6 +79,7 @@ class MainLoop:
         # pre-emptive (set True) versus a normal task completion.
         self._cancel_requested = False
         self._owner_watcher_task: asyncio.Task | None = None
+        self._handling_owner: bool = False
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -128,6 +135,8 @@ class MainLoop:
                 task = self._current_task
                 if task is None or task.done():
                     continue
+                if self._handling_owner:
+                    continue
                 if not self._queue.has_owner_message():
                     continue
                 logger.info("OWNER message detected — preempting in-flight handler")
@@ -141,20 +150,24 @@ class MainLoop:
         """Route ``event`` to the handler that matches its kind.
 
         OWNER messages (``priority == PRIORITY_OWNER_MESSAGE``) preempt
-        any in-flight handler before the OWNER's own dispatch begins —
-        this is Step 4 M4's "instant interrupt" guarantee. The cancelled
-        handler's brain side persists whatever partial output it had as
-        an INTERRUPTED trajectory entry, then re-raises CancelledError;
-        we swallow that here (the partial is already saved) and proceed
-        to the OWNER dispatch.
+        any in-flight *non-OWNER* handler before the OWNER's own dispatch
+        begins. An OWNER handler is never preempted by another OWNER
+        message — the new message waits in the queue (and may be coalesced
+        by ``_handle_message``).
         """
         if (
             event.priority == PRIORITY_OWNER_MESSAGE
             and self._current_task is not None
             and not self._current_task.done()
+            and not self._handling_owner
         ):
             await self._interrupt_current(reason="owner_message_preempt")
 
+        is_owner_msg = (
+            isinstance(event, MessageEvent)
+            and event.priority == PRIORITY_OWNER_MESSAGE
+        )
+        self._handling_owner = is_owner_msg
         try:
             if isinstance(event, MessageEvent):
                 await self._handle_message(event)
@@ -165,11 +178,11 @@ class MainLoop:
             else:
                 logger.warning("Unknown event kind: %s", event.kind)
         except asyncio.CancelledError:
-            # The handler cancelled itself (preempt or shutdown). Brain
-            # side already persisted partial output; nothing more to do.
             logger.info("Handler cancelled while dispatching %s", event.kind)
         except Exception as exc:  # pragma: no cover - defensive
             logger.exception("Handler crashed for %s: %s", event.kind, exc)
+        finally:
+            self._handling_owner = False
 
     async def _interrupt_current(self, reason: str) -> None:
         """Preempt the in-flight handler, marking the cancellation as requested.
@@ -208,6 +221,13 @@ class MainLoop:
         the producer) gets the assistant's full reply or the exception
         the brain raised — this is how the desktop ``/ws/chat`` route
         keeps its synchronous "send reply, then close turn" semantic.
+
+        **OWNER coalescing**: when the event is OWNER-priority, we sleep
+        briefly (``OWNER_COALESCE_SECONDS``) then drain any additional
+        OWNER messages for the same ``chat_id`` from the queue, merging
+        their text and images into a single brain call. This prevents
+        rapid-fire messages from producing independent cancel→restart
+        cycles while still giving the user a unified reply.
         """
         if self._brain is None:
             logger.warning("MessageEvent received but no brain wired")
@@ -215,16 +235,52 @@ class MainLoop:
                 event.done_future.set_result("")
             return
 
+        # ── Coalesce rapid-fire OWNER messages ──────────────────────
+        merged_text = event.text
+        merged_images = list(event.images) if event.images else []
+        coalesced_futures: list = []
+
+        if event.priority == PRIORITY_OWNER_MESSAGE:
+            await asyncio.sleep(self.OWNER_COALESCE_SECONDS)
+            requeue: list[Event] = []
+            while True:
+                extra = self._queue.get_nowait()
+                if extra is None:
+                    break
+                if (
+                    isinstance(extra, MessageEvent)
+                    and extra.priority == PRIORITY_OWNER_MESSAGE
+                    and extra.chat_id == event.chat_id
+                ):
+                    logger.info(
+                        "Coalescing OWNER message into current turn "
+                        "(+%d chars)", len(extra.text),
+                    )
+                    if extra.text:
+                        merged_text += "\n" + extra.text
+                    if extra.images:
+                        merged_images.extend(extra.images)
+                    if extra.done_future is not None and not extra.done_future.done():
+                        coalesced_futures.append(extra.done_future)
+                else:
+                    requeue.append(extra)
+            for ev in requeue:
+                await self._queue.put(ev)
+
+        # ── Drive brain ─────────────────────────────────────────────
+        final_text = merged_text
+        final_images = merged_images
+
         async def _drive() -> str:
             return await self._brain.think_conversational(
                 chat_id=event.chat_id,
-                user_message=event.text,
+                user_message=final_text,
                 send_fn=event.send_fn,
                 typing_fn=event.typing_fn,
                 status_callback=event.status_callback,
                 adapter=event.adapter,
                 user_id=event.user_id,
-                images=list(event.images) if event.images else None,
+                images=final_images if final_images else None,
             )
 
         task = asyncio.create_task(_drive(), name=f"think_conv:{event.chat_id}")
@@ -233,16 +289,23 @@ class MainLoop:
             reply = await task
             if event.done_future is not None and not event.done_future.done():
                 event.done_future.set_result(reply)
+            for f in coalesced_futures:
+                if not f.done():
+                    f.set_result(reply)
         except asyncio.CancelledError:
-            # M4 surfaces partial output here; for now propagate the
-            # cancellation to the producer so it can clean up.
             if event.done_future is not None and not event.done_future.done():
                 event.done_future.cancel()
+            for f in coalesced_futures:
+                if not f.done():
+                    f.cancel()
             raise
         except Exception as exc:
             logger.exception("think_conversational failed for %s", event.chat_id)
             if event.done_future is not None and not event.done_future.done():
                 event.done_future.set_exception(exc)
+            for f in coalesced_futures:
+                if not f.done():
+                    f.set_exception(exc)
         finally:
             if self._current_task is task:
                 self._current_task = None

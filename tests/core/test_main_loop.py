@@ -128,3 +128,154 @@ async def test_cancel_in_flight_noop_when_no_task():
 
 async def _noop(*_a, **_kw):  # pragma: no cover
     return None
+
+
+# ── OWNER coalesce & preemption tests ──────────────────────────────
+
+
+def _make_owner_event(chat_id="kev", text="hi", done_future=None):
+    return MessageEvent.from_message(
+        chat_id=chat_id, user_id="kev", text=text,
+        adapter="qq", send_fn=_noop, auth_level=int(AuthLevel.OWNER),
+        done_future=done_future,
+    )
+
+
+class FakeBrain:
+    """Minimal brain substitute that records calls."""
+
+    def __init__(self, delay: float = 0.0, reply: str = "ok"):
+        self.calls: list[dict] = []
+        self._delay = delay
+        self._reply = reply
+
+    async def think_conversational(self, **kw):
+        self.calls.append(kw)
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        return self._reply
+
+    async def think_inner(self, **kw):
+        if self._delay:
+            await asyncio.sleep(self._delay)
+        return "", None, False
+
+
+@pytest.mark.asyncio
+async def test_owner_messages_coalesce_in_burst():
+    """Three OWNER messages queued within the coalesce window should
+    merge into a single brain call with newline-joined text."""
+    q = EventQueue()
+    brain = FakeBrain(delay=0.0, reply="merged-reply")
+    loop = MainLoop(q, brain=brain)
+    loop.OWNER_COALESCE_SECONDS = 0.1  # speed up test
+
+    runner = asyncio.create_task(loop.run())
+
+    await q.put(_make_owner_event(text="msg1"))
+    await q.put(_make_owner_event(text="msg2"))
+    await q.put(_make_owner_event(text="msg3"))
+
+    await asyncio.sleep(0.5)
+    await loop.stop()
+    await q.put(InnerTickEvent.make())
+    await asyncio.wait_for(runner, timeout=2.0)
+
+    assert len(brain.calls) == 1
+    assert brain.calls[0]["user_message"] == "msg1\nmsg2\nmsg3"
+
+
+@pytest.mark.asyncio
+async def test_owner_does_not_preempt_owner():
+    """A second OWNER message must NOT cancel the handler for the first."""
+    q = EventQueue()
+    brain = FakeBrain(delay=0.5, reply="done")
+    loop = MainLoop(q, brain=brain)
+    loop.OWNER_COALESCE_SECONDS = 0.05
+
+    runner = asyncio.create_task(loop.run())
+
+    await q.put(_make_owner_event(text="first"))
+    await asyncio.sleep(0.15)  # let handler start
+    await q.put(_make_owner_event(text="second"))
+    await asyncio.sleep(1.5)  # let both complete
+
+    await loop.stop()
+    await q.put(InnerTickEvent.make())
+    await asyncio.wait_for(runner, timeout=2.0)
+
+    assert len(brain.calls) == 2
+    assert brain.calls[0]["user_message"] == "first"
+    assert brain.calls[1]["user_message"] == "second"
+
+
+@pytest.mark.asyncio
+async def test_owner_still_preempts_inner_tick():
+    """OWNER preemption of non-OWNER tasks (inner tick) must still work."""
+    q = EventQueue()
+    brain = FakeBrain(delay=2.0)
+    loop = MainLoop(q, brain=brain)
+    loop.OWNER_COALESCE_SECONDS = 0.05
+
+    runner = asyncio.create_task(loop.run())
+
+    await q.put(InnerTickEvent.make())
+    await asyncio.sleep(0.1)  # let inner tick handler start
+    await q.put(_make_owner_event(text="urgent"))
+    await asyncio.sleep(1.0)
+
+    await loop.stop()
+    await q.put(InnerTickEvent.make())
+    await asyncio.wait_for(runner, timeout=3.0)
+
+    owner_calls = [c for c in brain.calls if c.get("user_message") == "urgent"]
+    assert len(owner_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_coalesce_only_same_chat_id():
+    """OWNER messages for different chat_ids must NOT be merged."""
+    q = EventQueue()
+    brain = FakeBrain(delay=0.0, reply="ok")
+    loop = MainLoop(q, brain=brain)
+    loop.OWNER_COALESCE_SECONDS = 0.1
+
+    runner = asyncio.create_task(loop.run())
+
+    await q.put(_make_owner_event(chat_id="chatA", text="a1"))
+    await q.put(_make_owner_event(chat_id="chatB", text="b1"))
+
+    await asyncio.sleep(0.5)
+    await loop.stop()
+    await q.put(InnerTickEvent.make())
+    await asyncio.wait_for(runner, timeout=2.0)
+
+    assert len(brain.calls) == 2
+    texts = {c["user_message"] for c in brain.calls}
+    assert "a1" in texts
+    assert "b1" in texts
+
+
+@pytest.mark.asyncio
+async def test_coalesced_done_futures_all_resolved():
+    """All done_futures from coalesced messages must receive the reply."""
+    q = EventQueue()
+    brain = FakeBrain(delay=0.0, reply="shared-reply")
+    loop = MainLoop(q, brain=brain)
+    loop.OWNER_COALESCE_SECONDS = 0.1
+
+    runner = asyncio.create_task(loop.run())
+
+    f1 = asyncio.get_event_loop().create_future()
+    f2 = asyncio.get_event_loop().create_future()
+    await q.put(_make_owner_event(text="a", done_future=f1))
+    await q.put(_make_owner_event(text="b", done_future=f2))
+
+    results = await asyncio.wait_for(
+        asyncio.gather(f1, f2), timeout=2.0,
+    )
+    assert results == ["shared-reply", "shared-reply"]
+
+    await loop.stop()
+    await q.put(InnerTickEvent.make())
+    await asyncio.wait_for(runner, timeout=2.0)

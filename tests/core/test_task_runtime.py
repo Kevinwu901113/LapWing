@@ -135,6 +135,55 @@ async def test_chat_tools_excludes_web_when_disabled():
 
 
 @pytest.mark.asyncio
+async def test_chat_tools_includes_browser_tools_when_enabled():
+    """browser_enabled=True exposes browser_open etc. when they're registered."""
+    from unittest.mock import AsyncMock as _AM
+    from src.tools.browser_tools import register_browser_tools
+
+    registry = _chat_ready_registry()
+    register_browser_tools(registry, _AM())  # mock browser_manager
+    runtime = TaskRuntime(router=MagicMock(), tool_registry=registry)
+
+    tools = runtime.chat_tools(shell_enabled=False, browser_enabled=True)
+    names = {item["function"]["name"] for item in tools}
+
+    assert "browser_open" in names
+    assert "browser_click" in names
+    assert "browser_type" in names
+    assert "browser_login" in names
+    assert "browser_scroll" in names
+
+
+@pytest.mark.asyncio
+async def test_chat_tools_excludes_browser_tools_when_disabled():
+    """browser_enabled=False (default) hides browser tools even if registered."""
+    from unittest.mock import AsyncMock as _AM
+    from src.tools.browser_tools import register_browser_tools
+
+    registry = _chat_ready_registry()
+    register_browser_tools(registry, _AM())
+    runtime = TaskRuntime(router=MagicMock(), tool_registry=registry)
+
+    tools = runtime.chat_tools(shell_enabled=False, browser_enabled=False)
+    names = {item["function"]["name"] for item in tools}
+
+    assert "browser_open" not in names
+    assert "browser_click" not in names
+
+
+@pytest.mark.asyncio
+async def test_chat_tools_browser_enabled_safe_when_not_registered():
+    """browser_enabled=True is safe even if browser tools aren't registered."""
+    runtime = TaskRuntime(router=MagicMock(), tool_registry=_chat_ready_registry())
+
+    tools = runtime.chat_tools(shell_enabled=False, browser_enabled=True)
+    names = {item["function"]["name"] for item in tools}
+
+    assert "browser_open" not in names
+    assert "tell_user" in names
+
+
+@pytest.mark.asyncio
 async def test_chat_tools_raises_when_whitelisted_tool_not_registered():
     """Step 1i: silent skip is forbidden; an unregistered whitelist entry raises."""
     from src.tools.registry import ToolNotRegisteredError, build_default_tool_registry

@@ -219,6 +219,7 @@ class ExecutionSandbox:
         max_output: int = _MAX_OUTPUT,
     ) -> SandboxResult:
         """Run a command locally with sanitized env and process-group isolation."""
+        # 直接读 os.environ：沙箱需要复制+清洗当前进程的完整环境变量
         clean_env = sanitize_env(dict(os.environ))
 
         try:

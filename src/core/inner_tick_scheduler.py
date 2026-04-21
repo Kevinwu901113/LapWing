@@ -92,16 +92,16 @@ def build_inner_prompt(urgent_items: list[dict] | None = None) -> str:
         parts.append("以上事件需要你立即响应，请先处理完再做其他事。")
         parts.append("")
 
-    working_memory_path = Path("data/consciousness/working_memory.md")
-    if working_memory_path.exists():
+    scratch_pad_path = Path("data/consciousness/scratch_pad.md")
+    if scratch_pad_path.exists():
         try:
-            text = working_memory_path.read_text(encoding="utf-8").strip()
+            text = scratch_pad_path.read_text(encoding="utf-8").strip()
             if text:
                 parts.append("## 你上次在做的事\n")
                 parts.append(text[:2000])
                 parts.append("")
         except Exception:
-            pass  # missing/unreadable working memory is not fatal
+            pass
 
     parts.append("## 你可以想想这些方面\n")
     parts.append("- 刚才跟他聊的有没有什么你说错的或者可以做得更好的")
@@ -119,7 +119,7 @@ def build_inner_prompt(urgent_items: list[dict] | None = None) -> str:
     parts.append("- 你可以使用任何工具来做你想做的事")
     parts.append("- 如果你做了什么，用 write_note 记录下来")
     parts.append("- 如果你想找他说话，调用 send_message 工具")
-    parts.append("- 如果你想在工作记忆中记录进度，用 write_file 写到 data/consciousness/working_memory.md")
+    parts.append("- 如果你想在工作记忆中记录进度，用 write_file 写到 data/consciousness/scratch_pad.md")
     parts.append("- 什么都不想做也完全可以，回复\"无事\"即可")
     parts.append("- 在回复的最后一行，写上你希望多久后再被叫醒，格式：[NEXT: 数字m] 或 [NEXT: 数字h]")
     parts.append("  例如 [NEXT: 10m] 表示 10 分钟后，[NEXT: 2h] 表示 2 小时后")

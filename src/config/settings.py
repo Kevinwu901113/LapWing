@@ -1,10 +1,13 @@
 """
-Lapwing 统一配置 — TOML + env 两层加载。
+Lapwing 统一配置 — Pydantic BaseSettings + .env。
 
 加载优先级（高 → 低）：
-1. 环境变量（含 .env）
-2. config.toml
+1. 环境变量（含 config/.env）
+2. config.toml（可选，文件不存在时跳过）
 3. 代码中的默认值
+
+当前所有配置通过 .env 环境变量提供，config.toml 未使用但加载路径保留
+以便将来需要结构化配置时无需改代码。
 
 用法：
     from src.config import get_settings
@@ -169,6 +172,7 @@ _ENV_MAP: dict[str, list[str]] = {
     # ── browser ──
     "BROWSER_ENABLED": ["browser", "enabled"],
     "BROWSER_HEADLESS": ["browser", "headless"],
+    "BROWSER_PROXY_SERVER": ["browser", "proxy_server"],
     "BROWSER_USER_DATA_DIR": ["browser", "user_data_dir"],
     "BROWSER_MAX_TABS": ["browser", "max_tabs"],
     "BROWSER_PAGE_TEXT_MAX_CHARS": ["browser", "page_text_max_chars"],
@@ -379,6 +383,7 @@ class MiniMaxVLMConfig(BaseModel):
 class BrowserConfig(BaseModel):
     enabled: bool = False
     headless: bool = True
+    proxy_server: str = ""
     user_data_dir: str = ""
     max_tabs: int = 8
     page_text_max_chars: int = 4000
@@ -467,7 +472,7 @@ class LogConfig(BaseModel):
 # ── root settings ────────────────────────────
 
 def _inject_env(data: dict[str, Any]) -> dict[str, Any]:
-    """从 os.environ 注入环境变量到 data dict，覆盖 TOML 值。"""
+    """从 os.environ 注入环境变量到 data dict，优先级高于 TOML 和默认值。"""
     for env_name, path in _ENV_MAP.items():
         val = os.environ.get(env_name)
         if val is None:
@@ -493,7 +498,7 @@ class LapwingSettings(BaseSettings):
     """
     Lapwing 根配置。
 
-    加载顺序：env (.env + os.environ) > TOML > 默认值。
+    加载顺序：env (.env + os.environ) > config.toml（可选） > 默认值。
     不使用 pydantic 的 env_nested_delimiter（系统 SHELL 等冲突），
     改为在 model_validator 中按 _ENV_MAP 显式注入。
     """
@@ -530,7 +535,7 @@ class LapwingSettings(BaseSettings):
     @model_validator(mode="before")
     @classmethod
     def _inject_env_vars(cls, data: dict[str, Any]) -> dict[str, Any]:
-        """按 _ENV_MAP 将 os.environ 注入，优先级高于 TOML。"""
+        """按 _ENV_MAP 将 os.environ 注入，优先级高于 TOML 和默认值。"""
         return _inject_env(data)
 
     @classmethod

@@ -55,7 +55,7 @@ class CredentialVault:
 
     def __init__(self, vault_path: str = "data/credentials/vault.enc",
                  key_env: str = "CREDENTIAL_VAULT_KEY") -> None:
-        # 从环境变量加载加密密钥
+        # 直接读 os.environ：加密密钥是安全敏感值，key_env 名称由调用方指定，不走 settings
         key = os.environ.get(key_env)
         if not key:
             raise ValueError(f"{key_env} 环境变量未设置")

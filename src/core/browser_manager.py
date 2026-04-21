@@ -21,6 +21,7 @@ from config.settings import (
     BROWSER_ACTION_TIMEOUT_MS,
     BROWSER_HEADLESS,
     BROWSER_LOCALE,
+    BROWSER_PROXY_SERVER,
     BROWSER_MAX_ELEMENT_COUNT,
     BROWSER_MAX_TABS,
     BROWSER_NAVIGATION_TIMEOUT_MS,
@@ -473,7 +474,8 @@ class BrowserManager:
         state_dir.mkdir(parents=True, exist_ok=True)
 
         self._playwright = await async_playwright().start()
-        self._context = await self._playwright.chromium.launch_persistent_context(
+
+        launch_kwargs: dict[str, Any] = dict(
             user_data_dir=str(user_data_path),
             headless=BROWSER_HEADLESS,
             viewport={"width": BROWSER_VIEWPORT_WIDTH, "height": BROWSER_VIEWPORT_HEIGHT},
@@ -481,16 +483,23 @@ class BrowserManager:
             timezone_id=BROWSER_TIMEZONE,
             args=["--disable-blink-features=AutomationControlled"],
         )
+        if BROWSER_PROXY_SERVER:
+            launch_kwargs["proxy"] = {"server": BROWSER_PROXY_SERVER}
+
+        self._context = await self._playwright.chromium.launch_persistent_context(
+            **launch_kwargs,
+        )
 
         # 设置默认超时
         self._context.set_default_navigation_timeout(BROWSER_NAVIGATION_TIMEOUT_MS)
         self._context.set_default_timeout(BROWSER_ACTION_TIMEOUT_MS)
 
         logger.info(
-            "BrowserManager 已启动 (headless=%s, viewport=%dx%d)",
+            "BrowserManager 已启动 (headless=%s, viewport=%dx%d, proxy=%s)",
             BROWSER_HEADLESS,
             BROWSER_VIEWPORT_WIDTH,
             BROWSER_VIEWPORT_HEIGHT,
+            BROWSER_PROXY_SERVER or "none",
         )
 
     async def stop(self) -> None:

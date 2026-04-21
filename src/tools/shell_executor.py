@@ -31,6 +31,7 @@ def _load_docker_config():
     """从环境变量加载 Docker 配置。"""
     import os
     global _SHELL_BACKEND, _DOCKER_IMAGE, _DOCKER_WORKSPACE
+    # 直接读 os.getenv：这些是基础设施层配置，在 settings Pydantic 模型初始化之前就需要
     _SHELL_BACKEND = os.getenv("SHELL_BACKEND", "local")
     _DOCKER_IMAGE = os.getenv("SHELL_DOCKER_IMAGE", "lapwing-sandbox:latest")
     _DOCKER_WORKSPACE = os.getenv("SHELL_DOCKER_WORKSPACE", "/home/lapwing/workspace")

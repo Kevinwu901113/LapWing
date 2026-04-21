@@ -32,6 +32,7 @@ from src.tools.registry import build_default_tool_registry
 from src.tools.shell_executor import execute as execute_shell
 from src.tools.types import ToolExecutionRequest
 from config.settings import (
+    BROWSER_ENABLED,
     CHAT_WEB_TOOLS_ENABLED,
     MAX_HISTORY_TURNS,
     SHELL_ALLOW_SUDO,
@@ -250,6 +251,7 @@ class LapwingBrain:
         tools = self.task_runtime.chat_tools(
             shell_enabled=SHELL_ENABLED,
             web_enabled=CHAT_WEB_TOOLS_ENABLED,
+            browser_enabled=BROWSER_ENABLED,
         )
         services = {}
         # Step 5: 暴露 trajectory_store 给 tell_user / commitment 工具，
@@ -998,6 +1000,7 @@ class LapwingBrain:
             tool_specs = self.task_runtime.chat_tools(
                 shell_enabled=False,
                 web_enabled=True,
+                browser_enabled=BROWSER_ENABLED,
             )
             # 过滤为仅允许的工具名
             allowed = set(tools)
