@@ -659,8 +659,10 @@ class TaskRuntime:
         round_started_at = time.perf_counter()
 
         try:
+            messages_with_state = self._with_shell_state_context(ctx.messages, ctx.state)
+            messages_with_state = self._with_plan_context(messages_with_state, ctx.services)
             turn = await self._router.complete_with_tools(
-                self._with_shell_state_context(ctx.messages, ctx.state),
+                messages_with_state,
                 tools=ctx.tools,
                 slot="main_conversation",
                 session_key=f"chat:{ctx.chat_id}",
@@ -1271,6 +1273,27 @@ class TaskRuntime:
             return [merged_system, *messages[1:]]
         state_message = {"role": "system", "content": state_content}
         return [state_message, *messages]
+
+    def _with_plan_context(
+        self,
+        messages: list[dict[str, Any]],
+        services: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        if not services or "plan_state" not in services:
+            return messages
+        plan = services["plan_state"]
+        rendered = plan.render()
+        if not rendered:
+            return messages
+        if messages and messages[0].get("role") == "system":
+            merged_system = dict(messages[0])
+            base_content = str(merged_system.get("content", "")).strip()
+            merged_system["content"] = (
+                f"{base_content}\n\n{rendered}" if base_content else rendered
+            )
+            return [merged_system, *messages[1:]]
+        plan_message = {"role": "system", "content": rendered}
+        return [plan_message, *messages]
 
     def _shell_failure_reason(self, result: ShellResult) -> str:
         if result.reason and (result.blocked or result.timed_out):
