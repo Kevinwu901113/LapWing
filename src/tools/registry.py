@@ -6,6 +6,8 @@ import json
 import logging
 from typing import Any
 
+from config.settings import ROOT_DIR
+
 from src.tools.handlers import (
     _blocked_payload,
     apply_workspace_patch_tool,
@@ -238,7 +240,7 @@ def build_default_tool_registry() -> ToolRegistry:
             description="读取服务器上的文件内容。用于查看配置文件、日志、代码等。",
             json_schema={
                 "type": "object",
-                "properties": {"path": {"type": "string", "description": "文件的绝对路径"}},
+                "properties": {"path": {"type": "string", "description": f"文件的绝对路径。项目根目录: {ROOT_DIR}，数据目录: {ROOT_DIR / 'data'}/"}},
                 "required": ["path"],
             },
             executor=read_file_tool,
@@ -254,7 +256,7 @@ def build_default_tool_registry() -> ToolRegistry:
             json_schema={
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "文件的绝对路径"},
+                    "path": {"type": "string", "description": f"文件的绝对路径。项目根目录: {ROOT_DIR}，数据目录: {ROOT_DIR / 'data'}/"},
                     "content": {"type": "string", "description": "要写入的内容"},
                 },
                 "required": ["path", "content"],

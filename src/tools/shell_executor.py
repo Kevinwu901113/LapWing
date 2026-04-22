@@ -52,7 +52,6 @@ _PROTECTED_PREFIXES = (
     "/sbin",
     "/lib",
     "/lib64",
-    "/root",
 )
 _DANGEROUS_PATTERNS: list[tuple[str, str]] = [
     (r":\s*\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\};\s*:", "检测到 fork bomb，已拒绝执行。"),

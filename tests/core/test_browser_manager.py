@@ -162,6 +162,7 @@ async def browser_mgr(tmp_path, monkeypatch):
     monkeypatch.setattr("src.core.browser_manager.BROWSER_SCREENSHOT_RETAIN_DAYS", 7)
     monkeypatch.setattr("src.core.browser_manager.BROWSER_LOCALE", "zh-CN")
     monkeypatch.setattr("src.core.browser_manager.BROWSER_TIMEZONE", "Asia/Shanghai")
+    monkeypatch.setattr("src.core.browser_manager.BROWSER_PROXY_SERVER", "")
 
     from src.utils.url_safety import SafetyResult
     monkeypatch.setattr(

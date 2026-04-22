@@ -1,7 +1,8 @@
 # ============================================================
-# Lapwing 配置文件
-# 所有非敏感配置集中管理，敏感凭据请放 config/.env
-# env 变量可覆盖此文件中的任何值（嵌套路径用 _ 连接并大写）
+# Lapwing 主配置文件（TOML 为主配置源）
+# 所有非敏感配置在此集中管理，按模块分组。
+# 敏感凭据（API keys/tokens）和环境特定覆盖放 config/.env。
+# 环境变量可覆盖此文件中的任何值（见 _ENV_MAP）。
 # ============================================================
 
 [proxy]
@@ -118,7 +119,7 @@ allowed_origins = [
 ]
 
 [browser]
-enabled = true
+enabled = false
 headless = true
 max_tabs = 8
 page_text_max_chars = 4000
@@ -161,7 +162,7 @@ default_owner = true
 ws_chat_id_prefix = "desktop"
 
 [skill]
-enabled = true
+enabled = false
 sandbox_image = "lapwing-sandbox"
 sandbox_timeout = 30
 

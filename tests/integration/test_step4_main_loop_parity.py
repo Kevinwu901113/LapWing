@@ -51,10 +51,11 @@ async def test_step4_main_loop_parity_8_turn_conversation():
     loop = MainLoop(q, brain=brain, inner_tick_scheduler=sched)
     runner = asyncio.create_task(loop.run())
 
-    # 8 OWNER messages (Kevin in conversation).
+    # 8 OWNER messages with distinct chat_ids to avoid coalescing
+    # (OWNER_COALESCE_SECONDS merges rapid-fire same-chat messages).
     for i in range(8):
         await q.put(MessageEvent.from_message(
-            chat_id="kev",
+            chat_id=f"kev-{i}",
             user_id="kev",
             text=f"turn {i}",
             adapter="qq",
@@ -63,13 +64,13 @@ async def test_step4_main_loop_parity_8_turn_conversation():
         ))
 
     # Wait for all 8 dispatches.
-    for _ in range(100):
+    for _ in range(200):
         if len(seen_chat_ids) >= 8:
             break
-        await asyncio.sleep(0.01)
+        await asyncio.sleep(0.05)
 
     assert len(seen_chat_ids) == 8
-    assert all(c == "kev" for c in seen_chat_ids)
+    assert all(c.startswith("kev-") for c in seen_chat_ids)
 
     await loop.stop()
     await q.put(InnerTickEvent.make())

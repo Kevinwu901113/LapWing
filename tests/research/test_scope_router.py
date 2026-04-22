@@ -55,3 +55,9 @@ async def test_case_insensitive_platform_detection(router):
 async def test_cn_keyword_in_english_text(router):
     """中文平台关键词嵌在英文里，命中 CN。"""
     assert await router.decide("how to use bilibili abroad") == "cn"
+
+
+async def test_mixed_zh_en_no_platform_returns_both(router):
+    """中英混合无平台关键词 → both（不遗漏中文搜索引擎）。"""
+    assert await router.decide("帮我搜一下 FastAPI middleware") == "both"
+    assert await router.decide("Python asyncio 教程") == "both"

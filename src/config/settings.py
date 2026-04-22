@@ -1,13 +1,13 @@
 """
-Lapwing 统一配置 — Pydantic BaseSettings + .env。
+Lapwing 统一配置 — Pydantic BaseSettings + config.toml + .env。
 
 加载优先级（高 → 低）：
-1. 环境变量（含 config/.env）
-2. config.toml（可选，文件不存在时跳过）
+1. 环境变量（含 config/.env）— 覆盖层，用于 Docker/CI 或敏感凭据
+2. config.toml — 主配置源，所有非敏感配置在此集中管理
 3. 代码中的默认值
 
-当前所有配置通过 .env 环境变量提供，config.toml 未使用但加载路径保留
-以便将来需要结构化配置时无需改代码。
+config.toml 为主配置文件，结构化按模块分组。
+.env 仅保留敏感凭据（API keys/tokens）和环境特定覆盖（proxy URLs）。
 
 用法：
     from src.config import get_settings
@@ -81,7 +81,7 @@ class _TomlSource(PydanticBaseSettingsSource):
 
 # 环境变量名 → settings 嵌套路径的完整映射。
 # 不使用 pydantic 的 env_nested_delimiter（因为系统 SHELL=/bin/bash 等会冲突），
-# 改为在 model_validator 中显式注入。env 覆盖 TOML。
+# 改为在 model_validator 中显式注入。env 覆盖 TOML（覆盖层语义）。
 _ENV_MAP: dict[str, list[str]] = {
     # ── proxy ──
     "SEARCH_PROXY_URL": ["proxy", "search_url"],
@@ -498,7 +498,8 @@ class LapwingSettings(BaseSettings):
     """
     Lapwing 根配置。
 
-    加载顺序：env (.env + os.environ) > config.toml（可选） > 默认值。
+    加载顺序：env (.env + os.environ) > config.toml > 默认值。
+    TOML 为主配置源；env vars 为覆盖层（Docker/CI/敏感凭据）。
     不使用 pydantic 的 env_nested_delimiter（系统 SHELL 等冲突），
     改为在 model_validator 中按 _ENV_MAP 显式注入。
     """

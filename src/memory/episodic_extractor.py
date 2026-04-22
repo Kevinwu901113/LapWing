@@ -24,6 +24,7 @@ if TYPE_CHECKING:
     from src.core.llm_router import LLMRouter
     from src.core.trajectory_store import TrajectoryStore
     from src.memory.episodic_store import EpisodicStore
+    from src.memory.incident_store import IncidentStore
 
 logger = logging.getLogger("lapwing.memory.episodic_extractor")
 
@@ -37,6 +38,7 @@ class EpisodicExtractor:
         router: "LLMRouter",
         trajectory_store: "TrajectoryStore",
         episodic_store: "EpisodicStore",
+        incident_store: "IncidentStore | None" = None,
         window_size: int = 20,
         min_turns: int = 3,
         prompt_name: str = "episodic_extract",
@@ -44,6 +46,7 @@ class EpisodicExtractor:
         self._router = router
         self._trajectory = trajectory_store
         self._episodic = episodic_store
+        self._incident_store = incident_store
         self._window_size = window_size
         self._min_turns = min_turns
         self._prompt_name = prompt_name
@@ -89,6 +92,10 @@ class EpisodicExtractor:
             )
         except Exception as exc:
             logger.warning("[episodic] LLM call failed: %s", exc)
+            await self._record_incident(
+                f"情景提取 LLM 调用失败 (chat={chat_id}): {exc}",
+                source="episodic_extractor",
+            )
             return False
 
         title, summary = _parse_title_body(summary_raw)
@@ -105,7 +112,24 @@ class EpisodicExtractor:
             return True
         except Exception as exc:
             logger.warning("[episodic] add_episode failed: %s", exc)
+            await self._record_incident(
+                f"情景写入失败 (chat={chat_id}): {exc}",
+                source="episodic_extractor",
+            )
             return False
+
+
+    async def _record_incident(
+        self, summary: str, *, title: str | None = None, source: str = "",
+    ) -> None:
+        if self._incident_store is None:
+            return
+        try:
+            await self._incident_store.add_incident(
+                summary=summary, title=title, source=source,
+            )
+        except Exception as exc:
+            logger.warning("[episodic] incident recording failed: %s", exc)
 
 
 # ── Formatting helpers ──────────────────────────────────────────────

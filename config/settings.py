@@ -1,6 +1,8 @@
 """
 向后兼容层 — 所有值来自 src.config.get_settings()。
 
+配置加载顺序：env vars (.env) > config.toml > 代码默认值。
+TOML 为主配置源；env 为覆盖层（敏感凭据 + 环境特定值）。
 现有代码继续 ``from config.settings import X``；新代码建议直接用
 ``from src.config import get_settings``。
 """

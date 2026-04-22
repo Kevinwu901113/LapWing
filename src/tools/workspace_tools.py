@@ -5,11 +5,12 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from config.settings import DATA_DIR
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult
 
 logger = logging.getLogger("lapwing.tools.workspace_tools")
 
-AGENT_WORKSPACE = Path("data/agent_workspace")
+AGENT_WORKSPACE = DATA_DIR / "agent_workspace"
 
 
 def _resolve_safe(path_str: str) -> Path | None:
@@ -33,7 +34,7 @@ async def ws_file_write_executor(
     if resolved is None:
         return ToolExecutionResult(
             success=False, payload={},
-            reason="只能写入 data/agent_workspace/ 下的文件。",
+            reason=f"只能写入 {AGENT_WORKSPACE}/ 下的文件。",
         )
 
     resolved.parent.mkdir(parents=True, exist_ok=True)
@@ -55,7 +56,7 @@ async def ws_file_read_executor(
     if resolved is None:
         return ToolExecutionResult(
             success=False, payload={},
-            reason="只能读取 data/agent_workspace/ 下的文件。",
+            reason=f"只能读取 {AGENT_WORKSPACE}/ 下的文件。",
         )
 
     if not resolved.exists():
@@ -80,7 +81,7 @@ async def ws_file_list_executor(
     if resolved is None:
         return ToolExecutionResult(
             success=False, payload={},
-            reason="只能列出 data/agent_workspace/ 下的内容。",
+            reason=f"只能列出 {AGENT_WORKSPACE}/ 下的内容。",
         )
 
     if not resolved.exists():

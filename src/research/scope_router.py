@@ -32,7 +32,14 @@ class ScopeRouter:
     _WHITESPACE_RE = re.compile(r"\s+")
 
     async def decide(self, question: str) -> str:
-        """返回 'global' / 'cn' / 'both'。"""
+        """返回 'global' / 'cn' / 'both'。
+
+        路由策略：
+        - 含中文平台关键词 → 'cn'（除非同时含海外关键词 → 'both'）
+        - 含海外平台关键词 → 'global'（除非同时含中文关键词 → 'both'）
+        - 纯英文（无中文字符）→ 'global'
+        - 纯中文或中英混合 → 'both'（偏向不遗漏中文搜索引擎）
+        """
         q_lower = question.lower()
         # 平台关键词匹配时去空白，让 "B 站" / "B站" / "Stack Overflow" / "stackoverflow" 都能命中
         q_compact = self._WHITESPACE_RE.sub("", q_lower)
@@ -64,6 +71,6 @@ class ScopeRouter:
         if en_words > 0 and cn_chars == 0:
             return "global"
         if cn_chars > 0 and en_words == 0:
-            # 纯中文但可能涉及国际话题（道奇、油价、苹果公司等），两个都搜
             return "both"
+        # 中英混合（如"帮我搜 FastAPI middleware"）→ 双引擎覆盖
         return "both"

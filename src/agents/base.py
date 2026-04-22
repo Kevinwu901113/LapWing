@@ -17,6 +17,11 @@ import time
 from typing import TYPE_CHECKING, Any
 
 from src.logging.state_mutation_log import MutationType
+from src.utils.loop_detection import (
+    LoopDetector,
+    LoopDetectorConfig,
+    LoopVerdict,
+)
 
 from .types import AgentMessage, AgentResult, AgentSpec
 
@@ -51,6 +56,12 @@ class BaseAgent:
 
         start_ts = time.perf_counter()
         tool_calls_made = 0
+
+        loop_detector = LoopDetector(LoopDetectorConfig(
+            warning_threshold=max(3, self.spec.max_rounds // 3),
+            global_circuit_breaker_threshold=max(5, self.spec.max_rounds // 2),
+        ))
+        loop_state = loop_detector.new_state()
 
         await self._emit(
             MutationType.AGENT_STARTED,
@@ -107,9 +118,32 @@ class BaseAgent:
             # 执行工具
             tool_results: list[tuple] = []
             for tc in response.tool_calls:
+                check = loop_detector.check(loop_state, tc.name, tc.arguments)
+
+                if check.should_block:
+                    reason = check.block_reason + f"（Agent: {self.spec.name}）"
+                    logger.warning(
+                        "[agent] 循环检测触发断路: agent=%s, tool=%s, "
+                        "gr=%d, pp=%d",
+                        self.spec.name, tc.name,
+                        check.generic_repeat_count, check.ping_pong_count,
+                    )
+                    return await self._finalize_failed(
+                        message, reason, start_ts, tool_calls_made,
+                    )
+
+                if check.has_warning:
+                    logger.warning(
+                        "[agent] 循环检测警告: agent=%s, tool=%s, "
+                        "gr=%d, pp=%d",
+                        self.spec.name, tc.name,
+                        check.generic_repeat_count, check.ping_pong_count,
+                    )
+
                 output = await self._execute_tool(tc, message)
                 tool_results.append((tc, output))
                 tool_calls_made += 1
+                loop_detector.record(loop_state, tc.name, tc.arguments)
 
                 preview = output if len(output) <= 800 else output[:800] + "...（截断）"
                 await self._emit(
@@ -205,8 +239,15 @@ class BaseAgent:
                 "Agent mutation_log emit 失败 (%s)", event_type.value, exc_info=True,
             )
 
+    _AGENT_PERSONA_ANCHOR: str = (
+        "记住：你是 Lapwing 的一部分。"
+        "输出风格保持温暖自然，短句为主，不列清单，不用加粗标题。"
+    )
+
     def _build_system_prompt(self, message: AgentMessage) -> str:
         return f"""{self.spec.system_prompt}
+
+{self._AGENT_PERSONA_ANCHOR}
 
 ## 当前任务
 

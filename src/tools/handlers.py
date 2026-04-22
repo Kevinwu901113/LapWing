@@ -11,6 +11,7 @@ from config.settings import ROOT_DIR
 from src.core import verifier
 from src.tools import code_runner, file_editor
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult
+from src.utils.path_resolver import resolve_tool_path
 
 logger = logging.getLogger("lapwing.tools.handlers")
 
@@ -96,8 +97,11 @@ async def read_file_tool(
         payload = {"error": "缺少 path 参数", "stdout": "", "return_code": -1}
         return ToolExecutionResult(success=False, payload=payload, reason="缺少 path 参数")
 
-    result = await context.execute_shell(f"cat {shlex.quote(path)}")
-    payload = {"path": path, **result.to_dict()}
+    resolved, correction_note = resolve_tool_path(path)
+    result = await context.execute_shell(f"cat {shlex.quote(resolved)}")
+    payload = {"path": resolved, **result.to_dict()}
+    if correction_note:
+        payload["note"] = correction_note
     return ToolExecutionResult(
         success=(result.return_code == 0 and not result.blocked and not result.timed_out),
         payload=payload,
@@ -116,17 +120,19 @@ async def write_file_tool(
         payload = {"error": "缺少 path 参数", "stdout": "", "return_code": -1}
         return ToolExecutionResult(success=False, payload=payload, reason="缺少 path 参数")
 
-    from pathlib import Path as _Path
-    target = _Path(path)
+    resolved, correction_note = resolve_tool_path(path)
+    target = Path(resolved)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8")
     payload = {
-        "path": path,
+        "path": resolved,
         "action": "written",
         "bytes_written": len(content.encode("utf-8")),
         "stdout": "",
         "return_code": 0,
     }
+    if correction_note:
+        payload["note"] = correction_note
     return ToolExecutionResult(
         success=True,
         payload=payload,

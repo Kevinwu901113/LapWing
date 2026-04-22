@@ -15,6 +15,12 @@ import time
 import uuid
 from typing import Any, Awaitable, Callable
 
+from src.utils.loop_detection import (
+    LoopDetector as _SharedLoopDetector,
+    LoopDetectorConfig as _SharedLoopDetectorConfig,
+    tool_args_hash as _shared_tool_args_hash,
+)
+
 from config.settings import (
     ROOT_DIR,
     SHELL_DEFAULT_CWD,
@@ -1056,6 +1062,19 @@ class TaskRuntime:
                         "[runtime] Error burst guard triggered: %s",
                         ctx.error_guard.summary,
                     )
+                    tool_results.append((tool_call, tool_result_text))
+                    executed_tool_names.append(tool_call.name)
+                    # 先把已收集的 tool_results 写入 history（保证 tool_use → tool_result 配对完整）
+                    if tool_results:
+                        result_message = self._router.build_tool_result_message(
+                            slot="main_conversation",
+                            tool_results=tool_results,
+                            session_key=f"chat:{ctx.chat_id}",
+                        )
+                        if isinstance(result_message, list):
+                            ctx.messages.extend(result_message)
+                        else:
+                            ctx.messages.append(result_message)
                     # 注入错误摘要让 LLM 在下一轮有机会调整策略
                     ctx.messages.append({
                         "role": "user",
@@ -1065,9 +1084,6 @@ class TaskRuntime:
                             "请换一种方法或放弃这个子任务。如果继续尝试同样的方法仍然失败，我将终止执行。"
                         ),
                     })
-                    # 不直接 break——给 LLM 最后一次机会在下一轮调整
-                    tool_results.append((tool_call, tool_result_text))
-                    executed_tool_names.append(tool_call.name)
                     _record_round_latency()
                     return TaskLoopStep(payload=ctx.last_payload)
 
@@ -1753,12 +1769,8 @@ class TaskRuntime:
         loop_detection_state: LoopDetectionState,
         current_signature: tuple[str, str],
     ) -> int:
-        count = 1
-        for previous_signature in reversed(loop_detection_state.history):
-            if previous_signature != current_signature:
-                break
-            count += 1
-        return count
+        from src.utils.loop_detection import _generic_repeat_count
+        return _generic_repeat_count(loop_detection_state.history, current_signature)
 
     def _record_tool_signature(
         self,
@@ -1788,23 +1800,8 @@ class TaskRuntime:
         loop_detection_state: LoopDetectionState,
         current_signature: tuple[str, str],
     ) -> int:
-        """检测 A→B→A→B 交替重复模式，返回交替轮次数。"""
-        history = loop_detection_state.history
-        if len(history) < 3:
-            return 0
-        prev = history[-1]
-        if prev == current_signature:
-            return 0  # 连续重复，由 genericRepeat 覆盖
-        # 从末尾往前检查 ...B→A→B→A 模式（当前即将追加 current）
-        # history 末尾应为 ...A, B, A, B，当前是 A
-        count = 1  # 当前这对 (prev, current) 算一轮
-        idx = len(history) - 1
-        while idx >= 1:
-            if history[idx] != prev or history[idx - 1] != current_signature:
-                break
-            count += 1
-            idx -= 2
-        return count
+        from src.utils.loop_detection import _ping_pong_count
+        return _ping_pong_count(loop_detection_state.history, current_signature)
 
     def _should_emit_ping_pong_warning(self, ping_pong_count: int) -> bool:
         if not self._loop_detection_config.enabled:
@@ -1847,13 +1844,7 @@ class TaskRuntime:
         return "shell_local"
 
     def _tool_args_hash(self, arguments: dict[str, Any]) -> str:
-        canonical = json.dumps(
-            arguments,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-        )
-        return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+        return _shared_tool_args_hash(arguments)
 
     def _text_utf8_bytes(self, value: Any) -> int:
         if not isinstance(value, str):

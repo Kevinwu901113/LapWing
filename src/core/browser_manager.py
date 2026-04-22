@@ -2,6 +2,14 @@
 
 使用 Playwright 持久化上下文控制 Chromium，提供 DOM 提取、Tab 管理、
 结构化页面状态输出供 LLM 消费。Phase 1：纯 DOM 方式，无视觉理解。
+
+安全模型：
+- URL 安全：所有导航经过 url_safety.check_url_safety()（SSRF/内网阻断）。
+- JS 执行：Playwright 运行完整 Chromium，JS 在浏览器沙箱中执行——这是
+  设计意图而非安全缺陷。内容级 JS 模式扫描（检测 eval/document.cookie）
+  对自动化浏览器无意义：Chromium 自身的进程隔离和同源策略是防线。
+- 默认关闭：BROWSER_ENABLED 默认 False，需显式启用。
+- 敏感操作：sensitive_action_words 检测购买/删除等高风险页面交互。
 """
 
 from __future__ import annotations

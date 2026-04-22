@@ -517,6 +517,7 @@ class AppContainer:
         )
         from src.memory.episodic_extractor import EpisodicExtractor
         from src.memory.episodic_store import EpisodicStore
+        from src.memory.incident_store import IncidentStore
         from src.memory.semantic_distiller import SemanticDistiller
         from src.memory.semantic_store import SemanticStore
         from src.memory.working_set import WorkingSet
@@ -529,8 +530,13 @@ class AppContainer:
             vector_store=memory_vector_store,
             dedup_threshold=SEMANTIC_DISTILL_DEDUP_THRESHOLD,
         )
+        incident_store = IncidentStore(
+            memory_dir=MEMORY_DIR / "incidents",
+            vector_store=memory_vector_store,
+        )
         self.brain._episodic_store = episodic_store
         self.brain._semantic_store = semantic_store
+        self.brain._incident_store = incident_store
         self.brain._working_set = WorkingSet(
             episodic_store=episodic_store,
             semantic_store=semantic_store,
@@ -543,6 +549,7 @@ class AppContainer:
                 router=self.brain.router,
                 trajectory_store=self.trajectory_store,
                 episodic_store=episodic_store,
+                incident_store=incident_store,
                 window_size=EPISODIC_EXTRACT_WINDOW_SIZE,
                 min_turns=EPISODIC_EXTRACT_MIN_TURNS,
             )

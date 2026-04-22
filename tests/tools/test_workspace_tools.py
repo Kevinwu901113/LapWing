@@ -56,7 +56,7 @@ class TestWsFileWrite:
         )
         result = await ws_file_write_executor(req, _make_ctx())
         assert not result.success
-        assert "agent_workspace" in result.reason
+        assert str(tmp_workspace) in result.reason
 
 
 class TestWsFileRead:

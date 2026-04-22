@@ -36,6 +36,7 @@ from config.settings import (
     CONSCIOUSNESS_DEFAULT_INTERVAL,
     CONSCIOUSNESS_MAX_INTERVAL,
     CONSCIOUSNESS_MIN_INTERVAL,
+    DATA_DIR,
 )
 from src.core.events import InnerTickEvent
 
@@ -92,7 +93,7 @@ def build_inner_prompt(urgent_items: list[dict] | None = None) -> str:
         parts.append("以上事件需要你立即响应，请先处理完再做其他事。")
         parts.append("")
 
-    scratch_pad_path = Path("data/consciousness/scratch_pad.md")
+    scratch_pad_path = DATA_DIR / "consciousness" / "scratch_pad.md"
     if scratch_pad_path.exists():
         try:
             text = scratch_pad_path.read_text(encoding="utf-8").strip()
@@ -119,7 +120,7 @@ def build_inner_prompt(urgent_items: list[dict] | None = None) -> str:
     parts.append("- 你可以使用任何工具来做你想做的事")
     parts.append("- 如果你做了什么，用 write_note 记录下来")
     parts.append("- 如果你想找他说话，调用 send_message 工具")
-    parts.append("- 如果你想在工作记忆中记录进度，用 write_file 写到 data/consciousness/scratch_pad.md")
+    parts.append(f"- 如果你想在工作记忆中记录进度，用 write_file 写到 {DATA_DIR / 'consciousness' / 'scratch_pad.md'}")
     parts.append("- 什么都不想做也完全可以，回复\"无事\"即可")
     parts.append("- 在回复的最后一行，写上你希望多久后再被叫醒，格式：[NEXT: 数字m] 或 [NEXT: 数字h]")
     parts.append("  例如 [NEXT: 10m] 表示 10 分钟后，[NEXT: 2h] 表示 2 小时后")
