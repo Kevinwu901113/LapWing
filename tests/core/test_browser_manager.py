@@ -829,3 +829,83 @@ class TestWaitFor:
 
         result = await browser_mgr.wait_for("unknown_condition", timeout_ms=1000)
         assert result is False
+
+
+# ── ProxyRouter 集成单元测试 ──────────────────────────────────────────────────
+
+
+class TestProxyRouterUnit:
+    """不启动真实浏览器的轻量单元测试，覆盖 ProxyRouter 集成逻辑。"""
+
+    def test_set_proxy_router(self):
+        """set_proxy_router 正确设置 _proxy_router 属性。"""
+        mgr = BrowserManager()
+        assert mgr._proxy_router is None
+
+        class FakeRouter:
+            pass
+
+        router = FakeRouter()
+        mgr.set_proxy_router(router)
+        assert mgr._proxy_router is router
+
+    def test_get_context_and_strategy_with_no_router(self):
+        """未设置 proxy_router 时返回 (self._context, None)。"""
+        mgr = BrowserManager()
+        # 手动注入一个假 context（不启动真实浏览器）
+        fake_context = object()
+        mgr._context = fake_context
+
+        ctx, strategy = mgr._get_context_and_strategy("https://example.com")
+        assert ctx is fake_context
+        assert strategy is None
+
+    def test_is_proxy_related_failure_for_known_errors(self):
+        """已知代理相关错误消息返回 True。"""
+        mgr = BrowserManager()
+
+        known_proxy_errors = [
+            "net::ERR_CONNECTION_REFUSED",
+            "net::ERR_CONNECTION_RESET",
+            "net::ERR_TUNNEL_CONNECTION_FAILED",
+            "net::ERR_PROXY_CONNECTION_FAILED",
+            "Request failed with status 403",
+        ]
+        for msg in known_proxy_errors:
+            exc = RuntimeError(msg)
+            assert mgr._is_proxy_related_failure(exc), f"Expected True for: {msg}"
+
+    def test_is_proxy_related_failure_for_unrelated_errors(self):
+        """与代理无关的错误返回 False。"""
+        mgr = BrowserManager()
+
+        unrelated_errors = [
+            "404 Not Found",
+            "net::ERR_NAME_NOT_RESOLVED",
+            "Page not found",
+            "SSL certificate error",
+            "JavaScript error: undefined is not a function",
+        ]
+        for msg in unrelated_errors:
+            exc = RuntimeError(msg)
+            assert not mgr._is_proxy_related_failure(exc), f"Expected False for: {msg}"
+
+    def test_navigate_skips_proxy_retry_when_no_router(self, monkeypatch):
+        """无 proxy_router 时 navigate 不触发代理重试逻辑。
+
+        验证 _get_context_and_strategy 在单 context 模式下始终返回 None strategy，
+        从而 navigate 不会尝试 _is_proxy_related_failure 分支。
+        """
+        mgr = BrowserManager()
+        fake_context = object()
+        mgr._context = fake_context
+
+        # 没有 proxy_router
+        assert mgr._proxy_router is None
+
+        ctx, strategy = mgr._get_context_and_strategy("https://github.com")
+        assert ctx is fake_context
+        assert strategy is None
+
+        # 确认 _is_proxy_related_failure 本身不抛异常，仅用来验证方法可调用
+        assert not mgr._is_proxy_related_failure(RuntimeError("some unrelated error"))
