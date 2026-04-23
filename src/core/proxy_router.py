@@ -171,6 +171,8 @@ class ProxyRouter:
         self._cache: dict[str, ProxyDecision] = {}
         self._dirty: bool = False
         self._disabled: bool = not server
+        # 临时失败记录表："{domain}:{strategy}" -> ISO 时间戳
+        self._failure_log: dict[str, str] = {}
 
         self._load_or_init()
 
@@ -285,6 +287,15 @@ class ProxyRouter:
             rule.success_count += 1
             rule.last_updated = _now_iso()
             self._dirty = True
+        elif rule and rule.strategy != strategy:
+            logger.debug(
+                "proxy.report_success.strategy_mismatch",
+                extra={
+                    "domain": domain,
+                    "reported_strategy": strategy,
+                    "rule_strategy": rule.strategy,
+                },
+            )
 
     def report_failure_and_get_alternative(
         self, url: str, strategy: str
@@ -307,9 +318,6 @@ class ProxyRouter:
         # 我们在 _failed_strategies 临时表中跟踪这个域名的失败记录
         failed_key_current = f"{domain}:{strategy}"
         failed_key_alt = f"{domain}:{alt_strategy}"
-
-        if not hasattr(self, "_failure_log"):
-            self._failure_log: dict[str, str] = {}
 
         self._failure_log[failed_key_current] = now
 
@@ -375,6 +383,15 @@ class ProxyRouter:
 
     async def persist(self) -> None:
         """将规则异步写入 JSON 文件（仅在 dirty 时执行，先备份旧文件）。"""
+        if not self._dirty:
+            return
+
+        import asyncio
+
+        await asyncio.to_thread(self._sync_persist)
+
+    def _sync_persist(self) -> None:
+        """同步写入规则文件（在线程池中执行，避免阻塞事件循环）。"""
         if not self._dirty:
             return
 

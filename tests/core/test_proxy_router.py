@@ -189,6 +189,27 @@ def test_cache_invalidation_after_confirm(tmp_path: Path) -> None:
     assert d2.strategy == "direct"
 
 
+def test_confirm_alternative_resets_success_count(tmp_path: Path) -> None:
+    """confirm_alternative 后，learned 规则的 success_count 应重置为 0。"""
+    router = make_router(tmp_path, default_strategy="proxy")
+    url = "https://resetme.io/"
+
+    # 先用 proxy 策略成功几次，让规则有一个非零的 success_count
+    router.confirm_alternative(url, "proxy")
+    router.report_success(url, "proxy")
+    router.report_success(url, "proxy")
+    router.report_success(url, "proxy")
+    assert router._rules["resetme.io"].success_count == 3
+
+    # 现在确认切换到 direct（备用策略成功）
+    router.confirm_alternative(url, "direct")
+
+    rule = router._rules["resetme.io"]
+    assert rule.strategy == "direct"
+    assert rule.source == "learned"
+    assert rule.success_count == 0
+
+
 def test_url_parsing_various_formats(tmp_path: Path) -> None:
     """路由器应正确解析多种 URL 格式。"""
     router = make_router(tmp_path, default_strategy="proxy")
