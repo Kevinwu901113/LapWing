@@ -289,6 +289,9 @@ async def test_fetch_confirms_alternative_on_success():
     mock_router.confirm_alternative.assert_called_once_with(
         "https://ratelimited.example.com", "direct"
     )
+    mock_router.report_success.assert_called_once_with(
+        "https://ratelimited.example.com", "direct"
+    )
 
 
 @pytest.mark.parametrize("url", [

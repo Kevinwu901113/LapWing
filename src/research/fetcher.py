@@ -123,6 +123,7 @@ class SmartFetcher:
                 text, _ = await self._httpx_fetch_with_decision(url, alt)
                 if text:
                     self.proxy_router.confirm_alternative(url, alt.strategy)
+                    self.proxy_router.report_success(url, alt.strategy)
 
         # SPA / 浏览器降级（现有逻辑不变）
         if text and len(text) >= _SPA_INDICATOR_THRESHOLD and not self._looks_like_spa(text):
