@@ -176,6 +176,121 @@ async def test_blacklisted_urls_short_circuit(url):
     bm.new_tab.assert_not_called()
 
 
+# ---------------------------------------------------------------------------
+# ProxyRouter 集成测试
+# ---------------------------------------------------------------------------
+
+async def test_fetch_uses_proxy_decision():
+    """proxy_router 存在时，resolve() 被调用，且用代理 URL 构造 AsyncClient。"""
+    html = "<html><body>" + ("proxy article content. " * 500) + "</body></html>"
+    ctx = _mock_httpx_response(html)
+
+    mock_router = MagicMock()
+    mock_router.resolve.return_value = MagicMock(strategy="proxy", proxy_url="http://proxy:7890")
+
+    with patch("httpx.AsyncClient", return_value=ctx) as mock_client_cls:
+        fetcher = SmartFetcher(browser_manager=None, proxy_router=mock_router)
+        text = await fetcher.fetch("https://example.com/article")
+
+    assert text is not None
+    assert "proxy article content" in text
+    mock_router.resolve.assert_called_once_with("https://example.com/article")
+    # 构造时应带代理参数
+    call_kwargs = mock_client_cls.call_args[1] if mock_client_cls.call_args[1] else {}
+    assert "proxies" in call_kwargs
+    assert call_kwargs["proxies"] == {"all://": "http://proxy:7890"}
+    mock_router.report_success.assert_called_once_with("https://example.com/article", "proxy")
+
+
+async def test_fetch_retries_on_403_with_alternative():
+    """代理返回 403 时触发 report_failure_and_get_alternative，改用 direct 重试并成功。"""
+    # 第一次调用（proxy）→ 403；第二次调用（direct）→ 200
+    fail_response = MagicMock()
+    fail_response.status_code = 403
+    http_error = httpx.HTTPStatusError("403", request=MagicMock(), response=fail_response)
+
+    fail_client = AsyncMock()
+    fail_client.get.side_effect = http_error
+    fail_ctx = MagicMock()
+    fail_ctx.__aenter__ = AsyncMock(return_value=fail_client)
+    fail_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    good_html = "<html><body>" + ("direct success content. " * 500) + "</body></html>"
+    success_ctx = _mock_httpx_response(good_html)
+
+    mock_router = MagicMock()
+    mock_router.resolve.return_value = MagicMock(strategy="proxy", proxy_url="http://proxy:7890")
+    mock_router.report_failure_and_get_alternative.return_value = MagicMock(
+        strategy="direct", proxy_url=None
+    )
+
+    with patch("httpx.AsyncClient", side_effect=[fail_ctx, success_ctx]):
+        fetcher = SmartFetcher(browser_manager=None, proxy_router=mock_router)
+        text = await fetcher.fetch("https://blocked.example.com")
+
+    assert text is not None
+    assert "direct success content" in text
+    mock_router.report_failure_and_get_alternative.assert_called_once_with(
+        "https://blocked.example.com", "proxy"
+    )
+    mock_router.confirm_alternative.assert_called_once_with("https://blocked.example.com", "direct")
+
+
+async def test_fetch_no_retry_on_404():
+    """404 不是代理相关错误，不触发 report_failure_and_get_alternative。"""
+    fail_response = MagicMock()
+    fail_response.status_code = 404
+    http_error = httpx.HTTPStatusError("404", request=MagicMock(), response=fail_response)
+
+    fail_client = AsyncMock()
+    fail_client.get.side_effect = http_error
+    fail_ctx = MagicMock()
+    fail_ctx.__aenter__ = AsyncMock(return_value=fail_client)
+    fail_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    mock_router = MagicMock()
+    mock_router.resolve.return_value = MagicMock(strategy="proxy", proxy_url="http://proxy:7890")
+
+    with patch("httpx.AsyncClient", return_value=fail_ctx):
+        fetcher = SmartFetcher(browser_manager=None, proxy_router=mock_router)
+        text = await fetcher.fetch("https://notfound.example.com")
+
+    assert text is None
+    mock_router.report_failure_and_get_alternative.assert_not_called()
+
+
+async def test_fetch_confirms_alternative_on_success():
+    """重试成功后 confirm_alternative 被调用（使用新策略）。"""
+    fail_response = MagicMock()
+    fail_response.status_code = 429
+    http_error = httpx.HTTPStatusError("429", request=MagicMock(), response=fail_response)
+
+    fail_client = AsyncMock()
+    fail_client.get.side_effect = http_error
+    fail_ctx = MagicMock()
+    fail_ctx.__aenter__ = AsyncMock(return_value=fail_client)
+    fail_ctx.__aexit__ = AsyncMock(return_value=None)
+
+    good_html = "<html><body>" + ("confirmed content. " * 500) + "</body></html>"
+    success_ctx = _mock_httpx_response(good_html)
+
+    mock_router = MagicMock()
+    mock_router.resolve.return_value = MagicMock(strategy="proxy", proxy_url="http://proxy:7890")
+    mock_router.report_failure_and_get_alternative.return_value = MagicMock(
+        strategy="direct", proxy_url=None
+    )
+
+    with patch("httpx.AsyncClient", side_effect=[fail_ctx, success_ctx]):
+        fetcher = SmartFetcher(browser_manager=None, proxy_router=mock_router)
+        text = await fetcher.fetch("https://ratelimited.example.com")
+
+    assert text is not None
+    assert "confirmed content" in text
+    mock_router.confirm_alternative.assert_called_once_with(
+        "https://ratelimited.example.com", "direct"
+    )
+
+
 @pytest.mark.parametrize("url", [
     "https://www.bilibili.com/read/cv12345",   # B 站专栏（不在黑名单）
     "https://space.bilibili.com/123",            # B 站个人空间

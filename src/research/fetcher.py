@@ -95,8 +95,9 @@ class SmartFetcher:
       - _browser_fetch() 单次最多 8s
     """
 
-    def __init__(self, browser_manager: Any | None = None) -> None:
+    def __init__(self, browser_manager: Any | None = None, proxy_router: Any | None = None) -> None:
         self.browser_manager = browser_manager
+        self.proxy_router = proxy_router
 
     async def fetch(self, url: str) -> str | None:
         if _is_blacklisted(url):
@@ -112,8 +113,18 @@ class SmartFetcher:
             return None
 
     async def _fetch_inner(self, url: str) -> str | None:
-        text = await self._httpx_fetch(url)
+        text, used_strategy = await self._httpx_fetch(url)
 
+        # 代理相关失败时尝试切换策略重试
+        if text is None and used_strategy is not None and self.proxy_router is not None:
+            alt = self.proxy_router.report_failure_and_get_alternative(url, used_strategy)
+            if alt is not None:
+                logger.info("fetcher: 切换代理策略重试 %s (new=%s)", url, alt.strategy)
+                text, _ = await self._httpx_fetch_with_decision(url, alt)
+                if text:
+                    self.proxy_router.confirm_alternative(url, alt.strategy)
+
+        # SPA / 浏览器降级（现有逻辑不变）
         if text and len(text) >= _SPA_INDICATOR_THRESHOLD and not self._looks_like_spa(text):
             return text
 
@@ -128,19 +139,60 @@ class SmartFetcher:
 
         return text
 
-    async def _httpx_fetch(self, url: str) -> str | None:
+    async def _httpx_fetch(self, url: str) -> tuple[str | None, str | None]:
+        """解析代理策略，委托给 _httpx_fetch_with_decision。
+
+        返回 (text, strategy)；strategy 为 None 表示未使用 proxy_router。
+        """
+        if self.proxy_router is None:
+            text, _ = await self._httpx_fetch_with_decision(url, None)
+            return text, None
+
+        decision = self.proxy_router.resolve(url)
+        text, is_proxy_failure = await self._httpx_fetch_with_decision(url, decision)
+        if text is not None:
+            self.proxy_router.report_success(url, decision.strategy)
+            return text, None  # 成功后无需上层重试
+        # is_proxy_failure=True 时，上层可用 strategy 触发 report_failure_and_get_alternative
+        return None, decision.strategy if is_proxy_failure else None
+
+    async def _httpx_fetch_with_decision(
+        self, url: str, decision: Any | None
+    ) -> tuple[str | None, bool]:
+        """用给定的代理决策发起 httpx 请求。
+
+        返回 (text, is_proxy_related_failure)：
+          - text: 提取后的正文，失败时为 None
+          - is_proxy_related_failure: True 表示失败可能由代理引起，应尝试切换策略
+        """
+        proxy_url = decision.proxy_url if decision is not None else None
+        strategy = decision.strategy if decision is not None else "direct"
+
+        client_kwargs: dict = dict(
+            timeout=_TIMEOUT,
+            follow_redirects=True,
+            headers={"User-Agent": _USER_AGENT},
+        )
+        if proxy_url:
+            client_kwargs["proxies"] = {"all://": proxy_url}
+
         try:
-            async with httpx.AsyncClient(
-                timeout=_TIMEOUT,
-                follow_redirects=True,
-                headers={"User-Agent": _USER_AGENT},
-            ) as client:
+            async with httpx.AsyncClient(**client_kwargs) as client:
                 response = await client.get(url)
                 response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            status = exc.response.status_code
+            logger.warning("httpx 抓取失败 %s [%s] strategy=%s: %s", url, status, strategy, exc)
+            # 403 / 429 可能是代理被拦截，触发切换
+            return None, status in (403, 429)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            logger.warning("httpx 连接失败 %s strategy=%s: %s", url, strategy, exc)
+            return None, True
         except Exception as exc:
-            logger.warning("httpx 抓取失败 %s: %s", url, exc)
-            return None
-        return self._extract_text(response.text)
+            logger.warning("httpx 抓取失败 %s strategy=%s: %s", url, strategy, exc)
+            return None, False
+
+        return self._extract_text(response.text), False
 
     @staticmethod
     def _extract_text(html: str) -> str:
