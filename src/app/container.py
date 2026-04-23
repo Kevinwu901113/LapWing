@@ -167,6 +167,10 @@ class AppContainer:
         # built-in timer. Started in start() alongside MainLoop.
         self.inner_tick_scheduler: InnerTickScheduler | None = None
 
+        # ProxyRouter — per-domain proxy/direct routing with adaptive learning
+        from src.core.proxy_router import ProxyRouter
+        self.proxy_router: ProxyRouter | None = None
+
         self._prepared = False
         self._started = False
 
@@ -224,6 +228,20 @@ class AppContainer:
         await self.attention_manager.initialize()
         self.brain.attention_manager = self.attention_manager
         logger.info("AttentionManager 已初始化")
+
+        # ProxyRouter — 按域名自适应选择代理或直连
+        from src.core.proxy_router import ProxyRouter
+        from config.settings import PROXY_SERVER, PROXY_DEFAULT_STRATEGY
+        self.proxy_router = ProxyRouter(
+            server=PROXY_SERVER,
+            default_strategy=PROXY_DEFAULT_STRATEGY,
+            data_dir=self._data_dir / "proxy",
+        )
+        logger.info(
+            "ProxyRouter 已初始化 (server=%s, default=%s)",
+            PROXY_SERVER or "disabled",
+            PROXY_DEFAULT_STRATEGY,
+        )
 
         # 浏览器子系统初始化（在依赖装配前启动，因为工具注册需要 browser_manager）
         if BROWSER_ENABLED and not PHASE0_MODE:
@@ -372,6 +390,14 @@ class AppContainer:
                 await self._vlm_client.close()
             except Exception as e:
                 logger.debug("VLM 客户端关闭失败: %s", e)
+
+        # ProxyRouter 规则持久化
+        if self.proxy_router is not None:
+            try:
+                await self.proxy_router.persist()
+                logger.info("ProxyRouter 规则已持久化")
+            except Exception as exc:
+                logger.warning("ProxyRouter 持久化失败: %s", exc)
 
         # 浏览器子系统关闭
         if self._browser_manager is not None:
@@ -705,7 +731,7 @@ class AppContainer:
             scope_router=ScopeRouter(),
             tavily_backend=TavilyBackend(api_key=TAVILY_API_KEY, country=TAVILY_COUNTRY),
             bocha_backend=BochaBackend(api_key=BOCHA_API_KEY),
-            fetcher=SmartFetcher(browser_manager=self._browser_manager),
+            fetcher=SmartFetcher(browser_manager=self._browser_manager, proxy_router=self.proxy_router),
             refiner=Refiner(llm_router=self.brain.router),
         )
         register_research_tool(self.brain.tool_registry)
@@ -819,6 +845,7 @@ class AppContainer:
 
         self._browser_guard = None  # BrowserGuard 已移除（Phase 1 减法）
         self._browser_manager = BrowserManager()
+        self._browser_manager.set_proxy_router(self.proxy_router)
         await self._browser_manager.start()
 
         # CredentialVault 需要 CREDENTIAL_VAULT_KEY 环境变量，缺失时跳过
