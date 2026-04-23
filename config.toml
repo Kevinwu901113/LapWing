@@ -7,6 +7,9 @@
 
 [proxy]
 search_url = ""
+server = "http://192.168.0.202:7890"
+default_strategy = "proxy"
+persist_interval_seconds = 300
 
 [qq]
 enabled = true

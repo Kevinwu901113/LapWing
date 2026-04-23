@@ -42,6 +42,9 @@ COMPACTION_SUMMARY_MAX_TOKENS: int = _s.compaction.summary_max_tokens
 # ── 网络代理 ─────────────────────────────────
 
 SEARCH_PROXY_URL: str = _s.proxy.search_url
+PROXY_SERVER: str = _s.proxy.server
+PROXY_DEFAULT_STRATEGY: str = _s.proxy.default_strategy
+PROXY_PERSIST_INTERVAL_SECONDS: int = _s.proxy.persist_interval_seconds
 
 # ── QQ ───────────────────────────────────────
 

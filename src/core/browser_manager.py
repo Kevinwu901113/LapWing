@@ -130,6 +130,7 @@ class TabInfo:
     url: str
     title: str
     is_active: bool
+    context_type: str = "default"  # "proxy" | "direct" | "default"
     last_accessed: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -430,7 +431,9 @@ class BrowserManager:
 
     def __init__(self) -> None:
         self._playwright: Any = None
-        self._context: Any = None  # 持久化浏览器上下文
+        self._context: Any = None  # 持久化浏览器上下文（单 context 模式或主 context）
+        self._context_proxy: Any = None   # 双 context 模式：代理 context
+        self._context_direct: Any = None  # 双 context 模式：直连 context
         self._tabs: dict[str, tuple[Any, TabInfo]] = {}  # tab_id -> (page, info)
         self._active_tab_id: str | None = None
         self._element_map: dict[str, dict[int, str]] = {}  # tab_id -> {index: selector}
@@ -441,6 +444,7 @@ class BrowserManager:
         self._vlm_client: Any = None  # MiniMaxVLM（VLM 端点，优先于 router）
         self._event_bus: Any = None  # DesktopEventBus
         self._browser_guard: Any = None  # BrowserGuard（JS 安全检查）
+        self._proxy_router: Any = None  # ProxyRouter（per-domain 代理决策）
         # 视觉描述缓存：{tab_id: (timestamp, description)}
         self._vision_cache: dict[str, tuple[float, str]] = {}
 
@@ -457,6 +461,10 @@ class BrowserManager:
     def set_browser_guard(self, guard: Any) -> None:
         self._browser_guard = guard
 
+    def set_proxy_router(self, router: Any) -> None:
+        """设置 ProxyRouter，启用双 context 模式（proxy / direct）。"""
+        self._proxy_router = router
+
     # ── 属性 ──
 
     @property
@@ -466,7 +474,15 @@ class BrowserManager:
     # ── 生命周期 ──
 
     async def start(self) -> None:
-        """启动 Playwright + 持久化上下文。创建数据目录。"""
+        """启动 Playwright + 持久化上下文。创建数据目录。
+
+        如果 proxy_router 已注入且未禁用，则启动双 context 模式：
+        - _context_proxy: 使用 BROWSER_PROXY_SERVER 的代理 context
+        - _context_direct: 不使用代理的直连 context
+        - _context 指向 _context_proxy（向后兼容）
+
+        否则保持单 context 模式（_context = 原有逻辑）。
+        """
         from playwright.async_api import async_playwright
 
         if self._context is not None:
@@ -483,32 +499,74 @@ class BrowserManager:
 
         self._playwright = await async_playwright().start()
 
-        launch_kwargs: dict[str, Any] = dict(
-            user_data_dir=str(user_data_path),
+        # 判断是否启用双 context 模式
+        _dual_mode = self._proxy_router is not None and not getattr(self._proxy_router, "_disabled", True)
+
+        base_launch_kwargs: dict[str, Any] = dict(
             headless=BROWSER_HEADLESS,
             viewport={"width": BROWSER_VIEWPORT_WIDTH, "height": BROWSER_VIEWPORT_HEIGHT},
             locale=BROWSER_LOCALE,
             timezone_id=BROWSER_TIMEZONE,
             args=["--disable-blink-features=AutomationControlled"],
         )
-        if BROWSER_PROXY_SERVER:
-            launch_kwargs["proxy"] = {"server": BROWSER_PROXY_SERVER}
 
-        self._context = await self._playwright.chromium.launch_persistent_context(
-            **launch_kwargs,
-        )
+        if _dual_mode:
+            # 双 context 模式：profile-proxy / profile-direct
+            proxy_data_path = user_data_path.parent / "profile-proxy"
+            direct_data_path = user_data_path.parent / "profile-direct"
+            proxy_data_path.mkdir(parents=True, exist_ok=True)
+            direct_data_path.mkdir(parents=True, exist_ok=True)
 
-        # 设置默认超时
-        self._context.set_default_navigation_timeout(BROWSER_NAVIGATION_TIMEOUT_MS)
-        self._context.set_default_timeout(BROWSER_ACTION_TIMEOUT_MS)
+            proxy_kwargs = dict(base_launch_kwargs, user_data_dir=str(proxy_data_path))
+            if BROWSER_PROXY_SERVER:
+                proxy_kwargs["proxy"] = {"server": BROWSER_PROXY_SERVER}
 
-        logger.info(
-            "BrowserManager 已启动 (headless=%s, viewport=%dx%d, proxy=%s)",
-            BROWSER_HEADLESS,
-            BROWSER_VIEWPORT_WIDTH,
-            BROWSER_VIEWPORT_HEIGHT,
-            BROWSER_PROXY_SERVER or "none",
-        )
+            direct_kwargs = dict(base_launch_kwargs, user_data_dir=str(direct_data_path))
+            # direct context 不加代理
+
+            self._context_proxy = await self._playwright.chromium.launch_persistent_context(
+                **proxy_kwargs,
+            )
+            self._context_proxy.set_default_navigation_timeout(BROWSER_NAVIGATION_TIMEOUT_MS)
+            self._context_proxy.set_default_timeout(BROWSER_ACTION_TIMEOUT_MS)
+
+            self._context_direct = await self._playwright.chromium.launch_persistent_context(
+                **direct_kwargs,
+            )
+            self._context_direct.set_default_navigation_timeout(BROWSER_NAVIGATION_TIMEOUT_MS)
+            self._context_direct.set_default_timeout(BROWSER_ACTION_TIMEOUT_MS)
+
+            # 向后兼容：_context 指向代理 context
+            self._context = self._context_proxy
+
+            logger.info(
+                "BrowserManager 已启动（双 context 模式，headless=%s, viewport=%dx%d, proxy=%s）",
+                BROWSER_HEADLESS,
+                BROWSER_VIEWPORT_WIDTH,
+                BROWSER_VIEWPORT_HEIGHT,
+                BROWSER_PROXY_SERVER or "none",
+            )
+        else:
+            # 单 context 模式（原有逻辑）
+            launch_kwargs = dict(base_launch_kwargs, user_data_dir=str(user_data_path))
+            if BROWSER_PROXY_SERVER:
+                launch_kwargs["proxy"] = {"server": BROWSER_PROXY_SERVER}
+
+            self._context = await self._playwright.chromium.launch_persistent_context(
+                **launch_kwargs,
+            )
+
+            # 设置默认超时
+            self._context.set_default_navigation_timeout(BROWSER_NAVIGATION_TIMEOUT_MS)
+            self._context.set_default_timeout(BROWSER_ACTION_TIMEOUT_MS)
+
+            logger.info(
+                "BrowserManager 已启动 (headless=%s, viewport=%dx%d, proxy=%s)",
+                BROWSER_HEADLESS,
+                BROWSER_VIEWPORT_WIDTH,
+                BROWSER_VIEWPORT_HEIGHT,
+                BROWSER_PROXY_SERVER or "none",
+            )
 
     async def stop(self) -> None:
         """保存 Tab 状态，优雅关闭所有资源。"""
@@ -518,10 +576,28 @@ class BrowserManager:
         # 保存 Tab 状态
         await self._save_tab_state()
 
-        try:
-            await self._context.close()
-        except Exception as exc:
-            logger.warning("关闭浏览器上下文异常: %s", exc)
+        if self._context_proxy is not None:
+            # 双 context 模式：关闭两个 context
+            # 注意 _context 已指向 _context_proxy，不重复关闭
+            try:
+                await self._context_proxy.close()
+            except Exception as exc:
+                logger.warning("关闭代理浏览器上下文异常: %s", exc)
+            self._context_proxy = None
+            self._context = None  # 立即清除别名，避免持有已关闭的对象引用
+
+            if self._context_direct is not None:
+                try:
+                    await self._context_direct.close()
+                except Exception as exc:
+                    logger.warning("关闭直连浏览器上下文异常: %s", exc)
+                self._context_direct = None
+        else:
+            # 单 context 模式
+            try:
+                await self._context.close()
+            except Exception as exc:
+                logger.warning("关闭浏览器上下文异常: %s", exc)
 
         try:
             await self._playwright.stop()
@@ -538,7 +614,11 @@ class BrowserManager:
     # ── 导航 ──
 
     async def navigate(self, url: str, tab_id: str | None = None) -> PageState:
-        """导航到指定 URL。tab_id 为 None 时创建新 Tab。等待加载完成后返回 PageState。"""
+        """导航到指定 URL。tab_id 为 None 时创建新 Tab。等待加载完成后返回 PageState。
+
+        如果已注入 proxy_router，会根据域名决策选择 proxy/direct context。
+        导航失败时若是代理相关错误，自动用备选 context 重试一次。
+        """
         from src.utils.url_safety import check_url_safety
         safety = check_url_safety(url)
         if not safety.safe:
@@ -547,16 +627,72 @@ class BrowserManager:
         async with self._lock:
             self._ensure_started()
 
+            context, strategy = self._get_context_and_strategy(url)
+
+            # 记录是否是本次调用创建的 tab（用于双重失败时的清理）
+            original_tab_id_created: str | None = None
             if tab_id is None:
-                tab_info = await self._create_tab_unlocked(url=None)
+                tab_info = await self._create_tab_unlocked(url=None, context=context)
                 tab_id = tab_info.tab_id
+                original_tab_id_created = tab_id
 
             page = self._resolve_tab(tab_id)
 
             await self._publish_event("browser.navigating", {"tab_id": tab_id, "url": url})
             try:
                 await page.goto(url, wait_until="domcontentloaded")
+                if strategy is not None and self._proxy_router is not None:
+                    self._proxy_router.report_success(url, strategy)
             except Exception as exc:
+                # 如果是代理相关错误且有 proxy_router，尝试备选 context
+                if (
+                    strategy is not None
+                    and self._proxy_router is not None
+                    and self._is_proxy_related_failure(exc)
+                ):
+                    alt_decision = self._proxy_router.report_failure_and_get_alternative(url, strategy)
+                    if alt_decision is not None:
+                        alt_context, _ = self._get_context_and_strategy_from_decision(alt_decision)
+                        alt_tab_info = await self._create_tab_unlocked(url=None, context=alt_context)
+                        alt_page = self._resolve_tab(alt_tab_info.tab_id)
+                        try:
+                            await alt_page.goto(url, wait_until="domcontentloaded")
+                            self._proxy_router.confirm_alternative(url, alt_decision.strategy)
+                            tab_id = alt_tab_info.tab_id
+                            page = alt_page
+                        except Exception:
+                            # 两种策略都失败，清理 alt tab，抛出原始错误
+                            try:
+                                del self._tabs[alt_tab_info.tab_id]
+                                await alt_page.close()
+                            except Exception:
+                                pass
+                            # 同时清理本次调用创建的原始 tab（goto 失败，tab 已孤立）
+                            if original_tab_id_created is not None and original_tab_id_created in self._tabs:
+                                orig_page, _ = self._tabs.pop(original_tab_id_created)
+                                try:
+                                    await orig_page.close()
+                                except Exception:
+                                    pass
+                            raise exc  # 抛出原始异常，而非 alt 的异常
+                        else:
+                            # 备选成功，继续正常流程
+                            await self._wait_for_stable(page)
+                            self._active_tab_id = tab_id
+                            self._update_tab_info(tab_id, page)
+                            title = await page.title()
+                            await self._publish_event("browser.navigated", {"tab_id": tab_id, "url": page.url, "title": title})
+                            return await self._build_page_state(page, tab_id)
+
+                # 代理重试不适用（非代理错误，或无 proxy_router），直接处理原始错误
+                # 清理本次调用创建的孤立 tab
+                if original_tab_id_created is not None and original_tab_id_created in self._tabs:
+                    orig_page, _ = self._tabs.pop(original_tab_id_created)
+                    try:
+                        await orig_page.close()
+                    except Exception:
+                        pass
+
                 error_msg = str(exc)
                 await self._publish_event("browser.error", {"tab_id": tab_id, "error": error_msg, "action": "navigate"})
                 if "timeout" in error_msg.lower() or "Timeout" in error_msg:
@@ -802,10 +938,13 @@ class BrowserManager:
                     self._active_tab_id = None
 
     async def new_tab(self, url: str | None = None) -> TabInfo:
-        """创建新 Tab。"""
+        """创建新 Tab。如有 proxy_router 且提供了 URL，选择合适的 context。"""
         async with self._lock:
             self._ensure_started()
-            return await self._create_tab_unlocked(url)
+            context = self._context
+            if url is not None:
+                context, _ = self._get_context_and_strategy(url)
+            return await self._create_tab_unlocked(url, context=context)
 
     # ── JS 执行 ──
 
@@ -988,12 +1127,24 @@ class BrowserManager:
             is_image_heavy=image_heavy,
         )
 
-    async def _create_tab_unlocked(self, url: str | None = None) -> TabInfo:
-        """创建新 Tab（不加锁，供已加锁的方法调用）。"""
+    async def _create_tab_unlocked(self, url: str | None = None, context: Any = None) -> TabInfo:
+        """创建新 Tab（不加锁，供已加锁的方法调用）。
+
+        context: 指定使用哪个 Playwright context。None 时使用 self._context（向后兼容）。
+        """
         await self._ensure_tab_limit()
 
-        page = await self._context.new_page()
+        active_context = context if context is not None else self._context
+        page = await active_context.new_page()
         tab_id = self._generate_tab_id()
+
+        # 确定 context_type 标签
+        if context is self._context_proxy:
+            context_type = "proxy"
+        elif context is self._context_direct:
+            context_type = "direct"
+        else:
+            context_type = "default"
 
         if url:
             try:
@@ -1009,6 +1160,7 @@ class BrowserManager:
             url=page.url,
             title=await page.title() if url else "",
             is_active=True,
+            context_type=context_type,
             last_accessed=datetime.now(timezone.utc),
         )
 
@@ -1042,6 +1194,56 @@ class BrowserManager:
     def _generate_tab_id(self) -> str:
         """生成短唯一 Tab ID，如 'tab_a3f2'。"""
         return f"tab_{uuid.uuid4().hex[:4]}"
+
+    def _get_context_and_strategy(self, url: str) -> tuple[Any, Any]:
+        """根据 URL 选择合适的 Playwright context 和 strategy。
+
+        双 context 模式：通过 proxy_router.resolve(url) 决定 proxy/direct。
+        单 context 模式：返回 (self._context, None)。
+        """
+        if self._proxy_router is None or getattr(self._proxy_router, "_disabled", True):
+            return self._context, None
+
+        try:
+            decision = self._proxy_router.resolve(url)
+        except Exception as exc:
+            logger.warning("proxy_router.resolve 失败，降级为单 context: %s", exc)
+            return self._context, None
+
+        strategy = getattr(decision, "strategy", None)
+        context = self._get_context_and_strategy_from_decision(decision)[0]
+        return context, strategy
+
+    def _get_context_and_strategy_from_decision(self, decision: Any) -> tuple[Any, str | None]:
+        """根据 ProxyRouter decision 返回 (context, strategy)。"""
+        strategy = getattr(decision, "strategy", None)
+        if strategy == "proxy":
+            if self._context_proxy is not None:
+                return self._context_proxy, strategy
+            # proxy context 不可用（未启动或已关闭），降级并记录警告
+            logger.warning(
+                "_get_context_and_strategy_from_decision: strategy='proxy' 但 _context_proxy 不可用，"
+                "降级为 direct/default context"
+            )
+            if self._context_direct is not None:
+                return self._context_direct, strategy
+            return self._context, strategy
+        if strategy == "direct" and self._context_direct is not None:
+            return self._context_direct, strategy
+        # 未知 strategy 或单 context 模式回退
+        return self._context, strategy
+
+    def _is_proxy_related_failure(self, exc: Exception) -> bool:
+        """判断异常是否与代理相关（网络隧道/连接失败等）。"""
+        msg = str(exc)
+        proxy_markers = (
+            "net::ERR_CONNECTION_REFUSED",
+            "net::ERR_CONNECTION_RESET",
+            "net::ERR_TUNNEL_CONNECTION_FAILED",
+            "net::ERR_PROXY_CONNECTION_FAILED",
+            "403",
+        )
+        return any(marker in msg for marker in proxy_markers)
 
     async def _wait_for_stable(self, page: Any) -> None:
         """等待 BROWSER_WAIT_AFTER_ACTION_MS 让 DOM 稳定。"""
