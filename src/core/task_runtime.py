@@ -354,6 +354,9 @@ class TaskRuntime:
         for plan_tool in ("plan_task", "update_plan"):
             if self._tool_registry.get(plan_tool) is not None:
                 tool_names.add(plan_tool)
+        # 纠正记录工具——OWNER 可在对话中记录行为纠正
+        if self._tool_registry.get("add_correction") is not None:
+            tool_names.add("add_correction")
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
         if web_enabled:

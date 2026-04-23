@@ -1279,3 +1279,137 @@ async def test_complete_chat_records_tool_loop_round_latency():
     kwargs = latency_monitor.record_tool_loop_round.call_args.kwargs
     assert kwargs["bucket"] == "shell_local"
     assert kwargs["duration_ms"] >= 0
+
+
+@pytest.mark.asyncio
+async def test_on_circuit_breaker_open_called_when_breaker_fires():
+    """全局断路器触发时，on_circuit_breaker_open 回调应被调用，且不影响断路行为。"""
+    router = MagicMock()
+    callback = MagicMock()
+    runtime = TaskRuntime(
+        router=router,
+        tool_registry=_chat_ready_registry(),
+        loop_detection_config=_loop_config(
+            enabled=True,
+            history_size=10,
+            warning_threshold=1,
+            critical_threshold=2,
+            global_circuit_breaker_threshold=3,
+        ),
+        on_circuit_breaker_open=callback,
+    )
+    constraints = extract_execution_constraints("一直执行 pwd")
+    router.complete_with_tools = AsyncMock(
+        side_effect=[
+            SimpleNamespace(
+                text="",
+                tool_calls=[ToolCallRequest(id="c1", name="execute_shell", arguments={"command": "pwd"})],
+                continuation_message={"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+            ),
+            SimpleNamespace(
+                text="",
+                tool_calls=[ToolCallRequest(id="c2", name="execute_shell", arguments={"command": "pwd"})],
+                continuation_message={"role": "assistant", "content": "", "tool_calls": [{"id": "c2"}]},
+            ),
+            SimpleNamespace(
+                text="",
+                tool_calls=[ToolCallRequest(id="c3", name="execute_shell", arguments={"command": "pwd"})],
+                continuation_message={"role": "assistant", "content": "", "tool_calls": [{"id": "c3"}]},
+            ),
+        ]
+    )
+    router.build_tool_result_message = MagicMock(
+        return_value={"role": "tool", "tool_call_id": "c1", "name": "execute_shell", "content": "{}"}
+    )
+    deps = RuntimeDeps(
+        execute_shell=AsyncMock(
+            side_effect=[
+                ShellResult(stdout="/tmp\n", stderr="", return_code=0, cwd="/tmp"),
+                ShellResult(stdout="/tmp\n", stderr="", return_code=0, cwd="/tmp"),
+            ]
+        ),
+        policy=_make_policy(AsyncMock()),
+        shell_default_cwd="/tmp",
+        shell_allow_sudo=True,
+    )
+
+    result = await runtime.complete_chat(
+        chat_id="chat_1",
+        messages=[{"role": "user", "content": "一直执行 pwd"}],
+        constraints=constraints,
+        tools=runtime.chat_tools(shell_enabled=True),
+        deps=deps,
+        event_bus=SimpleNamespace(publish=AsyncMock()),
+    )
+
+    # 断路器触发，返回需用户介入的消息
+    assert "需用户介入" in result
+    # 回调应被调用一次，参数为触发工具名和重复次数
+    callback.assert_called_once_with("execute_shell", 3)
+
+
+@pytest.mark.asyncio
+async def test_on_circuit_breaker_open_exception_does_not_break_circuit_behavior():
+    """断路器回调抛出异常时，断路器行为不受影响。"""
+    router = MagicMock()
+
+    def _raising_callback(tool_name, repeat_count):
+        raise RuntimeError("回调异常")
+
+    runtime = TaskRuntime(
+        router=router,
+        tool_registry=_chat_ready_registry(),
+        loop_detection_config=_loop_config(
+            enabled=True,
+            history_size=10,
+            warning_threshold=1,
+            critical_threshold=2,
+            global_circuit_breaker_threshold=3,
+        ),
+        on_circuit_breaker_open=_raising_callback,
+    )
+    constraints = extract_execution_constraints("一直执行 pwd")
+    router.complete_with_tools = AsyncMock(
+        side_effect=[
+            SimpleNamespace(
+                text="",
+                tool_calls=[ToolCallRequest(id="c1", name="execute_shell", arguments={"command": "pwd"})],
+                continuation_message={"role": "assistant", "content": "", "tool_calls": [{"id": "c1"}]},
+            ),
+            SimpleNamespace(
+                text="",
+                tool_calls=[ToolCallRequest(id="c2", name="execute_shell", arguments={"command": "pwd"})],
+                continuation_message={"role": "assistant", "content": "", "tool_calls": [{"id": "c2"}]},
+            ),
+            SimpleNamespace(
+                text="",
+                tool_calls=[ToolCallRequest(id="c3", name="execute_shell", arguments={"command": "pwd"})],
+                continuation_message={"role": "assistant", "content": "", "tool_calls": [{"id": "c3"}]},
+            ),
+        ]
+    )
+    router.build_tool_result_message = MagicMock(
+        return_value={"role": "tool", "tool_call_id": "c1", "name": "execute_shell", "content": "{}"}
+    )
+    deps = RuntimeDeps(
+        execute_shell=AsyncMock(
+            side_effect=[
+                ShellResult(stdout="/tmp\n", stderr="", return_code=0, cwd="/tmp"),
+                ShellResult(stdout="/tmp\n", stderr="", return_code=0, cwd="/tmp"),
+            ]
+        ),
+        policy=_make_policy(AsyncMock()),
+        shell_default_cwd="/tmp",
+        shell_allow_sudo=True,
+    )
+
+    # 即使回调抛异常，complete_chat 也应正常返回断路消息
+    result = await runtime.complete_chat(
+        chat_id="chat_1",
+        messages=[{"role": "user", "content": "一直执行 pwd"}],
+        constraints=constraints,
+        tools=runtime.chat_tools(shell_enabled=True),
+        deps=deps,
+        event_bus=SimpleNamespace(publish=AsyncMock()),
+    )
+    assert "需用户介入" in result

@@ -524,9 +524,7 @@ class AppContainer:
         self.brain._correction_manager = _correction_manager
         self._correction_manager = _correction_manager
         # 将断路器回调注入到 task_runtime（CorrectionManager 做防抖）
-        self.brain.task_runtime.on_circuit_breaker_open = (
-            lambda tool_name, repeat_count: _correction_manager.on_circuit_break(tool_name, repeat_count)
-        )
+        self.brain.task_runtime.on_circuit_breaker_open = _correction_manager.on_circuit_break
         logger.info("CorrectionManager 已装配（阈值=3，断路器冷却=600s）")
 
         # SoulManager + soul 工具
