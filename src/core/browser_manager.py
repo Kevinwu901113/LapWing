@@ -584,6 +584,7 @@ class BrowserManager:
             except Exception as exc:
                 logger.warning("关闭代理浏览器上下文异常: %s", exc)
             self._context_proxy = None
+            self._context = None  # 立即清除别名，避免持有已关闭的对象引用
 
             if self._context_direct is not None:
                 try:
@@ -628,9 +629,12 @@ class BrowserManager:
 
             context, strategy = self._get_context_and_strategy(url)
 
+            # 记录是否是本次调用创建的 tab（用于双重失败时的清理）
+            original_tab_id_created: str | None = None
             if tab_id is None:
                 tab_info = await self._create_tab_unlocked(url=None, context=context)
                 tab_id = tab_info.tab_id
+                original_tab_id_created = tab_id
 
             page = self._resolve_tab(tab_id)
 
@@ -657,7 +661,20 @@ class BrowserManager:
                             tab_id = alt_tab_info.tab_id
                             page = alt_page
                         except Exception:
-                            pass  # 两个 context 都失败，抛出原始异常
+                            # 两种策略都失败，清理 alt tab，抛出原始错误
+                            try:
+                                del self._tabs[alt_tab_info.tab_id]
+                                await alt_page.close()
+                            except Exception:
+                                pass
+                            # 同时清理本次调用创建的原始 tab（goto 失败，tab 已孤立）
+                            if original_tab_id_created is not None and original_tab_id_created in self._tabs:
+                                orig_page, _ = self._tabs.pop(original_tab_id_created)
+                                try:
+                                    await orig_page.close()
+                                except Exception:
+                                    pass
+                            raise exc  # 抛出原始异常，而非 alt 的异常
                         else:
                             # 备选成功，继续正常流程
                             await self._wait_for_stable(page)
@@ -666,6 +683,15 @@ class BrowserManager:
                             title = await page.title()
                             await self._publish_event("browser.navigated", {"tab_id": tab_id, "url": page.url, "title": title})
                             return await self._build_page_state(page, tab_id)
+
+                # 代理重试不适用（非代理错误，或无 proxy_router），直接处理原始错误
+                # 清理本次调用创建的孤立 tab
+                if original_tab_id_created is not None and original_tab_id_created in self._tabs:
+                    orig_page, _ = self._tabs.pop(original_tab_id_created)
+                    try:
+                        await orig_page.close()
+                    except Exception:
+                        pass
 
                 error_msg = str(exc)
                 await self._publish_event("browser.error", {"tab_id": tab_id, "error": error_msg, "action": "navigate"})
@@ -1191,8 +1217,17 @@ class BrowserManager:
     def _get_context_and_strategy_from_decision(self, decision: Any) -> tuple[Any, str | None]:
         """根据 ProxyRouter decision 返回 (context, strategy)。"""
         strategy = getattr(decision, "strategy", None)
-        if strategy == "proxy" and self._context_proxy is not None:
-            return self._context_proxy, strategy
+        if strategy == "proxy":
+            if self._context_proxy is not None:
+                return self._context_proxy, strategy
+            # proxy context 不可用（未启动或已关闭），降级并记录警告
+            logger.warning(
+                "_get_context_and_strategy_from_decision: strategy='proxy' 但 _context_proxy 不可用，"
+                "降级为 direct/default context"
+            )
+            if self._context_direct is not None:
+                return self._context_direct, strategy
+            return self._context, strategy
         if strategy == "direct" and self._context_direct is not None:
             return self._context_direct, strategy
         # 未知 strategy 或单 context 模式回退

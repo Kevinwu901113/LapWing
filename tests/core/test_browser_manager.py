@@ -909,3 +909,172 @@ class TestProxyRouterUnit:
 
         # 确认 _is_proxy_related_failure 本身不抛异常，仅用来验证方法可调用
         assert not mgr._is_proxy_related_failure(RuntimeError("some unrelated error"))
+
+    async def test_navigate_retry_with_alternative_context(self):
+        """代理失败后用备选 context 重试并成功时，confirm_alternative 被调用。
+
+        不依赖真实 Playwright：通过替换 _create_tab_unlocked 和 page.goto 实现全 mock。
+        """
+        import types
+
+        mgr = BrowserManager()
+
+        # ── mock proxy router ──────────────────────────────────────────────
+        class FakeDecision:
+            strategy = "direct"
+
+        class FakeProxyRouter:
+            _disabled = False
+            resolve_called_with: list = []
+            report_failure_called = False
+            confirm_alternative_called_with: list = []
+            report_success_called = False
+
+            def resolve(self, url: str):
+                self.resolve_called_with.append(url)
+                d = FakeDecision()
+                d.strategy = "proxy"
+                return d
+
+            def report_success(self, url, strategy):
+                self.report_success_called = True
+
+            def report_failure_and_get_alternative(self, url, strategy):
+                self.report_failure_called = True
+                return FakeDecision()  # strategy = "direct"
+
+            def confirm_alternative(self, url, strategy):
+                self.confirm_alternative_called_with.append((url, strategy))
+
+        proxy_router = FakeProxyRouter()
+        mgr.set_proxy_router(proxy_router)
+
+        # ── mock contexts ──────────────────────────────────────────────────
+        fake_proxy_context = object()
+        fake_direct_context = object()
+        mgr._context = fake_proxy_context
+        mgr._context_proxy = fake_proxy_context
+        mgr._context_direct = fake_direct_context
+
+        # ── mock tab pages ─────────────────────────────────────────────────
+        first_goto_called = False
+        alt_goto_called = False
+
+        class FakeProxyPage:
+            url = "about:blank"
+
+            async def goto(self, url, wait_until=None):
+                nonlocal first_goto_called
+                first_goto_called = True
+                raise RuntimeError("net::ERR_TUNNEL_CONNECTION_FAILED")
+
+            async def title(self):
+                return ""
+
+            async def close(self):
+                pass
+
+        class FakeDirectPage:
+            url = "https://example.com/"
+
+            async def goto(self, url, wait_until=None):
+                nonlocal alt_goto_called
+                alt_goto_called = True
+                # 成功：不抛异常
+
+            async def title(self):
+                return "Example"
+
+            async def close(self):
+                pass
+
+        proxy_page = FakeProxyPage()
+        direct_page = FakeDirectPage()
+
+        # ── mock tab infos ─────────────────────────────────────────────────
+        from src.core.browser_manager import TabInfo
+        from datetime import datetime, timezone
+
+        proxy_tab_info = TabInfo(
+            tab_id="tab_prox",
+            url="about:blank",
+            title="",
+            is_active=True,
+            context_type="proxy",
+            last_accessed=datetime.now(timezone.utc),
+        )
+        direct_tab_info = TabInfo(
+            tab_id="tab_dirx",
+            url="about:blank",
+            title="",
+            is_active=True,
+            context_type="direct",
+            last_accessed=datetime.now(timezone.utc),
+        )
+
+        # 插入 tab 到 _tabs 字典（_create_tab_unlocked 的替代）
+        create_call_count = 0
+
+        async def fake_create_tab_unlocked(url=None, context=None):
+            nonlocal create_call_count
+            create_call_count += 1
+            if create_call_count == 1:
+                # 首次调用：返回 proxy tab
+                mgr._tabs[proxy_tab_info.tab_id] = (proxy_page, proxy_tab_info)
+                mgr._active_tab_id = proxy_tab_info.tab_id
+                return proxy_tab_info
+            else:
+                # 备选调用：返回 direct tab
+                mgr._tabs[direct_tab_info.tab_id] = (direct_page, direct_tab_info)
+                mgr._active_tab_id = direct_tab_info.tab_id
+                return direct_tab_info
+
+        mgr._create_tab_unlocked = fake_create_tab_unlocked
+
+        # ── mock _build_page_state (避免真实 DOM 调用) ────────────────────
+        from src.core.browser_manager import PageState
+
+        async def fake_build_page_state(page, tab_id):
+            return PageState(
+                url=page.url,
+                title=await page.title(),
+                elements=[],
+                text_summary="",
+                visual_description=None,
+                scroll_position="top",
+                has_more_below=False,
+                tab_id=tab_id,
+                timestamp="2026-01-01T00:00:00+00:00",
+                is_image_heavy=False,
+            )
+
+        mgr._build_page_state = fake_build_page_state
+
+        # ── mock helpers that touch the browser ───────────────────────────
+        async def fake_wait_for_stable(page):
+            pass
+
+        mgr._wait_for_stable = fake_wait_for_stable
+        mgr._update_tab_info = lambda tab_id, page: None
+
+        async def fake_publish_event(event_type, payload):
+            pass
+
+        mgr._publish_event = fake_publish_event
+
+        # ── mock url_safety (import inside navigate) ───────────────────────
+        import unittest.mock as mock
+        from src.utils.url_safety import SafetyResult
+
+        with mock.patch("src.utils.url_safety.check_url_safety", return_value=SafetyResult(True)):
+            state = await mgr.navigate("https://example.com/")
+
+        # ── assertions ─────────────────────────────────────────────────────
+        assert first_goto_called, "第一次 goto（proxy）应被调用"
+        assert alt_goto_called, "备选 goto（direct）应被调用"
+        assert proxy_router.report_failure_called, "report_failure_and_get_alternative 应被调用"
+        assert len(proxy_router.confirm_alternative_called_with) == 1, (
+            f"confirm_alternative 应被调用一次，实际: {proxy_router.confirm_alternative_called_with}"
+        )
+        assert proxy_router.confirm_alternative_called_with[0][1] == "direct"
+        assert state.tab_id == direct_tab_info.tab_id, "最终 tab 应为备选 direct tab"
