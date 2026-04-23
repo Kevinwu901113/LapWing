@@ -85,6 +85,9 @@ class _TomlSource(PydanticBaseSettingsSource):
 _ENV_MAP: dict[str, list[str]] = {
     # ── proxy ──
     "SEARCH_PROXY_URL": ["proxy", "search_url"],
+    "PROXY_SERVER": ["proxy", "server"],
+    "PROXY_DEFAULT_STRATEGY": ["proxy", "default_strategy"],
+    "PROXY_PERSIST_INTERVAL_SECONDS": ["proxy", "persist_interval_seconds"],
     # ── qq ──
     "QQ_ENABLED": ["qq", "enabled"],
     "QQ_WS_URL": ["qq", "ws_url"],
@@ -247,6 +250,9 @@ _ENV_MAP: dict[str, list[str]] = {
 
 class ProxyConfig(BaseModel):
     search_url: str = ""
+    server: str = ""                    # 代理服务器地址，空则禁用 ProxyRouter
+    default_strategy: str = "proxy"     # 默认策略：proxy | direct
+    persist_interval_seconds: int = 300 # 规则持久化间隔（秒）
 
 
 class QQConfig(BaseModel):
