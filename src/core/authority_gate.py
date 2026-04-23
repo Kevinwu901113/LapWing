@@ -112,6 +112,8 @@ OPERATION_AUTH: dict[str, AuthLevel] = {
     "delete_skill": AuthLevel.OWNER,
     "search_skill": AuthLevel.GUEST,
     "install_skill": AuthLevel.OWNER,
+    # 纠正记录
+    "add_correction": AuthLevel.OWNER,
 }
 
 # 未注册工具的默认权限（保守策略）

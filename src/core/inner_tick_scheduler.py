@@ -56,7 +56,11 @@ def is_inner_did_nothing(text: str) -> bool:
     return text.strip() in _INNER_NO_OP_RESPONSES
 
 
-def build_inner_prompt(urgent_items: list[dict] | None = None) -> str:
+def build_inner_prompt(
+    urgent_items: list[dict] | None = None,
+    *,
+    preparation_status: str | None = None,
+) -> str:
     """Construct the synthetic "user" prompt for one inner tick.
 
     Migrated from ``consciousness.py._build_consciousness_prompt`` so the
@@ -104,6 +108,14 @@ def build_inner_prompt(urgent_items: list[dict] | None = None) -> str:
         except Exception:
             pass
 
+    if preparation_status:
+        parts.append("## 你的知识储备状态\n")
+        parts.append(preparation_status)
+        parts.append("")
+        parts.append("如果有需要更新的主题，用 prepare_ambient_knowledge 工具预取。")
+        parts.append("不需要一次全部更新——选一两个最需要的就好。")
+        parts.append("")
+
     parts.append("## 你可以想想这些方面\n")
     parts.append("- 刚才跟他聊的有没有什么你说错的或者可以做得更好的")
     parts.append("- 你手头有没有没做完的事")
@@ -115,6 +127,10 @@ def build_inner_prompt(urgent_items: list[dict] | None = None) -> str:
     parts.append("- 你学会了哪些新技能？有没有还不够稳定需要再练习的？")
     parts.append("- 你可以想象 Kevin 可能会让你做什么，提前自己模拟练习")
     parts.append("- 你有没有可以写成技能的重复性操作？")
+    parts.append("- Kevin 最近有没有在关注什么新话题？需不需要更新兴趣画像？（用 manage_interest_profile）")
+    parts.append("- 如果你刚预取到了 Kevin 可能想知道的信息（比赛爆冷、极端天气），可以用 send_message 主动分享")
+    parts.append("- 如果你看到紧急事件中有「correction_threshold」或「circuit_break」类型，分析失败模式——是什么问题反复出现？考虑是否需要创建一个 Skill 来系统性解决")
+    parts.append("- 日常信息不需要主动说——只在特殊/意外/紧急时分享；深夜（23:00-08:00）除非紧急否则不主动发消息")
     parts.append("")
     parts.append("## 规则\n")
     parts.append("- 你可以使用任何工具来做你想做的事")

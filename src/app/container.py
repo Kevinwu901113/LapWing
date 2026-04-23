@@ -389,6 +389,14 @@ class AppContainer:
             except _asyncio.CancelledError:
                 pass
 
+        # AmbientKnowledgeStore 关闭
+        if hasattr(self, "ambient_store") and self.ambient_store is not None:
+            try:
+                await self.ambient_store.close()
+            except Exception:
+                logger.warning("ambient_store close failed", exc_info=True)
+            self.ambient_store = None
+
         # v2.0 Step 2f: close TrajectoryStore connection before mutation_log
         # closes (so any in-flight TRAJECTORY_APPENDED records land first).
         if self.trajectory_store is not None:
@@ -448,6 +456,52 @@ class AppContainer:
             reminder_source=None,
             previous_state_reader=get_previous_state,
         )
+
+        # AmbientKnowledgeStore —— 环境知识缓存
+        from src.ambient.ambient_knowledge import AmbientKnowledgeStore
+        self.ambient_store = AmbientKnowledgeStore(
+            db_path=self._data_dir / "ambient.db",
+        )
+        await self.ambient_store.init()
+        self.brain.state_view_builder._ambient = self.ambient_store
+        self.brain._ambient_store = self.ambient_store
+
+        # PreparationEngine —— 准备引擎
+        from src.ambient.preparation_engine import InterestProfile, PreparationEngine
+        interest_profile = InterestProfile(IDENTITY_DIR / "kevin_interests.md")
+        self._preparation_engine = PreparationEngine(
+            interest_profile=interest_profile,
+            ambient_store=self.ambient_store,
+        )
+        self.brain._preparation_engine = self._preparation_engine
+        self.brain._interest_profile = interest_profile
+
+        # CorrectionManager —— 行为纠正记录 + 断路器反馈
+        # on_threshold / on_circuit_break 回调延迟绑定 inner_tick_scheduler（start() 时才创建），
+        # 用 lambda 捕获 self 实现延迟解析，避免循环依赖。
+        from src.core.correction_manager import CorrectionManager
+        _correction_manager = CorrectionManager(
+            threshold=3,
+            on_threshold=lambda rule_key, count, details: (
+                self.inner_tick_scheduler.push_urgency({
+                    "type": "correction_threshold",
+                    "content": f"纠正阈值：规则「{rule_key}」已被纠正{count}次。详情：{details}",
+                }) if self.inner_tick_scheduler is not None else None
+            ),
+            on_circuit_break=lambda tool_name, repeat_count: (
+                self.inner_tick_scheduler.push_urgency({
+                    "type": "circuit_break",
+                    "content": f"工具断路：{tool_name} 重复{repeat_count}次无进展",
+                }) if self.inner_tick_scheduler is not None else None
+            ),
+        )
+        self.brain._correction_manager = _correction_manager
+        self._correction_manager = _correction_manager
+        # 将断路器回调注入到 task_runtime（CorrectionManager 做防抖）
+        self.brain.task_runtime.on_circuit_breaker_open = (
+            lambda tool_name, repeat_count: _correction_manager.on_circuit_break(tool_name, repeat_count)
+        )
+        logger.info("CorrectionManager 已装配（阈值=3，断路器冷却=600s）")
 
         # SoulManager + soul 工具
         from src.core.soul_manager import SoulManager
@@ -710,6 +764,11 @@ class AppContainer:
         )
         register_research_tool(self.brain.tool_registry)
         logger.info("Research 子系统已装配（research 工具 + ResearchEngine）")
+
+        # 环境知识工具
+        from src.tools.ambient_tools import register_ambient_tools
+        register_ambient_tools(self.brain.tool_registry)
+        logger.info("环境知识工具已注册（prepare/check_ambient_knowledge + manage_interest_profile）")
 
         # Skill Growth Model
         from config.settings import SKILL_SYSTEM_ENABLED

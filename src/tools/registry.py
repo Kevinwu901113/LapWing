@@ -46,6 +46,7 @@ from src.tools.plan_tools import (
     plan_task_executor,
     update_plan_executor,
 )
+from src.tools.correction_tools import ADD_CORRECTION_SPEC
 from src.tools.types import (
     ToolExecutionContext,
     ToolExecutionRequest,
@@ -442,6 +443,9 @@ def build_default_tool_registry() -> ToolRegistry:
             risk_level="low",
         )
     )
+
+    # 纠正记录工具
+    registry.register(ADD_CORRECTION_SPEC)
 
     # memory_tools_v2, soul_tools, personal_tools, agent_tools, browser_tools,
     # durable_scheduler tools — 全部在 container.py 中注册（Phase 3-6）

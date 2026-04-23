@@ -182,6 +182,7 @@ class TaskRuntime:
         latency_monitor: Any | None = None,
         no_action_budget: int | None = None,
         error_burst_threshold: int | None = None,
+        on_circuit_breaker_open: Callable[[str, int], None] | None = None,
     ) -> None:
         self._router = router
         self._max_tool_rounds = max_tool_rounds
@@ -194,6 +195,8 @@ class TaskRuntime:
         self._no_action_budget = no_action_budget if no_action_budget is not None else _cfg.TASK_NO_ACTION_BUDGET
         self._error_burst_threshold = error_burst_threshold if error_burst_threshold is not None else _cfg.TASK_ERROR_BURST_THRESHOLD
         self._memory_index: Any | None = None
+        # 断路器触发时的回调，签名：(tool_name, repeat_count) → None
+        self.on_circuit_breaker_open: Callable[[str, int], None] | None = on_circuit_breaker_open
 
     def set_browser_guard(self, browser_guard: Any | None) -> None:
         self._browser_guard = browser_guard
@@ -355,6 +358,13 @@ class TaskRuntime:
             tool_names.update({"execute_shell", "read_file", "write_file"})
         if web_enabled:
             tool_names.update({"research", "browse"})
+        # 环境知识工具
+        for ambient_tool in (
+            "prepare_ambient_knowledge", "check_ambient_knowledge",
+            "manage_interest_profile",
+        ):
+            if self._tool_registry.get(ambient_tool) is not None:
+                tool_names.add(ambient_tool)
         if browser_enabled:
             for name in self._BROWSER_TOOL_NAMES:
                 if self._tool_registry.get(name) is not None:
@@ -896,6 +906,12 @@ class TaskRuntime:
                 )
 
             if self._should_block_by_global_circuit_breaker(generic_repeat_count):
+                # 通知外部观察者（如 CorrectionManager）断路器已触发
+                if self.on_circuit_breaker_open is not None:
+                    try:
+                        self.on_circuit_breaker_open(tool_call.name, generic_repeat_count)
+                    except Exception:
+                        logger.debug("[runtime] on_circuit_breaker_open 回调异常", exc_info=True)
                 reason = (
                     "检测到无进展重复循环（同一工具与参数连续重复），"
                     "已触发全局断路器，需用户介入（提供新策略/新指令）。"
@@ -1493,7 +1509,25 @@ class TaskRuntime:
                 payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command=command)
                 return ToolExecutionResult(success=False, payload=payload, reason=reason)
 
+        # ── AmbientKnowledge 缓存拦截（仅限 research 工具）──────────────
+        if request.name == "research":
+            _ambient = (services or {}).get("ambient_store")
+            if _ambient is not None:
+                _cache_hit = await self._try_ambient_cache(request, _ambient)
+                if _cache_hit is not None:
+                    return _cache_hit
+
         execution = await self._tool_registry.execute(request, context=context)
+
+        # ── research 成功后写回 ambient cache ──────────────────────────
+        if request.name == "research" and execution.success:
+            _ambient_wb = (services or {}).get("ambient_store")
+            if _ambient_wb is not None:
+                try:
+                    await self._writeback_to_ambient(request, execution, _ambient_wb)
+                except Exception:
+                    logger.debug("ambient writeback failed", exc_info=True)
+
         if not use_shell_policy:
             return execution
 
@@ -1926,6 +1960,84 @@ class TaskRuntime:
                 return True
 
         return False
+
+    # ── AmbientKnowledge 缓存辅助方法 ─────────────────────────────────
+
+    async def _try_ambient_cache(
+        self,
+        request: ToolExecutionRequest,
+        ambient_store: Any,
+    ) -> ToolExecutionResult | None:
+        """保守的 research 缓存拦截：question 包含已缓存条目的 topic 关键词时命中。"""
+        question = str(request.arguments.get("question", "")).strip().lower()
+        if not question or len(question) < 4:
+            return None
+        try:
+            all_entries = await ambient_store.get_all_fresh()
+        except Exception:
+            return None
+        for entry in all_entries:
+            topic_lower = entry.topic.lower()
+            keywords = [w for w in topic_lower.split() if len(w) >= 2][:3]
+            if not keywords:
+                continue
+            if all(kw in question for kw in keywords):
+                import json as _json
+                try:
+                    data = _json.loads(entry.data)
+                except Exception:
+                    data = {}
+                return ToolExecutionResult(
+                    success=True,
+                    payload={
+                        "answer": entry.summary,
+                        "evidence": data.get("evidence", []),
+                        "confidence": entry.confidence,
+                        "source": f"ambient_cache:{entry.key}",
+                        "cached_at": entry.fetched_at,
+                    },
+                    reason=f"ambient_cache_hit:{entry.key}",
+                )
+        return None
+
+    async def _writeback_to_ambient(
+        self,
+        request: ToolExecutionRequest,
+        execution: ToolExecutionResult,
+        ambient_store: Any,
+    ) -> None:
+        """research 成功后将结果写回 ambient cache（仅高置信度结果）。"""
+        import json as _json
+        from datetime import datetime as _dt, timedelta as _td, timezone as _tz
+        from src.ambient.models import AmbientEntry
+
+        payload = execution.payload
+        confidence = float(payload.get("confidence", 0))
+        if confidence < 0.5:
+            return
+
+        question = str(request.arguments.get("question", "")).strip()
+        if not question:
+            return
+
+        answer = str(payload.get("answer", ""))
+        if not answer:
+            return
+
+        now = _dt.now(_tz.utc)
+        key = f"research:{hash(question) % 100000:05d}"
+        entry = AmbientEntry(
+            key=key,
+            category="research",
+            topic=question[:80],
+            data=_json.dumps(payload, ensure_ascii=False, default=str),
+            summary=answer[:300],
+            fetched_at=now.isoformat(),
+            expires_at=(now + _td(hours=4)).isoformat(),
+            source="research_writeback",
+            confidence=confidence,
+        )
+        await ambient_store.put(key, entry)
 
     def _blocked_payload(
         self,

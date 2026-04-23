@@ -310,6 +310,15 @@ class LapwingBrain:
         if skill_executor is not None:
             services["skill_executor"] = skill_executor
         services["tool_registry"] = self.tool_registry
+        ambient_store = getattr(self, "_ambient_store", None)
+        if ambient_store is not None:
+            services["ambient_store"] = ambient_store
+        interest_profile = getattr(self, "_interest_profile", None)
+        if interest_profile is not None:
+            services["interest_profile"] = interest_profile
+        correction_manager = getattr(self, "_correction_manager", None)
+        if correction_manager is not None:
+            services["correction_manager"] = correction_manager
 
         deps = RuntimeDeps(
             execute_shell=execute_shell,
@@ -676,7 +685,18 @@ class LapwingBrain:
             parse_next_interval,
         )
 
-        inner_prompt = build_inner_prompt(urgent_items)
+        preparation_status: str | None = None
+        prep_engine = getattr(self, "_preparation_engine", None)
+        if prep_engine is not None:
+            try:
+                preparation_status = await prep_engine.format_for_prompt()
+            except Exception:
+                logger.debug("preparation_engine.format_for_prompt failed", exc_info=True)
+
+        inner_prompt = build_inner_prompt(
+            urgent_items,
+            preparation_status=preparation_status,
+        )
 
         # Internal session key for TaskRuntime / memory cache. Never
         # written as source_chat_id — trajectory rows go in with NULL.
