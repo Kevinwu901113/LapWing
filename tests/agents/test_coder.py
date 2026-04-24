@@ -24,7 +24,8 @@ class TestCoderCreate:
         assert "ws_file_write" in whitelist
         assert "ws_file_read" in whitelist
         assert "ws_file_list" in whitelist
-        assert "execute_shell" in whitelist
+        assert "run_python_code" in whitelist
+        assert "execute_shell" not in whitelist
 
     def test_system_prompt_mentions_workspace(self):
         router, registry, mutation_log = _make_deps()

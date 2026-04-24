@@ -175,7 +175,7 @@ src/
   adapters/          Messaging adapters: base.py, qq_adapter.py, desktop_adapter.py,
                      qq_group_context.py, qq_group_filter.py
   agents/            Phase-6 agent framework: base.py, coder.py, researcher.py,
-                     team_lead.py, registry.py, types.py
+                     registry.py, types.py
   ambient/           Short-term environment knowledge (working memory, not long-term):
                        ambient_knowledge (SQLite store with TTL)
                        preparation_engine (parses interest profile → prep status)
@@ -235,7 +235,7 @@ src/
                          browse / view_image) — send_message is the proactive-push
                          tool for no-conversation contexts (target=kevin_qq /
                          kevin_desktop / qq_group:{id})
-                       agent_tools.py (delegate, delegate_to_agent)
+                       agent_tools.py (delegate_to_researcher, delegate_to_coder)
                        browser_tools.py (13 browser actions)
                        skill_tools.py (create / run / edit / list / promote / delete /
                          search / install skill — marketplace + local CRUD)
@@ -603,5 +603,13 @@ invariant-level gaps. Earlier documentation flagged several, all now resolved:
   under `src/skills/` (SkillStore + SkillExecutor) with 6 LLM-facing
   tools in `src/tools/skill_tools.py`. Gated by `SKILL_SYSTEM_ENABLED`
   (default false).
+
+Current gaps:
+
+- **Agent Team context injection depends on `context_digest` parameter.** If the LLM
+  omits `context_digest` when calling `delegate_to_researcher` / `delegate_to_coder`,
+  the sub-agent starts with minimal context (auto-extracted trajectory only). The prompt
+  in `lapwing_voice.md` instructs the model to always fill this parameter, but compliance
+  is not enforced at the framework level.
 
 If a new invariant-level gap is found, add it back here.

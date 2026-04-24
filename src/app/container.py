@@ -678,7 +678,6 @@ class AppContainer:
         from config.settings import AGENT_TEAM_ENABLED
         if AGENT_TEAM_ENABLED:
             from src.agents.registry import AgentRegistry
-            from src.agents.team_lead import TeamLead
             from src.agents.researcher import Researcher
             from src.agents.coder import Coder
             from src.tools.agent_tools import register_agent_tools
@@ -690,21 +689,10 @@ class AppContainer:
 
             agent_registry = AgentRegistry()
 
-            # services 供 Agent 的 tool loop 传递给 ToolExecutionContext
             agent_services = {
                 "agent_registry": agent_registry,
             }
 
-            # 注册具体 Agent（Step 6：mutation_log 取代 dispatcher）
-            agent_registry.register(
-                "team_lead",
-                TeamLead.create(
-                    self.brain.router,
-                    self.brain.tool_registry,
-                    self.mutation_log,
-                    services=agent_services,
-                ),
-            )
             agent_registry.register(
                 "researcher",
                 Researcher.create(
@@ -758,8 +746,6 @@ class AppContainer:
                 visibility="internal",
             ))
 
-            # 注册 Agent 工具（delegate + delegate_to_agent）——放在所有 Agent
-            # 注册完之后，tool description + enum 会从 AgentRegistry 动态填充。
             register_agent_tools(self.brain.tool_registry, agent_registry)
 
             self.brain._agent_registry = agent_registry

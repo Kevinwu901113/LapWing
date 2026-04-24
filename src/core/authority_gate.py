@@ -80,8 +80,8 @@ OPERATION_AUTH: dict[str, AuthLevel] = {
     "view_reminders": AuthLevel.OWNER,
     "cancel_reminder": AuthLevel.OWNER,
     # 委派（agent_tools 实际注册名）
-    "delegate": AuthLevel.OWNER,
-    "delegate_to_agent": AuthLevel.OWNER,
+    "delegate_to_researcher": AuthLevel.OWNER,
+    "delegate_to_coder": AuthLevel.OWNER,
     # 个人工具
     "send_message": AuthLevel.OWNER,
     "view_image": AuthLevel.OWNER,

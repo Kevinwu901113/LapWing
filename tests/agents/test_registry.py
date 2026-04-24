@@ -24,20 +24,19 @@ class TestAgentRegistry:
         reg = AgentRegistry()
         assert reg.get("nope") is None
 
-    def test_list_names_excludes_team_lead(self):
+    def test_list_names(self):
         reg = AgentRegistry()
-        reg.register("team_lead", _make_agent("team_lead"))
         reg.register("researcher", _make_agent("researcher"))
         reg.register("coder", _make_agent("coder"))
         names = reg.list_names()
-        assert "team_lead" not in names
         assert "researcher" in names
         assert "coder" in names
 
     def test_list_specs(self):
         reg = AgentRegistry()
-        reg.register("team_lead", _make_agent("team_lead"))
         reg.register("researcher", _make_agent("researcher"))
+        reg.register("coder", _make_agent("coder"))
         specs = reg.list_specs()
-        assert len(specs) == 1
-        assert specs[0]["name"] == "researcher"
+        assert len(specs) == 2
+        spec_names = {s["name"] for s in specs}
+        assert spec_names == {"researcher", "coder"}

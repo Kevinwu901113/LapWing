@@ -25,13 +25,10 @@ class AgentRegistry:
         return self._agents.get(name)
 
     def list_names(self) -> list[str]:
-        """返回除 team_lead 外的 Agent 名称（供 Team Lead prompt 参考）。"""
-        return [n for n in self._agents if n != "team_lead"]
+        return list(self._agents.keys())
 
     def list_specs(self) -> list[dict]:
-        """返回除 team_lead 外的 Agent 描述。"""
         return [
             {"name": a.spec.name, "description": a.spec.description}
-            for n, a in self._agents.items()
-            if n != "team_lead"
+            for a in self._agents.values()
         ]

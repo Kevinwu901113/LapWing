@@ -114,7 +114,7 @@ async def test_chat_tools_from_registry():
     assert {"execute_shell", "read_file", "write_file"}.issubset(names)
     assert {"get_time", "send_message", "send_image", "view_image"}.issubset(names)
     assert {"set_reminder", "view_reminders", "cancel_reminder"}.issubset(names)
-    assert {"research", "browse", "delegate"}.issubset(names)
+    assert {"research", "browse", "delegate_to_researcher", "delegate_to_coder"}.issubset(names)
     # `get_weather` + `image_search` are gone from the whitelist (Step 1i)
     assert "get_weather" not in names
     assert "image_search" not in names

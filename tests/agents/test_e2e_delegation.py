@@ -1,14 +1,17 @@
-"""端到端 delegation 测试：Lapwing → Team Lead → Agent → 结果。"""
+"""端到端 delegation 测试：Lapwing → Agent → 结果。"""
 
 from unittest.mock import AsyncMock, MagicMock
 
 from src.agents.coder import Coder
 from src.agents.registry import AgentRegistry
 from src.agents.researcher import Researcher
-from src.agents.team_lead import TeamLead
 from src.core.llm_types import ToolCallRequest, ToolTurnResult
 from src.logging.state_mutation_log import MutationType
-from src.tools.agent_tools import delegate_executor, register_agent_tools
+from src.tools.agent_tools import (
+    delegate_to_researcher_executor,
+    delegate_to_coder_executor,
+    register_agent_tools,
+)
 from src.tools.types import (
     ToolExecutionContext,
     ToolExecutionRequest,
@@ -23,137 +26,95 @@ def _make_mutation_log():
     return ml
 
 
-def _make_registry_with_agents(router, tool_registry, mutation_log, services=None):
-    """Build a full agent registry with all three agents."""
-    reg = AgentRegistry()
-    reg.register("team_lead", TeamLead.create(router, tool_registry, mutation_log, services=services))
-    reg.register("researcher", Researcher.create(router, tool_registry, mutation_log, services=services))
-    reg.register("coder", Coder.create(router, tool_registry, mutation_log, services=services))
-    return reg
-
-
 class TestE2EDelegateToResearcher:
-    """Lapwing delegates → Team Lead → Researcher → result."""
+    """Lapwing → delegate_to_researcher → Researcher → result."""
 
     async def test_full_chain(self):
         mutation_log = _make_mutation_log()
 
-        # Researcher LLM responses
         researcher_round1 = ToolTurnResult(
             text="",
-            tool_calls=[ToolCallRequest(id="r1", name="web_search", arguments={"query": "X"})],
+            tool_calls=[ToolCallRequest(id="r1", name="research", arguments={"question": "RAG"})],
             continuation_message={"role": "assistant", "content": ""},
         )
         researcher_round2 = ToolTurnResult(
-            text="Found: X is interesting. [来源: https://example.com]",
+            text="RAG 是检索增强生成技术。[来源: https://arxiv.org/abs/2025.12345]",
             tool_calls=[],
             continuation_message=None,
         )
 
-        # Team Lead LLM responses
-        tl_round1 = ToolTurnResult(
-            text="",
-            tool_calls=[ToolCallRequest(
-                id="tl1", name="delegate_to_agent",
-                arguments={"agent": "researcher", "instruction": "search for X"},
-            )],
-            continuation_message={"role": "assistant", "content": ""},
-        )
-        tl_round2 = ToolTurnResult(
-            text="调研结果：X is interesting。",
-            tool_calls=[],
-            continuation_message=None,
-        )
-
-        # Order: TL round1, Researcher round1, Researcher round2, TL round2
         router = MagicMock()
         router.complete_with_tools = AsyncMock(
-            side_effect=[tl_round1, researcher_round1, researcher_round2, tl_round2],
+            side_effect=[researcher_round1, researcher_round2],
         )
         router.build_tool_result_message = MagicMock(
-            return_value={"role": "user", "content": [{"type": "tool_result", "tool_use_id": "x", "content": "ok"}]},
+            return_value={"role": "user", "content": "tool result"},
         )
 
-        # Tool registry: mock function_tools + execute
         tool_registry = MagicMock()
-
-        def _get_tool(name):
-            spec = MagicMock()
-            spec.name = name
-            spec.description = f"{name} tool"
-            spec.json_schema = {"type": "object", "properties": {}}
-            return spec
-
-        tool_registry.get = MagicMock(side_effect=_get_tool)
+        tool_registry.get = MagicMock(return_value=MagicMock())
         tool_registry.function_tools = MagicMock(return_value=[])
         tool_registry.execute = AsyncMock(return_value=ToolExecutionResult(
-            success=True, payload={"results": ["X info"]},
+            success=True,
+            payload={"answer": "RAG info", "evidence": [], "confidence": "high", "unclear": ""},
         ))
 
-        agent_registry = _make_registry_with_agents(router, tool_registry, mutation_log)
+        agent_registry = AgentRegistry()
+        agent_services = {"agent_registry": agent_registry}
+        agent_registry.register(
+            "researcher",
+            Researcher.create(router, tool_registry, mutation_log, services=agent_services),
+        )
+        agent_registry.register(
+            "coder",
+            Coder.create(router, tool_registry, mutation_log, services=agent_services),
+        )
 
         ctx = ToolExecutionContext(
             execute_shell=AsyncMock(),
             shell_default_cwd=".",
-            services={
-                "agent_registry": agent_registry,
-            },
+            services={"agent_registry": agent_registry},
         )
         req = ToolExecutionRequest(
-            name="delegate",
-            arguments={"request": "帮我查一下 X 是什么"},
+            name="delegate_to_researcher",
+            arguments={"request": "帮我查一下最新的 RAG 论文"},
         )
 
-        result = await delegate_executor(req, ctx)
-        assert result.success
-        assert "X" in result.payload.get("result", "")
+        result = await delegate_to_researcher_executor(req, ctx)
+        assert result.success, f"delegate 失败: {result.reason}"
+        assert "RAG" in result.payload["result"]
+
+        # 2 次 LLM 调用（Researcher×2），不再有 TeamLead 中间层
+        assert router.complete_with_tools.await_count == 2
+
+        recorded_types = [
+            call.args[0] for call in mutation_log.record.call_args_list if call.args
+        ]
+        assert MutationType.AGENT_STARTED in recorded_types
+        assert MutationType.AGENT_TOOL_CALL in recorded_types
+        assert MutationType.AGENT_COMPLETED in recorded_types
 
 
 class TestE2ERealDelegation:
-    """真实端到端测试：tool_registry.execute 不 mock，实际调用 delegate_to_agent_executor。
+    """真实端到端测试：tool_registry.execute 不 mock。
 
-    验证 services 传递正确：TeamLead → _execute_tool → ToolExecutionContext(services=...)
-    → delegate_to_agent_executor 能拿到 agent_registry → 找到 Researcher → Researcher 执行。
-
-    Step 6 对齐：mutation_log 埋点替代 dispatcher——验证 agent.task_started /
-    agent.tool_called / agent.task_done 都走 mutation_log.record。
+    验证 services 传递正确：delegate executor → Agent → _execute_tool
+    → ToolExecutionContext(services=...) → research 工具。
     """
 
     async def test_real_chain_lapwing_to_researcher(self):
-        """delegate → TeamLead → delegate_to_agent → Researcher → research → 结果。"""
-        from src.tools.agent_tools import delegate_to_agent_executor
+        """delegate_to_researcher → Researcher → research → 结果。"""
         from src.tools.registry import ToolRegistry
 
         mutation_log = _make_mutation_log()
-
         real_registry = ToolRegistry()
-
-        real_registry.register(ToolSpec(
-            name="delegate_to_agent",
-            description="把子任务派给一个具体的 Agent。",
-            json_schema={
-                "type": "object",
-                "properties": {
-                    "agent": {"type": "string"},
-                    "instruction": {"type": "string"},
-                },
-                "required": ["agent", "instruction"],
-            },
-            executor=delegate_to_agent_executor,
-            capability="agent",
-            risk_level="low",
-        ))
 
         async def fake_research(req, ctx):
             return ToolExecutionResult(
                 success=True,
                 payload={
                     "answer": "RAG 是检索增强生成技术。",
-                    "evidence": [{
-                        "source_url": "https://arxiv.org/abs/2025.12345",
-                        "source_name": "RAG Paper 2025",
-                        "quote": "RAG is a retrieval augmented generation technique.",
-                    }],
+                    "evidence": [{"source_url": "https://arxiv.org/abs/2025.12345"}],
                     "confidence": "high",
                     "unclear": "",
                 },
@@ -162,18 +123,12 @@ class TestE2ERealDelegation:
         real_registry.register(ToolSpec(
             name="research",
             description="回答需要查找信息的问题",
-            json_schema={
-                "type": "object",
-                "properties": {"question": {"type": "string"}},
-                "required": ["question"],
-            },
+            json_schema={"type": "object", "properties": {"question": {"type": "string"}}, "required": ["question"]},
             executor=fake_research,
             capability="web",
             risk_level="low",
         ))
 
-        # browse 也在 Researcher profile 白名单里；注册一个 noop 满足严格
-        # 校验（Step 1 §4.2：tool_names 必须全部已注册）。
         async def _noop_browse(req, ctx):
             return ToolExecutionResult(success=True, payload={})
 
@@ -187,20 +142,9 @@ class TestE2ERealDelegation:
         ))
 
         agent_registry = AgentRegistry()
-        agent_services = {
-            "agent_registry": agent_registry,
-        }
+        agent_services = {"agent_registry": agent_registry}
 
         router = MagicMock()
-
-        tl_round1 = ToolTurnResult(
-            text="",
-            tool_calls=[ToolCallRequest(
-                id="tl1", name="delegate_to_agent",
-                arguments={"agent": "researcher", "instruction": "搜索 RAG 最新论文"},
-            )],
-            continuation_message={"role": "assistant", "content": ""},
-        )
 
         researcher_round1 = ToolTurnResult(
             text="",
@@ -210,30 +154,19 @@ class TestE2ERealDelegation:
             )],
             continuation_message={"role": "assistant", "content": ""},
         )
-
         researcher_round2 = ToolTurnResult(
             text="RAG 是检索增强生成技术。[来源: https://arxiv.org/abs/2025.12345]",
             tool_calls=[],
             continuation_message=None,
         )
 
-        tl_round2 = ToolTurnResult(
-            text="调研结果：RAG 是检索增强生成技术，最新论文见 arxiv。",
-            tool_calls=[],
-            continuation_message=None,
-        )
-
         router.complete_with_tools = AsyncMock(
-            side_effect=[tl_round1, researcher_round1, researcher_round2, tl_round2],
+            side_effect=[researcher_round1, researcher_round2],
         )
         router.build_tool_result_message = MagicMock(
             return_value={"role": "tool", "tool_call_id": "x", "name": "x", "content": "ok"},
         )
 
-        agent_registry.register(
-            "team_lead",
-            TeamLead.create(router, real_registry, mutation_log, services=agent_services),
-        )
         agent_registry.register(
             "researcher",
             Researcher.create(router, real_registry, mutation_log, services=agent_services),
@@ -246,61 +179,167 @@ class TestE2ERealDelegation:
         ctx = ToolExecutionContext(
             execute_shell=AsyncMock(),
             shell_default_cwd=".",
-            services={
-                "agent_registry": agent_registry,
-            },
+            services={"agent_registry": agent_registry},
         )
         req = ToolExecutionRequest(
-            name="delegate",
+            name="delegate_to_researcher",
             arguments={"request": "帮我查一下最新的 RAG 论文"},
         )
 
-        result = await delegate_executor(req, ctx)
-
+        result = await delegate_to_researcher_executor(req, ctx)
         assert result.success, f"delegate 失败: {result.reason}"
         assert "RAG" in result.payload["result"]
+        assert router.complete_with_tools.await_count == 2
 
-        # 4 次 LLM 调用（TL×2 + Researcher×2）
-        assert router.complete_with_tools.await_count == 4
-
-        # mutation_log 收到了各层事件
         recorded_types = [
             call.args[0] for call in mutation_log.record.call_args_list if call.args
         ]
         assert MutationType.AGENT_STARTED in recorded_types
-        assert MutationType.AGENT_TOOL_CALL in recorded_types
         assert MutationType.AGENT_COMPLETED in recorded_types
 
-    async def test_dynamic_agent_list_in_description(self):
-        """Step 6 改动 5：register_agent_tools 从 AgentRegistry 动态填充 description。"""
-        from src.agents.registry import AgentRegistry
+    async def test_dynamic_tool_registration(self):
+        """register_agent_tools 注册 delegate_to_researcher + delegate_to_coder。"""
         from src.tools.registry import ToolRegistry
 
         tool_registry = ToolRegistry()
-        agent_registry = AgentRegistry()
+        register_agent_tools(tool_registry)
 
+        researcher_spec = tool_registry.get("delegate_to_researcher")
+        assert researcher_spec is not None
+        assert "Researcher" in researcher_spec.description
+
+        coder_spec = tool_registry.get("delegate_to_coder")
+        assert coder_spec is not None
+        assert "Coder" in coder_spec.description
+
+
+class TestContextDigest:
+    """context_digest 为空和非空两种场景。"""
+
+    async def test_empty_context_digest_works(self):
+        """最常见的生产场景——delegate 不带 context，agent 照常工作。"""
         mutation_log = _make_mutation_log()
-        router = MagicMock()
 
+        router = MagicMock()
+        router.complete_with_tools = AsyncMock(return_value=ToolTurnResult(
+            text="Done.", tool_calls=[], continuation_message=None,
+        ))
+
+        tool_registry = MagicMock()
+        tool_registry.function_tools = MagicMock(return_value=[])
+
+        agent_registry = AgentRegistry()
+        agent_services = {"agent_registry": agent_registry}
         agent_registry.register(
             "researcher",
-            Researcher.create(router, tool_registry, mutation_log),
+            Researcher.create(router, tool_registry, mutation_log, services=agent_services),
         )
+
+        ctx = ToolExecutionContext(
+            execute_shell=AsyncMock(),
+            shell_default_cwd=".",
+            services={"agent_registry": agent_registry},
+        )
+        req = ToolExecutionRequest(
+            name="delegate_to_researcher",
+            arguments={"request": "查天气"},
+        )
+
+        result = await delegate_to_researcher_executor(req, ctx)
+        assert result.success
+
+    async def test_context_digest_injected_into_prompt(self):
+        """子 agent system prompt 确实包含了上下文段落。"""
+        mutation_log = _make_mutation_log()
+
+        captured_messages = []
+        router = MagicMock()
+
+        async def _capture_and_respond(**kwargs):
+            captured_messages.extend(kwargs.get("messages", []))
+            return ToolTurnResult(text="Done.", tool_calls=[], continuation_message=None)
+
+        router.complete_with_tools = AsyncMock(side_effect=_capture_and_respond)
+
+        tool_registry = MagicMock()
+        tool_registry.function_tools = MagicMock(return_value=[])
+
+        agent_registry = AgentRegistry()
+        agent_services = {"agent_registry": agent_registry}
         agent_registry.register(
-            "coder",
-            Coder.create(router, tool_registry, mutation_log),
+            "researcher",
+            Researcher.create(router, tool_registry, mutation_log, services=agent_services),
         )
 
-        register_agent_tools(tool_registry, agent_registry)
+        ctx = ToolExecutionContext(
+            execute_shell=AsyncMock(),
+            shell_default_cwd=".",
+            services={"agent_registry": agent_registry},
+        )
+        req = ToolExecutionRequest(
+            name="delegate_to_researcher",
+            arguments={
+                "request": "查一下",
+                "context_digest": "Kevin 在讨论 2026 年 RAG 论文",
+            },
+        )
 
-        delegate_spec = tool_registry.get("delegate")
-        assert delegate_spec is not None
-        assert "researcher" in delegate_spec.description
-        assert "coder" in delegate_spec.description
+        await delegate_to_researcher_executor(req, ctx)
 
-        to_agent_spec = tool_registry.get("delegate_to_agent")
-        assert to_agent_spec is not None
-        # agent 参数 enum 动态填充
-        agent_prop = to_agent_spec.json_schema["properties"]["agent"]
-        assert "enum" in agent_prop
-        assert set(agent_prop["enum"]) == {"researcher", "coder"}
+        system_msg = next(m for m in captured_messages if m["role"] == "system")
+        assert "来自主人格的上下文" in system_msg["content"]
+        assert "2026 年 RAG 论文" in system_msg["content"]
+
+
+class TestWhitelistViolation:
+    """白名单违规：Researcher 被 LLM 要求调 execute_shell → 被 profile 拒绝。"""
+
+    async def test_researcher_cannot_call_shell(self):
+        from src.core.runtime_profiles import AGENT_RESEARCHER_PROFILE
+
+        assert "execute_shell" not in AGENT_RESEARCHER_PROFILE.tool_names
+
+    async def test_coder_cannot_call_shell(self):
+        from src.core.runtime_profiles import AGENT_CODER_PROFILE
+
+        assert "execute_shell" not in AGENT_CODER_PROFILE.tool_names
+
+
+class TestParentTaskId:
+    """mutation 事件带 parent_task_id。"""
+
+    async def test_mutations_carry_parent_task_id(self):
+        mutation_log = _make_mutation_log()
+
+        router = MagicMock()
+        router.complete_with_tools = AsyncMock(return_value=ToolTurnResult(
+            text="Done.", tool_calls=[], continuation_message=None,
+        ))
+
+        tool_registry = MagicMock()
+        tool_registry.function_tools = MagicMock(return_value=[])
+
+        agent_registry = AgentRegistry()
+        agent_services = {"agent_registry": agent_registry}
+        agent_registry.register(
+            "researcher",
+            Researcher.create(router, tool_registry, mutation_log, services=agent_services),
+        )
+
+        ctx = ToolExecutionContext(
+            execute_shell=AsyncMock(),
+            shell_default_cwd=".",
+            services={"agent_registry": agent_registry},
+        )
+        req = ToolExecutionRequest(
+            name="delegate_to_researcher",
+            arguments={"request": "test"},
+        )
+
+        await delegate_to_researcher_executor(req, ctx)
+
+        started_calls = [
+            call for call in mutation_log.record.call_args_list
+            if call.args and call.args[0] == MutationType.AGENT_STARTED
+        ]
+        assert len(started_calls) >= 1

@@ -1,224 +1,196 @@
-"""Agent Team 工具：delegate + delegate_to_agent。
+"""Agent Team 工具：delegate_to_researcher + delegate_to_coder。
 
-v2.0 Step 6 对齐：delegate 执行完全依赖 ``BaseAgent`` 的 mutation_log
-埋点（``AGENT_STARTED`` / ``AGENT_TOOL_CALL`` / ``AGENT_COMPLETED`` /
-``AGENT_FAILED``），tool executor 自身不再重复 emit 事件——Phase 6 的
-``dispatcher.submit(event_type="agent.task_*")`` 双层 emit 已删除，
-Desktop SSE 通过 mutation_log 直接拿到完整生命周期。
-
-工具 description + enum 从 ``AgentRegistry`` 动态填充，避免硬编码
-Agent 名称和描述漂移（Step 6 改动 5）。
+两层调度（Lapwing → Agent），取代旧的三层（Lapwing → TeamLead → Agent）。
+Lapwing 通过两个直达工具分别调度 Researcher 和 Coder，省掉 TeamLead。
 """
 
 from __future__ import annotations
 
 import logging
+import traceback
 import uuid
 
-from src.agents.types import AgentMessage
+from src.agents.types import AgentMessage, AgentResult
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult, ToolSpec
 
 logger = logging.getLogger("lapwing.tools.agent_tools")
+
+_AGENT_MAX_ITERATIONS = 30
 
 
 def _generate_task_id() -> str:
     return f"task_{uuid.uuid4().hex[:12]}"
 
 
-async def delegate_executor(
-    req: ToolExecutionRequest, ctx: ToolExecutionContext,
-) -> ToolExecutionResult:
-    """Lapwing 调用的 delegate 工具。把任务交给 Team Lead。"""
-    request = req.arguments.get("request", "").strip()
-    context_str = req.arguments.get("context", "")
+def _extract_context_digest(ctx: ToolExecutionContext) -> str:
+    """从当前上下文中提取摘要供子 agent 参考。"""
+    parts: list[str] = []
 
-    if not request:
-        return ToolExecutionResult(success=False, payload={}, reason="请求不能为空")
+    trajectory_store = ctx.services.get("trajectory_store")
+    if trajectory_store is not None:
+        try:
+            recent = trajectory_store.recent(ctx.chat_id, limit=6)
+            if recent:
+                lines = []
+                for entry in recent[-6:]:
+                    role = getattr(entry, "role", "")
+                    text = getattr(entry, "text", "") or getattr(entry, "content", "")
+                    if text:
+                        lines.append(f"{role}: {str(text)[:200]}")
+                if lines:
+                    parts.append("最近对话：\n" + "\n".join(lines))
+        except Exception:
+            pass
 
-    agent_registry = ctx.services.get("agent_registry")
+    return "\n\n".join(parts)
 
-    if not agent_registry:
-        return ToolExecutionResult(success=False, payload={}, reason="Agent Team 未就绪")
 
-    team_lead = agent_registry.get("team_lead")
-    if not team_lead:
-        return ToolExecutionResult(success=False, payload={}, reason="Team Lead 不可用")
-
-    task_id = _generate_task_id()
-
-    message = AgentMessage(
-        from_agent="lapwing",
-        to_agent="team_lead",
-        task_id=task_id,
-        content=f"{request}\n\n上下文: {context_str}" if context_str else request,
-        message_type="request",
-    )
-
-    result = await team_lead.execute(message)
+def _serialize_agent_result(result: AgentResult, task_id: str) -> ToolExecutionResult:
+    """统一将 AgentResult 序列化为 ToolExecutionResult。"""
+    trace_tail = result.execution_trace[-5:] if result.execution_trace else []
 
     if result.status == "done":
+        payload: dict = {
+            "task_id": task_id,
+            "result": result.result,
+            "artifacts": result.artifacts,
+            "evidence": result.evidence,
+        }
+        if trace_tail:
+            payload["execution_trace"] = trace_tail
         return ToolExecutionResult(
             success=True,
-            payload={
-                "task_id": task_id,
-                "result": result.result,
-                "artifacts": result.artifacts,
-            },
+            payload=payload,
             reason="任务完成",
         )
     else:
+        payload = {
+            "task_id": task_id,
+            "status": result.status,
+        }
+        if result.error_detail:
+            payload["error_detail"] = result.error_detail
+        if trace_tail:
+            payload["execution_trace"] = trace_tail
         return ToolExecutionResult(
             success=False,
-            payload={"task_id": task_id, "status": result.status},
+            payload=payload,
             reason=result.reason or "任务失败",
         )
 
 
-async def delegate_to_agent_executor(
-    req: ToolExecutionRequest, ctx: ToolExecutionContext,
+async def _run_agent(
+    agent_name: str,
+    request: str,
+    context_digest: str,
+    ctx: ToolExecutionContext,
+    parent_task_id: str | None = None,
 ) -> ToolExecutionResult:
-    """Team Lead 调用的工具。把子任务派给具体 Agent。"""
-    agent_name = req.arguments.get("agent", "").strip()
-    instruction = req.arguments.get("instruction", "").strip()
-
-    if not agent_name or not instruction:
-        return ToolExecutionResult(
-            success=False, payload={},
-            reason="agent 和 instruction 不能为空",
-        )
-
+    """直接调度指定 agent 执行任务。"""
     agent_registry = ctx.services.get("agent_registry")
-
     if not agent_registry:
         return ToolExecutionResult(success=False, payload={}, reason="Agent Team 未就绪")
 
     agent = agent_registry.get(agent_name)
     if not agent:
-        available = agent_registry.list_names()
         return ToolExecutionResult(
             success=False, payload={},
-            reason=f"Agent '{agent_name}' 不存在。可用: {', '.join(available)}",
+            reason=f"Agent '{agent_name}' 不可用",
         )
 
-    subtask_id = _generate_task_id()
+    task_id = _generate_task_id()
+
+    digest = context_digest.strip()
+    if not digest:
+        digest = _extract_context_digest(ctx)
 
     message = AgentMessage(
-        from_agent="team_lead",
+        from_agent="lapwing",
         to_agent=agent_name,
-        task_id=subtask_id,
-        content=instruction,
+        task_id=task_id,
+        content=request,
+        context_digest=digest,
         message_type="request",
+        parent_task_id=parent_task_id,
     )
 
-    result = await agent.execute(message)
-
-    if result.status == "done":
-        return ToolExecutionResult(
-            success=True,
-            payload={
-                "result": result.result,
-                "evidence": result.evidence,
-                "artifacts": result.artifacts,
-            },
-            reason="ok",
-        )
-    else:
+    try:
+        result = await agent.execute(message)
+    except Exception as exc:
+        tb = traceback.format_exc()
+        tb_tail = "\n".join(tb.strip().splitlines()[-5:])
         return ToolExecutionResult(
             success=False,
-            payload={"status": result.status},
-            reason=result.reason or "失败",
+            payload={"task_id": task_id, "error_detail": tb_tail},
+            reason=f"Agent 执行异常: {exc}",
         )
 
-
-def _build_delegate_description(agent_registry) -> str:
-    """从 AgentRegistry 动态生成团队成员列表。"""
-    base = "把任务交给你的工作团队。告诉 Team Lead 你需要什么。"
-    if agent_registry is None:
-        return base
-    specs = agent_registry.list_specs()
-    if not specs:
-        return base
-    lines = [base, "", "团队成员："]
-    for spec in specs:
-        lines.append(f"- {spec['name']}: {spec['description']}")
-    return "\n".join(lines)
+    return _serialize_agent_result(result, task_id)
 
 
-def _build_delegate_to_agent_description(agent_registry) -> str:
-    base = "把子任务派给一个具体的 Agent。"
-    if agent_registry is None:
-        return base
-    specs = agent_registry.list_specs()
-    if not specs:
-        return base
-    lines = [base, "", "可用 Agent："]
-    for spec in specs:
-        lines.append(f"- {spec['name']}: {spec['description']}")
-    return "\n".join(lines)
+async def delegate_to_researcher_executor(
+    req: ToolExecutionRequest, ctx: ToolExecutionContext,
+) -> ToolExecutionResult:
+    request = req.arguments.get("request", "").strip()
+    if not request:
+        return ToolExecutionResult(success=False, payload={}, reason="request 不能为空")
+
+    context_digest = req.arguments.get("context_digest", "")
+    return await _run_agent("researcher", request, context_digest, ctx)
 
 
-def _agent_enum(agent_registry) -> list[str]:
-    if agent_registry is None:
-        return []
-    return [s["name"] for s in agent_registry.list_specs()]
+async def delegate_to_coder_executor(
+    req: ToolExecutionRequest, ctx: ToolExecutionContext,
+) -> ToolExecutionResult:
+    request = req.arguments.get("request", "").strip()
+    if not request:
+        return ToolExecutionResult(success=False, payload={}, reason="request 不能为空")
+
+    context_digest = req.arguments.get("context_digest", "")
+    return await _run_agent("coder", request, context_digest, ctx)
 
 
 def register_agent_tools(registry, agent_registry=None) -> None:
-    """注册 Agent Team 工具到 ToolRegistry。
+    """注册 delegate_to_researcher + delegate_to_coder 到 ToolRegistry。"""
 
-    ``agent_registry`` 用于动态生成工具 description 与 ``agent`` enum。
-    container 在组装 AgentRegistry 后调用这里注册，description 随当前
-    成员列表生效——新增/删除 Agent 不用改工具 schema。
-    """
-
-    enum = _agent_enum(agent_registry)
-    to_agent_schema_agent: dict = {
-        "type": "string",
-        "description": "Agent 名称",
+    _DELEGATE_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "request": {"type": "string", "description": "你的需求——清晰具体地描述任务"},
+            "context_digest": {
+                "type": "string",
+                "description": "当前对话的背景摘要，帮助 agent 理解上下文",
+            },
+        },
+        "required": ["request"],
     }
-    if enum:
-        to_agent_schema_agent["enum"] = enum
 
     registry.register(ToolSpec(
-        name="delegate",
-        description=_build_delegate_description(agent_registry),
-        json_schema={
-            "type": "object",
-            "properties": {
-                "request": {"type": "string", "description": "你的需求"},
-                "urgency": {
-                    "type": "string",
-                    "enum": ["low", "normal", "high"],
-                    "description": "紧急程度",
-                    "default": "normal",
-                },
-                "context": {"type": "string", "description": "相关上下文（可选）"},
-            },
-            "required": ["request"],
-        },
-        executor=delegate_executor,
-        capability="general",
+        name="delegate_to_researcher",
+        description=(
+            "把调研任务交给 Researcher。"
+            "擅长：网络搜索、信息整理、多源综合、写摘要。"
+            "不擅长：写代码、执行脚本、文件操作。"
+        ),
+        json_schema=_DELEGATE_SCHEMA,
+        executor=delegate_to_researcher_executor,
+        capability="agent",
         risk_level="low",
         max_result_tokens=3000,
     ))
 
     registry.register(ToolSpec(
-        name="delegate_to_agent",
-        description=_build_delegate_to_agent_description(agent_registry),
-        json_schema={
-            "type": "object",
-            "properties": {
-                "agent": to_agent_schema_agent,
-                "instruction": {
-                    "type": "string",
-                    "description": "给 Agent 的指令",
-                },
-            },
-            "required": ["agent", "instruction"],
-        },
-        executor=delegate_to_agent_executor,
+        name="delegate_to_coder",
+        description=(
+            "把代码任务交给 Coder。"
+            "擅长：写代码、调试、跑脚本、文件读写。"
+            "不擅长：网络搜索、信息调研。"
+        ),
+        json_schema=_DELEGATE_SCHEMA,
+        executor=delegate_to_coder_executor,
         capability="agent",
         risk_level="low",
+        max_result_tokens=3000,
     ))
 
-    logger.info("[agent_tools] 已注册 delegate + delegate_to_agent")
+    logger.info("[agent_tools] 已注册 delegate_to_researcher + delegate_to_coder")

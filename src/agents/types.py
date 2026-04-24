@@ -37,6 +37,8 @@ class AgentMessage:
     task_id: str
     content: str
     message_type: str            # "request" / "response" / "update"
+    context_digest: str = ""
+    parent_task_id: str | None = None
     timestamp: datetime = field(default_factory=datetime.now)
 
 
@@ -50,3 +52,5 @@ class AgentResult:
     evidence: list[dict] = field(default_factory=list)
     reason: str = ""
     attempted_actions: list[str] = field(default_factory=list)
+    error_detail: str | None = None
+    execution_trace: list[str] = field(default_factory=list)

@@ -56,11 +56,6 @@ SLOT_DEFINITIONS: dict[str, dict[str, str]] = {
         "description": "代码生成与执行 Agent，需要 tool calling",
         "requires_tools": "true",
     },
-    "agent_team_lead": {
-        "name": "TeamLead Agent",
-        "description": "Agent Team 编排调度，需要 tool calling",
-        "requires_tools": "true",
-    },
     "agent_researcher": {
         "name": "Researcher Agent",
         "description": "搜索信息综合 Agent，需要 tool calling",

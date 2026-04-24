@@ -317,7 +317,8 @@ class TaskRuntime:
             "get_time",
             "send_image", "view_image",
             "set_reminder", "view_reminders", "cancel_reminder",
-            "delegate",
+            "delegate_to_researcher",
+            "delegate_to_coder",
         }
         # Step 5 M2: 承诺三件套若已注册则纳入（M1 时尚未注册）
         for promise_tool in (

@@ -25,7 +25,7 @@ def _make_spec(**overrides):
 
 def _make_message(content="do something", task_id="t1"):
     return AgentMessage(
-        from_agent="team_lead",
+        from_agent="lapwing",
         to_agent="test_agent",
         task_id=task_id,
         content=content,

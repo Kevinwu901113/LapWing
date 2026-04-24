@@ -46,7 +46,7 @@ class TestAgentMessage:
     def test_fields(self):
         msg = AgentMessage(
             from_agent="lapwing",
-            to_agent="team_lead",
+            to_agent="researcher",
             task_id="task_001",
             content="查一下天气",
             message_type="request",
@@ -54,6 +54,19 @@ class TestAgentMessage:
         assert msg.from_agent == "lapwing"
         assert msg.message_type == "request"
         assert isinstance(msg.timestamp, datetime)
+        assert msg.context_digest == ""
+        assert msg.parent_task_id is None
+
+    def test_context_digest(self):
+        msg = AgentMessage(
+            from_agent="lapwing",
+            to_agent="researcher",
+            task_id="task_002",
+            content="查天气",
+            message_type="request",
+            context_digest="Kevin 想知道明天天气",
+        )
+        assert msg.context_digest == "Kevin 想知道明天天气"
 
 
 class TestAgentResult:
@@ -71,3 +84,13 @@ class TestAgentResult:
         )
         assert r.reason == "timeout"
         assert len(r.attempted_actions) == 2
+
+    def test_error_detail_and_execution_trace(self):
+        r = AgentResult(
+            task_id="t1", status="failed", result="",
+            reason="LLM error",
+            error_detail="asyncio.TimeoutError",
+            execution_trace=["started", "tool: research", "failed"],
+        )
+        assert r.error_detail == "asyncio.TimeoutError"
+        assert len(r.execution_trace) == 3

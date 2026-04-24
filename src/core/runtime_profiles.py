@@ -77,17 +77,9 @@ AGENT_CODER_PROFILE = RuntimeProfile(
     capabilities=frozenset(),
     tool_names=frozenset({
         "ws_file_read", "ws_file_write", "ws_file_list",
-        "execute_shell", "run_python_code",
+        "run_python_code",
     }),
     include_internal=True,
-    shell_policy_enabled=False,
-)
-
-AGENT_TEAM_LEAD_PROFILE = RuntimeProfile(
-    name="agent_team_lead",
-    capabilities=frozenset(),
-    tool_names=frozenset({"delegate_to_agent"}),
-    include_internal=False,
     shell_policy_enabled=False,
 )
 
@@ -100,7 +92,6 @@ _PROFILES = {
         FILE_OPS_PROFILE,
         AGENT_RESEARCHER_PROFILE,
         AGENT_CODER_PROFILE,
-        AGENT_TEAM_LEAD_PROFILE,
     )
 }
 

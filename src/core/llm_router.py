@@ -85,7 +85,6 @@ _SLOT_TO_PURPOSE: dict[str, str] = {
     "memory_processing": "tool",
     "agent_execution": "tool",
     "agent_coder": "tool",
-    "agent_team_lead": "tool",
     "agent_researcher": "tool",
     "heartbeat_proactive": "heartbeat",
 }

@@ -27,7 +27,7 @@ class Task:
     parent_task_id: str | None
     source: str  # "kevin_qq" / "kevin_desktop" / "heartbeat" / "reminder"
     status: str  # "queued" / "running" / "blocked" / "done" / "failed" / "cancelled"
-    initiator: str  # "lapwing" / "team_lead"
+    initiator: str  # "lapwing"
     assigned_to: str | None
     request: str
     context: str

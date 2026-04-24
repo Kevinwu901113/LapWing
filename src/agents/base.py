@@ -2,10 +2,7 @@
 
 v2.0 Step 6：观测改由 ``StateMutationLog`` 承担——每个 Agent 执行发射
 ``AGENT_STARTED`` / ``AGENT_TOOL_CALL`` / ``AGENT_COMPLETED`` / ``AGENT_FAILED``
-四类 mutation。Phase 6 原本的 ``dispatcher.submit(event_type="agent.*")``
-已全部移除；Desktop SSE（``/api/v2/events``）在 Step 4 M5 起直接订阅
-mutation_log，所以语义字符串保持 ``agent.task_*`` 以零成本兼容现有
-``useSSEv2.ts`` 消费逻辑。
+四类 mutation。
 """
 
 from __future__ import annotations
@@ -14,6 +11,7 @@ import asyncio
 import json
 import logging
 import time
+import traceback
 from typing import TYPE_CHECKING, Any
 
 from src.logging.state_mutation_log import MutationType
@@ -56,6 +54,7 @@ class BaseAgent:
 
         start_ts = time.perf_counter()
         tool_calls_made = 0
+        execution_trace: list[str] = []
 
         loop_detector = LoopDetector(LoopDetectorConfig(
             warning_threshold=max(3, self.spec.max_rounds // 3),
@@ -69,11 +68,13 @@ class BaseAgent:
                 "task_id": message.task_id,
                 "agent_name": self.spec.name,
                 "actor": self.spec.name,
-                "parent_task_id": None if message.from_agent == "lapwing" else message.from_agent,
+                "parent_task_id": message.parent_task_id,
                 "title": message.content[:200],
                 "request": message.content,
             },
         )
+
+        execution_trace.append(f"started: {self.spec.name}")
 
         messages: list[dict[str, Any]] = [
             {"role": "system", "content": self._build_system_prompt(message)},
@@ -97,25 +98,30 @@ class BaseAgent:
             except asyncio.TimeoutError:
                 return await self._finalize_failed(
                     message, "LLM 调用超时", start_ts, tool_calls_made,
+                    execution_trace=execution_trace,
+                    error_detail="asyncio.TimeoutError during LLM call",
                 )
             except Exception as exc:
                 logger.exception("Agent '%s' LLM 调用失败", self.spec.name)
+                tb = traceback.format_exc()
+                tb_tail = "\n".join(tb.strip().splitlines()[-5:])
                 return await self._finalize_failed(
                     message, f"LLM error: {exc}", start_ts, tool_calls_made,
+                    execution_trace=execution_trace,
+                    error_detail=tb_tail,
                 )
 
-            # 无 tool_calls → 任务完成
             if not response.tool_calls:
+                execution_trace.append(f"completed: final text ({len(response.text)} chars)")
                 return await self._finalize_done(
                     message, response.text, self._extract_evidence(messages),
                     start_ts, tool_calls_made,
+                    execution_trace=execution_trace,
                 )
 
-            # 追加 assistant continuation
             if response.continuation_message:
                 messages.append(response.continuation_message)
 
-            # 执行工具
             tool_results: list[tuple] = []
             for tc in response.tool_calls:
                 check = loop_detector.check(loop_state, tc.name, tc.arguments)
@@ -128,8 +134,11 @@ class BaseAgent:
                         self.spec.name, tc.name,
                         check.generic_repeat_count, check.ping_pong_count,
                     )
+                    execution_trace.append(f"circuit_break: {tc.name}")
                     return await self._finalize_failed(
                         message, reason, start_ts, tool_calls_made,
+                        execution_trace=execution_trace,
+                        error_detail=f"Loop detected on tool '{tc.name}'",
                     )
 
                 if check.has_warning:
@@ -145,6 +154,8 @@ class BaseAgent:
                 tool_calls_made += 1
                 loop_detector.record(loop_state, tc.name, tc.arguments)
 
+                execution_trace.append(f"tool: {tc.name}")
+
                 preview = output if len(output) <= 800 else output[:800] + "...（截断）"
                 await self._emit(
                     MutationType.AGENT_TOOL_CALL,
@@ -152,6 +163,7 @@ class BaseAgent:
                         "task_id": message.task_id,
                         "agent_name": self.spec.name,
                         "actor": self.spec.name,
+                        "parent_task_id": message.parent_task_id,
                         "tool_name": tc.name,
                         "tool_args": tc.arguments,
                         "success": True,
@@ -159,7 +171,6 @@ class BaseAgent:
                     },
                 )
 
-            # 追加 tool results — build_tool_result_message expects list[tuple[ToolCallRequest, str]]
             result_msg = self.llm_router.build_tool_result_message(
                 tool_results, slot=self.spec.model_slot,
             )
@@ -168,10 +179,12 @@ class BaseAgent:
             elif result_msg:
                 messages.append(result_msg)
 
-        # 超出 max_rounds
+        execution_trace.append(f"max_rounds_exceeded: {self.spec.max_rounds}")
         return await self._finalize_failed(
             message, f"超过最大轮数 {self.spec.max_rounds}",
             start_ts, tool_calls_made,
+            execution_trace=execution_trace,
+            error_detail=f"Exceeded max_rounds={self.spec.max_rounds}",
         )
 
     async def _finalize_done(
@@ -181,6 +194,8 @@ class BaseAgent:
         evidence: list[dict],
         start_ts: float,
         tool_calls_made: int,
+        *,
+        execution_trace: list[str] | None = None,
     ) -> AgentResult:
         duration = time.perf_counter() - start_ts
         await self._emit(
@@ -189,6 +204,7 @@ class BaseAgent:
                 "task_id": message.task_id,
                 "agent_name": self.spec.name,
                 "actor": self.spec.name,
+                "parent_task_id": message.parent_task_id,
                 "summary": text[:500],
                 "content": text[:500],
                 "duration_seconds": round(duration, 3),
@@ -200,6 +216,7 @@ class BaseAgent:
             status="done",
             result=text,
             evidence=evidence,
+            execution_trace=execution_trace or [],
         )
 
     async def _finalize_failed(
@@ -208,6 +225,9 @@ class BaseAgent:
         reason: str,
         start_ts: float,
         tool_calls_made: int,
+        *,
+        execution_trace: list[str] | None = None,
+        error_detail: str | None = None,
     ) -> AgentResult:
         duration = time.perf_counter() - start_ts
         await self._emit(
@@ -216,6 +236,7 @@ class BaseAgent:
                 "task_id": message.task_id,
                 "agent_name": self.spec.name,
                 "actor": self.spec.name,
+                "parent_task_id": message.parent_task_id,
                 "reason": reason,
                 "content": reason,
                 "duration_seconds": round(duration, 3),
@@ -227,6 +248,8 @@ class BaseAgent:
             status="failed",
             result="",
             reason=reason,
+            error_detail=error_detail,
+            execution_trace=execution_trace or [],
         )
 
     async def _emit(self, event_type: MutationType, payload: dict[str, Any]) -> None:
@@ -245,24 +268,34 @@ class BaseAgent:
     )
 
     def _build_system_prompt(self, message: AgentMessage) -> str:
-        return f"""{self.spec.system_prompt}
+        parts = [
+            self.spec.system_prompt,
+            "",
+            self._AGENT_PERSONA_ANCHOR,
+        ]
 
-{self._AGENT_PERSONA_ANCHOR}
+        if message.context_digest:
+            parts.extend([
+                "",
+                "## 来自主人格的上下文",
+                "",
+                message.context_digest,
+            ])
 
-## 当前任务
+        parts.extend([
+            "",
+            "## 当前任务",
+            "",
+            f"Task ID: {message.task_id}",
+            f"来源: {message.from_agent}",
+            "",
+            "请完成任务后直接返回结果文本。不需要再调用工具时，输出最终结果即可。",
+        ])
 
-Task ID: {message.task_id}
-来源: {message.from_agent}
-
-请完成任务后直接返回结果文本。不需要再调用工具时，输出最终结果即可。"""
+        return "\n".join(parts)
 
     def _get_tools(self) -> list[dict]:
-        """根据 runtime_profile 或 tools 白名单返回 OpenAI function 列表。
-
-        优先用 ``runtime_profile``（Step 6 对齐）；兼容读取旧字段仅为了
-        在迁移过渡期间让 legacy fixtures 继续工作——代码库内没有剩余
-        的 legacy callsite。
-        """
+        """根据 runtime_profile 或 tools 白名单返回 OpenAI function 列表。"""
         profile = self.spec.runtime_profile
         if profile is not None:
             return self.tool_registry.function_tools(
@@ -270,7 +303,6 @@ Task ID: {message.task_id}
                 tool_names=set(profile.tool_names) if profile.tool_names else None,
                 include_internal=profile.include_internal,
             )
-        # Legacy path（仅为过渡期的 test fixtures 保留；生产代码用 profile）
         tools = []
         for tool_name in self.spec.tools or []:
             spec = self.tool_registry.get(tool_name)
@@ -281,6 +313,12 @@ Task ID: {message.task_id}
     async def _execute_tool(self, tool_call, message: AgentMessage) -> str:
         """执行工具并返回 JSON 字符串结果。"""
         from src.tools.types import ToolExecutionContext, ToolExecutionRequest
+        from src.tools.shell_executor import ShellResult
+
+        async def _noop_shell(cmd: str):
+            return ShellResult(stdout="", stderr="Shell disabled for agents", return_code=1)
+
+        services = dict(self._services) if self._services else {}
 
         ctx = ToolExecutionContext(
             execute_shell=_noop_shell,
@@ -289,7 +327,7 @@ Task ID: {message.task_id}
             user_id=f"agent:{self.spec.name}",
             auth_level=1,  # TRUSTED
             chat_id=f"agent-{message.task_id}",
-            services=self._services,
+            services=services,
         )
 
         req = ToolExecutionRequest(name=tool_call.name, arguments=tool_call.arguments)
@@ -298,7 +336,12 @@ Task ID: {message.task_id}
             return json.dumps(result.payload, ensure_ascii=False, default=str)
         except Exception as exc:
             logger.exception("Agent '%s' tool '%s' failed", self.spec.name, tool_call.name)
-            return json.dumps({"error": str(exc)}, ensure_ascii=False)
+            tb = traceback.format_exc()
+            tb_tail = "\n".join(tb.strip().splitlines()[-5:])
+            return json.dumps(
+                {"error": str(exc), "traceback": tb_tail},
+                ensure_ascii=False,
+            )
 
     def _extract_evidence(self, messages: list[dict]) -> list[dict]:
         evidence = []
@@ -314,9 +357,3 @@ Task ID: {message.task_id}
                 except Exception:
                     pass
         return evidence
-
-
-async def _noop_shell(cmd: str):
-    """Agent 不允许直接执行 shell。"""
-    from src.tools.shell_executor import ShellResult
-    return ShellResult(stdout="", stderr="Shell disabled for agents", return_code=1)
