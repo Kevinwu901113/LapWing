@@ -20,16 +20,19 @@ was retired; there is no Telegram code path in the current tree.
 
 ### MVP Invariants (do not break without a dedicated refactor)
 
-1. **`tell_user` is the sole user-visible output.** Every token that reaches a human must
-   pass through the `tell_user` tool. All other tool calls are internal monologue.
-2. **Think-then-speak loop.** Brain → LLM decides whether to call tools or call `tell_user`;
-   only `tell_user` produces user-visible bytes. The loop keeps running until the LLM stops
-   emitting tool calls.
+1. **Direct output.** In a conversation, the LLM's bare text reply is the user-visible
+   message — no wrapper tool. Tool calls are internal operations (search, notes, etc.).
+   When the model has no live conversation context (inner tick, scheduled reminder,
+   agent-mode scheduler), it uses the `send_message` tool to proactively push to a
+   specific target (`kevin_qq` / `kevin_desktop` / `qq_group:{id}`).
+2. **Think-then-speak loop.** Brain → LLM emits tool calls until it stops; the final
+   bare-text turn is what Kevin sees. Loop bounded by `TASK_MAX_TOOL_ROUNDS`.
 3. **Inner tick is interruptible.** When Lapwing is idle, `InnerTickScheduler` drives her
    own thoughts; an OWNER message pushes a high-priority event onto `EventQueue` and the
    inner tick yields.
-4. **StateMutationLog is the single source of truth** for LLM calls, tool calls, iterations,
-   promises, and tells. Anything that mutates durable state should record a mutation.
+4. **StateMutationLog is the single source of truth** for LLM calls, tool calls,
+   iterations, promises, and user-visible sends. Anything that mutates durable state
+   records a mutation.
 
 See *Known gaps* at the end of this document for invariant-level issues not yet addressed.
 
@@ -91,7 +94,7 @@ User message (QQ / Desktop adapter)
           → LLMRouter._tracked_call                        # LLM_REQUEST / LLM_RESPONSE
           → VitalGuard → AuthorityGate → ToolRegistry.execute()
                                                            # TOOL_CALLED / TOOL_RESULT
-          → iff tool == tell_user → bytes flow back to send_fn
+          → when LLM emits final bare text (no more tool_use) → send_fn delivers it
 ```
 
 ### Inner tick flow (idle → self-initiated thinking)
@@ -128,8 +131,11 @@ MaintenanceTimer (3 AM daily)
   `data/identity/`; episodic and semantic memory live as markdown under `data/memory/`.
   Databases are used for append-only event logs (`trajectory`, `commitments`,
   `reminders_v2`, `mutations`).
-- **Single output channel.** `tell_user` is the sole tool that produces user-visible bytes
-  (see Known gaps for plumbing that still bypasses this).
+- **Direct output, no wrapper tool.** In a live conversation the LLM's bare text is the
+  user-visible message — the contract is structural: the chat path delivers the final
+  non-tool-use reply through `send_fn`. `send_message` (in `personal_tools.py`) is used
+  only when there is no live conversation context (inner tick, scheduled reminder,
+  agent-mode scheduler fallback) to push a message to a specific target.
 - **Four-tier permissions.** `AuthorityGate` classifies callers into
   `IGNORE(0) / GUEST(1) / TRUSTED(2) / OWNER(3)`. `ToolRegistry` enforces the per-tool
   minimum in `src/core/authority_gate.py:OPERATION_AUTH`. Desktop connections default to
@@ -194,8 +200,9 @@ src/
                        Task planning: plan_state (PlanStep/PlanState/transitions)
                        Behavior correction: correction_manager (Kevin corrections +
                          circuit-breaker callback; triggers urgency at threshold)
-                       Framework-level user output: system_send (audited non-LLM exit;
-                         see Known gaps §tell_user single-exit)
+                       Framework-level user output: system_send (audited non-LLM exit
+                         for confirmations, LLM errors, notify-mode reminders, agent
+                         scheduler fallbacks)
                        Safety: authority_gate, vital_guard, shell_policy, shell_types,
                          verifier, credential_vault, credential_sanitizer
                        Sandbox: execution_sandbox (three-tier Docker isolation:
@@ -222,10 +229,12 @@ src/
   skills/            Skill Growth Model: skill_store.py (YAML+md CRUD),
                        skill_executor.py (Docker sandbox / host routing)
   tools/             Tool registry + executors:
-                       tell_user.py  — SOLE LLM user-visible output
                        commitments.py (commit / fulfill / abandon)
                        memory_tools_v2.py (recall / write_note / edit_note / …)
-                       personal_tools.py (get_time / send_message / send_image / browse / view_image)
+                       personal_tools.py (get_time / send_message / send_image /
+                         browse / view_image) — send_message is the proactive-push
+                         tool for no-conversation contexts (target=kevin_qq /
+                         kevin_desktop / qq_group:{id})
                        agent_tools.py (delegate, delegate_to_agent)
                        browser_tools.py (13 browser actions)
                        skill_tools.py (create / run / edit / list / promote / delete /
@@ -234,7 +243,8 @@ src/
                          check_ambient_knowledge / manage_interest_profile)
                        correction_tools.py (add_correction — logs Kevin's corrections)
                        plan_tools.py (plan_task / update_plan — multi-step task planning
-                         with soft-gate on tell_user)
+                         with soft-gate on the final bare-text reply)
+                       timezone_tools.py (convert_timezone / get_current_datetime)
                        research_tool.py
                        soul_tools.py (read_soul / edit_soul — OWNER only)
                        shell_executor / file_editor / code_runner / workspace_tools /
@@ -462,9 +472,9 @@ For multi-step requests the LLM calls `plan_task` (builds a `PlanState` with ≥
 then `update_plan` to advance status (`pending` → `in_progress` → `completed` /
 `blocked`). `PlanState` lives in `TaskRuntime.context.services["plan_state"]` (lifetime =
 single TaskRuntime execution; not persisted across turns). Each tool round re-injects the
-rendered plan into the LLM's view, and `tell_user` has a **soft gate**: if the plan has
-incomplete steps, a reminder prepends the tell warning the model to finish planning
-before speaking. Gate is advisory, not a hard block.
+rendered plan into the LLM's view, and the final bare-text reply carries a **soft gate**:
+if the plan has incomplete steps, a reminder is prepended warning the model to finish
+planning before speaking. Gate is advisory, not a hard block.
 
 ### Ambient knowledge
 
@@ -488,14 +498,13 @@ no external calls, used by `StateViewBuilder` to give every turn a dated preambl
 ### Framework-level user output (`system_send`)
 
 `src/core/system_send.py` is the **non-LLM** audited exit for user-visible bytes
-(`send_system_message`). The LLM's only exit remains `tell_user`; `system_send` covers
-the four framework-mediated cases that can't be shoehorned through the model: confirm
-responses (`TaskRuntime.resolve_pending_confirmation`), LLM-call error surfacing, timer-
-driven `notify`-mode reminders, and agent-mode scheduler fallbacks. Both exits write to
-`trajectory_store` and `mutation_log` with a `source` tag
-(`confirmation` / `llm_error` / `reminder_notify` / `reminder_agent_result` /
-`reminder_agent_fallback`) so the audit trail stays complete. See Known gaps
-§`tell_user` single-exit for the history.
+(`send_system_message`). It covers the four framework-mediated cases that don't run
+through the model: confirm responses (`TaskRuntime.resolve_pending_confirmation`),
+LLM-call error surfacing, timer-driven `notify`-mode reminders, and agent-mode scheduler
+fallbacks. LLM-mediated sends (bare-text conversation replies + `send_message` tool
+calls) write to `trajectory_store` + `mutation_log`; `system_send` writes the same
+entries with a `source` tag (`confirmation` / `llm_error` / `reminder_notify` /
+`reminder_agent_result` / `reminder_agent_fallback`) so the audit trail stays complete.
 
 ### Vitals
 
@@ -572,22 +581,21 @@ State: Zustand stores in `src/stores/` (`chat.ts`, `server.ts`). Types in `src/t
 
 ## Known gaps
 
-As of the 2026-04-19 MVP cleanup + its O1/O2/O3 follow-ups, there are no
-outstanding invariant-level gaps. Earlier documentation flagged three, all now
-resolved:
+As of the 2026-04-24 direct-output overhaul, there are no outstanding
+invariant-level gaps. Earlier documentation flagged several, all now resolved:
 
-- `tell_user` single-exit — resolved by O1. All user-visible bytes
-  (LLM-mediated through the `tell_user` tool, and framework-mediated
-  through `src/core/system_send.py:send_system_message`) record into
-  `trajectory_store` + `mutation_log`. The invariant stays intact: the LLM
-  has only one exit (`tell_user`); the framework has a distinct, audited
-  exit that carries a `source` tag (`confirmation` / `llm_error` /
-  `reminder_notify` / `reminder_agent_result` / `reminder_agent_fallback`).
-- `MainLoop` not load-bearing — resolved. The earlier note was wrong: the
-  handler bodies in `src/core/main_loop.py:_handle_message` /
-  `_handle_inner_tick` / `_handle_system` are fully implemented, and the QQ
-  adapter (`main.py`) + Desktop WebSocket (`src/api/routes/chat_ws.py`) push
-  `MessageEvent` into the shared `EventQueue` (the only consumers of
+- `tell_user` single-exit — superseded by the 2026-04-24 direct-output
+  overhaul. The `tell_user` tool was removed; in a live conversation the
+  LLM's bare text reply is the user-visible message (Invariant #1). The
+  `send_message` tool (in `personal_tools.py`) handles proactive pushes
+  when there is no live conversation context. Audit-trail guarantees are
+  preserved: both LLM-mediated sends and `system_send` framework exits
+  record into `trajectory_store` + `mutation_log`.
+- `MainLoop` not load-bearing — resolved. The handler bodies in
+  `src/core/main_loop.py:_handle_message` / `_handle_inner_tick` /
+  `_handle_system` are fully implemented, and the QQ adapter (`main.py`)
+  + Desktop WebSocket (`src/api/routes/chat_ws.py`) push `MessageEvent`
+  into the shared `EventQueue` (the only consumers of
   `brain.think_conversational` in production are the MainLoop handler and
   the scheduler fallback).
 - Dormant skill subsystem — resolved by O3 (removed), then
