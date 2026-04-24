@@ -64,7 +64,7 @@ class Researcher(BaseAgent):
             name="researcher",
             description="搜索和调研",
             system_prompt=RESEARCHER_SYSTEM_PROMPT,
-            model_slot="agent_execution",
+            model_slot="agent_researcher",
             runtime_profile=AGENT_RESEARCHER_PROFILE,
             max_rounds=15,
             max_tokens=40000,

@@ -16,8 +16,12 @@ this schema explicitly, so drift between "what the prompt sees" and
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.ambient.models import AmbientEntry, TimeContext
 
 
 # ── Identity ─────────────────────────────────────────────────────────
@@ -196,6 +200,8 @@ class StateView:
     memory_snippets: MemorySnippets
     commitments_active: tuple[CommitmentView, ...]
     skill_summary: SkillSummary | None = None
+    time_context: TimeContext | None = None
+    ambient_entries: tuple[AmbientEntry, ...] = ()
 
 
 # ── Serializer output ────────────────────────────────────────────────

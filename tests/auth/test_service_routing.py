@@ -21,11 +21,11 @@ def test_resolve_candidates_falls_back_to_env_when_binding_provider_mismatches(t
     env = {
         "LLM_API_KEY": "generic-key",
         "LLM_BASE_URL": "https://api.minimaxi.com/v1",
-        "LLM_MODEL": "MiniMax-M2.7",
+        "LLM_MODEL": "minimax-m2.7",
         "LLM_PROVIDER": "minimax",
         "LLM_CHAT_API_KEY": "chat-key",
         "LLM_CHAT_BASE_URL": "https://api.minimaxi.com/v1",
-        "LLM_CHAT_MODEL": "MiniMax-M2.7",
+        "LLM_CHAT_MODEL": "minimax-m2.7",
         "LLM_CHAT_PROVIDER": "minimax",
         "LLM_TOOL_API_KEY": "",
         "LLM_TOOL_BASE_URL": "",
@@ -78,7 +78,7 @@ def test_unbind_profile_returns_clear_result(tmp_path):
     env = {
         "LLM_API_KEY": "generic-key",
         "LLM_BASE_URL": "https://api.minimaxi.com/v1",
-        "LLM_MODEL": "MiniMax-M2.7",
+        "LLM_MODEL": "minimax-m2.7",
     }
     with patch.dict("os.environ", env, clear=True):
         _clear_auth_modules()

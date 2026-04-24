@@ -22,7 +22,7 @@ class TestResearcherCreate:
         assert r.spec.runtime_profile is AGENT_RESEARCHER_PROFILE
         assert "research" in r.spec.runtime_profile.tool_names
         assert "browse" in r.spec.runtime_profile.tool_names
-        assert r.spec.model_slot == "agent_execution"
+        assert r.spec.model_slot == "agent_researcher"
 
     def test_system_prompt_mentions_sources(self):
         router, registry, mutation_log = _make_deps()

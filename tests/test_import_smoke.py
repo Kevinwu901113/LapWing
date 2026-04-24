@@ -95,7 +95,7 @@ def test_llm_router_anthropic_path_reports_missing_dependency():
         {
             "LLM_API_KEY": "generic-key",
             "LLM_BASE_URL": "https://api.minimaxi.com/anthropic/v1",
-            "LLM_MODEL": "MiniMax-M2.7",
+            "LLM_MODEL": "minimax-m2.7",
             "LLM_CHAT_API_KEY": "",
             "LLM_CHAT_BASE_URL": "",
             "LLM_CHAT_MODEL": "",

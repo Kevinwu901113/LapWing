@@ -439,3 +439,122 @@ class TestPurity:
             serialize(sv)
         finally:
             monkeypatch.setattr(builtins, "open", original_open)
+
+
+# ── Ambient awareness ────────────────────────────────────────────────
+
+class TestAmbientAwareness:
+    """Tests for the new 环境感知 section (time context + ambient knowledge)."""
+
+    def _make_time_context(self):
+        from src.ambient.models import TimeContext
+        return TimeContext(
+            datetime_str="2026年4月22日 15:24",
+            weekday="星期三",
+            time_period="下午",
+            lunar_date="三月初六",
+            season="春季",
+            upcoming_events=("距劳动节还有9天。",),
+        )
+
+    def _make_ambient_entry(self, key="weather:la", topic="洛杉矶天气", summary="晴 28°C"):
+        from src.ambient.models import AmbientEntry
+        return AmbientEntry(
+            key=key, category="weather", topic=topic, data="{}",
+            summary=summary, fetched_at="2026-04-22T13:00:00Z",
+            expires_at="2026-04-22T17:00:00Z", source="test",
+            confidence=1.0,
+        )
+
+    def test_time_context_renders_awareness_section(self):
+        sv = _make_state(now=datetime(2026, 4, 22, 15, 24, tzinfo=_TAIPEI))
+        sv_with_tc = StateView(
+            identity_docs=sv.identity_docs,
+            attention_context=sv.attention_context,
+            trajectory_window=sv.trajectory_window,
+            memory_snippets=sv.memory_snippets,
+            commitments_active=sv.commitments_active,
+            time_context=self._make_time_context(),
+        )
+        out = serialize(sv_with_tc)
+        assert "你的环境感知" in out.system_prompt
+        assert "2026年4月22日" in out.system_prompt
+        assert "星期三" in out.system_prompt
+        assert "春季" in out.system_prompt
+
+    def test_time_context_removes_legacy_time_line(self):
+        sv = _make_state(now=datetime(2026, 4, 22, 15, 24, tzinfo=_TAIPEI))
+        sv_with_tc = StateView(
+            identity_docs=sv.identity_docs,
+            attention_context=sv.attention_context,
+            trajectory_window=sv.trajectory_window,
+            memory_snippets=sv.memory_snippets,
+            commitments_active=sv.commitments_active,
+            time_context=self._make_time_context(),
+        )
+        out = serialize(sv_with_tc)
+        # 旧格式时间行不应出现
+        assert "当前时间：" not in out.system_prompt
+        assert "约15时，台北时间" not in out.system_prompt
+
+    def test_no_time_context_keeps_legacy(self):
+        """time_context=None 时保持旧行为——向后兼容。"""
+        sv = _make_state(now=datetime(2026, 4, 22, 15, 24, tzinfo=_TAIPEI))
+        out = serialize(sv)
+        assert "当前时间：" in out.system_prompt
+        assert "你的环境感知" not in out.system_prompt
+
+    def test_ambient_entries_rendered(self):
+        tc = self._make_time_context()
+        entries = (self._make_ambient_entry(),)
+        sv = _make_state()
+        sv_with = StateView(
+            identity_docs=sv.identity_docs,
+            attention_context=sv.attention_context,
+            trajectory_window=sv.trajectory_window,
+            memory_snippets=sv.memory_snippets,
+            commitments_active=sv.commitments_active,
+            time_context=tc,
+            ambient_entries=entries,
+        )
+        out = serialize(sv_with)
+        assert "你已知的信息" in out.system_prompt
+        assert "洛杉矶天气" in out.system_prompt
+        assert "晴 28°C" in out.system_prompt
+
+    def test_no_ambient_entries_shows_placeholder(self):
+        tc = self._make_time_context()
+        sv = _make_state()
+        sv_with = StateView(
+            identity_docs=sv.identity_docs,
+            attention_context=sv.attention_context,
+            trajectory_window=sv.trajectory_window,
+            memory_snippets=sv.memory_snippets,
+            commitments_active=sv.commitments_active,
+            time_context=tc,
+            ambient_entries=(),
+        )
+        out = serialize(sv_with)
+        assert "暂无已缓存的环境知识" in out.system_prompt
+        assert "你已知的信息" not in out.system_prompt
+
+    def test_voice_anchor_uses_time_context_period(self):
+        """time_context 填充时，voice anchor 应使用其 time_period。"""
+        tc = self._make_time_context()  # time_period="下午"
+        turns = tuple(
+            TrajectoryTurn(role="user" if i % 2 == 0 else "assistant", content=f"t{i}")
+            for i in range(5)
+        )
+        sv = _make_state(turns=turns)
+        sv_with = StateView(
+            identity_docs=sv.identity_docs,
+            attention_context=sv.attention_context,
+            trajectory_window=sv.trajectory_window,
+            memory_snippets=sv.memory_snippets,
+            commitments_active=sv.commitments_active,
+            time_context=tc,
+        )
+        out = serialize(sv_with)
+        note_msgs = [m for m in out.messages if "[System Note]" in m["content"]]
+        assert len(note_msgs) == 1
+        assert "下午" in note_msgs[0]["content"]

@@ -21,7 +21,7 @@ def mock_brain():
     config_manager = MagicMock()
     config_manager.get_config.return_value = {
         "providers": [{"id": "minimax", "name": "MiniMax"}],
-        "slots": {"main_conversation": {"provider_id": "minimax", "model_id": "MiniMax-M2.7"}},
+        "slots": {"main_conversation": {"provider_id": "minimax", "model_id": "minimax-m2.7"}},
     }
     brain._model_config = config_manager
     brain._note_store = None

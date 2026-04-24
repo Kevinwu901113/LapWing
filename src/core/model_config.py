@@ -51,6 +51,21 @@ SLOT_DEFINITIONS: dict[str, dict[str, str]] = {
         "description": "子 Agent (Researcher/Coder/Browser 等) 的 LLM 调用，需要 tool calling",
         "requires_tools": "true",
     },
+    "agent_coder": {
+        "name": "Coder Agent",
+        "description": "代码生成与执行 Agent，需要 tool calling",
+        "requires_tools": "true",
+    },
+    "agent_team_lead": {
+        "name": "TeamLead Agent",
+        "description": "Agent Team 编排调度，需要 tool calling",
+        "requires_tools": "true",
+    },
+    "agent_researcher": {
+        "name": "Researcher Agent",
+        "description": "搜索信息综合 Agent，需要 tool calling",
+        "requires_tools": "true",
+    },
     "heartbeat_proactive": {
         "name": "Heartbeat 主动",
         "description": "主动消息、兴趣分享、自主浏览等 heartbeat 行为",
@@ -86,6 +101,7 @@ class ProviderInfo:
 class SlotAssignment:
     provider_id: str
     model_id: str
+    fallback_model_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -115,7 +131,11 @@ def _serialize(config: ModelRoutingConfig, *, include_api_key: bool = False) -> 
             for p in config.providers
         ],
         "slots": {
-            slot_id: {"provider_id": a.provider_id, "model_id": a.model_id}
+            slot_id: {
+                "provider_id": a.provider_id,
+                "model_id": a.model_id,
+                **({"fallback_model_ids": a.fallback_model_ids} if a.fallback_model_ids else {}),
+            }
             for slot_id, a in config.slots.items()
         },
     }
@@ -140,10 +160,11 @@ def _deserialize(data: dict[str, Any]) -> ModelRoutingConfig:
 
     slots = {}
     for slot_id, assignment in data.get("slots", {}).items():
-        if slot_id in SLOT_DEFINITIONS:
+        if slot_id in SLOT_DEFINITIONS and assignment.get("provider_id"):
             slots[slot_id] = SlotAssignment(
                 provider_id=assignment["provider_id"],
                 model_id=assignment["model_id"],
+                fallback_model_ids=assignment.get("fallback_model_ids", []),
             )
 
     return ModelRoutingConfig(providers=providers, slots=slots)
@@ -208,6 +229,13 @@ class ModelConfigManager:
             return None
 
         return (provider.base_url, assignment.model_id, provider.api_key, provider.api_type)
+
+    def resolve_fallback_models(self, slot_id: str) -> list[str]:
+        """返回 slot 的 fallback model 列表（同 provider 内的模型降级链）。"""
+        assignment = self._config.slots.get(slot_id)
+        if assignment is None:
+            return []
+        return list(assignment.fallback_model_ids)
 
     # ── Provider CRUD ──
 
@@ -414,6 +442,9 @@ class ModelConfigManager:
                 if "minimax" in base_url.lower():
                     pid = "minimax"
                     pname = "MiniMax"
+                elif "volces.com" in base_url.lower() or "volcengine" in base_url.lower():
+                    pid = "volcengine"
+                    pname = "火山方舟"
                 elif "bigmodel" in base_url.lower():
                     pid = "glm"
                     pname = "GLM (智谱)"
@@ -424,10 +455,11 @@ class ModelConfigManager:
                     pid = "anthropic"
                     pname = "Anthropic"
 
+                from src.core.llm_protocols import _detect_api_type
                 providers[pid] = ProviderInfo(
                     id=pid,
                     name=pname,
-                    api_type="anthropic" if "anthropic" in base_url.lower() else "openai",
+                    api_type=_detect_api_type(base_url),
                     base_url=base_url,
                     api_key=api_key,
                     models=[],

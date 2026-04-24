@@ -285,14 +285,6 @@ def run_bot(logger: logging.Logger) -> int:
 
     logger.info("Lapwing 正在启动...")
 
-    # 生成/更新 vital manifest（供 Sentinel 哨兵使用）
-    try:
-        from src.core.vital_guard import save_manifest
-        save_manifest()
-        logger.info("Vital manifest 已更新。")
-    except Exception as _manifest_err:
-        logger.warning("Vital manifest 生成失败: %s", _manifest_err)
-
     container = AppContainer(db_path=DB_PATH, data_dir=DATA_DIR)
 
     # Register QQ adapter if enabled

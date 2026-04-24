@@ -21,7 +21,7 @@ class TestTeamLeadCreate:
         assert tl.spec.name == "team_lead"
         assert tl.spec.runtime_profile is AGENT_TEAM_LEAD_PROFILE
         assert "delegate_to_agent" in tl.spec.runtime_profile.tool_names
-        assert tl.spec.model_slot == "agent_execution"
+        assert tl.spec.model_slot == "agent_team_lead"
 
     def test_system_prompt_mentions_agents(self):
         router, registry, mutation_log = _make_deps()

@@ -170,13 +170,18 @@ src/
                      qq_group_context.py, qq_group_filter.py
   agents/            Phase-6 agent framework: base.py, coder.py, researcher.py,
                      team_lead.py, registry.py, types.py
+  ambient/           Short-term environment knowledge (working memory, not long-term):
+                       ambient_knowledge (SQLite store with TTL)
+                       preparation_engine (parses interest profile → prep status)
+                       time_context (pure function: now → TimeContext with lunar/season)
+                       models (AmbientEntry, Interest, PreparationStatus, TimeContext)
   api/               FastAPI + WebSocket local desktop API
     routes/          auth / agents / browser / chat_ws / identity / life_v2 /
                      events_v2 / models_v2 / notes_v2 / permissions_v2 / status_v2 /
                      system_v2 / tasks_v2
   app/               Application bootstrap (AppContainer = DI root, task_view)
   auth/              OAuth, API sessions, credential resolver
-  core/              Core runtime. 44 files. Key groups:
+  core/              Core runtime. Key groups:
                        Conversation path: brain, task_runtime, llm_router, llm_protocols,
                          llm_types, llm_exceptions, task_types, task_model, reasoning_tags,
                          output_sanitizer
@@ -186,14 +191,23 @@ src/
                        State view assembly: state_view, state_view_builder,
                          state_serializer, identity_file_manager, soul_manager,
                          prompt_loader, phase0 (test harness)
+                       Task planning: plan_state (PlanStep/PlanState/transitions)
+                       Behavior correction: correction_manager (Kevin corrections +
+                         circuit-breaker callback; triggers urgency at threshold)
+                       Framework-level user output: system_send (audited non-LLM exit;
+                         see Known gaps §tell_user single-exit)
                        Safety: authority_gate, vital_guard, shell_policy, shell_types,
-                         verifier, credential_vault
+                         verifier, credential_vault, credential_sanitizer
+                       Sandbox: execution_sandbox (three-tier Docker isolation:
+                         STRICT/STANDARD/PRIVILEGED; used by shell_executor + code_runner)
+                       Network: proxy_router (per-domain adaptive proxy/direct selection;
+                         seeded with Chinese domains direct; persists to data/proxy/)
                        Sensing: vitals, maintenance_timer, runtime_profiles,
                          model_config, group_filter, time_utils, trust_tagger,
                          minimax_vlm
                        Auth: codex_oauth_client
                        Channels: channel_manager
-                       Browser: browser_manager
+                       Browser: browser_manager (dual-context with ProxyRouter)
   guards/            memory_guard.py (only)
   logging/           state_mutation_log.py — Blueprint v2.0 §2 single source of truth
   memory/            RAPTOR two-layer memory + cache facade:
@@ -208,13 +222,19 @@ src/
   skills/            Skill Growth Model: skill_store.py (YAML+md CRUD),
                        skill_executor.py (Docker sandbox / host routing)
   tools/             Tool registry + executors:
-                       tell_user.py  — SOLE user-visible output
+                       tell_user.py  — SOLE LLM user-visible output
                        commitments.py (commit / fulfill / abandon)
                        memory_tools_v2.py (recall / write_note / edit_note / …)
                        personal_tools.py (get_time / send_message / send_image / browse / view_image)
                        agent_tools.py (delegate, delegate_to_agent)
                        browser_tools.py (13 browser actions)
-                       skill_tools.py (create / run / edit / list / promote / delete skill)
+                       skill_tools.py (create / run / edit / list / promote / delete /
+                         search / install skill — marketplace + local CRUD)
+                       ambient_tools.py (prepare_ambient_knowledge /
+                         check_ambient_knowledge / manage_interest_profile)
+                       correction_tools.py (add_correction — logs Kevin's corrections)
+                       plan_tools.py (plan_task / update_plan — multi-step task planning
+                         with soft-gate on tell_user)
                        research_tool.py
                        soul_tools.py (read_soul / edit_soul — OWNER only)
                        shell_executor / file_editor / code_runner / workspace_tools /
@@ -239,10 +259,12 @@ data/
   backups/           VitalGuard auto-backups
   browser/           profile/ (persistent context), screenshots/, state.json
   credentials/       vault.enc (Fernet-encrypted credential store)
+  proxy/             routing_rules.json (ProxyRouter persisted per-domain rules)
   logs/              lapwing.log + mutations_YYYY-MM-DD.log
   config/            model_routing.json, permissions.json, permission_overrides.json
   lapwing.db         SQLite (trajectory + commitments + reminders_v2 + sqlite_sequence)
   mutation_log.db    SQLite (mutations table; WAL)
+  ambient.db         SQLite (ambient_entries; TTL-scoped short-term environment cache)
   vitals.json        Boot/shutdown state for restart awareness
   lapwing.pid        Process lock
 desktop-v2/          Tauri v2 + React 19 frontend (active)
@@ -281,6 +303,9 @@ Deliberately absent (either never-existed or retired during the 2026-04-19 MVP c
   `AGENT_TEAM_ENABLED` · `EPISODIC_EXTRACT_ENABLED` · `SEMANTIC_DISTILL_ENABLED` ·
   `DESKTOP_DEFAULT_OWNER` · `SHELL_ALLOW_SUDO` (default false) ·
   `SKILL_SYSTEM_ENABLED` (default false).
+- **Proxy settings** (ProxyRouter): `PROXY_SERVER` (upstream proxy URL, empty = disable),
+  `PROXY_DEFAULT_STRATEGY` (`proxy` / `direct`), `PROXY_PERSIST_INTERVAL_SECONDS`.
+  `SEARCH_PROXY_URL` still applies specifically to search-backend calls.
 - **Logging**: dual logger setup in `main.py` — `lapwing` project logger + separate root
   library logger. Use `logging.getLogger("lapwing.module_name")`.
 - **Type modules**: core types live in dedicated modules — `task_types.py` (task runtime),
@@ -382,7 +407,8 @@ into `InnerTickScheduler` so the model sees it on the next tick.
 `BrowserManager` (`src/core/browser_manager.py`) provides Playwright-based Chromium
 automation:
 
-- Persistent context under `data/browser/profile/`.
+- Persistent context under `data/browser/profile/` (dual-context: proxied + direct, so
+  `ProxyRouter` can pick per-domain without tearing down the other session).
 - Tab management (`BROWSER_MAX_TABS` default 8), DOM extraction, structured page state.
 - Screenshots with retention (`BROWSER_SCREENSHOT_RETAIN_DAYS`).
 - Vision pipeline: when the page is image-heavy (above `BROWSER_VISION_IMG_THRESHOLD`), a
@@ -391,6 +417,85 @@ automation:
 - BrowserGuard (in-module) vets URLs and flags sensitive actions (purchase, delete).
 - Gated by `BROWSER_ENABLED`. 25+ `BROWSER_*` env vars, all declared in
   `config/settings.py`.
+
+### ProxyRouter
+
+`ProxyRouter` (`src/core/proxy_router.py`) does per-domain adaptive routing between the
+upstream proxy and direct connection. Seeded with Chinese domains (`*.cn`, `*.baidu.com`,
+`*.qq.com`, `*.bilibili.com`, …) as `direct`; everything else starts at
+`PROXY_DEFAULT_STRATEGY`. On failure, it flips the domain's strategy and records the
+outcome; on sustained success it stabilises. Rules persist to
+`data/proxy/routing_rules.json` on a timer (`PROXY_PERSIST_INTERVAL_SECONDS`) and at
+shutdown. Consumers: `SmartFetcher` and `BrowserManager` both go through `ProxyRouter`;
+search-backend calls still use `SEARCH_PROXY_URL` directly.
+
+### ExecutionSandbox
+
+`ExecutionSandbox` (`src/core/execution_sandbox.py`) is the unified Docker harness used
+by `code_runner` and `shell_executor`. Three tiers:
+
+- `STRICT` — 256 MB / 0.5 CPU / no network / workspace read-only (default for
+  `code_runner`).
+- `STANDARD` — 512 MB / 1.0 CPU / bridge network (`lapwing-sandbox`) / workspace RW.
+- `PRIVILEGED` — 1 GB+, host network, mounted secrets (opt-in, shell-side).
+
+Secrets are scrubbed via `credential_sanitizer.sanitize_env` before entering the
+container; stdout/stderr are redacted with `redact_secrets` and truncated to 4 000 bytes.
+The default image is `lapwing-sandbox:latest`.
+
+### CorrectionManager
+
+`CorrectionManager` (`src/core/correction_manager.py`) is the feedback spine for
+behaviour drift:
+
+- `add_correction(rule_key, details)` — logs Kevin's correction; at the 3rd hit on the
+  same `rule_key`, invokes the `on_threshold` callback which pushes an urgency event into
+  `InnerTickScheduler` so the model sees the pattern on the next tick.
+- `on_circuit_break(tool_name, repeat_count)` — wired from `TaskRuntime`'s per-tool loop
+  detector. Debounces with a 10-minute cooldown per tool so the model isn't spammed.
+
+Exposed to the LLM as the `add_correction` tool (`src/tools/correction_tools.py`).
+
+### Task planning (PlanState)
+
+For multi-step requests the LLM calls `plan_task` (builds a `PlanState` with ≥2 steps),
+then `update_plan` to advance status (`pending` → `in_progress` → `completed` /
+`blocked`). `PlanState` lives in `TaskRuntime.context.services["plan_state"]` (lifetime =
+single TaskRuntime execution; not persisted across turns). Each tool round re-injects the
+rendered plan into the LLM's view, and `tell_user` has a **soft gate**: if the plan has
+incomplete steps, a reminder prepends the tell warning the model to finish planning
+before speaking. Gate is advisory, not a hard block.
+
+### Ambient knowledge
+
+`AmbientKnowledgeStore` (`src/ambient/ambient_knowledge.py`, backed by
+`data/ambient.db`) is short-term working memory — **not** a substitute for episodic /
+semantic memory. It caches "what Lapwing currently knows" (weather, sports, news,
+calendar) keyed by topic, with per-category TTL (weather 3 h, news 4 h, sports 6 h,
+calendar 12 h, default 6 h) and a 50-entry cap.
+
+- `prepare_ambient_knowledge` — fetches via `ResearchEngine` then writes an entry.
+- `check_ambient_knowledge` — reads (honours TTL).
+- `manage_interest_profile` — CRUD for Kevin's interest profile (Markdown). The profile
+  is parsed by `PreparationEngine` into `Interest` records; `StateViewBuilder` can then
+  ask "what should Lapwing have prepared by now?" (`PreparationStatus`) and inject that
+  into the prompt.
+
+`TimeContextProvider` (`src/ambient/time_context.py`) is a pure function over `datetime`
+that yields weekday / season / lunar date (optional `lunardate`) / time-of-day bucket —
+no external calls, used by `StateViewBuilder` to give every turn a dated preamble.
+
+### Framework-level user output (`system_send`)
+
+`src/core/system_send.py` is the **non-LLM** audited exit for user-visible bytes
+(`send_system_message`). The LLM's only exit remains `tell_user`; `system_send` covers
+the four framework-mediated cases that can't be shoehorned through the model: confirm
+responses (`TaskRuntime.resolve_pending_confirmation`), LLM-call error surfacing, timer-
+driven `notify`-mode reminders, and agent-mode scheduler fallbacks. Both exits write to
+`trajectory_store` and `mutation_log` with a `source` tag
+(`confirmation` / `llm_error` / `reminder_notify` / `reminder_agent_result` /
+`reminder_agent_fallback`) so the audit trail stays complete. See Known gaps
+§`tell_user` single-exit for the history.
 
 ### Vitals
 

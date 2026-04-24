@@ -98,7 +98,7 @@ class TestLLMRouterInit:
         with patch.dict("os.environ", {
             "LLM_API_KEY": "generic-key",
             "LLM_BASE_URL": "https://api.minimaxi.com/anthropic/v1",
-            "LLM_MODEL": "MiniMax-M2.7",
+            "LLM_MODEL": "minimax-m2.7",
             "LLM_CHAT_API_KEY": "",
             "LLM_CHAT_BASE_URL": "",
             "LLM_CHAT_MODEL": "",
@@ -111,7 +111,7 @@ class TestLLMRouterInit:
         }, clear=True):
             from src.core.llm_router import LLMRouter
             router = LLMRouter()
-            assert router.model_for("chat") == "MiniMax-M2.7"
+            assert router.model_for("chat") == "minimax-m2.7"
             assert router._api_types["chat"] == "anthropic"
 
 
@@ -156,7 +156,7 @@ class TestLLMRouterComplete:
         with patch.dict("os.environ", {
             "LLM_API_KEY": "generic-key",
             "LLM_BASE_URL": "https://api.minimaxi.com/anthropic/v1",
-            "LLM_MODEL": "MiniMax-M2.7",
+            "LLM_MODEL": "minimax-m2.7",
         }, clear=True):
             from src.core.llm_router import LLMRouter
             router = LLMRouter()
@@ -182,7 +182,7 @@ class TestLLMRouterComplete:
             assert result == "测试回复"
             mock_client.messages.create.assert_called_once()
             call_kwargs = mock_client.messages.create.call_args.kwargs
-            assert call_kwargs["model"] == "MiniMax-M2.7"
+            assert call_kwargs["model"] == "minimax-m2.7"
             # system prompt 使用 Anthropic cache_control 格式
             assert call_kwargs["system"] == [
                 {"type": "text", "text": "你是助手", "cache_control": {"type": "ephemeral"}}
@@ -194,7 +194,7 @@ class TestLLMRouterComplete:
         with patch.dict("os.environ", {
             "LLM_API_KEY": "generic-key",
             "LLM_BASE_URL": "https://api.minimaxi.com/anthropic/v1",
-            "LLM_MODEL": "MiniMax-M2.7",
+            "LLM_MODEL": "minimax-m2.7",
         }, clear=True):
             from src.core.llm_router import LLMRouter
             router = LLMRouter()
@@ -313,7 +313,7 @@ class TestLLMRouterTools:
         with patch.dict("os.environ", {
             "LLM_API_KEY": "generic-key",
             "LLM_BASE_URL": "https://api.minimaxi.com/anthropic/v1",
-            "LLM_MODEL": "MiniMax-M2.7",
+            "LLM_MODEL": "minimax-m2.7",
         }, clear=True):
             from src.core.llm_router import LLMRouter
 
@@ -473,7 +473,7 @@ class TestLLMRouterTools:
         with patch.dict("os.environ", {
             "LLM_API_KEY": "generic-key",
             "LLM_BASE_URL": "https://api.minimaxi.com/anthropic/v1",
-            "LLM_MODEL": "MiniMax-M2.7",
+            "LLM_MODEL": "minimax-m2.7",
         }, clear=True):
             from src.core.llm_router import LLMRouter, ToolCallRequest
 
@@ -708,7 +708,7 @@ class TestLLMRouterModelSwitch:
         with patch.dict("os.environ", {
             "LLM_API_KEY": "generic-key",
             "LLM_BASE_URL": "https://generic.api.com/v1",
-            "LLM_MODEL": "MiniMax-M2.7",
+            "LLM_MODEL": "minimax-m2.7",
         }, clear=True):
             from src.core.llm_router import LLMRouter
 
@@ -717,26 +717,26 @@ class TestLLMRouterModelSwitch:
                     ("openai-codex/gpt-5.4", "Codex GPT-5.4"),
                 ]),
                 ("minimax", "MiniMax", "anthropic", "https://api.minimaxi.com/anthropic", "sk-test", [
-                    ("MiniMax-M2.7", "MiniMax-M2.7"),
+                    ("minimax-m2.7", "minimax-m2.7"),
                 ]),
             ])
             router = LLMRouter(model_config=mock_cfg)
             options = router.list_model_options()
             assert options == [
                 {"index": 1, "alias": "Codex GPT-5.4", "ref": "openai-codex/gpt-5.4"},
-                {"index": 2, "alias": None, "ref": "MiniMax-M2.7"},
+                {"index": 2, "alias": None, "ref": "minimax-m2.7"},
             ]
 
             assert router._resolve_model_option("1").ref == "openai-codex/gpt-5.4"
             assert router._resolve_model_option("codex gpt-5.4").ref == "openai-codex/gpt-5.4"
-            assert router._resolve_model_option("MiniMax-M2.7").ref == "MiniMax-M2.7"
+            assert router._resolve_model_option("minimax-m2.7").ref == "minimax-m2.7"
 
     async def test_session_override_only_applies_to_matching_session_key(self):
         with patch.dict("os.environ", {
             "LLM_API_KEY": "generic-key",
             "LLM_BASE_URL": "https://generic.api.com/v1",
-            "LLM_MODEL": "MiniMax-M2.7",
-            "LLM_CHAT_MODEL": "MiniMax-M2.7",
+            "LLM_MODEL": "minimax-m2.7",
+            "LLM_CHAT_MODEL": "minimax-m2.7",
         }, clear=True):
             from src.auth.models import ResolvedAuthCandidate
             from src.core.llm_router import LLMRouter
@@ -744,7 +744,7 @@ class TestLLMRouterModelSwitch:
             candidate = ResolvedAuthCandidate(
                 purpose="chat",
                 base_url="https://generic.api.com/v1",
-                model="MiniMax-M2.7",
+                model="minimax-m2.7",
                 api_type="openai",
                 auth_value="test-key",
                 auth_kind="env",
@@ -755,7 +755,7 @@ class TestLLMRouterModelSwitch:
             )
             mock_cfg = _make_mock_model_config([
                 ("minimax", "MiniMax", "anthropic", "https://api.minimaxi.com/anthropic", "sk-test", [
-                    ("MiniMax-M2.7", "MiniMax-M2.7"),
+                    ("minimax-m2.7", "minimax-m2.7"),
                 ]),
                 ("openai", "OpenAI", "openai", "https://api.openai.com/v1", "sk-test", [
                     ("openai/gpt-4.1", "GPT-4.1"),
@@ -774,7 +774,7 @@ class TestLLMRouterModelSwitch:
 
             router.switch_session_model(session_key="chat:1", selector="2")
             assert router.model_for("chat", session_key="chat:1") == "openai/gpt-4.1"
-            assert router.model_for("chat", session_key="chat:2") == "MiniMax-M2.7"
+            assert router.model_for("chat", session_key="chat:2") == "minimax-m2.7"
 
             await router.complete(
                 [{"role": "user", "content": "hello"}],
@@ -792,13 +792,13 @@ class TestLLMRouterModelSwitch:
                 allow_failover=False,
             )
             second_call = mock_client.chat.completions.create.call_args.kwargs
-            assert second_call["model"] == "MiniMax-M2.7"
+            assert second_call["model"] == "minimax-m2.7"
 
     async def test_model_default_clears_session_overrides(self):
         with patch.dict("os.environ", {
             "LLM_API_KEY": "generic-key",
             "LLM_BASE_URL": "https://generic.api.com/v1",
-            "LLM_MODEL": "MiniMax-M2.7",
+            "LLM_MODEL": "minimax-m2.7",
         }, clear=True):
             from src.auth.models import ResolvedAuthCandidate
             from src.core.llm_router import LLMRouter
@@ -806,7 +806,7 @@ class TestLLMRouterModelSwitch:
             candidate = ResolvedAuthCandidate(
                 purpose="chat",
                 base_url="https://generic.api.com/v1",
-                model="MiniMax-M2.7",
+                model="minimax-m2.7",
                 api_type="openai",
                 auth_value="test-key",
                 auth_kind="env",
@@ -817,7 +817,7 @@ class TestLLMRouterModelSwitch:
             )
             mock_cfg = _make_mock_model_config([
                 ("minimax", "MiniMax", "anthropic", "https://api.minimaxi.com/anthropic", "sk-test", [
-                    ("MiniMax-M2.7", "MiniMax-M2.7"),
+                    ("minimax-m2.7", "minimax-m2.7"),
                 ]),
                 ("openai", "OpenAI", "openai", "https://api.openai.com/v1", "sk-test", [
                     ("openai/gpt-4.1", "GPT-4.1"),
@@ -831,7 +831,7 @@ class TestLLMRouterModelSwitch:
 
             reset_result = router.clear_session_model(session_key="chat:99")
             assert reset_result["cleared"] == 3
-            assert router.model_for("chat", session_key="chat:99") == "MiniMax-M2.7"
+            assert router.model_for("chat", session_key="chat:99") == "minimax-m2.7"
 
 
 class TestCodexResponsesAPI:

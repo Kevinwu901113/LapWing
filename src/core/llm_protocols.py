@@ -9,9 +9,13 @@ from src.core.llm_types import ToolCallRequest
 logger = logging.getLogger("lapwing.core.llm_protocols")
 
 
+_ANTHROPIC_COMPAT_PATHS = ("/anthropic", "/api/coding")
+
+
 def _detect_api_type(base_url: str, model: str | None = None) -> str:
     """根据 base_url 判断当前 provider 走哪种兼容协议。"""
-    return "anthropic" if "/anthropic" in base_url.lower() else "openai"
+    url = base_url.lower()
+    return "anthropic" if any(p in url for p in _ANTHROPIC_COMPAT_PATHS) else "openai"
 
 
 def _is_native_anthropic(base_url: str) -> bool:

@@ -21,12 +21,12 @@ group_cooldown = 60
 group_interest_keywords = []
 
 [llm]
-model = "MiniMax-M2.7"
-provider = "minimax"
+model = "minimax-m2.7"
+provider = "volcengine"
 
 [llm.chat]
-model = "MiniMax-M2.7"
-provider = "minimax"
+model = "minimax-m2.7"
+provider = "volcengine"
 
 [llm.tool]
 model = ""
@@ -108,7 +108,7 @@ interval_hours = 2
 sources = ["hackernews", "reddit/technology", "reddit/science"]
 
 [api]
-host = "0.0.0.0"
+host = "127.0.0.1"
 port = 8765
 session_cookie_name = "lapwing_session"
 session_ttl_seconds = 43200
@@ -161,7 +161,7 @@ trusted_ids = []
 refresh_skew_seconds = 300
 
 [desktop]
-default_owner = true
+default_owner = false
 ws_chat_id_prefix = "desktop"
 
 [skill]

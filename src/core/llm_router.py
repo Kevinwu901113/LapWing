@@ -84,6 +84,9 @@ _SLOT_TO_PURPOSE: dict[str, str] = {
     "lightweight_judgment": "tool",
     "memory_processing": "tool",
     "agent_execution": "tool",
+    "agent_coder": "tool",
+    "agent_team_lead": "tool",
+    "agent_researcher": "tool",
     "heartbeat_proactive": "heartbeat",
 }
 
@@ -296,19 +299,18 @@ class LLMRouter:
         self._model_options_by_alias: dict[str, ModelOption] = {}
         self._last_error_ts: dict[str, float] = {}
         self._model_provider_map: dict[str, Any] = {}  # model_id → ProviderInfo
+        self._fallback_models: dict[str, list[str]] = {}  # slot → fallback model chain
         self._setup_routing()
         self._setup_model_options()
 
     @staticmethod
     def _clamp_provider_params(params: dict, is_anthropic_compat: bool) -> dict:
-        """Provider-specific 参数边界检查。MiniMax 要求 temperature ∈ (0.0, 1.0]。"""
+        """Provider-specific 参数边界检查。Anthropic 兼容 API 要求 temperature ∈ (0.0, 1.0]。"""
         temperature = params.get("temperature")
         if temperature is not None and is_anthropic_compat:
             if temperature <= 0:
-                logger.warning("temperature=%.2f 超出 MiniMax 范围 (0,1]，钳制为 0.01", temperature)
                 params["temperature"] = 0.01
             elif temperature > 1.0:
-                logger.warning("temperature=%.2f 超出 MiniMax 范围 (0,1]，钳制为 1.0", temperature)
                 params["temperature"] = 1.0
         return params
 
@@ -332,7 +334,7 @@ class LLMRouter:
         for slot_id in SLOT_DEFINITIONS:
             resolved = self._model_config.resolve_slot(slot_id)
             if resolved is None:
-                logger.warning(f"Slot '{slot_id}' not configured, will use fallback")
+                logger.debug(f"Slot '{slot_id}' not configured, will use fallback")
                 continue
 
             base_url, model, api_key, api_type = resolved
@@ -371,6 +373,14 @@ class LLMRouter:
                 self._reasoning_effort[slot_id] = getattr(prov, "reasoning_effort", None)
                 self._context_compaction[slot_id] = getattr(prov, "context_compaction", False)
 
+        # Load per-slot fallback model chains
+        self._fallback_models.clear()
+        for slot_id in SLOT_DEFINITIONS:
+            fallbacks = self._model_config.resolve_fallback_models(slot_id)
+            if fallbacks:
+                self._fallback_models[slot_id] = fallbacks
+                logger.info(f"[{slot_id}] fallback chain: {' → '.join(fallbacks)}")
+
         # Register legacy purpose keys for backward compatibility
         for purpose, default_slot in _PURPOSE_TO_DEFAULT_SLOT.items():
             if purpose not in self._models and default_slot in self._models:
@@ -388,6 +398,7 @@ class LLMRouter:
         self._model_provider_map.clear()
         self._reasoning_effort.clear()
         self._context_compaction.clear()
+        self._fallback_models.clear()
         self._setup_routing()
         self._setup_model_options()
         logger.info("Model routing reloaded")
@@ -770,6 +781,31 @@ class LLMRouter:
                                     refresh_exc,
                                 )
 
+                        # 同 provider 内模型级 fallback（429/529/timeout 时尝试备选模型）
+                        fallback_chain = self._fallback_models.get(effective_key, [])
+                        if fallback_chain and failure_kind in ("rate_limit", "timeout"):
+                            for fb_model in fallback_chain:
+                                try:
+                                    logger.warning(
+                                        "[%s] 主模型 %s 失败(%s)，尝试 fallback → %s",
+                                        effective_key, model, failure_kind, fb_model,
+                                    )
+                                    fb_client, fb_resolved, fb_api_type = self._resolve_client(
+                                        effective_key,
+                                        auth_value=current_candidate.auth_value,
+                                        model_override=fb_model,
+                                    )
+                                    result = await runner(current_candidate, fb_client, fb_resolved, fb_api_type)
+                                    self._auth_manager.mark_success(current_candidate)
+                                    return result
+                                except Exception as fb_exc:
+                                    fb_kind = _classify_provider_exception(fb_exc)
+                                    last_exc = fb_exc
+                                    logger.warning(
+                                        "[%s] fallback 模型 %s 也失败(%s)，继续尝试下一个",
+                                        effective_key, fb_model, fb_kind,
+                                    )
+
                         self._auth_manager.mark_failure(current_candidate, failure_kind)
                         if (
                             allow_failover
@@ -784,7 +820,7 @@ class LLMRouter:
                                 failure_kind,
                             )
                             break
-                        logger.warning("LLM 调��失败: %s (slot=%s)", exc, effective_key)
+                        logger.warning("LLM 调用失败: %s (slot=%s)", exc, effective_key)
                         raise
 
             if last_exc is not None:

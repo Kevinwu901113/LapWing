@@ -41,7 +41,7 @@ class MiniMaxVLM:
         }
         payload = {
             "prompt": prompt,
-            "image_source": image_source,
+            "image_url": image_source,
         }
 
         return await self._do_request(url, headers, payload)
@@ -54,7 +54,14 @@ class MiniMaxVLM:
             resp = await self._client.post(url, headers=headers, json=payload)
             resp.raise_for_status()
             data = resp.json()
-            return data.get("result", data.get("text", str(data)))
+            base_resp = data.get("base_resp", {})
+            status_code = base_resp.get("status_code", 0)
+            if status_code != 0:
+                status_msg = base_resp.get("status_msg", "未知错误")
+                raise RuntimeError(
+                    f"MiniMax VLM 业务错误 (code={status_code}): {status_msg}"
+                )
+            return data["content"]
 
         try:
             return await _request()

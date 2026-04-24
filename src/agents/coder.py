@@ -60,7 +60,7 @@ class Coder(BaseAgent):
             name="coder",
             description="写代码和执行",
             system_prompt=CODER_SYSTEM_PROMPT,
-            model_slot="agent_execution",
+            model_slot="agent_coder",
             runtime_profile=AGENT_CODER_PROFILE,
             max_rounds=20,
             max_tokens=50000,

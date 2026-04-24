@@ -993,6 +993,8 @@ def _infer_provider_from_route(base_url: str, model: str) -> str:
         return "openai"
     if "minimax" in host:
         return "minimax"
+    if "volces.com" in host or "volcengine" in host:
+        return "volcengine"
     if "nvidia.com" in host:
         return "nvidia"
     if "anthropic.com" in host:

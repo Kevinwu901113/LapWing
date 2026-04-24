@@ -40,10 +40,13 @@ LOCKED_PATHS: frozenset[Path] = frozenset({
     ROOT_DIR / "config" / ".env",
     ROOT_DIR / "config" / ".env.test",
     ROOT_DIR / "config" / "settings.py",
+    ROOT_DIR / "prompts" / "lapwing_soul.md",
+    ROOT_DIR / "prompts" / "lapwing_voice.md",
 })
 
 LOCKED_PREFIXES: tuple[Path, ...] = (
     ROOT_DIR / "src",
+    ROOT_DIR / "prompts",
 )
 
 BACKUP_DIR = ROOT_DIR / "data" / "backups" / "vital_guard"

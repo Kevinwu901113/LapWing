@@ -88,7 +88,7 @@ class TestTrackedCall:
                 "anthropic",
                 {
                     "model_slot": "chat",
-                    "model_name": "MiniMax-M2.7",
+                    "model_name": "minimax-m2.7",
                     "base_url": "https://api.minimaxi.com/anthropic",
                     "purpose": "main_conversation",
                     "messages": [{"role": "user", "content": "hi"}],

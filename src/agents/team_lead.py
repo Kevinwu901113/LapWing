@@ -64,7 +64,7 @@ class TeamLead(BaseAgent):
             name="team_lead",
             description="团队管理者",
             system_prompt=TEAM_LEAD_SYSTEM_PROMPT,
-            model_slot="agent_execution",
+            model_slot="agent_team_lead",
             runtime_profile=AGENT_TEAM_LEAD_PROFILE,
             max_rounds=10,
             max_tokens=20000,

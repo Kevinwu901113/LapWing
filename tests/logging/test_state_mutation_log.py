@@ -145,7 +145,7 @@ class TestLargePayloadNoTruncation:
         payload = {
             "request_id": request_id,
             "model_slot": "chat",
-            "model_name": "MiniMax-M2.7",
+            "model_name": "minimax-m2.7",
             "base_url": "https://api.minimaxi.com/anthropic",
             "protocol": "anthropic",
             "purpose": "main_conversation",

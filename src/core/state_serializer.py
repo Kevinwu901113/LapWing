@@ -84,12 +84,14 @@ def serialize(state: StateView) -> SerializedPrompt:
     if state.identity_docs.constitution:
         parts.append(state.identity_docs.constitution)
 
-    # Layer 3: runtime state
+    # Layer 3: ambient awareness (time context + cached knowledge)
+    if state.time_context is not None:
+        parts.append(_render_ambient_awareness(state))
+
+    # Layer 4: runtime state
     parts.append(_render_runtime_state(state))
 
-    # Layer 4: memory snippets (new explicit layer, opt-in — empty =
-    # no section emitted, preserving pre-Step-3 prompts that didn't
-    # surface retrieval hits)
+    # Layer 5: memory snippets (opt-in — empty = no section emitted)
     memory_block = _render_memory_snippets(state)
     if memory_block:
         parts.append(memory_block)
@@ -116,14 +118,15 @@ def _render_runtime_state(state: StateView) -> str:
     att = state.attention_context
     lines: list[str] = []
 
-    # Current time
-    now: datetime = att.now
-    weekday = _WEEKDAY_NAMES[now.weekday()]
-    period = _period_name(now.hour)
-    lines.append(
-        f"当前时间：{now.year}年{now.month}月{now.day}日 {weekday} "
-        f"{period}（约{now.hour}时，台北时间）"
-    )
+    # 时间行：当 time_context 已填充时由环境感知段渲染，此处跳过
+    if state.time_context is None:
+        now: datetime = att.now
+        weekday = _WEEKDAY_NAMES[now.weekday()]
+        period = _period_name(now.hour)
+        lines.append(
+            f"当前时间：{now.year}年{now.month}月{now.day}日 {weekday} "
+            f"{period}（约{now.hour}时，台北时间）"
+        )
 
     # Offline-gap warning: only render when the builder flagged a gap.
     # Pre-Step-3 code wrote "距上次活跃已过 {h:.0f} 小时" — kept verbatim
@@ -217,6 +220,22 @@ def _render_runtime_state(state: StateView) -> str:
     return "## 当前状态\n\n" + "\n".join(lines)
 
 
+def _render_ambient_awareness(state: StateView) -> str:
+    """渲染"你的环境感知"段落：时间语境 + 已缓存的环境知识。"""
+    lines: list[str] = []
+    if state.time_context is not None:
+        lines.append(state.time_context.to_prompt_text())
+    if state.ambient_entries:
+        lines.append("")
+        lines.append("### 你已知的信息")
+        for e in state.ambient_entries:
+            lines.append(f"- {e.topic}：{e.summary}")
+    elif state.time_context is not None:
+        lines.append("")
+        lines.append("（暂无已缓存的环境知识）")
+    return "## 你的环境感知\n\n" + "\n".join(lines)
+
+
 def _render_memory_snippets(state: StateView) -> str:
     """Render the optional retrieval layer. Empty → no section."""
     snippets = state.memory_snippets.snippets
@@ -263,7 +282,10 @@ def _inject_voice(
         return system_prompt, messages
 
     now = state.attention_context.now
-    period = _period_name(now.hour)
+    if state.time_context is not None:
+        period = state.time_context.time_period
+    else:
+        period = _period_name(now.hour)
     time_anchor = f"现在是{period}（约{now.hour}时）。说话要符合这个时间段。"
 
     # Effective total matches legacy count: [system] + recent_messages.

@@ -44,7 +44,10 @@ from src.core.state_view import (
 )
 from src.core.trajectory_store import TrajectoryEntry, TrajectoryEntryType
 
+from src.ambient.time_context import TimeContextProvider
+
 if TYPE_CHECKING:
+    from src.ambient.ambient_knowledge import AmbientKnowledgeStore
     from src.core.attention import AttentionManager
     from src.core.commitments import CommitmentStore
     from src.core.task_model import TaskStore
@@ -105,6 +108,8 @@ class StateViewBuilder:
         self._memory_top_k = memory_top_k
         self._memory_query_chat_turns = memory_query_chat_turns
         self._skill_store = None  # set by container when skill system is enabled
+        self._ambient: AmbientKnowledgeStore | None = None
+        self._time_provider = TimeContextProvider()
 
     # ── Entry points ─────────────────────────────────────────────────
 
@@ -141,6 +146,8 @@ class StateViewBuilder:
         commitments_active = await self._build_commitments_active(chat_id=chat_id)
         memory_snippets = await self._build_memory_snippets(trajectory_window)
         skill_summary = self._build_skill_summary()
+        time_context = self._time_provider.get_context(attention_context.now)
+        ambient_entries = await self._build_ambient_entries()
 
         return StateView(
             identity_docs=identity_docs,
@@ -149,6 +156,8 @@ class StateViewBuilder:
             memory_snippets=memory_snippets,
             commitments_active=commitments_active,
             skill_summary=skill_summary,
+            time_context=time_context,
+            ambient_entries=ambient_entries,
         )
 
     async def build_for_inner(
@@ -178,6 +187,8 @@ class StateViewBuilder:
         commitments_active = await self._build_commitments_active(chat_id=None)
         memory_snippets = await self._build_memory_snippets(trajectory_window)
         skill_summary = self._build_skill_summary()
+        time_context = self._time_provider.get_context(attention_context.now)
+        ambient_entries = await self._build_ambient_entries()
 
         return StateView(
             identity_docs=identity_docs,
@@ -186,6 +197,8 @@ class StateViewBuilder:
             memory_snippets=memory_snippets,
             commitments_active=commitments_active,
             skill_summary=skill_summary,
+            time_context=time_context,
+            ambient_entries=ambient_entries,
         )
 
     # ── Identity ─────────────────────────────────────────────────────
@@ -414,6 +427,17 @@ class StateViewBuilder:
             stable_names=tuple(stable_names),
             testing_details=tuple(testing_details),
         )
+
+    # ── Ambient knowledge ───────────────────────────────────────────
+
+    async def _build_ambient_entries(self) -> tuple:
+        if self._ambient is None:
+            return ()
+        try:
+            return await self._ambient.get_all_fresh()
+        except Exception:
+            logger.debug("AmbientKnowledgeStore.get_all_fresh failed", exc_info=True)
+            return ()
 
 
 # ── Module-private helpers ──────────────────────────────────────────
