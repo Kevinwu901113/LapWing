@@ -551,6 +551,14 @@ class IdentityStore:
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
+    async def _list_retrieval_traces(self) -> list[dict]:
+        """内部辅助：列出所有检索追踪（测试用）。"""
+        cursor = await self._db.execute(
+            "SELECT * FROM identity_retrieval_traces ORDER BY created_at"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
     # ------------------------------------------------------------------
     # Task 8: Evidence + Privacy (Redact / Erase) + Tombstones
     # ------------------------------------------------------------------
