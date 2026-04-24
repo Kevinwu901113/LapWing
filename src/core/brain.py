@@ -346,16 +346,16 @@ class LapwingBrain:
     ) -> list[dict]:
         """Assemble the full LLM messages list via StateSerializer.
 
-        v2.0 Step 3 §3.1. Replaces the former ``_build_system_prompt`` +
-        ``_inject_voice_reminder`` pair. ``recent_messages`` is the list
-        brain already assembled (effective user-message swapped in, trust
-        tagging applied, etc.); we carry it into StateView via the
-        builder's ``trajectory_turns_override`` so the serializer renders
-        exactly what the LLM needs without re-reading the trajectory.
+        v2.0 Step 3 §3.1. ``recent_messages`` is the list brain already
+        assembled (effective user-message swapped in, trust tagging
+        applied, etc.); we carry it into StateView via the builder's
+        ``trajectory_turns_override`` so the serializer renders exactly
+        what the LLM needs without re-reading the trajectory.
 
-        Returns the final ``[{system}, ...serialized, ...]`` list with
-        the voice reminder depth-injected. Caller layers image blocks
-        on top using ``_inject_images_into_last_user_message``.
+        Returns the final ``[{system}, ...serialized, ...]`` list.
+        Voice is part of the system prompt (stable prefix for caching).
+        Caller layers image blocks on top using
+        ``_inject_images_into_last_user_message``.
         """
         from config.settings import PHASE0_MODE
 

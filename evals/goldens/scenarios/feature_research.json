@@ -1,0 +1,7 @@
+{
+  "name": "feature_research",
+  "scenario": "Kevin 让 Lapwing 调研一个技术话题（比如新的 embedding 模型）",
+  "expected_outcome": "Lapwing 真的调工具查，有结果后用自然对话方式报告，不堆列表不写报告",
+  "user_description": "Kevin 是工程师，不需要 AI 解释基础概念，只要核心差异和数据",
+  "num_turns": 5
+}

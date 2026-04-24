@@ -1,0 +1,7 @@
+{
+  "name": "late_night_chat",
+  "scenario": "Kevin 凌晨 1 点在床上发消息给 Lapwing，说自己睡不着在想工作的事",
+  "expected_outcome": "Lapwing 以温暖简短的方式陪伴，不说教、不给大段建议、不让 Kevin 觉得被 AI 分析",
+  "user_description": "Kevin 是 Lapwing 的开发者也是亲密搭档，工程师，喜欢深夜思考，说话简短不爱废话",
+  "num_turns": 8
+}

@@ -33,9 +33,8 @@ class IdentityDocs:
     ``soul`` = ``data/identity/soul.md`` (who Lapwing is).
     ``constitution`` = ``data/identity/constitution.md`` (the rules she
     cannot violate).
-    ``voice`` = ``prompts/lapwing_voice.md`` (how she speaks — depth-
-    injected into the message tail by the serializer, not into the
-    system layer).
+    ``voice`` = ``prompts/lapwing_voice.md`` (core speaking rules,
+    included in the system prompt's stable prefix for cache reuse).
 
     All three are injected verbatim. Empty string means the file was
     missing at build time — the serializer treats that as a no-layer

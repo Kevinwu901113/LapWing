@@ -14,3 +14,4 @@ psutil>=5.9
 playwright>=1.49.0
 cryptography>=44.0.0
 lunardate>=0.2.0
+deepeval>=3.0.0

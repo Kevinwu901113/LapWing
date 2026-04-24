@@ -277,6 +277,7 @@ def _make_override_token(
         claim_id=claim_id,
         issuer=issuer,
         reason=reason,
+        action_payload_hash=action_payload_hash,
         expires_at=expires,
         created_at=_now_iso(),
     )

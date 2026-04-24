@@ -2,7 +2,7 @@ import type { LapwingStatus } from "@/types/status-v2";
 import type { TaskV2 } from "@/types/tasks-v2";
 import type { AgentMessage } from "@/types/tasks-v2";
 import type { PermissionsResponse, PermissionDefaultsResponse } from "@/types/permissions";
-import type { ModelRoutingConfig } from "@/types/models";
+import type { ModelRoutingConfig, ProviderPayload } from "@/types/models";
 import type { NoteTreeEntry, NoteContent, NoteSearchResult } from "@/types/notes";
 import type { IdentityFile, SoulSnapshot, SoulDiff } from "@/types/identity";
 import type { SystemInfo, SystemEvent } from "@/types/system";
@@ -65,6 +65,23 @@ export const updateModelRouting = (slots: Record<string, { provider_id: string; 
   fetchJson<{ success: boolean }>("/api/v2/models/routing", {
     method: "PUT",
     body: JSON.stringify({ slots }),
+  });
+
+export const createModelProvider = (provider: ProviderPayload) =>
+  fetchJson<{ status: string; provider_id: string }>("/api/v2/models/providers", {
+    method: "POST",
+    body: JSON.stringify(provider),
+  });
+
+export const updateModelProvider = (providerId: string, provider: Partial<ProviderPayload>) =>
+  fetchJson<{ status: string }>("/api/v2/models/providers/" + encodeURIComponent(providerId), {
+    method: "PUT",
+    body: JSON.stringify(provider),
+  });
+
+export const deleteModelProvider = (providerId: string) =>
+  fetchJson<{ status: string }>("/api/v2/models/providers/" + encodeURIComponent(providerId), {
+    method: "DELETE",
   });
 
 export const getAvailableModels = () =>

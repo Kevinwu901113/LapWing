@@ -124,9 +124,10 @@ MaintenanceTimer (3 AM daily)
   which tool to call, whether to remember — is the model's. If you find yourself adding a
   rule that "filters" or "gates" a message, stop: that belongs in the prompt, not the code.
 - **Personality lives in `prompts/lapwing_soul.md` + `prompts/lapwing_voice.md`.** soul.md
-  defines WHO she is; voice.md uses ✕/✓ contrasts to set behavioural boundaries.
-  `StateSerializer` injects a `_PERSONA_ANCHOR` reminder at depth-0 (immediately before the
-  last user turn) to prevent drift during long tool loops.
+  defines WHO she is; voice.md carries 5 core speaking rules + condensed tool guidance.
+  Both are part of the system prompt's stable prefix (cache-friendly). Full ✕/✓ contrasts
+  live in `prompts/lapwing_voice_details.md`, injected on-demand when drift is detected.
+  `_PERSONA_ANCHOR` is always in the system prompt.
 - **Files as source of truth for identity and memory.** Soul / constitution live in
   `data/identity/`; episodic and semantic memory live as markdown under `data/memory/`.
   Databases are used for append-only event logs (`trajectory`, `commitments`,
@@ -253,7 +254,9 @@ src/
   utils/             Small helpers
 
 config/              settings.py (all values via os.getenv) + .env / .env.example / .env.test
-prompts/             11 markdown files, hot-reloadable via prompt_loader.py
+prompts/             12 markdown files, hot-reloadable via prompt_loader.py
+                     lapwing_voice.md = core 5 rules (stable, cached);
+                     lapwing_voice_details.md = full ✕/✓ contrasts (on-demand)
 data/
   identity/          soul.md, voice.md, constitution.md (immutable by Lapwing)
   memory/

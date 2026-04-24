@@ -723,13 +723,13 @@ class TestLLMRouterModelSwitch:
             router = LLMRouter(model_config=mock_cfg)
             options = router.list_model_options()
             assert options == [
-                {"index": 1, "alias": "Codex GPT-5.4", "ref": "openai-codex/gpt-5.4"},
-                {"index": 2, "alias": None, "ref": "minimax-m2.7"},
+                {"index": 1, "alias": "Codex GPT-5.4", "ref": "codex/openai-codex/gpt-5.4"},
+                {"index": 2, "alias": None, "ref": "minimax/minimax-m2.7"},
             ]
 
-            assert router._resolve_model_option("1").ref == "openai-codex/gpt-5.4"
-            assert router._resolve_model_option("codex gpt-5.4").ref == "openai-codex/gpt-5.4"
-            assert router._resolve_model_option("minimax-m2.7").ref == "minimax-m2.7"
+            assert router._resolve_model_option("1").ref == "codex/openai-codex/gpt-5.4"
+            assert router._resolve_model_option("codex gpt-5.4").ref == "codex/openai-codex/gpt-5.4"
+            assert router._resolve_model_option("minimax-m2.7").ref == "minimax/minimax-m2.7"
 
     async def test_session_override_only_applies_to_matching_session_key(self):
         with patch.dict("os.environ", {
@@ -832,6 +832,45 @@ class TestLLMRouterModelSwitch:
             reset_result = router.clear_session_model(session_key="chat:99")
             assert reset_result["cleared"] == 3
             assert router.model_for("chat", session_key="chat:99") == "minimax-m2.7"
+
+    async def test_tool_result_message_uses_purpose_override_for_slot(self):
+        with patch.dict("os.environ", {
+            "LLM_API_KEY": "generic-key",
+            "LLM_BASE_URL": "https://generic.api.com/v1",
+            "LLM_MODEL": "minimax-m2.7",
+        }, clear=True):
+            from src.core.llm_router import LLMRouter, ToolCallRequest
+
+            mock_cfg = _make_mock_model_config([
+                ("codex", "Codex", "codex_oauth", "", "", [
+                    ("gpt-5.4-mini", "Codex GPT-5.4 Mini"),
+                ]),
+                ("minimax", "MiniMax", "anthropic", "https://api.minimaxi.com/anthropic", "sk-test", [
+                    ("minimax-m2.7", "minimax-m2.7"),
+                ]),
+            ])
+            router = LLMRouter(model_config=mock_cfg)
+            router._models["main_conversation"] = "minimax-m2.7"
+            router._base_urls["main_conversation"] = "https://api.minimaxi.com/anthropic"
+            router._api_types["main_conversation"] = "anthropic"
+
+            router.switch_session_model(session_key="chat:1", selector="1")
+            result = router.build_tool_result_message(
+                slot="main_conversation",
+                session_key="chat:1",
+                tool_results=[
+                    (
+                        ToolCallRequest(id="fc_1", name="echo_test", arguments={}),
+                        '{"ok": true}',
+                    )
+                ],
+            )
+
+            assert result == {
+                "type": "function_call_output",
+                "call_id": "fc_1",
+                "output": '{"ok": true}',
+            }
 
 
 class TestCodexResponsesAPI:
@@ -1028,4 +1067,3 @@ class TestSanitizeCodexPayload:
             "context_management": [{"type": "compaction"}],
         }
         assert _sanitize_codex_payload(payload) == {}
-
