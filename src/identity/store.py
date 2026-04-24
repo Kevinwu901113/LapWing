@@ -12,16 +12,32 @@ from uuid import uuid4
 
 import aiosqlite
 
+from dataclasses import dataclass
+
 from src.identity.auth import AuthContext, check_scope
 from src.identity.models import (
+    AuditLogEntry,
+    ClaimEvidence,
     ClaimRevision,
     ClaimStatus,
     ClaimType,
     ClaimOwner,
+    ConflictEvent,
+    GateEvent,
     IdentityClaim,
+    InjectionTrace,
+    OverrideToken,
+    RetrievalTrace,
     RevisionAction,
     Sensitivity,
 )
+
+
+@dataclass
+class RedactResult:
+    """redact_claim 的返回结果"""
+    success: bool
+    requires_source_redaction: bool = False
 
 logger = logging.getLogger("lapwing.identity.store")
 
@@ -387,6 +403,530 @@ class IdentityStore:
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Task 7: Trace + Event Writers
+    # ------------------------------------------------------------------
+
+    async def write_gate_event(self, event: GateEvent) -> None:
+        """INSERT into identity_gate_events."""
+        await self._db.execute(
+            "INSERT INTO identity_gate_events "
+            "(event_id, claim_id, outcome, pass_reason, gate_level, "
+            "context_profile, signals, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                event.event_id,
+                event.claim_id,
+                event.outcome.value if hasattr(event.outcome, "value") else event.outcome,
+                (event.pass_reason.value if hasattr(event.pass_reason, "value") else event.pass_reason)
+                if event.pass_reason is not None else None,
+                event.gate_level.value if hasattr(event.gate_level, "value") else event.gate_level,
+                (event.context_profile.value if hasattr(event.context_profile, "value") else event.context_profile)
+                if event.context_profile is not None else None,
+                json.dumps(event.signals),
+                event.created_at,
+            ),
+        )
+        await self._db.commit()
+
+    async def write_retrieval_trace(self, trace: RetrievalTrace) -> None:
+        """INSERT into identity_retrieval_traces."""
+        await self._db.execute(
+            "INSERT INTO identity_retrieval_traces "
+            "(trace_id, query, context_profile, candidate_ids, selected_ids, "
+            "redacted_ids, latency_ms, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                trace.trace_id,
+                trace.query,
+                (trace.context_profile.value if hasattr(trace.context_profile, "value") else trace.context_profile)
+                if trace.context_profile is not None else None,
+                json.dumps(trace.candidate_ids),
+                json.dumps(trace.selected_ids),
+                json.dumps(trace.redacted_ids),
+                trace.latency_ms,
+                trace.created_at,
+            ),
+        )
+        await self._db.commit()
+
+    async def write_injection_trace(self, trace: InjectionTrace) -> None:
+        """INSERT into identity_injection_traces."""
+        await self._db.execute(
+            "INSERT INTO identity_injection_traces "
+            "(trace_id, retrieval_trace_id, claim_ids, token_count, "
+            "budget_total, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                trace.trace_id,
+                trace.retrieval_trace_id,
+                json.dumps(trace.claim_ids),
+                trace.token_count,
+                trace.budget_total,
+                trace.created_at,
+            ),
+        )
+        await self._db.commit()
+
+    async def write_audit_log(self, entry: AuditLogEntry, auth: AuthContext) -> None:
+        """INSERT into identity_audit_log with auth_context_id."""
+        ctx_id = await self.save_auth_context(auth)
+        await self._db.execute(
+            "INSERT INTO identity_audit_log "
+            "(entry_id, action, claim_id, actor, details, auth_context_id, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                entry.entry_id,
+                entry.action.value if hasattr(entry.action, "value") else entry.action,
+                entry.claim_id,
+                entry.actor,
+                json.dumps(entry.details),
+                ctx_id,
+                entry.created_at,
+            ),
+        )
+        await self._db.commit()
+
+    async def write_conflict_event(self, event: ConflictEvent) -> None:
+        """INSERT into identity_conflict_events."""
+        await self._db.execute(
+            "INSERT INTO identity_conflict_events "
+            "(event_id, claim_id_a, claim_id_b, conflict_type, resolution, "
+            "resolved, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                event.event_id,
+                event.claim_id_a,
+                event.claim_id_b,
+                event.conflict_type.value if hasattr(event.conflict_type, "value") else event.conflict_type,
+                event.resolution,
+                1 if event.resolved else 0,
+                event.created_at,
+            ),
+        )
+        await self._db.commit()
+
+    async def create_override_token(
+        self, token: OverrideToken, auth: AuthContext
+    ) -> None:
+        """INSERT into identity_override_tokens."""
+        await self._db.execute(
+            "INSERT INTO identity_override_tokens "
+            "(token_id, claim_id, issuer, reason, action_payload_hash, "
+            "consumed, expires_at, created_at) "
+            "VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+            (
+                token.token_id,
+                token.claim_id,
+                token.issuer,
+                token.reason,
+                token.action_payload_hash,
+                token.expires_at,
+                token.created_at,
+            ),
+        )
+        await self._db.commit()
+
+    async def consume_override_token(
+        self, token_id: str, payload_hash: str, auth: AuthContext
+    ) -> bool:
+        """SET consumed=1 WHERE not consumed AND payload hash matches.
+
+        Returns True if consumed, False if already consumed or not found.
+        """
+        cursor = await self._db.execute(
+            "UPDATE identity_override_tokens SET consumed=1 "
+            "WHERE token_id=? AND action_payload_hash=? AND consumed=0",
+            (token_id, payload_hash),
+        )
+        await self._db.commit()
+        return cursor.rowcount > 0
+
+    async def _list_gate_events(self) -> list[dict]:
+        """内部辅助：列出所有门控事件（测试用）。"""
+        cursor = await self._db.execute(
+            "SELECT * FROM identity_gate_events ORDER BY created_at"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Task 8: Evidence + Privacy (Redact / Erase) + Tombstones
+    # ------------------------------------------------------------------
+
+    async def add_evidence(
+        self, evidence: ClaimEvidence, auth: AuthContext
+    ) -> None:
+        """INSERT into identity_evidence."""
+        await self._db.execute(
+            "INSERT INTO identity_evidence "
+            "(evidence_id, claim_id, evidence_type, content, source_ref, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                evidence.evidence_id,
+                evidence.claim_id,
+                evidence.evidence_type,
+                evidence.content,
+                evidence.source,
+                evidence.created_at,
+            ),
+        )
+        await self._db.commit()
+
+    async def get_evidence(
+        self, claim_id: str, auth: AuthContext
+    ) -> list[dict]:
+        """SELECT from identity_evidence."""
+        cursor = await self._db.execute(
+            "SELECT * FROM identity_evidence WHERE claim_id=? ORDER BY created_at",
+            (claim_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def redact_claim(
+        self,
+        claim_id: str,
+        auth: AuthContext,
+        reason: str,
+        *,
+        source_already_redacted: bool = False,
+    ) -> RedactResult:
+        """抹除主张文本。
+
+        如果主张有 markdown_span 证据且 source_already_redacted=False，
+        返回 requires_source_redaction=True, success=False。
+        """
+        check_scope(auth, "identity.redact")
+
+        existing = await self.get_claim(claim_id, auth)
+        if existing is None:
+            raise ValueError(f"claim {claim_id!r} not found")
+
+        # 检查是否有 markdown_span 证据
+        evidence = await self.get_evidence(claim_id, auth)
+        has_markdown = any(e["evidence_type"] == "markdown_span" for e in evidence)
+
+        if has_markdown and not source_already_redacted:
+            return RedactResult(success=False, requires_source_redaction=True)
+
+        # 执行 redact：清除 object_val，设置 predicate 为 [REDACTED]，状态为 redacted
+        now = datetime.now(timezone.utc).isoformat()
+        old_snapshot = {
+            "object_val": existing.object_val,
+            "predicate": existing.predicate,
+            "status": existing.status if isinstance(existing.status, str) else existing.status.value,
+        }
+        new_snapshot = {
+            "claim_id": existing.claim_id,
+            "raw_block_id": existing.raw_block_id,
+            "claim_local_key": existing.claim_local_key,
+            "source_file": existing.source_file,
+            "stable_block_key": existing.stable_block_key,
+            "claim_type": existing.claim_type if isinstance(existing.claim_type, str) else existing.claim_type.value,
+            "owner": existing.owner if isinstance(existing.owner, str) else existing.owner.value,
+            "predicate": "[REDACTED]",
+            "object_val": "",
+            "confidence": existing.confidence,
+            "sensitivity": existing.sensitivity if isinstance(existing.sensitivity, str) else existing.sensitivity.value,
+            "status": "redacted",
+            "tags": existing.tags if isinstance(existing.tags, list) else json.loads(existing.tags),
+            "created_at": existing.created_at,
+        }
+        revision = ClaimRevision(
+            revision_id=str(uuid4()),
+            claim_id=claim_id,
+            action=RevisionAction.REDACTED,
+            old_snapshot=old_snapshot,
+            new_snapshot=new_snapshot,
+            actor=auth.actor,
+            reason=reason,
+            created_at=now,
+        )
+        await self.append_revision(revision, auth)
+        return RedactResult(success=True)
+
+    async def erase_claim(
+        self, claim_id: str, auth: AuthContext, reason: str
+    ) -> None:
+        """完全擦除主张（Addendum P1.1）。
+
+        保留 tombstone 投影行，清除字段。删除证据和关系。
+        写入 identity_redaction_tombstones。追加 ERASED 修订。
+        Enqueue delete_vector。
+        """
+        check_scope(auth, "identity.erase")
+
+        existing = await self.get_claim(claim_id, auth)
+        if existing is None:
+            raise ValueError(f"claim {claim_id!r} not found")
+
+        now = datetime.now(timezone.utc).isoformat()
+
+        # 删除证据和关系
+        await self._db.execute(
+            "DELETE FROM identity_evidence WHERE claim_id=?", (claim_id,)
+        )
+        await self._db.execute(
+            "DELETE FROM identity_relations WHERE source_claim_id=? OR target_claim_id=?",
+            (claim_id, claim_id),
+        )
+
+        # 写入 tombstone
+        tombstone_id = str(uuid4())
+        await self._db.execute(
+            "INSERT INTO identity_redaction_tombstones "
+            "(tombstone_id, claim_id, source_file, stable_block_key, "
+            "raw_block_id, erased_at, reason) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                tombstone_id,
+                claim_id,
+                existing.source_file,
+                existing.stable_block_key,
+                existing.raw_block_id,
+                now,
+                reason,
+            ),
+        )
+        await self._db.commit()
+
+        # 追加 ERASED 修订
+        old_snapshot = {
+            "object_val": existing.object_val,
+            "predicate": existing.predicate,
+            "status": existing.status if isinstance(existing.status, str) else existing.status.value,
+        }
+        new_snapshot = {
+            "claim_id": existing.claim_id,
+            "raw_block_id": existing.raw_block_id,
+            "claim_local_key": existing.claim_local_key,
+            "source_file": existing.source_file,
+            "stable_block_key": existing.stable_block_key,
+            "claim_type": existing.claim_type if isinstance(existing.claim_type, str) else existing.claim_type.value,
+            "owner": existing.owner if isinstance(existing.owner, str) else existing.owner.value,
+            "predicate": "[ERASED]",
+            "object_val": "",
+            "confidence": existing.confidence,
+            "sensitivity": existing.sensitivity if isinstance(existing.sensitivity, str) else existing.sensitivity.value,
+            "status": "erased",
+            "tags": existing.tags if isinstance(existing.tags, list) else json.loads(existing.tags),
+            "created_at": existing.created_at,
+        }
+        revision = ClaimRevision(
+            revision_id=str(uuid4()),
+            claim_id=claim_id,
+            action=RevisionAction.ERASED,
+            old_snapshot=old_snapshot,
+            new_snapshot=new_snapshot,
+            actor=auth.actor,
+            reason=reason,
+            created_at=now,
+        )
+        await self.append_revision(revision, auth)
+
+    async def _list_tombstones(self) -> list[dict]:
+        """内部辅助：列出所有 tombstone（测试用）。"""
+        cursor = await self._db.execute(
+            "SELECT * FROM identity_redaction_tombstones ORDER BY erased_at"
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Task 9: Relations / Evidence / Claim Sources / Explicit Access
+    # ------------------------------------------------------------------
+
+    async def add_relation(
+        self,
+        source_id: str,
+        target_id: str,
+        relation_type: str,
+        weight: float,
+        auth: AuthContext,
+    ) -> None:
+        """INSERT into identity_relations."""
+        now = datetime.now(timezone.utc).isoformat()
+        await self._db.execute(
+            "INSERT INTO identity_relations "
+            "(source_claim_id, target_claim_id, relation_type, weight, created_at) "
+            "VALUES (?, ?, ?, ?, ?)",
+            (source_id, target_id, relation_type, weight, now),
+        )
+        await self._db.commit()
+
+    async def get_neighbors(
+        self, claim_id: str, auth: AuthContext
+    ) -> list[dict]:
+        """SELECT from identity_relations where source_claim_id=claim_id."""
+        cursor = await self._db.execute(
+            "SELECT * FROM identity_relations WHERE source_claim_id=? "
+            "ORDER BY created_at",
+            (claim_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def upsert_claim_source(
+        self,
+        claim_id: str,
+        source_file: str,
+        byte_start: int,
+        byte_end: int,
+        sha256: str,
+        stable_block_key: str,
+    ) -> None:
+        """INSERT OR REPLACE into identity_claim_sources (Addendum P0.3)."""
+        now = datetime.now(timezone.utc).isoformat()
+        await self._db.execute(
+            "INSERT OR REPLACE INTO identity_claim_sources "
+            "(claim_id, source_file, source_span_start, source_span_end, "
+            "sha256_at_parse, stable_block_key, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (claim_id, source_file, byte_start, byte_end, sha256, stable_block_key, now),
+        )
+        await self._db.commit()
+
+    async def get_claim_sources(self, claim_id: str) -> list[dict]:
+        """SELECT from identity_claim_sources."""
+        cursor = await self._db.execute(
+            "SELECT * FROM identity_claim_sources WHERE claim_id=? ORDER BY created_at",
+            (claim_id,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+
+    async def create_explicit_access_request(
+        self,
+        actor_id: str,
+        scope: str,
+        target_claim_ids: list[str],
+        ttl_seconds: int,
+        auth: AuthContext,
+    ) -> str:
+        """INSERT into identity_explicit_access_requests, returns request_id."""
+        from datetime import timedelta
+
+        request_id = str(uuid4())
+        now = datetime.now(timezone.utc)
+        expires_at = (now + timedelta(seconds=ttl_seconds)).isoformat()
+        await self._db.execute(
+            "INSERT INTO identity_explicit_access_requests "
+            "(request_id, actor_id, scope, target_claim_ids, ttl_seconds, "
+            "consumed, created_at, expires_at) "
+            "VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+            (
+                request_id,
+                actor_id,
+                scope,
+                json.dumps(target_claim_ids),
+                ttl_seconds,
+                now.isoformat(),
+                expires_at,
+            ),
+        )
+        await self._db.commit()
+        return request_id
+
+    async def _raw_execute(self, sql: str) -> None:
+        """内部辅助：直接执行原始 SQL（测试 trigger 用）。"""
+        await self._db.execute(sql)
+        await self._db.commit()
+
+    # ------------------------------------------------------------------
+    # Task 10: Extraction Cache + Gate Cache + Outbox drain
+    # ------------------------------------------------------------------
+
+    async def set_extraction_cache(self, key: str, result: dict) -> None:
+        """INSERT OR REPLACE into identity_extraction_cache."""
+        now = datetime.now(timezone.utc).isoformat()
+        await self._db.execute(
+            "INSERT OR REPLACE INTO identity_extraction_cache "
+            "(cache_key, result, created_at) VALUES (?, ?, ?)",
+            (key, json.dumps(result), now),
+        )
+        await self._db.commit()
+
+    async def get_extraction_cache(self, key: str) -> dict | None:
+        """SELECT, parse JSON. Returns None on miss."""
+        cursor = await self._db.execute(
+            "SELECT result FROM identity_extraction_cache WHERE cache_key=?",
+            (key,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0])
+
+    async def clear_extraction_cache(
+        self, scope: str, source_file: str | None, auth: AuthContext
+    ) -> int:
+        """DELETE all or by source; returns count."""
+        if scope == "all" or source_file is None:
+            cursor = await self._db.execute(
+                "DELETE FROM identity_extraction_cache"
+            )
+        else:
+            cursor = await self._db.execute(
+                "DELETE FROM identity_extraction_cache WHERE cache_key LIKE ?",
+                (f"%{source_file}%",),
+            )
+        await self._db.commit()
+        return cursor.rowcount
+
+    async def set_gate_cache(
+        self, key: str, result: dict, ttl_seconds: int
+    ) -> None:
+        """INSERT OR REPLACE with computed expires_at."""
+        from datetime import timedelta
+
+        now = datetime.now(timezone.utc)
+        expires_at = (now + timedelta(seconds=ttl_seconds)).isoformat()
+        await self._db.execute(
+            "INSERT OR REPLACE INTO identity_gate_cache "
+            "(cache_key, outcome, computed_at, expires_at) VALUES (?, ?, ?, ?)",
+            (key, json.dumps(result), now.isoformat(), expires_at),
+        )
+        await self._db.commit()
+
+    async def get_gate_cache(self, key: str) -> dict | None:
+        """SELECT, check not expired, parse JSON."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self._db.execute(
+            "SELECT outcome FROM identity_gate_cache "
+            "WHERE cache_key=? AND expires_at > ?",
+            (key, now),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        return json.loads(row[0])
+
+    async def enqueue_outbox(
+        self, claim_id: str, action: str, payload: dict | None = None
+    ) -> None:
+        """INSERT into identity_index_outbox."""
+        now = datetime.now(timezone.utc).isoformat()
+        await self._db.execute(
+            "INSERT INTO identity_index_outbox "
+            "(claim_id, action, payload, created_at) VALUES (?, ?, ?, ?)",
+            (claim_id, action, json.dumps(payload or {}), now),
+        )
+        await self._db.commit()
+
+    async def drain_outbox(self, batch_size: int = 50) -> int:
+        """Mark pending entries as processed. Returns count processed."""
+        now = datetime.now(timezone.utc).isoformat()
+        cursor = await self._db.execute(
+            "UPDATE identity_index_outbox SET processed_at=? "
+            "WHERE outbox_id IN ("
+            "  SELECT outbox_id FROM identity_index_outbox "
+            "  WHERE processed_at IS NULL ORDER BY outbox_id LIMIT ?"
+            ")",
+            (now, batch_size),
+        )
+        await self._db.commit()
+        return cursor.rowcount
 
     # ------------------------------------------------------------------
     # 行 → 数据类转换
