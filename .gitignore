@@ -29,3 +29,7 @@ qq_export.zip
 # Tools
 .worktrees/
 .claude/
+
+# Eval reports (generated, not tracked)
+evals/reports/*.json
+evals/reports/*.html

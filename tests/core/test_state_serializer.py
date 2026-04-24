@@ -1,9 +1,9 @@
 """Unit tests for src.core.state_serializer — pure-function rendering.
 
-Blueprint v2.0 Step 3 §2. Every test builds a StateView, serializes it,
-and asserts properties of the output. No mocks, no I/O — the serializer's
-contract is "same input, same output", and these tests pin down that
-contract so the parity smoke test can rely on it.
+Blueprint A prompt-caching overhaul. Voice is always in the system prompt
+(no depth injection into messages). Persona anchor is always in system.
+Offline-gap threshold raised to 12 hours. Overdue promise rendering toned
+down (no ⚠️ prefix).
 """
 
 from __future__ import annotations
@@ -85,8 +85,7 @@ class TestCoreShape:
         assert isinstance(out, SerializedPrompt)
 
     def test_pure_function_determinism(self):
-        """Same input → byte-identical output. Locks in the invariant
-        parity smoke tests depend on."""
+        """Same input → byte-identical output."""
         sv = _make_state()
         a = serialize(sv)
         b = serialize(sv)
@@ -96,8 +95,21 @@ class TestCoreShape:
     def test_empty_inputs_do_not_crash(self):
         sv = _make_state(soul="", constitution="", voice="")
         out = serialize(sv)
-        # runtime-state block is still emitted (time anchor etc.)
         assert "当前状态" in out.system_prompt
+
+    def test_stable_prefix_is_deterministic(self):
+        """The stable prefix (soul + constitution + voice + anchor) is
+        byte-identical across calls with the same identity docs — this
+        is what makes prompt caching work."""
+        sv1 = _make_state(offline_hours=None)
+        sv2 = _make_state(offline_hours=15.0)  # different dynamic state
+        out1 = serialize(sv1)
+        out2 = serialize(sv2)
+        # Extract the stable prefix (everything before the first dynamic section)
+        # The persona anchor is the last stable section
+        anchor_end_1 = out1.system_prompt.index(_PERSONA_ANCHOR) + len(_PERSONA_ANCHOR)
+        anchor_end_2 = out2.system_prompt.index(_PERSONA_ANCHOR) + len(_PERSONA_ANCHOR)
+        assert out1.system_prompt[:anchor_end_1] == out2.system_prompt[:anchor_end_2]
 
 
 # ── Layer 1 & 2: identity docs ───────────────────────────────────────
@@ -111,7 +123,6 @@ class TestIdentityLayers:
 
     def test_missing_identity_files_produce_no_layer(self):
         out = serialize(_make_state(soul="", constitution="CON"))
-        # leading section is the constitution, no stray divider
         assert out.system_prompt.startswith("CON")
 
     def test_sections_joined_with_horizontal_rule(self):
@@ -119,30 +130,77 @@ class TestIdentityLayers:
         assert "\n\n---\n\n" in out.system_prompt
 
 
-# ── Layer 3: runtime state ────────────────────────────────────────────
+# ── Layer 3: voice in system prompt ──────────────────────────────────
+
+class TestVoiceInSystem:
+    def test_voice_always_in_system_prompt(self):
+        """Voice is always part of the system prompt regardless of
+        conversation length."""
+        out = serialize(_make_state(voice="VOICE_CORE"))
+        assert "VOICE_CORE" in out.system_prompt
+
+    def test_voice_before_dynamic_sections(self):
+        """Voice appears in the stable prefix, before runtime state."""
+        out = serialize(_make_state(voice="VOICE_CORE"))
+        voice_pos = out.system_prompt.index("VOICE_CORE")
+        state_pos = out.system_prompt.index("当前状态")
+        assert voice_pos < state_pos
+
+    def test_persona_anchor_always_in_system(self):
+        """_PERSONA_ANCHOR is always in system prompt."""
+        out = serialize(_make_state())
+        assert _PERSONA_ANCHOR in out.system_prompt
+
+    def test_no_depth_injection_in_messages(self):
+        """No [System Note] injected into messages regardless of
+        conversation length — voice lives in the system prompt only."""
+        turns = tuple(
+            TrajectoryTurn(
+                role="user" if i % 2 == 0 else "assistant",
+                content=f"msg {i}"
+            )
+            for i in range(10)
+        )
+        out = serialize(_make_state(turns=turns, voice="VOICE_LONG"))
+        for m in out.messages:
+            assert "[System Note]" not in m["content"]
+        assert "VOICE_LONG" in out.system_prompt
+
+    def test_empty_voice_no_crash(self):
+        out = serialize(_make_state(voice=""))
+        assert _PERSONA_ANCHOR in out.system_prompt
+
+
+# ── Layer 6: runtime state ───────────────────────────────────────────
 
 class TestRuntimeState:
     def test_time_anchor_shows_ymd_and_period(self):
         sv = _make_state(now=datetime(2026, 4, 18, 14, 30, tzinfo=_TAIPEI))
         out = serialize(sv)
         assert "2026年4月18日" in out.system_prompt
-        assert "下午" in out.system_prompt  # 14 is 13-17 → 下午
+        assert "下午" in out.system_prompt
         assert "约14时" in out.system_prompt
 
     def test_weekday_is_taipei_local(self):
-        # 2026-04-18 is a Saturday (weekday 5 → 周六)
         sv = _make_state(now=datetime(2026, 4, 18, 14, 30, tzinfo=_TAIPEI))
         out = serialize(sv)
         assert "周六" in out.system_prompt
 
-    def test_offline_gap_above_threshold_renders_warning(self):
-        sv = _make_state(offline_hours=6.7)
+    def test_offline_gap_above_12h_renders_warning(self):
+        sv = _make_state(offline_hours=14.5)
         out = serialize(sv)
         assert "距上次活跃已过" in out.system_prompt
-        assert "7 小时" in out.system_prompt
+        assert "14 小时" in out.system_prompt
 
-    def test_offline_gap_below_threshold_suppressed(self):
-        sv = _make_state(offline_hours=2.0)
+    def test_offline_gap_below_12h_suppressed(self):
+        """Gaps under 12 hours (normal idle) don't emit a warning."""
+        sv = _make_state(offline_hours=6.7)
+        out = serialize(sv)
+        assert "距上次活跃已过" not in out.system_prompt
+
+    def test_offline_gap_at_4h_suppressed(self):
+        """Old threshold was 4h; now suppressed."""
+        sv = _make_state(offline_hours=4.5)
         out = serialize(sv)
         assert "距上次活跃已过" not in out.system_prompt
 
@@ -212,13 +270,11 @@ class TestCommitments:
         )
         out = serialize(_make_state(commitments=(com,)))
         assert "陪 Kevin 散步" in out.system_prompt
-        # Step 5: 标题改为通道无关的"我对用户的承诺"
         assert "我对用户的承诺" in out.system_prompt
-        # overdue 段在没有 overdue 时不出现
         assert "已超时的承诺" not in out.system_prompt
 
-    def test_overdue_promise_rendered_with_warning(self):
-        """Step 5: overdue=True 走单独的 overdue 段，带 ⚠️ 前缀。"""
+    def test_overdue_promise_rendered(self):
+        """Overdue promises go to a separate section."""
         com = CommitmentView(
             id="p2", description="查比赛", status="open",
             kind="promise", due_at="2026-04-19T01:00:00+00:00",
@@ -226,12 +282,11 @@ class TestCommitments:
         )
         out = serialize(_make_state(commitments=(com,)))
         assert "已超时的承诺" in out.system_prompt
-        assert "⚠️ 超时未完成：查比赛" in out.system_prompt
-        # 不在普通 active 段
+        assert "超时未完成：查比赛" in out.system_prompt
         assert "我对用户的承诺" not in out.system_prompt
 
     def test_overdue_and_active_promises_split(self):
-        """Step 5: 同时存在 overdue + active 时，分两段显示。"""
+        """Both overdue and active sections appear when both exist."""
         active = CommitmentView(
             id="p3", description="还没到期的事", status="open",
             kind="promise", due_at=None, is_overdue=False,
@@ -247,18 +302,12 @@ class TestCommitments:
         assert "还没到期的事" in out.system_prompt
 
     def test_serializer_does_not_filter_by_promise_status(self):
-        """Contract split: CommitmentStore.list_open() returns only the
-        pending + in_progress rows; the serializer renders whatever
-        kind=promise commitments the StateView carries, trusting the
-        builder's filter. A post-Step-3 test that wants to confirm
-        'closed promises disappear' lives at the builder layer, not
-        here."""
+        """The builder is the checkpoint, not the serializer."""
         com = CommitmentView(
             id="p1", description="已完成的事", status="fulfilled",
             kind="promise", due_at=None,
         )
         out = serialize(_make_state(commitments=(com,)))
-        # Serializer still renders it — the builder is the checkpoint.
         assert "已完成的事" in out.system_prompt
 
     def test_empty_commitments_no_section(self):
@@ -275,7 +324,6 @@ class TestCommitments:
             ) for i in range(10)
         )
         out = serialize(_make_state(commitments=coms))
-        # Only first 3 reminders rendered
         assert "reminder 0" in out.system_prompt
         assert "reminder 1" in out.system_prompt
         assert "reminder 2" in out.system_prompt
@@ -311,86 +359,41 @@ class TestMemorySnippets:
 # ── Trajectory window → messages ──────────────────────────────────────
 
 class TestMessagesFromTrajectory:
-    def test_empty_trajectory_produces_no_convo_messages(self):
+    def test_empty_trajectory_produces_no_messages(self):
         out = serialize(_make_state(turns=()))
-        # With 0 turns, voice fold path = 0 + 1 = total 1 < 4 → voice appended to system prompt, no user inject
         assert out.messages == []
 
-    def test_full_trajectory_turns_preserved(self):
+    def test_trajectory_turns_preserved_verbatim(self):
+        """Messages are a 1:1 mapping of trajectory turns, no injection."""
         turns = tuple(
-            TrajectoryTurn(role="user" if i % 2 == 0 else "assistant", content=f"msg {i}")
+            TrajectoryTurn(
+                role="user" if i % 2 == 0 else "assistant",
+                content=f"msg {i}"
+            )
             for i in range(8)
         )
         out = serialize(_make_state(turns=turns))
-        # 8 turns → total 9 ≥ 6 → voice injected at (len-2)=6 so the
-        # two-element tail (msg 6, msg 7) stays at the end; matches
-        # PromptBuilder.inject_voice_reminder behaviour on [system, *recent].
-        assert len(out.messages) == 9
-        # First 6 messages are the first 6 original turns, untouched
-        for i in range(6):
+        assert len(out.messages) == 8
+        for i in range(8):
             assert out.messages[i]["content"] == f"msg {i}"
-        # Position -3 is the injected voice note
-        assert "[System Note]" in out.messages[-3]["content"]
-        # Last two positions hold the final two original turns
-        assert out.messages[-2]["content"] == "msg 6"
-        assert out.messages[-1]["content"] == "msg 7"
 
-    def test_short_convo_voice_folded_into_system(self):
-        # 2 turns: total = 3 < 4, voice appended to system prompt
-        turns = (
-            TrajectoryTurn(role="user", content="hi"),
-            TrajectoryTurn(role="assistant", content="hey"),
-        )
-        out = serialize(_make_state(turns=turns, voice="VOICE_X"))
-        assert "VOICE_X" in out.system_prompt
-        assert all("[System Note]" not in m["content"] for m in out.messages)
-
-    def test_medium_convo_voice_injected_no_persona_anchor(self):
-        # 3 turns: total = 4 ≥ 4, but < 6 → voice + time only
-        turns = (
-            TrajectoryTurn(role="user", content="a"),
-            TrajectoryTurn(role="assistant", content="b"),
-            TrajectoryTurn(role="user", content="c"),
-        )
-        out = serialize(_make_state(turns=turns, voice="VOICE_M"))
-        note_msgs = [m for m in out.messages if "[System Note]" in m["content"]]
-        assert len(note_msgs) == 1
-        assert "VOICE_M" in note_msgs[0]["content"]
-        # Persona anchor reserved for long convos
-        assert _PERSONA_ANCHOR[:10] not in note_msgs[0]["content"]
-
-    def test_long_convo_voice_injected_with_persona_anchor(self):
-        # 5 turns: total = 6 ≥ 6 → voice + persona anchor + time
-        turns = tuple(
-            TrajectoryTurn(role="user" if i % 2 == 0 else "assistant", content=f"t{i}")
-            for i in range(5)
-        )
-        out = serialize(_make_state(turns=turns, voice="VOICE_L"))
-        note_msgs = [m for m in out.messages if "[System Note]" in m["content"]]
-        assert len(note_msgs) == 1
-        assert "VOICE_L" in note_msgs[0]["content"]
-        assert _PERSONA_ANCHOR[:15] in note_msgs[0]["content"]
-
-    def test_voice_note_placement_preserves_tail_pair(self):
-        """For ≥6 total messages, voice note lands third-from-end so
-        the last two original turns stay at the end — mirrors the
-        pre-Step-3 inject_voice_reminder on [system, *recent]."""
-        turns = tuple(
-            TrajectoryTurn(role="user", content=f"t{i}") for i in range(6)
-        )
-        out = serialize(_make_state(turns=turns))
-        assert out.messages[-2]["content"] == "t4"
-        assert out.messages[-1]["content"] == "t5"
-        assert "[System Note]" in out.messages[-3]["content"]
-
-    def test_messages_voice_preserves_turn_order(self):
+    def test_messages_preserve_turn_order(self):
         turns = tuple(
             TrajectoryTurn(role="user", content=f"m{i}") for i in range(4)
         )
         out = serialize(_make_state(turns=turns))
-        # Non-injected turns must stay in oldest→newest order
-        originals = [m for m in out.messages if "[System Note]" not in m["content"]]
-        assert [m["content"] for m in originals] == ["m0", "m1", "m2", "m3"]
+        assert [m["content"] for m in out.messages] == ["m0", "m1", "m2", "m3"]
+
+    def test_voice_always_in_system_not_messages(self):
+        """Even with many turns, voice stays in system prompt."""
+        turns = tuple(
+            TrajectoryTurn(role="user", content=f"t{i}") for i in range(10)
+        )
+        out = serialize(_make_state(turns=turns, voice="VOICE_TEST"))
+        assert "VOICE_TEST" in out.system_prompt
+        assert len(out.messages) == 10
+        for m in out.messages:
+            assert "VOICE_TEST" not in m["content"]
 
 
 # ── Period name helper ───────────────────────────────────────────────
@@ -407,9 +410,6 @@ class TestPeriodName:
         (23, "深夜"),
     ])
     def test_boundaries_match_vitals(self, hour, expected):
-        """Parity with ``src.core.vitals.get_period_name`` — the model
-        has been trained on the existing phrasing, so the labels must
-        stay identical."""
         assert _period_name(hour) == expected
 
 
@@ -417,22 +417,15 @@ class TestPeriodName:
 
 class TestPurity:
     def test_no_network_no_file_io(self, monkeypatch):
-        """Run the serializer with file I/O and clock reads disabled.
-        If the serializer is truly pure, neither gets invoked."""
+        """Serializer performs no I/O on the hot path."""
         import builtins
-        import os
 
         original_open = builtins.open
 
         def _fail_open(*args, **kwargs):
-            # Allow pytest's own internals to read files
             raise AssertionError(f"serialize() performed file I/O: {args}")
 
-        # Only guard the serializer's call — patch inside a narrow scope
         sv = _make_state()
-        # We call serialize() once without the patch (warm imports),
-        # then re-call under the guard to prove no I/O happens on the
-        # hot path.
         serialize(sv)
         try:
             monkeypatch.setattr(builtins, "open", _fail_open)
@@ -444,7 +437,7 @@ class TestPurity:
 # ── Ambient awareness ────────────────────────────────────────────────
 
 class TestAmbientAwareness:
-    """Tests for the new 环境感知 section (time context + ambient knowledge)."""
+    """Tests for the 环境感知 section (time context + ambient knowledge)."""
 
     def _make_time_context(self):
         from src.ambient.models import TimeContext
@@ -493,12 +486,10 @@ class TestAmbientAwareness:
             time_context=self._make_time_context(),
         )
         out = serialize(sv_with_tc)
-        # 旧格式时间行不应出现
         assert "当前时间：" not in out.system_prompt
         assert "约15时，台北时间" not in out.system_prompt
 
     def test_no_time_context_keeps_legacy(self):
-        """time_context=None 时保持旧行为——向后兼容。"""
         sv = _make_state(now=datetime(2026, 4, 22, 15, 24, tzinfo=_TAIPEI))
         out = serialize(sv)
         assert "当前时间：" in out.system_prompt
@@ -538,23 +529,25 @@ class TestAmbientAwareness:
         assert "暂无已缓存的环境知识" in out.system_prompt
         assert "你已知的信息" not in out.system_prompt
 
-    def test_voice_anchor_uses_time_context_period(self):
-        """time_context 填充时，voice anchor 应使用其 time_period。"""
-        tc = self._make_time_context()  # time_period="下午"
-        turns = tuple(
-            TrajectoryTurn(role="user" if i % 2 == 0 else "assistant", content=f"t{i}")
-            for i in range(5)
-        )
-        sv = _make_state(turns=turns)
-        sv_with = StateView(
-            identity_docs=sv.identity_docs,
-            attention_context=sv.attention_context,
-            trajectory_window=sv.trajectory_window,
-            memory_snippets=sv.memory_snippets,
-            commitments_active=sv.commitments_active,
-            time_context=tc,
-        )
-        out = serialize(sv_with)
-        note_msgs = [m for m in out.messages if "[System Note]" in m["content"]]
-        assert len(note_msgs) == 1
-        assert "下午" in note_msgs[0]["content"]
+
+# ── Prompt layering order ────────────────────────────────────────────
+
+class TestLayeringOrder:
+    """Verify the stable-first, dynamic-second ordering that enables
+    prompt caching."""
+
+    def test_soul_before_constitution(self):
+        out = serialize(_make_state(soul="[SOUL]", constitution="[CON]"))
+        assert out.system_prompt.index("[SOUL]") < out.system_prompt.index("[CON]")
+
+    def test_voice_before_runtime_state(self):
+        out = serialize(_make_state(voice="[VOICE]"))
+        assert out.system_prompt.index("[VOICE]") < out.system_prompt.index("当前状态")
+
+    def test_persona_anchor_before_runtime_state(self):
+        out = serialize(_make_state())
+        assert out.system_prompt.index(_PERSONA_ANCHOR) < out.system_prompt.index("当前状态")
+
+    def test_constitution_before_voice(self):
+        out = serialize(_make_state(constitution="[CON]", voice="[VOICE]"))
+        assert out.system_prompt.index("[CON]") < out.system_prompt.index("[VOICE]")

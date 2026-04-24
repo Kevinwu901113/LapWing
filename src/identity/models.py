@@ -264,6 +264,7 @@ class OverrideToken:
     claim_id: str
     issuer: ActorType
     reason: str
+    action_payload_hash: str | None
     expires_at: str | None
     created_at: str                # ISO datetime string
 

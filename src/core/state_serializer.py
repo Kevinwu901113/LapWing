@@ -1,27 +1,25 @@
 """StateSerializer — pure function turning StateView into prompt bytes.
 
-Blueprint v2.0 Step 3 §2. Replaces the procedural assembly that lived in
-``PromptBuilder.build_system_prompt`` + ``inject_voice_reminder``. Every
-input comes from ``StateView``; every output lands in ``SerializedPrompt``.
+Blueprint A prompt-caching overhaul. Layers the system prompt so stable
+identity sections come first (cache-friendly), dynamic context follows.
+Voice is always in the system prompt; depth injection into messages is
+removed.
+
+Render order (stable prefix → dynamic suffix):
+
+    1. soul.md                (identity_docs.soul)          ← stable
+    2. constitution.md        (identity_docs.constitution)  ← stable
+    3. voice core             (identity_docs.voice)         ← stable
+    4. persona anchor         (_PERSONA_ANCHOR)             ← stable
+    ─── cache breakpoint ───
+    5. ambient awareness      (time_context + ambient)      ← dynamic
+    6. runtime state block    (attention + commitments)     ← dynamic
+    7. memory snippets        (memory_snippets)             ← dynamic
+    8. corrections            (corrections_text)            ← dynamic
+
 No file reads, no ``datetime.now`` calls, no store lookups — whatever the
 prompt needs is either already in the view or is a deterministic function
 of its fields.
-
-Render order mirrors the pre-Step-3 layout so the parity smoke test can
-compare outputs against the ``recast_v2_step2_complete`` tag semantics:
-
-    1. soul.md                (identity_docs.soul)
-    2. constitution.md        (identity_docs.constitution)
-    3. runtime state block    (attention_context + commitments_active)
-    4. memory snippets        (memory_snippets) — new explicit layer
-    5. voice reminder         (identity_docs.voice) — depth-injected
-
-The runtime-state block reproduces PromptBuilder's ordering:
-    - current time anchor
-    - offline-gap warning (if any)
-    - channel tag + speaker info
-    - due reminders (commitments_active, kind=reminder)
-    - active tasks   (commitments_active, kind=task)
 """
 
 from __future__ import annotations
@@ -38,7 +36,7 @@ from src.core.state_view import (
 )
 
 
-# ── Constants mirrored from PromptBuilder ─────────────────────────────
+# ── Constants ────────────────────────────────────────────────────────
 
 _PERSONA_ANCHOR: Final[str] = (
     "记住：你是 Lapwing，说话像发微信，短句为主。"
@@ -64,6 +62,8 @@ _AUTH_NAMES: Final[dict[int, str]] = {
 
 _SECTION_DIVIDER: Final[str] = "\n\n---\n\n"
 
+_OFFLINE_GAP_THRESHOLD_HOURS: Final[float] = 12.0
+
 
 # ── Public entry point ────────────────────────────────────────────────
 
@@ -73,8 +73,15 @@ def serialize(state: StateView) -> SerializedPrompt:
     Pure function: no I/O, no clock reads, no global lookups. The output
     is fully determined by ``state``. This is what makes the parity
     smoke test meaningful — feed the same StateView, get the same bytes.
+
+    System prompt is layered: stable identity sections first (soul,
+    constitution, voice, persona anchor), then dynamic context (ambient,
+    runtime state, memory, corrections). The stable prefix is identical
+    across turns within a 5-minute window, enabling prompt caching.
     """
     parts: list[str] = []
+
+    # ── Stable prefix (cache-friendly) ──
 
     # Layer 1: soul.md
     if state.identity_docs.soul:
@@ -84,28 +91,35 @@ def serialize(state: StateView) -> SerializedPrompt:
     if state.identity_docs.constitution:
         parts.append(state.identity_docs.constitution)
 
-    # Layer 3: ambient awareness (time context + cached knowledge)
+    # Layer 3: voice core (5 rules + tool guidance)
+    if state.identity_docs.voice:
+        parts.append(state.identity_docs.voice)
+
+    # Layer 4: persona anchor
+    parts.append(_PERSONA_ANCHOR)
+
+    # ── Dynamic suffix ──
+
+    # Layer 5: ambient awareness (time context + cached knowledge)
     if state.time_context is not None:
         parts.append(_render_ambient_awareness(state))
 
-    # Layer 4: runtime state
+    # Layer 6: runtime state
     parts.append(_render_runtime_state(state))
 
-    # Layer 5: memory snippets (opt-in — empty = no section emitted)
+    # Layer 7: memory snippets (opt-in — empty = no section emitted)
     memory_block = _render_memory_snippets(state)
     if memory_block:
         parts.append(memory_block)
 
+    # Layer 8: corrections
     if state.corrections_text:
         parts.append(state.corrections_text)
 
     system_prompt = _SECTION_DIVIDER.join(parts)
 
-    # Build messages list + apply voice-reminder depth injection.
+    # Build messages list (no depth injection).
     messages = _build_messages(state)
-    system_prompt, messages = _inject_voice(
-        system_prompt, messages, state
-    )
 
     return SerializedPrompt(system_prompt=system_prompt, messages=messages)
 
@@ -115,8 +129,8 @@ def serialize(state: StateView) -> SerializedPrompt:
 def _render_runtime_state(state: StateView) -> str:
     """Produce the "## 当前状态" block.
 
-    Mirrors PromptBuilder._build_runtime_state line-by-line so the
-    parity smoke test can compare against the Step-2 tag semantics.
+    Offline-gap warning uses a 12-hour threshold to avoid cluttering
+    every turn with stale-data warnings for normal idle periods.
     """
     att = state.attention_context
     lines: list[str] = []
@@ -131,12 +145,10 @@ def _render_runtime_state(state: StateView) -> str:
             f"{period}（约{now.hour}时，台北时间）"
         )
 
-    # Offline-gap warning: only render when the builder flagged a gap.
-    # Pre-Step-3 code wrote "距上次活跃已过 {h:.0f} 小时" — kept verbatim
-    # so the model keeps recognising the phrase.
-    if att.offline_hours is not None and att.offline_hours > 4:
+    # Offline-gap warning: only for genuinely long absences.
+    if att.offline_hours is not None and att.offline_hours > _OFFLINE_GAP_THRESHOLD_HOURS:
         lines.append(
-            f"⚠️ 距上次活跃已过 {att.offline_hours:.0f} 小时。"
+            f"距上次活跃已过 {att.offline_hours:.0f} 小时。"
             "记忆中的时效性信息（比赛、新闻、天气等）可能已过期，请搜索确认后再回答。"
         )
 
@@ -170,15 +182,7 @@ def _render_runtime_state(state: StateView) -> str:
     if task_lines:
         lines.append("正在进行的任务：\n" + "\n".join(task_lines))
 
-    # Open promises (commitments with kind=promise) — new layer from
-    # Step 3; previous PromptBuilder had no promise surface. Every
-    # commitment in ``state.commitments_active`` has already been
-    # filtered to "live" by the builder (CommitmentStore.list_open
-    # returns pending + in_progress rows only) — the serializer does
-    # not re-filter on status here.
-    #
-    # Step 5: 拆 overdue 与 active 两段，overdue 段加显著前缀
-    # ⚠️ 让模型必然看到——它要决定重试 / 告知用户 / abandon。
+    # Open promises
     promise_active: list[str] = []
     promise_overdue: list[str] = []
     for c in state.commitments_active:
@@ -186,7 +190,7 @@ def _render_runtime_state(state: StateView) -> str:
             continue
         if c.is_overdue:
             promise_overdue.append(
-                f"  - ⚠️ 超时未完成：{c.description}"
+                f"  - 超时未完成：{c.description}"
                 + (f"（截止 {c.due_at}）" if c.due_at else "")
                 + f"  [id={c.id[:8]}]"
             )
@@ -198,15 +202,13 @@ def _render_runtime_state(state: StateView) -> str:
             )
 
     if promise_overdue:
-        # overdue 单独一段，标题强调
-        lines.append("⚠️ 已超时的承诺（必须处理：重试 / 告诉用户 / abandon）：\n" + "\n".join(promise_overdue[:8]))
+        lines.append("已超时的承诺：\n" + "\n".join(promise_overdue[:8]))
     if promise_active:
         lines.append("我对用户的承诺：\n" + "\n".join(promise_active[:5]))
 
     # Skill summary
     if state.skill_summary is not None:
         ss = state.skill_summary
-        # broken 不计入可用数量，不影响提示词可见性判断
         total = ss.stable_count + ss.testing_count + ss.draft_count
         if total > 0:
             skill_lines = []
@@ -248,7 +250,7 @@ def _render_memory_snippets(state: StateView) -> str:
     return "## 记忆片段\n\n" + body
 
 
-# ── Messages + voice injection ────────────────────────────────────────
+# ── Messages ─────────────────────────────────────────────────────────
 
 def _build_messages(state: StateView) -> list[dict]:
     """Convert the trajectory window into the LLM-SDK message shape."""
@@ -256,70 +258,6 @@ def _build_messages(state: StateView) -> list[dict]:
     for turn in state.trajectory_window.turns:
         out.append({"role": turn.role, "content": turn.content})
     return out
-
-
-def _inject_voice(
-    system_prompt: str, messages: list[dict], state: StateView
-) -> tuple[str, list[dict]]:
-    """Place the voice reminder using the same depth rules as pre-Step-3.
-
-    The classic ``inject_voice_reminder`` counted ``[system, *recent]``
-    (the full messages array including the system row). Here we still
-    reason in terms of that total, so ``effective_count = len(messages)
-    + 1``. Rules preserved verbatim:
-
-    - ≥ 5 recent turns (total ≥ 6): voice + persona anchor + time
-      anchor, inserted two from the end.
-    - ≥ 3 recent turns (total ≥ 4): voice + time anchor, inserted two
-      from the end.
-    - shorter conversations: voice appended to the system prompt.
-
-    Output includes the final system_prompt (possibly with voice
-    appended) and a fresh messages list with the depth-inserted note if
-    applicable. The original system message is not yet in ``messages``
-    — brain will prepend ``{"role":"system","content":system_prompt}``
-    after calling the serializer.
-    """
-    voice = state.identity_docs.voice
-    if not voice:
-        return system_prompt, messages
-
-    now = state.attention_context.now
-    if state.time_context is not None:
-        period = state.time_context.time_period
-    else:
-        period = _period_name(now.hour)
-    time_anchor = f"现在是{period}（约{now.hour}时）。说话要符合这个时间段。"
-
-    # Effective total matches legacy count: [system] + recent_messages.
-    total = len(messages) + 1
-
-    # Insert position: the legacy helper operated on
-    # [system, *recent] and used ``len(messages) - 2`` so the note
-    # landed between the second-to-last and last original messages.
-    # Converting to the recent-only view brain hands us, that becomes
-    # ``len(messages) - 2`` still (because we lost one "system" slot on
-    # both sides of the arithmetic). Keep the two-from-end behaviour
-    # so two real turns follow the note, matching pre-Step-3 output.
-    insert_at = max(0, len(messages) - 2)
-
-    if total >= 6:
-        note = (
-            f"[System Note]\n{voice}\n\n{_PERSONA_ANCHOR}\n\n{time_anchor}\n"
-            "[/System Note]"
-        )
-        new_messages = list(messages)
-        new_messages.insert(insert_at, {"role": "user", "content": note})
-        return system_prompt, new_messages
-
-    if total >= 4:
-        note = f"[System Note]\n{voice}\n\n{time_anchor}\n[/System Note]"
-        new_messages = list(messages)
-        new_messages.insert(insert_at, {"role": "user", "content": note})
-        return system_prompt, new_messages
-
-    # Very short convo: fold voice into system prompt tail.
-    return system_prompt + "\n\n" + voice, messages
 
 
 # ── Helpers ───────────────────────────────────────────────────────────

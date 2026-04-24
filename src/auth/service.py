@@ -457,6 +457,7 @@ class AuthManager:
         model: str,
         api_type: str,
         api_key: str | None = None,
+        provider_id: str | None = None,
     ) -> None:
         """Register a slot-level routing config.
 
@@ -464,7 +465,7 @@ class AuthManager:
         (e.g. 'lightweight_judgment') can have its own provider/model
         even when multiple slots share the same purpose ('tool').
         """
-        inferred_provider = _infer_provider_from_route(base_url, model)
+        inferred_provider = provider_id or _infer_provider_from_route(base_url, model)
         self._slot_configs[slot_id] = PurposeConfig(
             purpose=purpose,
             base_url=base_url,

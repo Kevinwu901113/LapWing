@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable
 
 from src.auth.service import AuthManager
 from src.core.reasoning_tags import strip_internal_thinking_tags
+from src.core.model_config import ResolvedModelRoute, make_model_ref
 from src.logging.state_mutation_log import (
     MutationType,
     StateMutationLog,
@@ -260,7 +261,14 @@ def _mut_usage_dict(response: Any, protocol: str) -> dict[str, int | None]:
     if response is None or protocol == "codex_oauth":
         return {"input_tokens": None, "output_tokens": None}
     input_t, output_t = _extract_usage(response)
-    return {"input_tokens": input_t, "output_tokens": output_t}
+    usage = getattr(response, "usage", None)
+    cache_creation = getattr(usage, "cache_creation_input_tokens", None) if usage else None
+    cache_read = getattr(usage, "cache_read_input_tokens", None) if usage else None
+    result: dict[str, int | None] = {"input_tokens": input_t, "output_tokens": output_t}
+    if cache_creation is not None or cache_read is not None:
+        result["cache_creation_input_tokens"] = cache_creation
+        result["cache_read_input_tokens"] = cache_read
+    return result
 
 
 def _mut_content_blocks(response: Any, protocol: str) -> list[dict[str, Any]]:
@@ -297,7 +305,11 @@ class LLMRouter:
         self._model_options_by_ref: dict[str, ModelOption] = {}
         self._model_options_by_alias: dict[str, ModelOption] = {}
         self._last_error_ts: dict[str, float] = {}
-        self._model_provider_map: dict[str, Any] = {}  # model_id → ProviderInfo
+        self._routes: dict[str, ResolvedModelRoute] = {}  # slot/purpose → route
+        self._model_refs: dict[str, str] = {}  # slot/purpose → provider/model ref
+        self._model_routes_by_ref: dict[str, ResolvedModelRoute] = {}
+        self._model_routes_by_model_id: dict[str, list[ResolvedModelRoute]] = {}
+        self._model_provider_map: dict[str, Any] = {}  # legacy: model_ref/model_id → ProviderInfo
         self._fallback_models: dict[str, list[str]] = {}  # slot → fallback model chain
         self._setup_routing()
         self._setup_model_options()
@@ -331,51 +343,60 @@ class LLMRouter:
         from src.core.model_config import SLOT_DEFINITIONS
 
         for slot_id in SLOT_DEFINITIONS:
-            resolved = self._model_config.resolve_slot(slot_id)
-            if resolved is None:
+            route = self._resolve_config_slot_route(slot_id)
+            if route is None:
                 logger.debug(f"Slot '{slot_id}' not configured, will use fallback")
                 continue
 
-            base_url, model, api_key, api_type = resolved
-            self._base_urls[slot_id] = base_url
-            self._models[slot_id] = model
-            self._api_types[slot_id] = api_type
+            self._routes[slot_id] = route
+            self._model_refs[slot_id] = route.model_ref
+            self._base_urls[slot_id] = route.base_url
+            self._models[slot_id] = route.model_id
+            self._api_types[slot_id] = route.api_type
             self._clients.setdefault(slot_id, None)
             logger.info(
                 f"[{slot_id}] 已注册模型路由: "
-                f"{model} ({base_url[:40]}..., {api_type})"
+                f"{route.model_ref} ({route.base_url[:40]}..., {route.api_type})"
             )
             # Push slot config to AuthManager for per-slot credential resolution
             auth_purpose = _SLOT_TO_PURPOSE.get(slot_id, "chat")
             self._auth_manager.register_slot_config(
                 slot_id,
                 auth_purpose,
-                base_url=base_url,
-                model=model,
-                api_type=api_type,
-                api_key=api_key,
+                base_url=route.base_url,
+                model=route.model_id,
+                api_type=route.api_type,
+                api_key=route.api_key,
+                provider_id=route.provider_id,
             )
 
-        # Build model_id → ProviderInfo reverse map for cross-provider session overrides
+        # Build provider-qualified model maps for cross-provider session overrides
+        self._model_routes_by_ref.clear()
+        self._model_routes_by_model_id.clear()
         self._model_provider_map.clear()
         for provider in self._model_config.get_full_config().providers:
             for m in provider.models:
-                self._model_provider_map[m.id] = provider
+                ref = make_model_ref(provider.id, m.id)
+                route = self._route_from_provider_model(provider, m)
+                self._model_routes_by_ref[ref] = route
+                self._model_routes_by_model_id.setdefault(m.id, []).append(route)
+                self._model_provider_map[ref] = provider
+                # Preserve legacy lookup for unique model ids.
+                self._model_provider_map.setdefault(m.id, provider)
 
         # Populate per-slot codex params from provider config
         self._reasoning_effort.clear()
         self._context_compaction.clear()
         for slot_id in SLOT_DEFINITIONS:
-            model = self._models.get(slot_id)
-            if model and model in self._model_provider_map:
-                prov = self._model_provider_map[model]
-                self._reasoning_effort[slot_id] = getattr(prov, "reasoning_effort", None)
-                self._context_compaction[slot_id] = getattr(prov, "context_compaction", False)
+            route = self._routes.get(slot_id)
+            if route is not None:
+                self._reasoning_effort[slot_id] = route.reasoning_effort
+                self._context_compaction[slot_id] = route.context_compaction
 
         # Load per-slot fallback model chains
         self._fallback_models.clear()
         for slot_id in SLOT_DEFINITIONS:
-            fallbacks = self._model_config.resolve_fallback_models(slot_id)
+            fallbacks = self._resolve_config_fallback_refs(slot_id)
             if fallbacks:
                 self._fallback_models[slot_id] = fallbacks
                 logger.info(f"[{slot_id}] fallback chain: {' → '.join(fallbacks)}")
@@ -384,9 +405,110 @@ class LLMRouter:
         for purpose, default_slot in _PURPOSE_TO_DEFAULT_SLOT.items():
             if purpose not in self._models and default_slot in self._models:
                 self._models[purpose] = self._models[default_slot]
+                if default_slot in self._model_refs:
+                    self._model_refs[purpose] = self._model_refs[default_slot]
+                if default_slot in self._routes:
+                    self._routes[purpose] = self._routes[default_slot]
                 self._base_urls[purpose] = self._base_urls[default_slot]
                 self._api_types[purpose] = self._api_types[default_slot]
                 self._clients.setdefault(purpose, None)
+
+    def _resolve_config_slot_route(self, slot_id: str) -> ResolvedModelRoute | None:
+        """Resolve a slot using the new route API, falling back to legacy tuples."""
+        route_getter = getattr(self._model_config, "resolve_slot_route", None)
+        if callable(route_getter):
+            try:
+                route = route_getter(slot_id)
+            except Exception:
+                route = None
+            if self._is_route_like(route):
+                return route
+
+        resolved = self._model_config.resolve_slot(slot_id)
+        if resolved is None:
+            return None
+        base_url, model, api_key, api_type = resolved
+        provider = None
+        for p in self._model_config.get_full_config().providers:
+            if any(getattr(m, "id", None) == model for m in getattr(p, "models", [])):
+                provider = p
+                break
+        provider_id = getattr(provider, "id", "") or ""
+        provider_name = getattr(provider, "name", provider_id) or provider_id
+        model_name = model
+        if provider is not None:
+            for m in getattr(provider, "models", []):
+                if getattr(m, "id", None) == model:
+                    model_name = getattr(m, "name", model)
+                    break
+        return ResolvedModelRoute(
+            provider_id=provider_id,
+            provider_name=provider_name,
+            model_id=model,
+            model_name=model_name,
+            model_ref=make_model_ref(provider_id, model) if provider_id else model,
+            api_type=api_type,
+            base_url=base_url,
+            api_key=api_key,
+            auth_type=getattr(provider, "auth_type", "api_key"),
+            api_key_env=getattr(provider, "api_key_env", None),
+            protocol=getattr(provider, "protocol", None) or api_type,
+            capabilities={},
+            limits={},
+            defaults={},
+            reasoning_effort=getattr(provider, "reasoning_effort", None),
+            context_compaction=bool(getattr(provider, "context_compaction", False)),
+        )
+
+    def _resolve_config_fallback_refs(self, slot_id: str) -> list[str]:
+        getter = getattr(self._model_config, "resolve_fallback_model_refs", None)
+        if callable(getter):
+            try:
+                refs = getter(slot_id)
+            except Exception:
+                refs = []
+            if isinstance(refs, list):
+                return [str(r) for r in refs if r]
+        default_route = self._routes.get(slot_id)
+        default_provider = default_route.provider_id if default_route else ""
+        legacy = self._model_config.resolve_fallback_models(slot_id)
+        if not isinstance(legacy, list):
+            return []
+        return [
+            self._qualify_model_ref(default_provider, model)
+            for model in legacy
+        ]
+
+    @staticmethod
+    def _is_route_like(value: Any) -> bool:
+        if value is None:
+            return False
+        return all(
+            isinstance(getattr(value, attr, None), str)
+            for attr in ("provider_id", "model_id", "model_ref", "base_url", "api_type")
+        )
+
+    @staticmethod
+    def _route_from_provider_model(provider: Any, model: Any) -> ResolvedModelRoute:
+        model_id = getattr(model, "id", "")
+        return ResolvedModelRoute(
+            provider_id=getattr(provider, "id", ""),
+            provider_name=getattr(provider, "name", getattr(provider, "id", "")),
+            model_id=model_id,
+            model_name=getattr(model, "name", model_id),
+            model_ref=make_model_ref(getattr(provider, "id", ""), model_id),
+            api_type=getattr(provider, "api_type", "openai"),
+            base_url=getattr(provider, "base_url", ""),
+            api_key=getattr(provider, "api_key", ""),
+            auth_type=getattr(provider, "auth_type", "api_key"),
+            api_key_env=getattr(provider, "api_key_env", None),
+            protocol=getattr(provider, "protocol", None) or getattr(provider, "api_type", "openai"),
+            capabilities=dict(getattr(model, "capabilities", {}) or {}),
+            limits=dict(getattr(model, "limits", {}) or {}),
+            defaults=dict(getattr(model, "defaults", {}) or {}),
+            reasoning_effort=getattr(provider, "reasoning_effort", None),
+            context_compaction=bool(getattr(provider, "context_compaction", False)),
+        )
 
     def reload_routing(self) -> None:
         """Hot-reload routing config. Call after frontend saves new config."""
@@ -394,6 +516,10 @@ class LLMRouter:
         self._models.clear()
         self._api_types.clear()
         self._base_urls.clear()
+        self._routes.clear()
+        self._model_refs.clear()
+        self._model_routes_by_ref.clear()
+        self._model_routes_by_model_id.clear()
         self._model_provider_map.clear()
         self._reasoning_effort.clear()
         self._context_compaction.clear()
@@ -445,8 +571,11 @@ class LLMRouter:
             # 从 model_routing.json 的所有 provider 生成
             for provider in self._model_config.get_full_config().providers:
                 for m in provider.models:
+                    ref = make_model_ref(provider.id, m.id)
                     alias = m.name if m.name != m.id else None
-                    _add(m.id, alias)
+                    _add(ref, alias)
+                    # Preserve bare model id selector when it is unambiguous.
+                    options_by_alias.setdefault(m.id.lower(), options_by_ref[ref])
         else:
             # 无 ModelConfigManager 时从已注册的 slot 模型中生成
             for model_id in dict.fromkeys(self._models.values()):
@@ -460,8 +589,43 @@ class LLMRouter:
         if session_key:
             override = self._session_model_overrides.get((session_key, purpose))
             if override:
-                return override
+                route = self._lookup_model_route(override)
+                return route.model_id if route is not None else override
         return self._models.get(purpose, LLM_MODEL)
+
+    def _effective_model_ref_for_purpose(self, purpose: str, *, session_key: str | None = None) -> str | None:
+        if session_key:
+            override = self._session_model_overrides.get((session_key, purpose))
+            if override:
+                route = self._lookup_model_route(override)
+                return route.model_ref if route is not None else override
+        return self._model_refs.get(purpose)
+
+    def _lookup_model_route(self, ref_or_model_id: str | None) -> ResolvedModelRoute | None:
+        if not ref_or_model_id:
+            return None
+        direct = self._model_routes_by_ref.get(ref_or_model_id)
+        if direct is not None:
+            return direct
+        matches = self._model_routes_by_model_id.get(ref_or_model_id, [])
+        if len(matches) == 1:
+            return matches[0]
+        return None
+
+    def _route_for_effective_key(self, effective_key: str) -> ResolvedModelRoute | None:
+        route = self._routes.get(effective_key)
+        if route is not None:
+            return route
+        model = self._models.get(effective_key)
+        return self._lookup_model_route(model)
+
+    def _qualify_model_ref(self, default_provider_id: str, ref_or_model_id: str) -> str:
+        route = self._lookup_model_route(ref_or_model_id)
+        if route is not None:
+            return route.model_ref
+        if default_provider_id:
+            return make_model_ref(default_provider_id, ref_or_model_id)
+        return ref_or_model_id
 
     def list_model_options(self) -> list[dict[str, Any]]:
         return [
@@ -534,24 +698,28 @@ class LLMRouter:
         overrides: dict[str, str] = {}
         for purpose in _MODEL_PURPOSES:
             default_model = self._models.get(purpose, LLM_MODEL)
+            default_ref = self._model_refs.get(purpose)
             override = (
                 self._session_model_overrides.get((session_key, purpose))
                 if session_key
                 else None
             )
-            effective_model = override or default_model
+            override_route = self._lookup_model_route(override)
+            effective_model = override_route.model_id if override_route is not None else (override or default_model)
+            effective_ref = override_route.model_ref if override_route is not None else (override or default_ref)
             base_url = self._base_urls.get(purpose, LLM_BASE_URL)
             # 优先从 provider map 获取 api_type（解决跨 provider override 问题）
-            if override and self._model_provider_map:
-                override_provider = self._model_provider_map.get(override)
-                api_type = override_provider.api_type if override_provider else _detect_api_type(base_url, effective_model)
+            if override_route is not None:
+                api_type = override_route.api_type
             else:
                 api_type = self._api_types.get(purpose, _detect_api_type(base_url, effective_model))
             if override:
                 overrides[purpose] = override
             purposes[purpose] = {
                 "default": default_model,
+                "defaultRef": default_ref,
                 "effective": effective_model,
+                "effectiveRef": effective_ref,
                 "override": override,
                 "apiType": api_type,
             }
@@ -596,16 +764,26 @@ class LLMRouter:
         model_override: str | None = None,
     ) -> tuple[Any, str, str]:
         client_override = self._clients.get(routing_key)
-        model = model_override or self._models.get(routing_key, LLM_MODEL)
-        base_url = self._base_urls.get(routing_key, LLM_BASE_URL)
-        if model_override is None:
-            api_type = self._api_types.get(routing_key, _detect_api_type(base_url, model))
+        route_override = self._lookup_model_route(model_override)
+        if route_override is not None:
+            model = route_override.model_id
+            base_url = route_override.base_url
+            api_type = route_override.api_type
+            route_api_key = route_override.api_key
         else:
-            api_type = _detect_api_type(base_url, model)
+            model = model_override or self._models.get(routing_key, LLM_MODEL)
+            base_url = self._base_urls.get(routing_key, LLM_BASE_URL)
+            if model_override is None:
+                api_type = self._api_types.get(routing_key, _detect_api_type(base_url, model))
+            else:
+                api_type = _detect_api_type(base_url, model)
+            route_api_key = ""
 
         if client_override is not None:
             return client_override, model, api_type
 
+        if not auth_value and route_api_key:
+            auth_value = route_api_key
         if not auth_value:
             raise ValueError(f"[{routing_key}] 当前请求没有可用 credential。")
 
@@ -672,11 +850,8 @@ class LLMRouter:
         client_override = self._clients.get(effective_key)
 
         # 检查 session override 是否指向不同 provider（如 MiniMax slot → gpt-5.4）
-        override_api_type = None
-        if session_model_override and self._model_provider_map:
-            override_provider = self._model_provider_map.get(session_model_override)
-            if override_provider:
-                override_api_type = override_provider.api_type
+        override_route = self._lookup_model_route(session_model_override)
+        override_api_type = override_route.api_type if override_route is not None else None
 
         # codex_oauth 由 SDK 自管理 token，不走 AuthManager candidate 解析
         slot_api_type = self._api_types.get(effective_key)
@@ -688,7 +863,9 @@ class LLMRouter:
             from src.core.codex_oauth_client import get_client, reset_client
             from config.settings import CODEX_FALLBACK_MODEL
             model = self._models.get(effective_key, CODEX_FALLBACK_MODEL)
-            if session_model_override:
+            if override_route is not None:
+                model = override_route.model_id
+            elif session_model_override:
                 model = session_model_override
             client = await get_client()
             try:
@@ -714,9 +891,21 @@ class LLMRouter:
                         effective_key,
                     )
                     session_model_override = None
+                    override_route = None
                     override_api_type = None
                 else:
                     raise
+
+        # API-key provider override goes directly through the selected route.
+        # AuthManager candidates are slot-oriented; using the route here keeps
+        # provider/model overrides from accidentally reusing the slot provider.
+        if override_route is not None and override_route.api_type != "codex_oauth":
+            client, model, api_type = self._resolve_client(
+                effective_key,
+                auth_value=override_route.api_key,
+                model_override=override_route.model_ref,
+            )
+            return await runner(None, client, model, api_type)
 
         while True:
             candidates = self._auth_manager.resolve_candidates(
@@ -785,13 +974,19 @@ class LLMRouter:
                         if fallback_chain and failure_kind in ("rate_limit", "timeout"):
                             for fb_model in fallback_chain:
                                 try:
+                                    fb_route = self._lookup_model_route(fb_model)
+                                    fb_auth_value = current_candidate.auth_value
+                                    if fb_route is not None:
+                                        current_route = self._route_for_effective_key(effective_key)
+                                        if current_route is not None and fb_route.provider_id != current_route.provider_id:
+                                            fb_auth_value = fb_route.api_key
                                     logger.warning(
                                         "[%s] 主模型 %s 失败(%s)，尝试 fallback → %s",
                                         effective_key, model, failure_kind, fb_model,
                                     )
                                     fb_client, fb_resolved, fb_api_type = self._resolve_client(
                                         effective_key,
-                                        auth_value=current_candidate.auth_value,
+                                        auth_value=fb_auth_value,
                                         model_override=fb_model,
                                     )
                                     result = await runner(current_candidate, fb_client, fb_resolved, fb_api_type)
@@ -1531,12 +1726,12 @@ class LLMRouter:
             self._session_model_overrides.get((session_key, effective_key))
             if session_key else None
         )
-        if override_model and self._model_provider_map:
-            override_provider = self._model_provider_map.get(override_model)
-            if override_provider:
-                api_type = override_provider.api_type
-            else:
-                api_type = _detect_api_type(base_url, effective_model)
+        if session_key and not override_model:
+            auth_purpose = _SLOT_TO_PURPOSE.get(effective_key, purpose)
+            override_model = self._session_model_overrides.get((session_key, auth_purpose))
+        override_route = self._lookup_model_route(override_model)
+        if override_route is not None:
+            api_type = override_route.api_type
         elif override_model:
             api_type = _detect_api_type(base_url, effective_model)
         else:

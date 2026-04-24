@@ -102,7 +102,7 @@ class TestOverdueSurfacing:
         out = serialize(view)
 
         assert "已超时的承诺" in out.system_prompt
-        assert "⚠️ 超时未完成：查比赛结果" in out.system_prompt
+        assert "超时未完成：查比赛结果" in out.system_prompt
 
     async def test_no_overdue_no_warning_section(self, stores, tmp_path):
         cs, _ = stores

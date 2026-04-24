@@ -78,6 +78,9 @@ SLOT_DEFINITIONS: dict[str, dict[str, str]] = {
 class ModelInfo:
     id: str
     name: str
+    capabilities: dict[str, Any] = field(default_factory=dict)
+    limits: dict[str, Any] = field(default_factory=dict)
+    defaults: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -88,6 +91,9 @@ class ProviderInfo:
     base_url: str
     api_key: str
     models: list[ModelInfo] = field(default_factory=list)
+    auth_type: str = "api_key"             # "api_key" | "oauth" | "none"
+    api_key_env: str | None = None
+    protocol: str | None = None            # explicit wire protocol override for UI/metadata
     reasoning_effort: str | None = None   # codex: "low" | "medium" | "high" | "xhigh"
     context_compaction: bool = False       # codex: server-side context compaction
 
@@ -99,10 +105,69 @@ class SlotAssignment:
     fallback_model_ids: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class ResolvedModelRoute:
+    """Provider-qualified model route used by LLMRouter.
+
+    ``model_ref`` is the stable registry identity: ``<provider_id>/<model_id>``.
+    ``model_id`` remains the raw model id sent to the provider API.
+    """
+
+    provider_id: str
+    provider_name: str
+    model_id: str
+    model_name: str
+    model_ref: str
+    api_type: str
+    base_url: str
+    api_key: str
+    auth_type: str = "api_key"
+    api_key_env: str | None = None
+    protocol: str | None = None
+    capabilities: dict[str, Any] = field(default_factory=dict)
+    limits: dict[str, Any] = field(default_factory=dict)
+    defaults: dict[str, Any] = field(default_factory=dict)
+    reasoning_effort: str | None = None
+    context_compaction: bool = False
+
+
 @dataclass
 class ModelRoutingConfig:
     providers: list[ProviderInfo] = field(default_factory=list)
     slots: dict[str, SlotAssignment] = field(default_factory=dict)
+
+
+def make_model_ref(provider_id: str, model_id: str) -> str:
+    """Return the stable provider-qualified model reference."""
+    return f"{provider_id}/{model_id}"
+
+
+def split_model_ref(
+    ref: str,
+    *,
+    provider_ids: list[str] | set[str] | tuple[str, ...] = (),
+) -> tuple[str, str] | None:
+    """Split ``provider/model`` without confusing model ids that contain slashes.
+
+    Many real model ids contain slashes (for example
+    ``moonshotai/kimi-k2-instruct``), so callers should pass known provider ids.
+    If no provider id matches, the value is treated as a bare model id.
+    """
+    value = str(ref or "").strip()
+    if not value:
+        return None
+    for provider_id in sorted((p for p in provider_ids if p), key=len, reverse=True):
+        prefix = f"{provider_id}/"
+        if value.startswith(prefix):
+            return provider_id, value[len(prefix):]
+    if provider_ids:
+        return None
+    if "/" not in value:
+        return None
+    provider_id, model_id = value.split("/", 1)
+    if not provider_id or not model_id:
+        return None
+    return provider_id, model_id
 
 
 def _serialize(config: ModelRoutingConfig, *, include_api_key: bool = False) -> dict[str, Any]:
@@ -111,6 +176,40 @@ def _serialize(config: ModelRoutingConfig, *, include_api_key: bool = False) -> 
     include_api_key=False（默认）时 api_key 写为 "FROM_ENV"，
     避免明文密钥落盘。内部读取走内存中的 ProviderInfo.api_key。
     """
+    provider_ids = {p.id for p in config.providers}
+
+    def _model_dict(m: ModelInfo) -> dict[str, Any]:
+        data: dict[str, Any] = {"id": m.id, "name": m.name}
+        if m.capabilities:
+            data["capabilities"] = m.capabilities
+        if m.limits:
+            data["limits"] = m.limits
+        if m.defaults:
+            data["defaults"] = m.defaults
+        return data
+
+    def _slot_dict(a: SlotAssignment) -> dict[str, Any]:
+        fallback_model_refs = [
+            _qualify_model_ref(a.provider_id, item, provider_ids)
+            for item in a.fallback_model_ids
+        ]
+        data: dict[str, Any] = {
+            "provider_id": a.provider_id,
+            "model_id": a.model_id,
+            "model_ref": make_model_ref(a.provider_id, a.model_id),
+        }
+        if a.fallback_model_ids:
+            data["fallback_model_ids"] = a.fallback_model_ids
+            data["fallback_model_refs"] = fallback_model_refs
+        return data
+
+    def _api_key_value(p: ProviderInfo) -> str:
+        if include_api_key:
+            return p.api_key
+        if p.api_type == "codex_oauth" or p.auth_type in {"oauth", "none"}:
+            return ""
+        return "FROM_ENV"
+
     return {
         "providers": [
             {
@@ -118,21 +217,17 @@ def _serialize(config: ModelRoutingConfig, *, include_api_key: bool = False) -> 
                 "name": p.name,
                 "api_type": p.api_type,
                 "base_url": p.base_url,
-                "api_key": p.api_key if include_api_key else "FROM_ENV",
-                "models": [{"id": m.id, "name": m.name} for m in p.models],
+                "api_key": _api_key_value(p),
+                "models": [_model_dict(m) for m in p.models],
+                **({"auth_type": p.auth_type} if p.auth_type != "api_key" else {}),
+                **({"api_key_env": p.api_key_env} if p.api_key_env else {}),
+                **({"protocol": p.protocol} if p.protocol else {}),
                 **({"reasoning_effort": p.reasoning_effort} if p.reasoning_effort else {}),
                 **({"context_compaction": True} if p.context_compaction else {}),
             }
             for p in config.providers
         ],
-        "slots": {
-            slot_id: {
-                "provider_id": a.provider_id,
-                "model_id": a.model_id,
-                **({"fallback_model_ids": a.fallback_model_ids} if a.fallback_model_ids else {}),
-            }
-            for slot_id, a in config.slots.items()
-        },
+        "slots": {slot_id: _slot_dict(a) for slot_id, a in config.slots.items()},
     }
 
 
@@ -140,8 +235,16 @@ def _deserialize(data: dict[str, Any]) -> ModelRoutingConfig:
     """从 JSON dict 反序列化。"""
     providers = []
     for p in data.get("providers", []):
-        models = [ModelInfo(id=m["id"], name=m.get("name", m["id"]))
-                  for m in p.get("models", [])]
+        models = [
+            ModelInfo(
+                id=m["id"],
+                name=m.get("name", m["id"]),
+                capabilities=dict(m.get("capabilities") or {}),
+                limits=dict(m.get("limits") or {}),
+                defaults=dict(m.get("defaults") or {}),
+            )
+            for m in p.get("models", [])
+        ]
         providers.append(ProviderInfo(
             id=p["id"],
             name=p.get("name", p["id"]),
@@ -149,20 +252,48 @@ def _deserialize(data: dict[str, Any]) -> ModelRoutingConfig:
             base_url=p["base_url"],
             api_key=p.get("api_key", ""),
             models=models,
+            auth_type=p.get("auth_type") or ("oauth" if p.get("api_type") == "codex_oauth" else "api_key"),
+            api_key_env=p.get("api_key_env"),
+            protocol=p.get("protocol"),
             reasoning_effort=p.get("reasoning_effort"),
             context_compaction=bool(p.get("context_compaction", False)),
         ))
 
+    provider_ids = {p.id for p in providers}
     slots = {}
     for slot_id, assignment in data.get("slots", {}).items():
-        if slot_id in SLOT_DEFINITIONS and assignment.get("provider_id"):
+        provider_id = assignment.get("provider_id")
+        model_id = assignment.get("model_id")
+        model_ref = assignment.get("model_ref")
+        if model_ref and (not provider_id or not model_id):
+            split = split_model_ref(model_ref, provider_ids=provider_ids)
+            if split is not None:
+                provider_id, model_id = split
+        if slot_id in SLOT_DEFINITIONS and provider_id:
+            fallback_model_ids = (
+                assignment.get("fallback_model_refs")
+                or assignment.get("fallback_model_ids")
+                or []
+            )
             slots[slot_id] = SlotAssignment(
-                provider_id=assignment["provider_id"],
-                model_id=assignment["model_id"],
-                fallback_model_ids=assignment.get("fallback_model_ids", []),
+                provider_id=provider_id,
+                model_id=model_id or "",
+                fallback_model_ids=list(fallback_model_ids),
             )
 
     return ModelRoutingConfig(providers=providers, slots=slots)
+
+
+def _qualify_model_ref(
+    default_provider_id: str,
+    ref_or_model_id: str,
+    provider_ids: set[str] | list[str] | tuple[str, ...],
+) -> str:
+    value = str(ref_or_model_id or "").strip()
+    split = split_model_ref(value, provider_ids=provider_ids)
+    if split is not None:
+        return make_model_ref(split[0], split[1])
+    return make_model_ref(default_provider_id, value)
 
 
 class ModelConfigManager:
@@ -196,34 +327,57 @@ class ModelConfigManager:
         """返回完整配置（内部用，含 api_key）。"""
         return self._config
 
+    def resolve_slot_route(self, slot_id: str) -> ResolvedModelRoute | None:
+        """解析 slot 到 provider-qualified route。"""
+        assignment = self._config.slots.get(slot_id)
+        if assignment is None:
+            return None
+        return self.resolve_model_ref(
+            make_model_ref(assignment.provider_id, assignment.model_id)
+        )
+
     def resolve_slot(self, slot_id: str) -> tuple[str, str, str, str] | None:
         """解析 slot 到实际的 (base_url, model, api_key, api_type)。
 
         LLMRouter 调用此方法获取每个 slot 的路由信息。
         返回 None 表示 slot 未配置。
         """
-        assignment = self._config.slots.get(slot_id)
-        if assignment is None:
+        route = self.resolve_slot_route(slot_id)
+        if route is None:
             return None
+        return (route.base_url, route.model_id, route.api_key, route.api_type)
 
-        provider = self._find_provider(assignment.provider_id)
-        if provider is None:
+    def resolve_model_ref(
+        self,
+        ref_or_model_id: str,
+        *,
+        default_provider_id: str | None = None,
+    ) -> ResolvedModelRoute | None:
+        """Resolve a provider-qualified ref or unique bare model id."""
+        provider_ids = {p.id for p in self._config.providers}
+        split = split_model_ref(ref_or_model_id, provider_ids=provider_ids)
+        if split is not None:
+            provider_id, model_id = split
+            return self._route_for(provider_id, model_id)
+
+        if default_provider_id:
+            route = self._route_for(default_provider_id, ref_or_model_id)
+            if route is not None:
+                return route
+
+        matches: list[ResolvedModelRoute] = []
+        for provider in self._config.providers:
+            route = self._route_for(provider.id, ref_or_model_id)
+            if route is not None:
+                matches.append(route)
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
             logger.warning(
-                f"Slot '{slot_id}' references unknown provider "
-                f"'{assignment.provider_id}'"
+                "Model id '%s' exists under multiple providers; use provider/model ref",
+                ref_or_model_id,
             )
-            return None
-
-        # 验证 model 在 provider 的 models 列表中
-        model_ids = {m.id for m in provider.models}
-        if assignment.model_id not in model_ids:
-            logger.warning(
-                f"Slot '{slot_id}' references unknown model "
-                f"'{assignment.model_id}' in provider '{provider.id}'"
-            )
-            return None
-
-        return (provider.base_url, assignment.model_id, provider.api_key, provider.api_type)
+        return None
 
     def resolve_fallback_models(self, slot_id: str) -> list[str]:
         """返回 slot 的 fallback model 列表（同 provider 内的模型降级链）。"""
@@ -231,6 +385,31 @@ class ModelConfigManager:
         if assignment is None:
             return []
         return list(assignment.fallback_model_ids)
+
+    def resolve_fallback_model_refs(self, slot_id: str) -> list[str]:
+        """返回 provider-qualified fallback model refs。"""
+        assignment = self._config.slots.get(slot_id)
+        if assignment is None:
+            return []
+        provider_ids = {p.id for p in self._config.providers}
+        return [
+            _qualify_model_ref(assignment.provider_id, item, provider_ids)
+            for item in assignment.fallback_model_ids
+        ]
+
+    def resolve_fallback_routes(self, slot_id: str) -> list[ResolvedModelRoute]:
+        """返回 fallback routes，跳过无效配置并记录 warning。"""
+        assignment = self._config.slots.get(slot_id)
+        if assignment is None:
+            return []
+        routes: list[ResolvedModelRoute] = []
+        for ref in self.resolve_fallback_model_refs(slot_id):
+            route = self.resolve_model_ref(ref, default_provider_id=assignment.provider_id)
+            if route is None:
+                logger.warning("Slot '%s' references unknown fallback model '%s'", slot_id, ref)
+                continue
+            routes.append(route)
+        return routes
 
     # ── Provider CRUD ──
 
@@ -241,14 +420,23 @@ class ModelConfigManager:
         base_url: str,
         api_key: str,
         api_type: str = "openai",
-        models: list[dict[str, str]] | None = None,
+        models: list[dict[str, Any]] | None = None,
+        auth_type: str = "api_key",
+        api_key_env: str | None = None,
+        protocol: str | None = None,
     ) -> dict[str, Any]:
         """添加一个 provider。"""
         if self._find_provider(provider_id) is not None:
             raise ValueError(f"Provider '{provider_id}' 已存在")
 
         model_list = [
-            ModelInfo(id=m["id"], name=m.get("name", m["id"]))
+            ModelInfo(
+                id=m["id"],
+                name=m.get("name", m["id"]),
+                capabilities=dict(m.get("capabilities") or {}),
+                limits=dict(m.get("limits") or {}),
+                defaults=dict(m.get("defaults") or {}),
+            )
             for m in (models or [])
         ]
         provider = ProviderInfo(
@@ -258,6 +446,9 @@ class ModelConfigManager:
             base_url=base_url,
             api_key=api_key,
             models=model_list,
+            auth_type=auth_type,
+            api_key_env=api_key_env,
+            protocol=protocol,
         )
         self._config.providers.append(provider)
         self._save()
@@ -281,9 +472,21 @@ class ModelConfigManager:
             provider.api_key = updates["api_key"]
         if "api_type" in updates:
             provider.api_type = updates["api_type"]
+        if "auth_type" in updates:
+            provider.auth_type = updates["auth_type"] or "api_key"
+        if "api_key_env" in updates:
+            provider.api_key_env = updates["api_key_env"]
+        if "protocol" in updates:
+            provider.protocol = updates["protocol"]
         if "models" in updates:
             provider.models = [
-                ModelInfo(id=m["id"], name=m.get("name", m["id"]))
+                ModelInfo(
+                    id=m["id"],
+                    name=m.get("name", m["id"]),
+                    capabilities=dict(m.get("capabilities") or {}),
+                    limits=dict(m.get("limits") or {}),
+                    defaults=dict(m.get("defaults") or {}),
+                )
                 for m in updates["models"]
             ]
             # 如果删了某个 model，检查是否有 slot 在用它
@@ -324,6 +527,7 @@ class ModelConfigManager:
         slot_id: str,
         provider_id: str,
         model_id: str,
+        fallback_model_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         """给一个 slot 分配模型。"""
         if slot_id not in SLOT_DEFINITIONS:
@@ -342,6 +546,7 @@ class ModelConfigManager:
         self._config.slots[slot_id] = SlotAssignment(
             provider_id=provider_id,
             model_id=model_id,
+            fallback_model_ids=list(fallback_model_ids or []),
         )
         self._save()
         return {"status": "ok", "slot_id": slot_id}
@@ -353,6 +558,44 @@ class ModelConfigManager:
             if p.id == provider_id:
                 return p
         return None
+
+    def _find_model(self, provider: ProviderInfo, model_id: str) -> ModelInfo | None:
+        for model in provider.models:
+            if model.id == model_id:
+                return model
+        return None
+
+    def _route_for(self, provider_id: str, model_id: str) -> ResolvedModelRoute | None:
+        provider = self._find_provider(provider_id)
+        if provider is None:
+            logger.warning("Unknown provider '%s'", provider_id)
+            return None
+        model = self._find_model(provider, model_id)
+        if model is None:
+            logger.warning(
+                "Provider '%s' does not declare model '%s'",
+                provider_id,
+                model_id,
+            )
+            return None
+        return ResolvedModelRoute(
+            provider_id=provider.id,
+            provider_name=provider.name,
+            model_id=model.id,
+            model_name=model.name,
+            model_ref=make_model_ref(provider.id, model.id),
+            api_type=provider.api_type,
+            base_url=provider.base_url,
+            api_key=provider.api_key,
+            auth_type=provider.auth_type,
+            api_key_env=provider.api_key_env,
+            protocol=provider.protocol or provider.api_type,
+            capabilities=dict(model.capabilities),
+            limits=dict(model.limits),
+            defaults=dict(model.defaults),
+            reasoning_effort=provider.reasoning_effort,
+            context_compaction=provider.context_compaction,
+        )
 
     def _save(self) -> None:
         CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -387,11 +630,17 @@ class ModelConfigManager:
         import os
         from config.settings import LLM_API_KEY, NIM_API_KEY
         for p in config.providers:
+            if p.api_type == "codex_oauth" or p.auth_type in {"oauth", "none"}:
+                if p.api_key == "FROM_ENV":
+                    p.api_key = ""
+                continue
             if p.api_key and p.api_key != "FROM_ENV":
                 continue
             # 按 provider id / base_url 推断对应的环境变量
             # 直接读 os.getenv：运行时热切换 model 时 key 可能已被外部更新，需要最新值
-            if "nvidia" in p.base_url.lower() or p.id == "nvidia":
+            if p.api_key_env:
+                p.api_key = os.getenv(p.api_key_env, "")
+            elif "nvidia" in p.base_url.lower() or p.id == "nvidia":
                 p.api_key = NIM_API_KEY or os.getenv("NIM_API_KEY", "")
             else:
                 p.api_key = LLM_API_KEY or os.getenv("LLM_API_KEY", "")
@@ -458,6 +707,7 @@ class ModelConfigManager:
                     base_url=base_url,
                     api_key=api_key,
                     models=[],
+                    api_key_env="NIM_API_KEY" if pid == "nvidia" else "LLM_API_KEY",
                 )
                 provider_by_url[base_url] = pid
 
