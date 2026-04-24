@@ -180,7 +180,7 @@ async def test_chat_tools_browser_enabled_safe_when_not_registered():
     names = {item["function"]["name"] for item in tools}
 
     assert "browser_open" not in names
-    assert "tell_user" in names
+    assert "send_message" in names
 
 
 @pytest.mark.asyncio

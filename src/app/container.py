@@ -296,6 +296,29 @@ class AppContainer:
         elif PHASE0_MODE:
             logger.info("Phase 0 模式：跳过意识循环")
 
+        # CircuitBreaker -> urgency: tool repeated failures -> heartbeat
+        if hasattr(self, '_circuit_breaker') and self.inner_tick_scheduler is not None:
+            _its_cb = self.inner_tick_scheduler
+            _cb = self._circuit_breaker
+            def _on_cb_open(key: str, count: int) -> None:
+                _its_cb.push_urgency({
+                    "type": "circuit_breaker",
+                    'content': f'工具 {key} 已连续失败 {count} 次，断路器已开启。考虑创建 Skill 来更可靠地处理这类任务。',
+                })
+            _cb._on_open = _on_cb_open
+
+        # CorrectionManager → urgency 信号：纠正规则反复违反时推送到 heartbeat
+        if hasattr(self, '_correction_manager') and self.inner_tick_scheduler is not None:
+            _its_cm = self.inner_tick_scheduler
+            _cm = self._correction_manager
+            def _on_correction_threshold(rule: str, entry: dict) -> None:
+                count = entry.get("violation_count", 0)
+                _its_cm.push_urgency({
+                    "type": "correction_threshold",
+                    'content': f'纠正规则「{rule[:80]}」已被违反 {count} 次。这是反复出现的问题，考虑创建 Skill 来系统性地避免它。',
+                })
+            _cm._on_threshold = _on_correction_threshold
+
         # v2.0 Step 4: start MainLoop after the consciousness/scheduler
         # block above (so brain wiring is complete) but before adapters
         # connect (so the first MessageEvent / InnerTickEvent has a
@@ -793,6 +816,12 @@ class AppContainer:
         from src.tools.ambient_tools import register_ambient_tools
         register_ambient_tools(self.brain.tool_registry)
         logger.info("环境知识工具已注册（prepare/check_ambient_knowledge + manage_interest_profile）")
+
+        # CircuitBreaker — 工具失败断路器，注入到 brain services 让 task_runtime 使用
+        from src.utils.circuit_breaker import CircuitBreaker
+        self._circuit_breaker = CircuitBreaker()
+        self.brain._circuit_breaker_ref = self._circuit_breaker
+        logger.info("CircuitBreaker 已装配")
 
         # Skill Growth Model
         from config.settings import SKILL_SYSTEM_ENABLED

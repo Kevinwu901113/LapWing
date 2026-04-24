@@ -107,6 +107,7 @@ class StateViewBuilder:
         self._inner_history_turns = inner_history_turns
         self._memory_top_k = memory_top_k
         self._memory_query_chat_turns = memory_query_chat_turns
+        self._correction_manager = None  # set by container
         self._skill_store = None  # set by container when skill system is enabled
         self._ambient: AmbientKnowledgeStore | None = None
         self._time_provider = TimeContextProvider()
@@ -145,6 +146,7 @@ class StateViewBuilder:
             trajectory_window = await self._build_trajectory_for_chat(chat_id)
         commitments_active = await self._build_commitments_active(chat_id=chat_id)
         memory_snippets = await self._build_memory_snippets(trajectory_window)
+        corrections_text = await self._build_corrections_text()
         skill_summary = self._build_skill_summary()
         time_context = self._time_provider.get_context(attention_context.now)
         ambient_entries = await self._build_ambient_entries()
@@ -155,6 +157,7 @@ class StateViewBuilder:
             trajectory_window=trajectory_window,
             memory_snippets=memory_snippets,
             commitments_active=commitments_active,
+            corrections_text=corrections_text,
             skill_summary=skill_summary,
             time_context=time_context,
             ambient_entries=ambient_entries,
@@ -186,6 +189,7 @@ class StateViewBuilder:
             trajectory_window = await self._build_trajectory_for_inner()
         commitments_active = await self._build_commitments_active(chat_id=None)
         memory_snippets = await self._build_memory_snippets(trajectory_window)
+        corrections_text = await self._build_corrections_text()
         skill_summary = self._build_skill_summary()
         time_context = self._time_provider.get_context(attention_context.now)
         ambient_entries = await self._build_ambient_entries()
@@ -196,6 +200,7 @@ class StateViewBuilder:
             trajectory_window=trajectory_window,
             memory_snippets=memory_snippets,
             commitments_active=commitments_active,
+            corrections_text=corrections_text,
             skill_summary=skill_summary,
             time_context=time_context,
             ambient_entries=ambient_entries,
@@ -393,6 +398,15 @@ class StateViewBuilder:
                 logger.debug("task_store.list_active failed", exc_info=True)
 
         return tuple(views)
+
+    async def _build_corrections_text(self) -> str | None:
+        if self._correction_manager is None:
+            return None
+        try:
+            return await self._correction_manager.format_for_prompt()
+        except Exception:
+            logger.debug("correction_manager.format_for_prompt failed", exc_info=True)
+            return None
 
     def _build_skill_summary(self) -> SkillSummary | None:
         if self._skill_store is None:

@@ -120,5 +120,5 @@ class PlanState:
         return (
             "当前计划中还有未完成的步骤，请先完成再回复用户：\n"
             f"{self.render_incomplete()}\n"
-            "如果确实需要先告诉用户中间结果，再次调用 tell_user 即可。"
+            "如果确实需要先告诉用户中间结果，再次调用 send_message 即可。"
         )

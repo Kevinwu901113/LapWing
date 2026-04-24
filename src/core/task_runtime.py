@@ -100,13 +100,6 @@ _FILE_WRITE_TOOLS: frozenset[str] = frozenset({
     "write_file", "file_write", "file_append", "apply_workspace_patch",
 })
 
-# 中间轮次文本过滤：只有 <user_visible> 标签内的文字才发给用户
-_USER_VISIBLE_RE = re.compile(
-    r"<user_visible>(.*?)</user_visible>",
-    re.DOTALL,
-)
-
-
 def _sanitize_visible_text(text: str) -> str:
     """从可见文本中移除调试日志残留，防止工具调用描述泄露给用户。"""
     from src.core.output_sanitizer import sanitize_outgoing
@@ -114,23 +107,8 @@ def _sanitize_visible_text(text: str) -> str:
     text = re.sub(r"\[/函数调用结果\]", "", text)
     text = re.sub(r"\[函数调用结果\]", "", text)
     text = re.sub(r"\n{3,}", "\n\n", text)
-    text = re.sub(r"</?user_visible>", "", text)
-    text = sanitize_outgoing(text)  # 兜底过滤
+    text = sanitize_outgoing(text)
     return text.strip()
-
-
-def _extract_user_visible(text: str) -> str:
-    """从 LLM 中间轮次文本中提取 <user_visible> 标签内的内容。
-
-    只有被 <user_visible>...</user_visible> 包裹的文本才会返回；
-    多个标签的内容用换行拼接；没有标签则返回空字符串。
-    最后做 sanitize 清理，防止 LLM 误将调试日志写入标签内。
-    """
-    matches = _USER_VISIBLE_RE.findall(text)
-    if not matches:
-        return ""
-    combined = "\n".join(m.strip() for m in matches if m.strip())
-    return _sanitize_visible_text(combined)
 
 
 # ── 模拟工具调用检测（模块级辅助函数）──
@@ -332,15 +310,12 @@ class TaskRuntime:
         browser_enabled: bool = False,
     ) -> list[dict[str, Any]]:
         """chat 场景工具集：按需暴露 shell / web / browser。
-        Phase 4: 个人工具（send_message, send_image 等）+ 提醒工具始终可用。
-        Step 5: tell_user 与 commit/fulfill/abandon_promise 始终包含——
-        前者是模型唯一对外说话出口，后者是承诺登记机制。
-        commit/fulfill/abandon_promise 在 M2 注册后自动并入。
+        send_message 用于主动消息（意识 tick 等）；正常对话中模型裸文本直接发送。
         """
         tool_names: set[str] = {
-            "tell_user",
+            "send_message",
             "get_time",
-            "send_message", "send_image", "view_image",
+            "send_image", "view_image",
             "set_reminder", "view_reminders", "cancel_reminder",
             "delegate",
         }
@@ -754,32 +729,6 @@ class TaskRuntime:
                     })
                     return TaskLoopStep()
 
-            # ── 裸文本但未调 tell_user ──
-            # Step 5 设计：裸文本不再 fallback 发给用户。若模型在用户面前的
-            # 首轮产出文字但既没调 tell_user 也没调任何工具，用户什么都看
-            # 不见。给模型一次机会把话真的说出来（或调工具查信息）。
-            if (
-                ctx.missing_tell_user_retries < 1
-                and model_text
-                and not ctx.has_used_tools
-                and ctx.send_fn is not None
-                and "tell_user" in available_tool_names
-            ):
-                ctx.missing_tell_user_retries += 1
-                logger.info(
-                    "[runtime] 裸文本未调 tell_user，注入提醒（retry %d）",
-                    ctx.missing_tell_user_retries,
-                )
-                ctx.messages.append({
-                    "role": "user",
-                    "content": (
-                        "[系统提醒] 你返回了文字但没调 tell_user，用户看不到。"
-                        "请重新决定：要说话就调 tell_user；要查资料就调 research 或 browse；"
-                        "两个都要就先调工具再调 tell_user。"
-                    ),
-                })
-                return TaskLoopStep()
-
             # ── No-Action Budget（仅在 LLM 曾使用工具后激活）──
             if ctx.has_used_tools and ctx.no_action_budget.consume():
                 logger.debug(
@@ -814,19 +763,11 @@ class TaskRuntime:
         # LLM 返回了 tool_call — 重置 no-action 预算并标记
         ctx.has_used_tools = True
         ctx.no_action_budget.reset()
-        # 默认静默：只发送 <user_visible> 标签内的内容，防止工具 JSON / 源码泄露
+        # 工具调用伴随的文字是内部推理，不发给用户
         interim_text = (turn.text or "").strip()
         if interim_text:
-            visible_text = _extract_user_visible(interim_text)
-            if visible_text and ctx.on_interim_text is not None:
-                try:
-                    await ctx.on_interim_text(visible_text)
-                    ctx.interim_parts.append(visible_text)
-                except Exception:
-                    pass
             logger.debug(
-                "Interim text (filtered): visible=%d chars, total=%d chars",
-                len(visible_text) if visible_text else 0,
+                "Interim text alongside tool calls: %d chars (not sent to user)",
                 len(interim_text),
             )
 
@@ -1675,7 +1616,17 @@ class TaskRuntime:
     ) -> tuple[str, dict[str, Any], bool]:
         dispatcher = (services or {}).get("dispatcher")
         mutation_log: StateMutationLog | None = (services or {}).get("mutation_log")
+        circuit_breaker = (services or {}).get("circuit_breaker")
         iteration_id = current_iteration_id()
+
+        cb_key = ""
+        if circuit_breaker is not None:
+            cb_key = f"{tool_call.name}:{hashlib.md5(json.dumps(tool_call.arguments, sort_keys=True).encode()).hexdigest()[:8]}"
+            allowed, cb_reason = circuit_breaker.should_allow(cb_key)
+            if not allowed:
+                logger.info("Circuit breaker blocked %s: %s", tool_call.name, cb_reason)
+                payload = {"blocked": True, "reason": cb_reason, "tool": tool_call.name}
+                return json.dumps(payload, ensure_ascii=False), payload, False
 
         if dispatcher is not None:
             try:
@@ -1774,6 +1725,12 @@ class TaskRuntime:
                 )
             except Exception:
                 logger.warning("TOOL_RESULT mutation record failed", exc_info=True)
+
+        if circuit_breaker is not None:
+            if execution.success:
+                circuit_breaker.record_success(cb_key)
+            else:
+                circuit_breaker.record_failure(cb_key)
 
         return tool_result_text, payload, execution.success
 

@@ -22,11 +22,6 @@ from src.tools.handlers import (
     verify_workspace_tool,
     write_file_tool,
 )
-from src.tools.tell_user import (
-    TELL_USER_DESCRIPTION,
-    TELL_USER_SCHEMA,
-    tell_user_executor,
-)
 from src.tools.commitments import (
     ABANDON_PROMISE_DESCRIPTION,
     ABANDON_PROMISE_SCHEMA,
@@ -167,20 +162,7 @@ class ToolRegistry:
 def build_default_tool_registry() -> ToolRegistry:
     registry = ToolRegistry()
 
-    # Step 5: tell_user 是模型唯一对外说话的路径，必须最先注册以
-    # 确保所有 RuntimeProfile 都能看到。
-    registry.register(
-        ToolSpec(
-            name="tell_user",
-            description=TELL_USER_DESCRIPTION,
-            json_schema=TELL_USER_SCHEMA,
-            executor=tell_user_executor,
-            capability="communication",
-            risk_level="low",
-        )
-    )
-
-    # Step 5: 承诺三件套——commit/fulfill/abandon_promise。
+    # 承诺三件套——commit/fulfill/abandon_promise。
     # 与 tell_user 一起构成"说话 + 承诺"语义层。
     registry.register(
         ToolSpec(
@@ -446,6 +428,36 @@ def build_default_tool_registry() -> ToolRegistry:
 
     # 纠正记录工具
     registry.register(ADD_CORRECTION_SPEC)
+
+    # 时区工具
+    from src.tools.timezone_tools import (
+        CONVERT_TIMEZONE_DESCRIPTION,
+        CONVERT_TIMEZONE_SCHEMA,
+        GET_CURRENT_DATETIME_DESCRIPTION,
+        GET_CURRENT_DATETIME_SCHEMA,
+        convert_timezone_executor,
+        get_current_datetime_executor,
+    )
+    registry.register(
+        ToolSpec(
+            name="convert_timezone",
+            description=CONVERT_TIMEZONE_DESCRIPTION,
+            json_schema=CONVERT_TIMEZONE_SCHEMA,
+            executor=convert_timezone_executor,
+            capability="general",
+            risk_level="low",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="get_current_datetime",
+            description=GET_CURRENT_DATETIME_DESCRIPTION,
+            json_schema=GET_CURRENT_DATETIME_SCHEMA,
+            executor=get_current_datetime_executor,
+            capability="general",
+            risk_level="low",
+        )
+    )
 
     # memory_tools_v2, soul_tools, personal_tools, agent_tools, browser_tools,
     # durable_scheduler tools — 全部在 container.py 中注册（Phase 3-6）

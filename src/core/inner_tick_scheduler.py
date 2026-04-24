@@ -48,7 +48,10 @@ logger = logging.getLogger("lapwing.core.inner_tick_scheduler")
 
 _NEXT_PATTERN = re.compile(r"\[T?NEXT:\s*(\d+)\s*(s|m|h|min)\]", re.IGNORECASE)
 
-_INNER_NO_OP_RESPONSES = frozenset({"无事", "无事。", "无事，", "nothing"})
+_INNER_NO_OP_RESPONSES = frozenset({
+    "无事", "无事。", "无事，", "nothing",
+    "HEARTBEAT_OK", "heartbeat_ok",
+})
 
 
 def is_inner_did_nothing(text: str) -> bool:
@@ -63,38 +66,44 @@ def build_inner_prompt(
 ) -> str:
     """Construct the synthetic "user" prompt for one inner tick.
 
-    Migrated from ``consciousness.py._build_consciousness_prompt`` so the
-    prompt-shape lives next to the scheduler that fires the tick. The
-    structure is unchanged from Phase 4: free-time framing → optional
-    urgency block → working-memory recap → reflection prompts → rules
-    (tool usage, [NEXT: Xm] suffix). MainLoop's tick handler hands this
-    string to ``brain.think_inner`` exactly as the consciousness loop
-    used to hand it to ``brain.think``.
+    Replaces the old open-ended "free time" prompt with a structured
+    checklist. The model runs through each item and either acts or
+    responds HEARTBEAT_OK.
     """
-    from pathlib import Path
     from src.core.time_utils import now as _now
 
-    now = _now().strftime("%Y-%m-%d %H:%M %A")
+    now = _now()
+    now_str = now.strftime("%Y-%m-%d %H:%M %A")
+
     parts = [
-        f"[内部意识 tick — {now}]",
+        f"[Heartbeat — {now_str}]",
         "",
-        "这是你的自由时间。你可以做任何你觉得应该做的事，或者什么都不做。",
-        "没有人在等你回复。你不需要跟任何人说话，除非你自己想。",
-        "",
-        "【重要】这不是用户对话。没有人刚才跟你说了什么话。",
-        "不要说「你能再说一次吗」「抱歉走神了」「你好」之类的话——没有人在跟你说话。",
-        "如果没有需要做的事，回复\"无事\"即可。",
+        "这是定期检查。请逐项完成以下清单：",
         "",
     ]
 
     if urgent_items:
-        parts.append("## ⚡ 紧急事件（请优先处理）\n")
+        parts.append("## ⚡ 紧急事件（最优先）")
         for item in urgent_items:
             event_type = item.get("type", "unknown")
             content = item.get("content", "")
             parts.append(f"- [{event_type}] {content}")
         parts.append("")
-        parts.append("以上事件需要你立即响应，请先处理完再做其他事。")
+
+    heartbeat_path = DATA_DIR / "consciousness" / "heartbeat.md"
+    if heartbeat_path.exists():
+        try:
+            checklist = heartbeat_path.read_text(encoding="utf-8").strip()
+            if checklist:
+                parts.append(checklist)
+                parts.append("")
+        except Exception:
+            pass
+    else:
+        parts.append("## 检查项")
+        parts.append("1. Kevin 上次联系是什么时候？超过 6 小时就主动问候")
+        parts.append("2. 有没有到期的提醒或承诺？")
+        parts.append("3. 有什么值得分享给 Kevin 的吗？（不要发 Reddit 内容，找国内网站）")
         parts.append("")
 
     scratch_pad_path = DATA_DIR / "consciousness" / "scratch_pad.md"
@@ -102,7 +111,7 @@ def build_inner_prompt(
         try:
             text = scratch_pad_path.read_text(encoding="utf-8").strip()
             if text:
-                parts.append("## 你上次在做的事\n")
+                parts.append("## 上次在做的事")
                 parts.append(text[:2000])
                 parts.append("")
         except Exception:
@@ -320,6 +329,13 @@ class InnerTickScheduler:
                     await self._conversation_event.wait()
                     if not self._alive:
                         break
+
+                # Skip non-urgent ticks during quiet hours (23:00-08:00).
+                from src.core.time_utils import now as _now
+                current_hour = _now().hour
+                if (current_hour >= 23 or current_hour < 8) and self._urgency_queue.empty():
+                    logger.debug("activeHours: skipping tick (hour=%d)", current_hour)
+                    continue
 
                 reason = "urgency" if not self._urgency_queue.empty() else "periodic"
                 await self._queue.put(InnerTickEvent.make(reason=reason))

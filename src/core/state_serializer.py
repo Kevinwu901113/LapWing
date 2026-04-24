@@ -45,7 +45,7 @@ _PERSONA_ANCHOR: Final[str] = (
     "不列清单，不用加粗标题，不用括号写动作。"
     "温暖自然，做事时保持人格，不切换成工具模式。"
     "用过工具查到的信息你就是知道了——不要装作不确定。搜索过程不发出来。"
-    "【必须】回复超过两句话时用 [SPLIT] 分条发送，不要用换行符\\n代替。不分条是违规的。"
+    "你说的每一句话 Kevin 都能直接看到。想分多条消息就用空行隔开。"
 )
 
 _WEEKDAY_NAMES: Final[tuple[str, ...]] = (
@@ -95,6 +95,9 @@ def serialize(state: StateView) -> SerializedPrompt:
     memory_block = _render_memory_snippets(state)
     if memory_block:
         parts.append(memory_block)
+
+    if state.corrections_text:
+        parts.append(state.corrections_text)
 
     system_prompt = _SECTION_DIVIDER.join(parts)
 

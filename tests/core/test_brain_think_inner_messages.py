@@ -59,7 +59,7 @@ async def test_think_inner_sends_inner_prompt_as_user_turn(brain):
     recent = captured["recent"]
     assert len(recent) >= 1
     assert recent[-1]["role"] == "user"
-    assert recent[-1]["content"].startswith("[内部意识 tick")
+    assert recent[-1]["content"].startswith("[Heartbeat")
 
     # And the messages list handed to _complete_chat must include a user msg.
     msgs = captured["messages"]

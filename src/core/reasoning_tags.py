@@ -5,8 +5,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 
-_SPLIT_MARKER_RE = re.compile(r"\[SPLIT\]", re.IGNORECASE)
-
 # 轻量级 <think> 块清理正则（闭合 + 未闭合尾部）
 _THINK_BLOCK_RE = re.compile(
     r"<think(?:ing)?[^>]*>.*?</think(?:ing)?>",
@@ -114,29 +112,3 @@ def strip_internal_thinking_tags(text: str) -> str:
     return "".join(parts)
 
 
-def split_on_markers(text: str) -> list[str]:
-    """按 [SPLIT] 分隔符拆分文本，返回非空片段列表。无分隔符时返回单元素列表。"""
-    if not _SPLIT_MARKER_RE.search(text):
-        return [text]
-    segments = [seg.strip() for seg in _SPLIT_MARKER_RE.split(text)]
-    return [seg for seg in segments if seg]
-
-
-def split_on_paragraphs(text: str, min_segments: int = 2) -> list[str]:
-    """按连续空行（\\n\\n+）拆分文本，用作 [SPLIT] 未出现时的 fallback。
-
-    只有拆分后段数 >= min_segments 才返回多段，否则返回单元素列表。
-    """
-    segments = [seg.strip() for seg in re.split(r"\n\s*\n", text)]
-    segments = [seg for seg in segments if seg]
-    if len(segments) >= min_segments:
-        return segments
-    return [text]
-
-
-def strip_split_markers(text: str) -> str:
-    """移除文本中所有 [SPLIT] 分隔符（及周边多余空白），用于记忆存储和重复发送检测。"""
-    if not _SPLIT_MARKER_RE.search(text):
-        return text
-    cleaned = _SPLIT_MARKER_RE.sub(" ", text)
-    return " ".join(cleaned.split())

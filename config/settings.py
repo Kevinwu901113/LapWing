@@ -102,6 +102,7 @@ CONSCIOUSNESS_MIN_INTERVAL: int = _s.consciousness.min_interval
 CONSCIOUSNESS_MAX_INTERVAL: int = _s.consciousness.max_interval
 CONSCIOUSNESS_AFTER_CHAT_INTERVAL: int = _s.consciousness.after_chat_interval
 CONSCIOUSNESS_CONVERSATION_END_DELAY: int = _s.consciousness.conversation_end_delay
+HEARTBEAT_TOOL_BUDGET: int = getattr(_s.consciousness, "tool_budget", 5)
 
 # ── 对话设置 ─────────────────────────────────
 

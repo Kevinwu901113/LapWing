@@ -199,6 +199,7 @@ class StateView:
     trajectory_window: TrajectoryWindow
     memory_snippets: MemorySnippets
     commitments_active: tuple[CommitmentView, ...]
+    corrections_text: str | None = None
     skill_summary: SkillSummary | None = None
     time_context: TimeContext | None = None
     ambient_entries: tuple[AmbientEntry, ...] = ()

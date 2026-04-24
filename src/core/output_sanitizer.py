@@ -9,9 +9,6 @@ import re
 
 # 所有已知的内部标记 pattern
 _PATTERNS: list[re.Pattern] = [
-    # [SPLIT] 由分段逻辑处理，不在此处移除
-    # <user_visible> 标签（开闭）
-    re.compile(r"</?user_visible>"),
     # [NEXT: 数字+单位] / [TNEXT: 数字+单位] — 意识循环唤醒间隔
     re.compile(r"\[T?NEXT:\s*\d+\s*(?:s|m|min|h)\]", re.IGNORECASE),
     # [ENTER] — LLM 随意输出的标记
