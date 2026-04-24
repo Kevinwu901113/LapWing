@@ -446,6 +446,11 @@ class AppContainer:
                 logger.warning("ambient_store close failed", exc_info=True)
             self.ambient_store = None
 
+        # 身份基底存储关闭
+        if hasattr(self, '_identity_store') and self._identity_store is not None:
+            await self._identity_store.close()
+            logger.info("身份基底存储已关闭 / Identity store closed")
+
         # v2.0 Step 2f: close TrajectoryStore connection before mutation_log
         # closes (so any in-flight TRAJECTORY_APPENDED records land first).
         if self.trajectory_store is not None:
@@ -673,6 +678,39 @@ class AppContainer:
             self.brain._episodic_extractor is not None,
             self.brain._semantic_distiller is not None,
         )
+
+        # ── 身份基底 ─────────────────────────────
+        from config.settings import (
+            IDENTITY_PARSER_ENABLED, IDENTITY_STORE_ENABLED,
+            IDENTITY_RETRIEVER_ENABLED, IDENTITY_INJECTOR_ENABLED,
+            IDENTITY_GATE_ENABLED, IDENTITY_SYSTEM_KILLSWITCH,
+            DATA_DIR,
+        )
+        from src.identity.flags import IdentityFlags
+        self._identity_flags = IdentityFlags(
+            parser_enabled=IDENTITY_PARSER_ENABLED,
+            store_enabled=IDENTITY_STORE_ENABLED,
+            retriever_enabled=IDENTITY_RETRIEVER_ENABLED,
+            injector_enabled=IDENTITY_INJECTOR_ENABLED,
+            gate_enabled=IDENTITY_GATE_ENABLED,
+            identity_system_killswitch=IDENTITY_SYSTEM_KILLSWITCH,
+        )
+        self._identity_store = None
+        self._identity_retriever = None
+        if self._identity_flags.is_active("store"):
+            from src.identity.store import IdentityStore
+            self._identity_store = IdentityStore(db_path=DATA_DIR / "identity.db")
+            await self._identity_store.init()
+            logger.info("身份基底存储已初始化 / Identity store initialized")
+            if self._identity_flags.is_active("retriever"):
+                from src.identity.retriever import IdentityRetriever
+                self._identity_retriever = IdentityRetriever(
+                    store=self._identity_store,
+                    flags=self._identity_flags,
+                )
+        self.brain._identity_store = self._identity_store
+        self.brain._identity_flags = self._identity_flags
+        self.brain._identity_retriever = self._identity_retriever
 
         # ── Agent Team 系统（Phase 6） ──────────────────────────────────
         from config.settings import AGENT_TEAM_ENABLED

@@ -123,6 +123,14 @@ SKILL_SYSTEM_ENABLED: bool = _s.skill.enabled
 SKILL_SANDBOX_IMAGE: str = _s.skill.sandbox_image
 SKILL_SANDBOX_TIMEOUT: int = _s.skill.sandbox_timeout
 
+# ── Identity ───────────────────────────────
+IDENTITY_PARSER_ENABLED: bool = _s.identity.parser_enabled
+IDENTITY_STORE_ENABLED: bool = _s.identity.store_enabled
+IDENTITY_RETRIEVER_ENABLED: bool = _s.identity.retriever_enabled
+IDENTITY_INJECTOR_ENABLED: bool = _s.identity.injector_enabled
+IDENTITY_GATE_ENABLED: bool = _s.identity.gate_enabled
+IDENTITY_SYSTEM_KILLSWITCH: bool = _s.identity.identity_system_killswitch
+
 # ── Sandbox (unified) ───────────────────────
 SANDBOX_DOCKER_IMAGE: str = _s.sandbox.docker_image
 SANDBOX_NETWORK: str = _s.sandbox.network

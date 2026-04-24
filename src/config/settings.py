@@ -238,6 +238,13 @@ _ENV_MAP: dict[str, list[str]] = {
     "CODEX_FALLBACK_MODEL": ["codex", "fallback_model"],
     # ── compaction ──
     "COMPACTION_TRIGGER_RATIO": ["compaction", "trigger_ratio"],
+    # ── identity ──
+    "IDENTITY_PARSER_ENABLED": ["identity", "parser_enabled"],
+    "IDENTITY_STORE_ENABLED": ["identity", "store_enabled"],
+    "IDENTITY_RETRIEVER_ENABLED": ["identity", "retriever_enabled"],
+    "IDENTITY_INJECTOR_ENABLED": ["identity", "injector_enabled"],
+    "IDENTITY_GATE_ENABLED": ["identity", "gate_enabled"],
+    "IDENTITY_SYSTEM_KILLSWITCH": ["identity", "identity_system_killswitch"],
     # ── log ──
     "LOG_LEVEL": ["log", "level"],
     # ── top-level ──
@@ -475,6 +482,18 @@ class LogConfig(BaseModel):
     level: str = "INFO"
 
 
+class IdentityConfig(BaseModel):
+    parser_enabled: bool = True
+    store_enabled: bool = True
+    retriever_enabled: bool = True
+    injector_enabled: bool = False
+    gate_enabled: bool = False
+    reviewer_enabled: bool = False
+    l1_memory_enabled: bool = False
+    evolution_enabled: bool = False
+    identity_system_killswitch: bool = False
+
+
 # ── root settings ────────────────────────────
 
 def _inject_env(data: dict[str, Any]) -> dict[str, Any]:
@@ -536,6 +555,7 @@ class LapwingSettings(BaseSettings):
     codex: CodexConfig = Field(default_factory=CodexConfig)
     compaction: CompactionConfig = Field(default_factory=CompactionConfig)
     log: LogConfig = Field(default_factory=LogConfig)
+    identity: IdentityConfig = Field(default_factory=IdentityConfig)
     credential_vault_path: str = ""
     phase0_mode: str = ""
 

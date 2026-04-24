@@ -213,3 +213,11 @@ timeout = 60
 memory_mb = 1024
 cpus = 2.0
 timeout = 300
+
+[identity]
+parser_enabled = true
+store_enabled = true
+retriever_enabled = true
+injector_enabled = false
+gate_enabled = false
+identity_system_killswitch = false
