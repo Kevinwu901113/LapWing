@@ -75,6 +75,15 @@ def create_app(
     )
     app.include_router(_identity_routes.router)
 
+    # 身份主张路由（/api/identity/*）— 主张查询、隐私操作、重建、健康检查。
+    from src.api.routes import identity_claims as _identity_claims_routes
+    _identity_claims_routes.init(
+        store=getattr(brain, "_identity_store", None),
+        flags=getattr(brain, "_identity_flags", None),
+        parser=getattr(brain, "_identity_parser", None),
+    )
+    app.include_router(_identity_claims_routes.router)
+
     # Phase 5: v2 路由
     from src.api.routes import notes_v2 as _notes_v2_routes
     from src.api.routes import status_v2 as _status_v2_routes
