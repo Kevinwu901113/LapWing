@@ -471,11 +471,16 @@ class IdentityParser:
 
         now = datetime.now(timezone.utc).isoformat()
 
+        # 收集本次重建后该文件中出现的 claim_id（用于弃用孤儿主张）
+        seen_claim_ids: set[str] = set()
+
         for block in blocks:
             claim_local_key = "claim_0"
             claim_id = compute_claim_id_from_key(
                 rel_path, block.stable_block_key, claim_local_key
             )
+
+            seen_claim_ids.add(claim_id)
 
             # 检查 tombstone
             if claim_id in tombstoned_ids:
@@ -572,6 +577,17 @@ class IdentityParser:
                 sha256=file_sha,
                 stable_block_key=block.stable_block_key,
             )
+
+        # 弃用该文件中不再出现的活跃主张（孤儿清理）
+        from src.identity.models import ClaimStatus
+        all_claims = await self._store.list_claims(auth, status=ClaimStatus.ACTIVE.value)
+        for claim in all_claims:
+            if claim.source_file == rel_path and claim.claim_id not in seen_claim_ids:
+                if claim.claim_id not in tombstoned_ids:
+                    await self._store.deprecate_claim(
+                        claim.claim_id, auth, "rebuild: no longer in source file"
+                    )
+                    report.deprecated += 1
 
         # 更新 identity_source_files
         await self._upsert_source_file(rel_path, file_sha)

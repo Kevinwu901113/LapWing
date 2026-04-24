@@ -16,6 +16,7 @@ from dataclasses import dataclass
 
 from src.identity.auth import AuthContext, check_scope
 from src.identity.models import (
+    AuditAction,
     AuditLogEntry,
     ClaimEvidence,
     ClaimRevision,
@@ -64,6 +65,7 @@ class IdentityStore:
         self._db.row_factory = aiosqlite.Row
         await self._db.execute("PRAGMA journal_mode=WAL")
         await self._db.execute("PRAGMA foreign_keys=ON")
+        await self._db.execute("PRAGMA synchronous=NORMAL")
         await self._apply_migrations()
 
     async def close(self) -> None:
@@ -343,12 +345,24 @@ class IdentityStore:
     async def export_claim(
         self, claim_id: str, auth: AuthContext
     ) -> dict:
-        """导出主张及其所有修订为字典。"""
+        """导出主张及其所有修订为字典，并写入审计日志。"""
         check_scope(auth, "identity.read")
         claim = await self.get_claim(claim_id, auth)
         if claim is None:
             raise ValueError(f"claim {claim_id!r} not found")
         revisions = await self.get_revisions(claim_id, auth)
+
+        # 写入审计日志
+        audit_entry = AuditLogEntry(
+            entry_id=str(uuid4()),
+            action=AuditAction.CLAIM_CREATED,  # 使用 closest action; 导出事件
+            claim_id=claim_id,
+            actor=auth.actor,
+            details={"event": "export"},
+            created_at=datetime.now(timezone.utc).isoformat(),
+        )
+        await self.write_audit_log(audit_entry, auth)
+
         return {
             "claim": {
                 "claim_id": claim.claim_id,
@@ -619,6 +633,13 @@ class IdentityStore:
         if has_markdown and not source_already_redacted:
             return RedactResult(success=False, requires_source_redaction=True)
 
+        # 清理旧 outbox 条目中的敏感文本
+        await self._db.execute(
+            "DELETE FROM identity_index_outbox WHERE claim_id=? AND processed_at IS NULL",
+            (claim_id,),
+        )
+        await self._db.commit()
+
         # 执行 redact：清除 object_val，设置 predicate 为 [REDACTED]，状态为 redacted
         now = datetime.now(timezone.utc).isoformat()
         old_snapshot = {
@@ -672,13 +693,17 @@ class IdentityStore:
 
         now = datetime.now(timezone.utc).isoformat()
 
-        # 删除证据和关系
+        # 删除证据、关系和旧 outbox 条目
         await self._db.execute(
             "DELETE FROM identity_evidence WHERE claim_id=?", (claim_id,)
         )
         await self._db.execute(
             "DELETE FROM identity_relations WHERE source_claim_id=? OR target_claim_id=?",
             (claim_id, claim_id),
+        )
+        await self._db.execute(
+            "DELETE FROM identity_index_outbox WHERE claim_id=? AND processed_at IS NULL",
+            (claim_id,),
         )
 
         # 写入 tombstone
@@ -935,6 +960,94 @@ class IdentityStore:
         )
         await self._db.commit()
         return cursor.rowcount
+
+    # ------------------------------------------------------------------
+    # Task 19: Acceptance test helper methods
+    # ------------------------------------------------------------------
+
+    async def _count_retrieval_traces(self) -> int:
+        cursor = await self._db.execute("SELECT COUNT(*) FROM identity_retrieval_traces")
+        row = await cursor.fetchone()
+        return row[0]
+
+    async def _search_all_tables(self, text: str) -> bool:
+        """Search for text in non-audit tables. Returns True if found."""
+        # Check identity_claims.object_val and identity_claims.predicate
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) FROM identity_claims WHERE object_val LIKE ? OR predicate LIKE ?",
+            (f"%{text}%", f"%{text}%"),
+        )
+        if (await cursor.fetchone())[0] > 0:
+            return True
+        # Check identity_evidence.content
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) FROM identity_evidence WHERE content LIKE ?",
+            (f"%{text}%",),
+        )
+        if (await cursor.fetchone())[0] > 0:
+            return True
+        # Check identity_index_outbox.payload
+        cursor = await self._db.execute(
+            "SELECT COUNT(*) FROM identity_index_outbox WHERE payload LIKE ?",
+            (f"%{text}%",),
+        )
+        if (await cursor.fetchone())[0] > 0:
+            return True
+        return False
+
+    async def _list_audit_entries(self, action: str | None = None) -> list[dict]:
+        if action:
+            cursor = await self._db.execute(
+                "SELECT * FROM identity_audit_log WHERE action=? ORDER BY created_at",
+                (action,),
+            )
+        else:
+            cursor = await self._db.execute(
+                "SELECT * FROM identity_audit_log ORDER BY created_at"
+            )
+        return [dict(r) for r in await cursor.fetchall()]
+
+    async def verify_explicit_request(
+        self, request_id: str, actor_id: str, scope: str, target_claim_id: str,
+    ) -> bool:
+        """Verify and consume an explicit access request. Returns True if valid and consumed."""
+        cursor = await self._db.execute(
+            "SELECT * FROM identity_explicit_access_requests WHERE request_id=?",
+            (request_id,),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return False
+        row_dict = dict(row)
+        # Check not consumed
+        if row_dict.get("consumed", 0):
+            return False
+        # Check not expired
+        expires = row_dict.get("expires_at", "")
+        if expires:
+            try:
+                exp_dt = datetime.fromisoformat(expires)
+                if exp_dt < datetime.now(timezone.utc):
+                    return False
+            except (ValueError, TypeError):
+                pass
+        # Check actor matches
+        if row_dict.get("actor_id") != actor_id:
+            return False
+        # Check scope matches
+        if row_dict.get("scope") != scope:
+            return False
+        # Check target_claim_id in target list
+        target_ids = json.loads(row_dict.get("target_claim_ids", "[]"))
+        if target_claim_id not in target_ids:
+            return False
+        # Mark consumed
+        await self._db.execute(
+            "UPDATE identity_explicit_access_requests SET consumed=1 WHERE request_id=?",
+            (request_id,),
+        )
+        await self._db.commit()
+        return True
 
     # ------------------------------------------------------------------
     # 行 → 数据类转换
