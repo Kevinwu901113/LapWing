@@ -53,6 +53,11 @@ async def test_execute_blocks_protected_path_write(isolated_shell_log):
     assert "/etc" in result.reason
 
 
+def test_workspace_owner_is_not_treated_as_other_home(monkeypatch):
+    monkeypatch.setattr(shell_executor, "_WORKSPACE_OWNER", "kevin")
+    assert "/home/kevin" not in shell_executor._other_home_prefixes()
+
+
 @pytest.mark.asyncio
 async def test_execute_blocks_interactive_command(isolated_shell_log):
     result = await shell_executor.execute("vim README.md")

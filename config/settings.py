@@ -152,9 +152,14 @@ SHELL_TIMEOUT: int = _s.shell.timeout
 SHELL_DEFAULT_CWD: str = _s.shell.default_cwd or str(ROOT_DIR)
 SHELL_MAX_OUTPUT_CHARS: int = _s.shell.max_output_chars
 SHELL_BACKEND: str = _s.shell.backend
+SHELL_WORKSPACE_OWNER: str = _s.shell.workspace_owner
+SHELL_DOCKER_IMAGE: str = _s.shell.docker_image
+SHELL_DOCKER_WORKSPACE: str = _s.shell.docker_workspace
 TASK_MAX_TOOL_ROUNDS: int = _s.task.max_tool_rounds
 TASK_NO_ACTION_BUDGET: int = _s.task.no_action_budget
 TASK_ERROR_BURST_THRESHOLD: int = _s.task.error_burst_threshold
+INTENT_ROUTER_ENABLED: bool = _s.intent_router.enabled
+INTENT_ROUTER_SESSION_TTL_SECONDS: int = _s.intent_router.session_ttl_seconds
 
 # ── SLO ──────────────────────────────────────
 
@@ -169,6 +174,7 @@ TOOL_LATENCY_MIN_SAMPLES_FOR_SLO: int = _s.slo.latency_min_samples
 # ── Loop detection ───────────────────────────
 
 LOOP_DETECTION_ENABLED: bool = _s.loop_detection.enabled
+LOOP_DETECTION_BLOCKING: bool = _s.loop_detection.blocking
 LOOP_DETECTION_HISTORY_SIZE: int = _s.loop_detection.history_size
 LOOP_DETECTION_WARNING_THRESHOLD: int = _s.loop_detection.warning_threshold
 LOOP_DETECTION_CRITICAL_THRESHOLD: int = _s.loop_detection.critical_threshold

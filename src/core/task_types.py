@@ -11,6 +11,7 @@ from config.settings import (
     LOOP_DETECTION_DETECTOR_GENERIC_REPEAT,
     LOOP_DETECTION_DETECTOR_KNOWN_POLL_NO_PROGRESS,
     LOOP_DETECTION_DETECTOR_PING_PONG,
+    LOOP_DETECTION_BLOCKING,
     LOOP_DETECTION_ENABLED,
     LOOP_DETECTION_GLOBAL_CIRCUIT_BREAKER_THRESHOLD,
     LOOP_DETECTION_HISTORY_SIZE,
@@ -26,6 +27,7 @@ class LoopDetectionConfig:
     """工具循环检测配置（对齐 OpenClaw 语义）。"""
 
     enabled: bool = LOOP_DETECTION_ENABLED
+    blocking: bool = LOOP_DETECTION_BLOCKING
     history_size: int = LOOP_DETECTION_HISTORY_SIZE
     warning_threshold: int = LOOP_DETECTION_WARNING_THRESHOLD
     critical_threshold: int = LOOP_DETECTION_CRITICAL_THRESHOLD
@@ -211,5 +213,4 @@ class ToolLoopContext:
     simulated_tool_retries: int = 0
     has_used_tools: bool = False
     start_time: float = field(default_factory=time.perf_counter)
-
 

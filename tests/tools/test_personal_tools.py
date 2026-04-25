@@ -1,7 +1,7 @@
 """personal_tools 个人工具集单元测试 — Phase 4。"""
 
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock
 
 from src.tools.types import ToolExecutionRequest, ToolExecutionContext, ToolExecutionResult
 
@@ -95,50 +95,44 @@ class TestSendMessage:
 
     async def test_kevin_desktop_success(self):
         """target=kevin_desktop 成功发送桌面消息。"""
-        import sys
         from src.tools.personal_tools import _send_message
 
         mock_desktop_adapter = MagicMock()
-        mock_desktop_adapter.is_connected = MagicMock(return_value=True)
-        mock_desktop_adapter.send_message = AsyncMock()
+        mock_desktop_adapter.config = {"kevin_id": "owner"}
+        mock_desktop_adapter.is_connected = AsyncMock(return_value=True)
+        mock_desktop_adapter.send_text = AsyncMock()
 
         mock_cm = MagicMock()
         mock_cm.get_adapter = MagicMock(return_value=mock_desktop_adapter)
 
-        # 确保 DesktopAdapter 可被导入（模块可能不存在）
-        mock_desktop_module = MagicMock()
-        with patch.dict(sys.modules, {"src.adapters.desktop": mock_desktop_module}):
-            ctx = _make_ctx(services={"channel_manager": mock_cm})
-            req = ToolExecutionRequest(name="send_message", arguments={
-                "target": "kevin_desktop",
-                "content": "桌面消息",
-            })
-            result = await _send_message(req, ctx)
+        ctx = _make_ctx(services={"channel_manager": mock_cm})
+        req = ToolExecutionRequest(name="send_message", arguments={
+            "target": "kevin_desktop",
+            "content": "桌面消息",
+        })
+        result = await _send_message(req, ctx)
 
         assert result.success is True
         assert result.payload["sent"] is True
         assert result.payload["target"] == "kevin_desktop"
-        mock_desktop_adapter.send_message.assert_awaited_once_with("桌面消息")
+        mock_desktop_adapter.send_text.assert_awaited_once_with("owner", "桌面消息")
 
     async def test_desktop_not_connected(self):
         """Desktop 未连接时返回有意义的错误提示。"""
-        import sys
         from src.tools.personal_tools import _send_message
 
         mock_desktop_adapter = MagicMock()
-        mock_desktop_adapter.is_connected = MagicMock(return_value=False)
+        mock_desktop_adapter.is_connected = AsyncMock(return_value=False)
 
         mock_cm = MagicMock()
         mock_cm.get_adapter = MagicMock(return_value=mock_desktop_adapter)
 
-        mock_desktop_module = MagicMock()
-        with patch.dict(sys.modules, {"src.adapters.desktop": mock_desktop_module}):
-            ctx = _make_ctx(services={"channel_manager": mock_cm})
-            req = ToolExecutionRequest(name="send_message", arguments={
-                "target": "kevin_desktop",
-                "content": "测试",
-            })
-            result = await _send_message(req, ctx)
+        ctx = _make_ctx(services={"channel_manager": mock_cm})
+        req = ToolExecutionRequest(name="send_message", arguments={
+            "target": "kevin_desktop",
+            "content": "测试",
+        })
+        result = await _send_message(req, ctx)
 
         assert result.success is False
         assert "Desktop" in result.payload["error"] or "未连接" in result.payload["error"]

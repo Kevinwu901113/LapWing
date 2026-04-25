@@ -124,6 +124,30 @@ class DurableScheduler:
         self._event_queue = event_queue
         self._running = False
 
+    @property
+    def urgency_callback(self):
+        return self._urgency_callback
+
+    @urgency_callback.setter
+    def urgency_callback(self, callback) -> None:
+        self._urgency_callback = callback
+
+    @property
+    def send_fn(self):
+        return self._send_fn
+
+    @send_fn.setter
+    def send_fn(self, send_fn) -> None:
+        self._send_fn = send_fn
+
+    @property
+    def brain(self):
+        return self._brain
+
+    @brain.setter
+    def brain(self, brain) -> None:
+        self._brain = brain
+
     # ── 公开接口 ────────────────────────────────────────────────────
 
     async def schedule(

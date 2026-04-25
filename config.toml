@@ -66,13 +66,18 @@ timeout = 30
 default_cwd = "/home/kevin/lapwing"
 max_output_chars = 4000
 backend = "local"
+workspace_owner = "kevin"
 docker_image = "lapwing-sandbox:latest"
-docker_workspace = "/home/lapwing/workspace"
+docker_workspace = "/workspace"
 
 [task]
 max_tool_rounds = 32
 no_action_budget = 3
 error_burst_threshold = 3
+
+[intent_router]
+enabled = true
+session_ttl_seconds = 300
 
 [slo]
 shell_p95_ms = 2000
@@ -84,7 +89,8 @@ latency_window_size = 200
 latency_min_samples = 20
 
 [loop_detection]
-enabled = false
+enabled = true
+blocking = false
 history_size = 30
 warning_threshold = 10
 critical_threshold = 20

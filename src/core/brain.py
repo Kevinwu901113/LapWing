@@ -29,6 +29,7 @@ from src.tools.types import ToolExecutionRequest
 from config.settings import (
     BROWSER_ENABLED,
     CHAT_WEB_TOOLS_ENABLED,
+    INTENT_ROUTER_ENABLED,
     MAX_HISTORY_TURNS,
     SHELL_ALLOW_SUDO,
     SHELL_DEFAULT_CWD,
@@ -43,6 +44,12 @@ logger = logging.getLogger("lapwing.core.brain")
 
 # 直接输出模式：模型裸文本 = 用户可见消息。工具调用是内部操作。
 # send_message 工具仅用于主动消息场景（意识 tick / 定时提醒等无对话上下文时）。
+
+_TASK_PROFILE_HINTS = (
+    "跑", "执行", "运行", "shell", "命令", "代码", "git", "pytest",
+    "deploy", "部署", "当前目录", "列一下", "查看目录", "文件", "文件夹",
+    "创建", "新建", "写入", "修改", "删除",
+)
 
 
 @dataclasses.dataclass
@@ -240,11 +247,12 @@ class LapwingBrain:
             user_message,
             approved_directory=approved_directory,
         )
-        tools = self.task_runtime.chat_tools(
-            shell_enabled=SHELL_ENABLED,
-            web_enabled=CHAT_WEB_TOOLS_ENABLED,
-            browser_enabled=BROWSER_ENABLED,
-        )
+        profile_name = self._fallback_profile_for_message(user_message, constraints)
+        if INTENT_ROUTER_ENABLED:
+            intent_router = getattr(self, "intent_router", None)
+            if intent_router is not None and profile_name != "task_execution":
+                profile_name = await intent_router.route(chat_id, user_message)
+        tools = self.task_runtime.tools_for_profile(profile_name)
         services = {}
         if self.trajectory_store is not None:
             services["trajectory_store"] = self.trajectory_store
@@ -308,6 +316,8 @@ class LapwingBrain:
         correction_manager = getattr(self, "_correction_manager", None)
         if correction_manager is not None:
             services["correction_manager"] = correction_manager
+        if getattr(self, "router", None) is not None:
+            services["llm_router"] = self.router
 
         deps = RuntimeDeps(
             execute_shell=execute_shell,
@@ -326,12 +336,24 @@ class LapwingBrain:
             event_bus=self.event_bus,
             on_consent_required=lambda state: self.task_runtime.record_pending_confirmation(chat_id, state),
             services=services,
+            profile=profile_name,
             on_interim_text=on_interim_text,
             on_typing=on_typing,
             adapter=adapter,
             user_id=user_id,
             send_fn=send_fn,
         )
+
+    @staticmethod
+    def _fallback_profile_for_message(user_message: str, constraints) -> str:
+        if getattr(constraints, "is_write_request", False) or getattr(
+            constraints, "has_hard_path_constraints", False
+        ):
+            return "task_execution"
+        lowered = user_message.lower()
+        if any(hint in lowered for hint in _TASK_PROFILE_HINTS):
+            return "task_execution"
+        return "chat_extended"
 
     async def _render_messages(
         self,
@@ -1031,4 +1053,3 @@ class LapwingBrain:
             return None
 
         return response_text
-

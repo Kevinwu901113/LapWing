@@ -8,7 +8,7 @@ import re
 from typing import Any
 
 from src.research.prompts import REFINE_PROMPT, REFINE_PROMPT_TEXT_FALLBACK
-from src.research.types import Evidence, ResearchResult
+from src.research.types import Evidence, ResearchResult, normalize_confidence
 
 logger = logging.getLogger("lapwing.research.refiner")
 
@@ -20,7 +20,7 @@ _FALLBACK_QUOTE_MAX = 300
 _CODE_FENCE_RE = re.compile(r"^```(?:json)?\s*\n(.*?)\n```\s*$", re.DOTALL)
 
 _RESULT_TOOL_NAME = "submit_research_result"
-_RESULT_TOOL_DESCRIPTION = "提交研究综合结果。answer 是给用户看的答案；evidence 是带出处的关键引文；confidence 是高/中/低；unclear 是不确定或矛盾的地方。"
+_RESULT_TOOL_DESCRIPTION = "提交研究综合结果。answer 是给用户看的答案；evidence 是带出处的关键引文；confidence 是 0.0-1.0 数值；unclear 是不确定或矛盾的地方。"
 _RESULT_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -42,8 +42,10 @@ _RESULT_SCHEMA: dict[str, Any] = {
             },
         },
         "confidence": {
-            "type": "string",
-            "enum": ["high", "medium", "low"],
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1,
+            "description": "0.0-1.0 的置信度分数。",
         },
         "unclear": {
             "type": "string",
@@ -64,7 +66,7 @@ class Refiner:
         if not sources:
             return ResearchResult(
                 answer="没有找到相关信息。",
-                confidence="low",
+                confidence=0.3,
             )
 
         sources_text = self._format_sources(sources)
@@ -110,7 +112,7 @@ class Refiner:
             return ResearchResult(
                 answer=(response or "")[:_FALLBACK_ANSWER_MAX].strip()
                 or "精炼结果为空。",
-                confidence="low",
+                confidence=0.3,
                 unclear="精炼结果无法解析为结构化数据",
             )
 
@@ -136,9 +138,7 @@ class Refiner:
 
     @staticmethod
     def _result_from_parsed(parsed: dict) -> ResearchResult:
-        confidence = parsed.get("confidence", "medium")
-        if confidence not in ("high", "medium", "low"):
-            confidence = "medium"
+        confidence = normalize_confidence(parsed.get("confidence", 0.6))
         evidence = []
         for ev in parsed.get("evidence") or []:
             if not isinstance(ev, dict):
@@ -170,6 +170,6 @@ class Refiner:
                 source_name=str(first.get("title", "")),
                 quote=content[:_FALLBACK_QUOTE_MAX],
             )],
-            confidence="low",
+            confidence=0.3,
             unclear=unclear,
         )

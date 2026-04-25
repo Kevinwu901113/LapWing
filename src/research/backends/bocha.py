@@ -72,14 +72,15 @@ class BochaBackend(SearchBackend):
         )
 
         results: list[dict[str, Any]] = []
-        for item in web_pages:
+        total = max(len(web_pages), 1)
+        for index, item in enumerate(web_pages):
             # summary 比 snippet 更详细，优先用 summary
             content = item.get("summary") or item.get("snippet") or ""
             results.append({
                 "url": item.get("url", ""),
                 "title": item.get("name", ""),
                 "snippet": content[:_SNIPPET_MAX],
-                "score": 1.0,  # 博查不返回 score，用 1.0 让排序保持插入顺序
+                "score": 0.5 * (1.0 - index / total),
                 "source": "bocha",
             })
         return results

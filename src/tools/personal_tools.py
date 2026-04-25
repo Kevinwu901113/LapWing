@@ -85,20 +85,15 @@ async def _send_message(
     try:
         if target == "kevin_desktop":
             # 取 desktop adapter，检查连接状态
-            desktop_adapter = None
-            try:
-                from src.adapters.desktop import DesktopAdapter
-                desktop_adapter = channel_manager.get_adapter("desktop")
-            except Exception:
-                pass
-
-            if desktop_adapter is None or not desktop_adapter.is_connected():
+            desktop_adapter = channel_manager.get_adapter("desktop")
+            is_connected = await desktop_adapter.is_connected() if desktop_adapter is not None else False
+            if not is_connected:
                 return ToolExecutionResult(
                     success=False,
                     payload={"error": "Desktop 未连接。你可以改用 target='kevin_qq' 发到 QQ。"},
                     reason="desktop_not_connected",
                 )
-            await desktop_adapter.send_message(content)
+            await desktop_adapter.send_text(desktop_adapter.config.get("kevin_id", "owner"), content)
             return ToolExecutionResult(
                 success=True,
                 payload={"sent": True, "target": target, "content": content},

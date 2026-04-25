@@ -26,6 +26,57 @@ CHAT_SHELL_PROFILE = RuntimeProfile(
     shell_policy_enabled=True,
 )
 
+CHAT_MINIMAL_PROFILE = RuntimeProfile(
+    name="chat_minimal",
+    capabilities=frozenset({"general"}),
+    tool_names=frozenset({
+        "get_current_datetime",
+        "send_message",
+        "add_correction",
+    }),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
+CHAT_EXTENDED_PROFILE = RuntimeProfile(
+    name="chat_extended",
+    capabilities=frozenset({"general", "memory", "web", "schedule", "skill", "commitment"}),
+    tool_names=frozenset({
+        "get_current_datetime",
+        "send_message",
+        "add_correction",
+        "research",
+        "get_sports_score",
+        "browse",
+        "set_reminder",
+        "view_reminders",
+        "cancel_reminder",
+        "commit_promise",
+        "fulfill_promise",
+        "abandon_promise",
+        "recall",
+        "write_note",
+        "read_note",
+        "list_notes",
+        "search_notes",
+        "create_skill",
+        "run_skill",
+    }),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
+TASK_EXECUTION_PROFILE = RuntimeProfile(
+    name="task_execution",
+    capabilities=frozenset({
+        "shell", "web", "skill", "memory", "schedule",
+        "general", "browser", "commitment", "agent", "file",
+        "code", "verify", "identity",
+    }),
+    include_internal=False,
+    shell_policy_enabled=True,
+)
+
 CODER_SNIPPET_PROFILE = RuntimeProfile(
     name="coder_snippet",
     capabilities=frozenset({"code", "verify", "commitment"}),
@@ -87,6 +138,9 @@ _PROFILES = {
     profile.name: profile
     for profile in (
         CHAT_SHELL_PROFILE,
+        CHAT_MINIMAL_PROFILE,
+        CHAT_EXTENDED_PROFILE,
+        TASK_EXECUTION_PROFILE,
         CODER_SNIPPET_PROFILE,
         CODER_WORKSPACE_PROFILE,
         FILE_OPS_PROFILE,

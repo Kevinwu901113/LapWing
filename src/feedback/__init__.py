@@ -1,4 +1,4 @@
-"""Compatibility import for behavior correction management."""
+"""Feedback persistence and behavior-correction helpers."""
 
 from src.feedback.correction_manager import CorrectionManager
 from src.feedback.correction_store import CorrectionEntry, CorrectionStore

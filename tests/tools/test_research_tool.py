@@ -53,7 +53,7 @@ async def test_normal_path_returns_payload():
     )
     assert result.success is True
     assert result.payload["answer"] == "综合答案"
-    assert result.payload["confidence"] == "high"
+    assert result.payload["confidence"] == 0.9
     assert result.payload["evidence"][0]["source_url"] == "https://a.com"
     assert result.payload["backends"] == ["tavily"]
     engine.research.assert_awaited_once_with("道奇今天几比几", scope="global")

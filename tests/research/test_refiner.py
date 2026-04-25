@@ -38,7 +38,7 @@ async def test_empty_sources_returns_low_confidence_no_call():
     refiner = Refiner(llm_router=router)
     result = await refiner.refine("question", [])
     assert isinstance(result, ResearchResult)
-    assert result.confidence == "low"
+    assert result.confidence == 0.3
     assert "没有找到" in result.answer
     router.complete_structured.assert_not_called()
     router.complete.assert_not_called()
@@ -56,7 +56,7 @@ async def test_structured_path_normal():
     refiner = Refiner(llm_router=router)
     result = await refiner.refine("question", _sources())
     assert result.answer == "综合后的答案"
-    assert result.confidence == "high"
+    assert result.confidence == 0.9
     assert len(result.evidence) == 1
     assert result.evidence[0].quote == "关键句子 A"
 
@@ -78,7 +78,7 @@ async def test_structured_invalid_confidence_normalized():
     })
     refiner = Refiner(llm_router=router)
     result = await refiner.refine("q", _sources())
-    assert result.confidence == "medium"
+    assert result.confidence == 0.6
 
 
 async def test_structured_evidence_quote_truncated():
@@ -144,7 +144,7 @@ async def test_text_fallback_invalid_json_returns_low_confidence():
     )
     refiner = Refiner(llm_router=router)
     result = await refiner.refine("q", _sources())
-    assert result.confidence == "low"
+    assert result.confidence == 0.3
     assert "无法解析" in result.unclear
     assert "这不是 JSON" in result.answer
 
@@ -159,7 +159,7 @@ async def test_both_paths_fail_returns_first_source_summary():
     )
     refiner = Refiner(llm_router=router)
     result = await refiner.refine("q", _sources())
-    assert result.confidence == "low"
+    assert result.confidence == 0.3
     assert "精炼失败" in result.unclear
     assert result.evidence[0].source_url == "https://a.com"
     assert "A 的正文内容" in result.answer

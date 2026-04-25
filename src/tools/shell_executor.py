@@ -5,6 +5,7 @@ import time
 import getpass
 import json
 import logging
+import os
 import pwd
 import re
 from dataclasses import dataclass
@@ -16,32 +17,40 @@ from config.settings import (
     LOGS_DIR,
     SHELL_ALLOW_SUDO,
     SHELL_DEFAULT_CWD,
+    SHELL_BACKEND,
+    SHELL_DOCKER_IMAGE,
+    SHELL_DOCKER_WORKSPACE,
     SHELL_ENABLED,
     SHELL_MAX_OUTPUT_CHARS,
     SHELL_TIMEOUT,
+    SHELL_WORKSPACE_OWNER,
 )
 from src.core.execution_sandbox import ExecutionSandbox, SandboxTier
 
 # Docker sandbox 配置（可选）
 _SHELL_BACKEND = "local"  # "local" | "docker"
 _DOCKER_IMAGE = "lapwing-sandbox:latest"
-_DOCKER_WORKSPACE = "/home/lapwing/workspace"
+_DOCKER_WORKSPACE = "/workspace"
 
 def _load_docker_config():
-    """从环境变量加载 Docker 配置。"""
-    import os
+    """Load Docker shell config from TOML-backed settings, with env overrides."""
     global _SHELL_BACKEND, _DOCKER_IMAGE, _DOCKER_WORKSPACE
-    # 直接读 os.getenv：这些是基础设施层配置，在 settings Pydantic 模型初始化之前就需要
-    _SHELL_BACKEND = os.getenv("SHELL_BACKEND", "local")
-    _DOCKER_IMAGE = os.getenv("SHELL_DOCKER_IMAGE", "lapwing-sandbox:latest")
-    _DOCKER_WORKSPACE = os.getenv("SHELL_DOCKER_WORKSPACE", "/home/lapwing/workspace")
+    _SHELL_BACKEND = os.getenv("SHELL_BACKEND", SHELL_BACKEND or "local")
+    _DOCKER_IMAGE = os.getenv(
+        "LAPWING_DOCKER_IMAGE",
+        os.getenv("SHELL_DOCKER_IMAGE", SHELL_DOCKER_IMAGE or "lapwing-sandbox:latest"),
+    )
+    _DOCKER_WORKSPACE = os.getenv(
+        "LAPWING_DOCKER_WORKSPACE",
+        os.getenv("SHELL_DOCKER_WORKSPACE", SHELL_DOCKER_WORKSPACE or "/workspace"),
+    )
 
 _load_docker_config()
 _sandbox = ExecutionSandbox(docker_image=_DOCKER_IMAGE)
 
 logger = logging.getLogger("lapwing.tools.shell_executor")
 
-_CURRENT_USER = getpass.getuser()
+_WORKSPACE_OWNER = os.getenv("LAPWING_WORKSPACE_OWNER", SHELL_WORKSPACE_OWNER or getpass.getuser())
 _LOG_FILE = LOGS_DIR / "shell_execution.log"
 _DEFAULT_CWD = str(Path(SHELL_DEFAULT_CWD).resolve())
 _PROTECTED_PREFIXES = (
@@ -130,7 +139,7 @@ def _other_home_prefixes() -> list[str]:
         home_dir = str(entry.pw_dir).strip()
         if not home_dir.startswith("/home/"):
             continue
-        if entry.pw_name == _CURRENT_USER:
+        if entry.pw_name == _WORKSPACE_OWNER:
             continue
         prefixes.append(home_dir)
     return prefixes

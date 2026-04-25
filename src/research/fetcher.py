@@ -175,7 +175,7 @@ class SmartFetcher:
             headers={"User-Agent": _USER_AGENT},
         )
         if proxy_url:
-            client_kwargs["proxies"] = {"all://": proxy_url}
+            client_kwargs["proxy"] = proxy_url
 
         try:
             async with httpx.AsyncClient(**client_kwargs) as client:

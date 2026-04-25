@@ -109,6 +109,22 @@ class TestDurableSchedulerCore:
         fired_reminder: Reminder = callback.call_args[0][0]
         assert fired_reminder.content == "urgent thing"
 
+    async def test_late_bound_send_fn_and_callback_are_used(self, tmp_path):
+        scheduler = await _make_scheduler(tmp_path)
+        send_fn = AsyncMock()
+        callback = AsyncMock()
+
+        scheduler.send_fn = send_fn
+        scheduler.urgency_callback = callback
+
+        await scheduler.schedule(due_time=_past(5), content="late bound")
+        await scheduler.check_and_fire()
+
+        callback.assert_awaited_once()
+        send_fn.assert_awaited_once()
+        text = send_fn.call_args.args[0]
+        assert "late bound" in text
+
     async def test_recurring_daily(self, tmp_path):
         scheduler = await _make_scheduler(tmp_path)
 

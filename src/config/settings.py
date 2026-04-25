@@ -140,10 +140,19 @@ _ENV_MAP: dict[str, list[str]] = {
     "SHELL_DEFAULT_CWD": ["shell", "default_cwd"],
     "SHELL_MAX_OUTPUT_CHARS": ["shell", "max_output_chars"],
     "SHELL_BACKEND": ["shell", "backend"],
+    "SHELL_WORKSPACE_OWNER": ["shell", "workspace_owner"],
+    "SHELL_DOCKER_IMAGE": ["shell", "docker_image"],
+    "SHELL_DOCKER_WORKSPACE": ["shell", "docker_workspace"],
+    "LAPWING_WORKSPACE_OWNER": ["shell", "workspace_owner"],
+    "LAPWING_DOCKER_IMAGE": ["shell", "docker_image"],
+    "LAPWING_DOCKER_WORKSPACE": ["shell", "docker_workspace"],
     # ── task ──
     "TASK_MAX_TOOL_ROUNDS": ["task", "max_tool_rounds"],
     "TASK_NO_ACTION_BUDGET": ["task", "no_action_budget"],
     "TASK_ERROR_BURST_THRESHOLD": ["task", "error_burst_threshold"],
+    # ── intent_router ──
+    "INTENT_ROUTER_ENABLED": ["intent_router", "enabled"],
+    "INTENT_ROUTER_SESSION_TTL_SECONDS": ["intent_router", "session_ttl_seconds"],
     # ── slo ──
     "TOOL_LOOP_SLO_SHELL_P95_MS": ["slo", "shell_p95_ms"],
     "TOOL_LOOP_SLO_WEB_P95_MS": ["slo", "web_p95_ms"],
@@ -154,6 +163,7 @@ _ENV_MAP: dict[str, list[str]] = {
     "TOOL_LATENCY_MIN_SAMPLES_FOR_SLO": ["slo", "latency_min_samples"],
     # ── loop_detection ──
     "LOOP_DETECTION_ENABLED": ["loop_detection", "enabled"],
+    "LOOP_DETECTION_BLOCKING": ["loop_detection", "blocking"],
     "LOOP_DETECTION_HISTORY_SIZE": ["loop_detection", "history_size"],
     "LOOP_DETECTION_WARNING_THRESHOLD": ["loop_detection", "warning_threshold"],
     "LOOP_DETECTION_CRITICAL_THRESHOLD": ["loop_detection", "critical_threshold"],
@@ -331,12 +341,20 @@ class ShellConfig(BaseModel):
     default_cwd: str = ""
     max_output_chars: int = 4000
     backend: str = "local"
+    workspace_owner: str = ""
+    docker_image: str = "lapwing-sandbox:latest"
+    docker_workspace: str = "/workspace"
 
 
 class TaskConfig(BaseModel):
     max_tool_rounds: int = Field(default=32, ge=1)
     no_action_budget: int = 3
     error_burst_threshold: int = 3
+
+
+class IntentRouterConfig(BaseModel):
+    enabled: bool = True
+    session_ttl_seconds: int = Field(default=300, ge=1)
 
 
 class SLOConfig(BaseModel):
@@ -351,6 +369,7 @@ class SLOConfig(BaseModel):
 
 class LoopDetectionConfig(BaseModel):
     enabled: bool = True
+    blocking: bool = True
     history_size: int = Field(default=30, ge=1)
     warning_threshold: int = Field(default=10, ge=1)
     critical_threshold: int = Field(default=20, ge=1)
@@ -542,6 +561,7 @@ class LapwingSettings(BaseSettings):
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     shell: ShellConfig = Field(default_factory=ShellConfig)
     task: TaskConfig = Field(default_factory=TaskConfig)
+    intent_router: IntentRouterConfig = Field(default_factory=IntentRouterConfig)
     slo: SLOConfig = Field(default_factory=SLOConfig)
     loop_detection: LoopDetectionConfig = Field(default_factory=LoopDetectionConfig)
     search: SearchConfig = Field(default_factory=SearchConfig)

@@ -138,6 +138,7 @@ async def test_bocha_search_parses_results():
     # 优先用 summary
     assert "完整摘要" in results[0]["snippet"]
     assert results[0]["source"] == "bocha"
+    assert results[0]["score"] > results[1]["score"]
     # 没有 summary 时用 snippet
     assert results[1]["snippet"] == "只有 snippet"
 
