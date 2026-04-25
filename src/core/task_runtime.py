@@ -280,20 +280,21 @@ class TaskRuntime:
         *,
         include_internal: bool,
     ) -> set[str]:
-        specs = self._tool_registry.list_tools(
-            capabilities=set(profile.capabilities),
-            include_internal=include_internal,
-            tool_names=set(profile.tool_names) if profile.tool_names else None,
-        )
+        if profile.tool_names:
+            specs = self._tool_registry.get_tools_for_profile(
+                profile,
+                include_internal=include_internal,
+            )
+        else:
+            specs = self._tool_registry.list_tools(
+                capabilities=set(profile.capabilities),
+                include_internal=include_internal,
+            )
         return {spec.name for spec in specs}
 
     def tools_for_profile(self, profile: str | RuntimeProfile) -> list[dict[str, Any]]:
         profile_obj = self._resolve_profile(profile)
-        return self._tool_registry.function_tools(
-            capabilities=set(profile_obj.capabilities),
-            include_internal=False,
-            tool_names=set(profile_obj.tool_names) if profile_obj.tool_names else None,
-        )
+        return self._tool_registry.function_tools_for_profile(profile_obj)
 
     _BROWSER_TOOL_NAMES: frozenset[str] = frozenset({
         "browser_open", "browser_click", "browser_type", "browser_select",
@@ -444,10 +445,8 @@ class TaskRuntime:
                     user_id=user_id,
                     send_fn=send_fn,
                 )
-                # Step 5 cleanup: removed observation-only hallucination
-                # patch (src/logging/hallucination_patch.py). Replaced by
-                # the structural fix — tell_user is the only user-facing
-                # path, commit_promise tracks intent. Audit lives in
+                # Step 5 cleanup: direct-output chat owns user-visible text;
+                # commit_promise tracks intent, and audit lives in
                 # CommitmentStore + StateMutationLog.
                 return reply
         except Exception:
@@ -743,13 +742,6 @@ class TaskRuntime:
                     ctx.no_action_budget.default,
                 )
             await self._emit_status(ctx.status_callback, ctx.chat_id, "stage:finalizing")
-            final_text = _sanitize_visible_text(model_text)
-            if final_text and ctx.on_interim_text is not None:
-                try:
-                    await ctx.on_interim_text(final_text)
-                    ctx.interim_parts.append(final_text)
-                except Exception:
-                    pass
             ctx.final_reply = await self._finalize_without_tool_calls(
                 chat_id=ctx.chat_id,
                 task_id=ctx.task_id,
@@ -1785,6 +1777,8 @@ class TaskRuntime:
     def _should_block_by_global_circuit_breaker(self, repeat_count: int) -> bool:
         if not self._loop_detection_config.enabled:
             return False
+        if not self._loop_detection_config.blocking:
+            return False
         if not self._loop_detection_config.detector_generic_repeat:
             return False
         return repeat_count >= self._loop_detection_config.global_circuit_breaker_threshold
@@ -1807,6 +1801,8 @@ class TaskRuntime:
 
     def _should_block_by_ping_pong(self, ping_pong_count: int) -> bool:
         if not self._loop_detection_config.enabled:
+            return False
+        if not self._loop_detection_config.blocking:
             return False
         if not self._loop_detection_config.detector_ping_pong:
             return False
@@ -2074,4 +2070,3 @@ class TaskRuntime:
             await event_bus.publish(event_type, payload)
         except Exception as exc:
             logger.warning("[runtime] 发布任务事件失败: %s", exc)
-

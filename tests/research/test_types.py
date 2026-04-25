@@ -16,7 +16,7 @@ def test_research_result_defaults():
     result = ResearchResult(answer="hello")
     assert result.answer == "hello"
     assert result.evidence == []
-    assert result.confidence == "medium"
+    assert result.confidence == 0.6
     assert result.unclear == ""
     assert result.search_backend_used == []
 
@@ -33,7 +33,7 @@ def test_research_result_with_evidence():
     )
     assert len(result.evidence) == 2
     assert result.evidence[0].source_url == "https://a.com"
-    assert result.confidence == "high"
+    assert result.confidence == 0.9
     assert result.unclear == "某处不确定"
     assert result.search_backend_used == ["tavily", "bocha"]
 
@@ -46,3 +46,9 @@ def test_evidence_independence_between_instances():
     r1.search_backend_used.append("tavily")
     assert r2.evidence == []
     assert r2.search_backend_used == []
+
+
+def test_research_result_accepts_legacy_confidence_strings():
+    assert ResearchResult(answer="x", confidence="low").confidence == 0.3
+    assert ResearchResult(answer="x", confidence="medium").confidence == 0.6
+    assert ResearchResult(answer="x", confidence="high").confidence == 0.9

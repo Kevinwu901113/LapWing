@@ -1,6 +1,7 @@
 """本地 API auth 测试。"""
 
 from unittest.mock import MagicMock
+import json
 
 import httpx
 import pytest
@@ -87,6 +88,37 @@ class TestLocalApiAuth:
                 "/api/v2/status",
                 headers={"Authorization": "Bearer bootstrap-token"},
             )
+
+        assert response.status_code == 200
+
+    async def test_api_accepts_desktop_bearer_token(self, protected_brain, tmp_path, monkeypatch):
+        token_path = tmp_path / "desktop-tokens.json"
+        token_path.write_text(json.dumps([{"token": "desktop-token"}]), encoding="utf-8")
+        from src.api import desktop_auth
+        monkeypatch.setattr(desktop_auth, "DESKTOP_AUTH_TOKENS_PATH", token_path)
+
+        app = create_app(protected_brain, DesktopEventBus())
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get(
+                "/api/v2/status",
+                headers={"Authorization": "Bearer desktop-token"},
+            )
+
+        assert response.status_code == 200
+
+    async def test_api_accepts_desktop_query_token(self, protected_brain, tmp_path, monkeypatch):
+        token_path = tmp_path / "desktop-tokens.json"
+        token_path.write_text(json.dumps([{"token": "desktop-token"}]), encoding="utf-8")
+        from src.api import desktop_auth
+        monkeypatch.setattr(desktop_auth, "DESKTOP_AUTH_TOKENS_PATH", token_path)
+
+        app = create_app(protected_brain, DesktopEventBus(), mutation_log=None)
+        transport = httpx.ASGITransport(app=app)
+
+        async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+            response = await client.get("/api/v2/status?token=desktop-token")
 
         assert response.status_code == 200
 

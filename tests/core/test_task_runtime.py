@@ -56,6 +56,7 @@ def _args_hash(arguments: dict) -> str:
 def _loop_config(
     *,
     enabled: bool,
+    blocking: bool = True,
     history_size: int = 30,
     warning_threshold: int = 10,
     critical_threshold: int = 20,
@@ -64,6 +65,7 @@ def _loop_config(
 ) -> LoopDetectionConfig:
     return LoopDetectionConfig(
         enabled=enabled,
+        blocking=blocking,
         history_size=history_size,
         warning_threshold=warning_threshold,
         critical_threshold=critical_threshold,
@@ -477,6 +479,66 @@ async def test_complete_chat_status_callback_uses_stage_messages():
     assert status_texts[0] == "stage:planning"
     assert "stage:executing:execute_shell:1:1" in status_texts
     assert status_texts[-1] == "stage:finalizing"
+
+
+@pytest.mark.asyncio
+async def test_complete_chat_does_not_emit_final_reply_as_interim_text():
+    router = MagicMock()
+    runtime = TaskRuntime(router=router, tool_registry=_chat_ready_registry(), no_action_budget=0)
+    constraints = extract_execution_constraints("看看当前目录")
+
+    router.complete_with_tools = AsyncMock(
+        side_effect=[
+            SimpleNamespace(
+                text="",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="call_1",
+                        name="execute_shell",
+                        arguments={"command": "pwd"},
+                    ),
+                ],
+                continuation_message={
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "call_1"}],
+                },
+            ),
+            SimpleNamespace(
+                text="当前目录是 /tmp。",
+                tool_calls=[],
+                continuation_message=None,
+            ),
+        ]
+    )
+    router.build_tool_result_message = MagicMock(
+        return_value={
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "name": "execute_shell",
+            "content": '{"stdout": "/tmp"}',
+        }
+    )
+    deps = RuntimeDeps(
+        execute_shell=AsyncMock(return_value=ShellResult(stdout="/tmp\n", stderr="", return_code=0, cwd="/tmp")),
+        policy=_make_policy(AsyncMock()),
+        shell_default_cwd="/tmp",
+        shell_allow_sudo=True,
+    )
+    on_interim_text = AsyncMock()
+
+    result = await runtime.complete_chat(
+        chat_id="chat_1",
+        messages=[{"role": "user", "content": "看看当前目录"}],
+        constraints=constraints,
+        tools=runtime.chat_tools(shell_enabled=True),
+        deps=deps,
+        event_bus=None,
+        on_interim_text=on_interim_text,
+    )
+
+    assert result == "当前目录是 /tmp。"
+    on_interim_text.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -894,6 +956,21 @@ async def test_loop_detection_generic_repeat_warns_without_blocking():
     assert warning_events[0]["loop_detection_repeat_count"] >= 2
     assert warning_events[0]["loop_detection_detector"] == "genericRepeat"
     assert mock_execute_shell.await_count == 2
+
+
+def test_loop_detection_blocking_flag_disables_global_breaker():
+    runtime = TaskRuntime(
+        router=MagicMock(),
+        tool_registry=_chat_ready_registry(),
+        loop_detection_config=_loop_config(
+            enabled=True,
+            blocking=False,
+            warning_threshold=1,
+            global_circuit_breaker_threshold=1,
+        ),
+    )
+    assert runtime._should_emit_generic_repeat_warning(1) is True
+    assert runtime._should_block_by_global_circuit_breaker(1) is False
 
 
 @pytest.mark.asyncio

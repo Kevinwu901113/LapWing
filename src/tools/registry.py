@@ -42,6 +42,7 @@ from src.tools.plan_tools import (
     update_plan_executor,
 )
 from src.tools.correction_tools import ADD_CORRECTION_SPEC
+from src.tools.sports_tool import SPORTS_TOOL_SPEC
 from src.tools.types import (
     ToolExecutionContext,
     ToolExecutionRequest,
@@ -117,6 +118,36 @@ class ToolRegistry:
             tool_names=tool_names,
         )
         return [tool.to_function_tool() for tool in specs]
+
+    def get_tools_for_profile(self, profile: Any, *, include_internal: bool | None = None) -> list[ToolSpec]:
+        """Return registered tools visible for a RuntimeProfile.
+
+        Dynamic chat profiles list optional tools that are only registered when
+        their subsystem is enabled, so missing names are skipped here instead
+        of treated as configuration drift.
+        """
+        if include_internal is None:
+            include_internal = bool(getattr(profile, "include_internal", False))
+        tool_names = getattr(profile, "tool_names", frozenset())
+        if tool_names:
+            specs = [
+                self._tools[name]
+                for name in tool_names
+                if name in self._tools
+                and (include_internal or self._tools[name].is_model_facing)
+            ]
+        else:
+            specs = self.list_tools(
+                capabilities=set(getattr(profile, "capabilities", frozenset())),
+                include_internal=bool(getattr(profile, "include_internal", False)),
+            )
+        return specs
+
+    def function_tools_for_profile(self, profile: Any) -> list[dict[str, Any]]:
+        return [
+            tool.to_function_tool()
+            for tool in self.get_tools_for_profile(profile, include_internal=False)
+        ]
 
     async def execute(
         self,
@@ -428,6 +459,7 @@ def build_default_tool_registry() -> ToolRegistry:
 
     # 纠正记录工具
     registry.register(ADD_CORRECTION_SPEC)
+    registry.register(SPORTS_TOOL_SPEC)
 
     # 时区工具
     from src.tools.timezone_tools import (

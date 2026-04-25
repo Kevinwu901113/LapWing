@@ -83,10 +83,31 @@ async def test_both_scope_calls_both_backends_in_parallel():
     await engine.research("q", scope="both")
     tavily.search.assert_awaited_once()
     bocha.search.assert_awaited_once()
-    # refine 时 sources 应按 score 降序：bocha (0.9) > tavily (0.5)
+    # refine 时 sources 应按 backend 内归一化分排序：Tavily 权重高于 Bocha
     sources = refiner.refine.call_args.args[1]
-    assert sources[0]["url"] == "https://b.com"
-    assert sources[1]["url"] == "https://a.com"
+    assert sources[0]["url"] == "https://a.com"
+    assert sources[1]["url"] == "https://b.com"
+
+
+async def test_backend_scores_are_normalized_before_ranking():
+    engine, _, _, _, _, refiner = _engine(
+        scope_decision="both",
+        tavily_results=[
+            {"url": "https://t1.com", "title": "t1", "snippet": "s", "score": 0.6, "source": "tavily"}
+        ],
+        bocha_results=[
+            {"url": "https://b1.com", "title": "b1", "snippet": "s", "score": 0.5, "source": "bocha"},
+            {"url": "https://b2.com", "title": "b2", "snippet": "s", "score": 0.25, "source": "bocha"},
+        ],
+        fetch_results=["t body", "b1 body", "b2 body"],
+    )
+    await engine.research("q", scope="both")
+    sources = refiner.refine.call_args.args[1]
+    assert [source["url"] for source in sources] == [
+        "https://t1.com",
+        "https://b1.com",
+        "https://b2.com",
+    ]
 
 
 async def test_one_backend_failure_other_continues():
@@ -107,7 +128,7 @@ async def test_no_search_results_returns_low_confidence():
         bocha_results=[],
     )
     result = await engine.research("q", scope="both")
-    assert result.confidence == "low"
+    assert result.confidence == 0.3
     assert "没有找到" in result.answer
     refiner.refine.assert_not_called()
 
@@ -164,7 +185,7 @@ async def test_result_carries_backends_used():
     )
     result = await engine.research("q")
     assert result.search_backend_used == ["bocha"]
-    assert result.confidence == "high"
+    assert result.confidence == 0.9
 
 
 async def test_overall_research_timeout(monkeypatch):
@@ -198,6 +219,6 @@ async def test_overall_research_timeout(monkeypatch):
         refiner=refiner,
     )
     result = await eng.research("q")
-    assert result.confidence == "low"
+    assert result.confidence == 0.3
     assert "查询超时" in result.answer
     assert result.unclear == "查询超时"

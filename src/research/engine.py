@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import defaultdict
 from typing import Any
 
 from src.research.types import ResearchResult
@@ -14,6 +15,7 @@ _TOP_K_FETCH = 3
 _MAX_CONTENT_PER_SOURCE = 5000
 _RESULTS_PER_BACKEND = 5
 _RESEARCH_OVERALL_TIMEOUT = 30.0  # 整个 research(question) 的硬上限
+_BACKEND_WEIGHTS = {"tavily": 1.0, "bocha": 0.7}
 
 
 class ResearchEngine:
@@ -46,7 +48,7 @@ class ResearchEngine:
             )
             return ResearchResult(
                 answer=f"查询超时，没能在 {int(_RESEARCH_OVERALL_TIMEOUT)} 秒内完成。",
-                confidence="low",
+                confidence=0.3,
                 unclear="查询超时",
             )
 
@@ -70,7 +72,7 @@ class ResearchEngine:
             logger.warning("research: scope=%r 未匹配任何后端", scope)
             return ResearchResult(
                 answer="没有可用的搜索后端。",
-                confidence="low",
+                confidence=0.3,
                 unclear=f"未知 scope: {scope}",
                 search_backend_used=backends_used,
             )
@@ -82,7 +84,7 @@ class ResearchEngine:
         if not candidates:
             return ResearchResult(
                 answer="没有找到相关信息。",
-                confidence="low",
+                confidence=0.3,
                 unclear="搜索引擎没有返回结果",
                 search_backend_used=backends_used,
             )
@@ -130,5 +132,21 @@ class ResearchEngine:
                 if url and url not in seen_urls:
                     seen_urls.add(url)
                     merged.append(item)
-        merged.sort(key=lambda x: x.get("score", 0) or 0, reverse=True)
+        ResearchEngine._normalize_scores(merged)
+        merged.sort(
+            key=lambda x: x.get("normalized_score", x.get("score", 0)) or 0,
+            reverse=True,
+        )
         return merged
+
+    @staticmethod
+    def _normalize_scores(results: list[dict[str, Any]]) -> None:
+        by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for item in results:
+            by_source[str(item.get("source") or "")].append(item)
+
+        for source, items in by_source.items():
+            max_score = max((float(item.get("score") or 0) for item in items), default=0.0) or 1.0
+            weight = _BACKEND_WEIGHTS.get(source, 0.5)
+            for item in items:
+                item["normalized_score"] = (float(item.get("score") or 0) / max_score) * weight

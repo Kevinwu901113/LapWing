@@ -18,7 +18,7 @@ from config.settings import (
 )
 logger = logging.getLogger("lapwing.api.server")
 
-_DIST_DIR = Path(__file__).parent.parent.parent / "desktop" / "dist"
+_DIST_DIR = Path(__file__).parent.parent.parent / "desktop-v2" / "dist"
 
 
 def create_app(
@@ -56,7 +56,12 @@ def create_app(
     from src.api.routes import chat_ws as _chat_ws_routes
 
     _auth_routes.init(app.state.auth_manager, api_session_ttl=API_SESSION_TTL_SECONDS)
-    _chat_ws_routes.init(brain, channel_manager, event_queue=event_queue)
+    _chat_ws_routes.init(
+        brain,
+        channel_manager,
+        event_queue=event_queue,
+        auth_manager=app.state.auth_manager,
+    )
 
     app.include_router(_auth_routes.router)
     app.include_router(_chat_ws_routes.router)
@@ -175,10 +180,15 @@ def create_app(
         bearer_token = ""
         if auth_header.lower().startswith("bearer "):
             bearer_token = auth_header[7:].strip()
+        query_token = request.query_params.get("token", "")
 
         if auth_manager.validate_api_session(session_token) or (
             bearer_token and bearer_token == auth_manager.bootstrap_token()
         ):
+            return await call_next(request)
+
+        from src.api.desktop_auth import validate_desktop_token
+        if validate_desktop_token(bearer_token) or validate_desktop_token(query_token):
             return await call_next(request)
 
         return JSONResponse(status_code=401, content={"detail": "Unauthorized"})

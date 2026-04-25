@@ -74,5 +74,5 @@ export const reloadPrompt = () => fetchJson<{ ok: boolean }>("/api/v2/system/rel
 export const createSession = (bootstrapToken: string) =>
   fetchJson<{ ok: boolean }>("/api/auth/session", {
     method: "POST",
-    body: JSON.stringify({ token: bootstrapToken }),
+    body: JSON.stringify({ bootstrap_token: bootstrapToken }),
   });

@@ -2,9 +2,13 @@
 
 import pytest
 import time
+import sqlite3
+from datetime import timedelta
 from unittest.mock import MagicMock
 
 from src.core.correction_manager import CorrectionManager
+from src.core.time_utils import now
+from src.feedback.correction_store import CorrectionStore
 
 
 class TestAddCorrection:
@@ -47,14 +51,33 @@ class TestAddCorrection:
         assert "第2次" in args[2]
         assert "第3次" in args[2]
 
-    def test_threshold_fires_again_on_subsequent_calls(self):
-        """超过阈值后，后续每次调用都会再次触发回调。"""
+    def test_threshold_is_suppressed_within_cooldown(self):
+        """达到阈值后，冷却期内后续纠正不重复触发。"""
         callback = MagicMock()
         mgr = CorrectionManager(threshold=3, on_threshold=callback)
         for _ in range(5):
             mgr.add_correction("rule_x")
-        # 第3、4、5次都应触发
-        assert callback.call_count == 3
+        assert callback.call_count == 1
+
+    def test_threshold_fires_again_after_cooldown(self, tmp_path):
+        """冷却期过后，再次纠正会重新触发阈值回调。"""
+        callback = MagicMock()
+        db_path = tmp_path / "corrections.db"
+        store = CorrectionStore(db_path)
+        mgr = CorrectionManager(store=store, threshold=3, on_threshold=callback)
+        for _ in range(3):
+            mgr.add_correction("rule_x")
+        assert callback.call_count == 1
+
+        old_ts = (now() - timedelta(hours=25)).isoformat()
+        with sqlite3.connect(db_path) as conn:
+            conn.execute(
+                "UPDATE corrections SET threshold_fired_at = ? WHERE rule_key = ?",
+                (old_ts, "rule_x"),
+            )
+
+        mgr.add_correction("rule_x")
+        assert callback.call_count == 2
 
     def test_no_callback_when_none(self):
         """未设置回调时不报错。"""
@@ -106,6 +129,28 @@ class TestGetViolationsAndReset:
         """reset 一个不存在的规则不报错。"""
         mgr = CorrectionManager()
         mgr.reset("nonexistent")  # 不应抛异常
+
+    def test_persistence_across_restart(self, tmp_path):
+        """SQLite store 应跨 manager 实例保留纠正计数。"""
+        db_path = tmp_path / "corrections.db"
+        mgr1 = CorrectionManager(store=CorrectionStore(db_path))
+        mgr1.add_correction("rule_a")
+        mgr1.add_correction("rule_a")
+
+        mgr2 = CorrectionManager(store=CorrectionStore(db_path))
+        assert mgr2.get_violations()["rule_a"] == 2
+
+    def test_format_for_prompt_empty(self):
+        mgr = CorrectionManager()
+        assert mgr.format_for_prompt() == ""
+
+    def test_format_for_prompt_with_entries(self):
+        mgr = CorrectionManager()
+        mgr.add_correction("不要列清单", "在 chat 用了 bullets")
+        output = mgr.format_for_prompt()
+        assert "## 最近的行为纠正" in output
+        assert "不要列清单" in output
+        assert "1次" in output
 
 
 class TestOnCircuitBreak:

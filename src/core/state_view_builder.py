@@ -403,7 +403,10 @@ class StateViewBuilder:
         if self._correction_manager is None:
             return None
         try:
-            return await self._correction_manager.format_for_prompt()
+            text = self._correction_manager.format_for_prompt()
+            if hasattr(text, "__await__"):
+                text = await text
+            return text or None
         except Exception:
             logger.debug("correction_manager.format_for_prompt failed", exc_info=True)
             return None

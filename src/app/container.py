@@ -102,6 +102,9 @@ class AppContainer:
         from src.core.model_config import ModelConfigManager
         _model_config = ModelConfigManager()
         self.brain = brain or LapwingBrain(db_path=self._db_path, model_config=_model_config)
+        from src.core.intent_router import IntentRouter
+        self.intent_router = IntentRouter(llm_router=self.brain.router)
+        self.brain.intent_router = self.intent_router
         self.task_view_store = task_view_store or TaskViewStore()
         self.event_bus = event_bus or DesktopEventBus()
         self.event_bus.add_listener(self.task_view_store.ingest_event)
@@ -311,11 +314,13 @@ class AppContainer:
         if hasattr(self, '_correction_manager') and self.inner_tick_scheduler is not None:
             _its_cm = self.inner_tick_scheduler
             _cm = self._correction_manager
-            def _on_correction_threshold(rule: str, entry: dict) -> None:
-                count = entry.get("violation_count", 0)
+            def _on_correction_threshold(rule_key: str, count: int, details: str) -> None:
                 _its_cm.push_urgency({
                     "type": "correction_threshold",
-                    'content': f'纠正规则「{rule[:80]}」已被违反 {count} 次。这是反复出现的问题，考虑创建 Skill 来系统性地避免它。',
+                    "rule_key": rule_key,
+                    "count": count,
+                    "details": details,
+                    'content': f'纠正规则「{rule_key[:80]}」已被违反 {count} 次。这是反复出现的问题，考虑创建 Skill 来系统性地避免它。',
                 })
             _cm._on_threshold = _on_correction_threshold
 
@@ -533,8 +538,11 @@ class AppContainer:
         # CorrectionManager —— 行为纠正记录 + 断路器反馈
         # on_threshold / on_circuit_break 回调延迟绑定 inner_tick_scheduler（start() 时才创建），
         # 用 lambda 捕获 self 实现延迟解析，避免循环依赖。
-        from src.core.correction_manager import CorrectionManager
+        from config.settings import DATA_DIR
+        from src.feedback.correction_manager import CorrectionManager
+        from src.feedback.correction_store import CorrectionStore
         _correction_manager = CorrectionManager(
+            store=CorrectionStore(DATA_DIR / "corrections.db"),
             threshold=3,
             on_threshold=lambda rule_key, count, details: (
                 self.inner_tick_scheduler.push_urgency({
@@ -551,6 +559,7 @@ class AppContainer:
         )
         self.brain._correction_manager = _correction_manager
         self._correction_manager = _correction_manager
+        self.brain.state_view_builder._correction_manager = _correction_manager
         # 将断路器回调注入到 task_runtime（CorrectionManager 做防抖）
         self.brain.task_runtime.on_circuit_breaker_open = _correction_manager.on_circuit_break
         logger.info("CorrectionManager 已装配（阈值=3，断路器冷却=600s）")

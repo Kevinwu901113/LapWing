@@ -22,6 +22,15 @@ class ChannelManager:
         self.adapters[channel_type] = adapter
         logger.info("已注册通道: %s", channel_type.value)
 
+    def get_adapter(self, channel: ChannelType | str) -> BaseAdapter | None:
+        """Return a registered adapter by enum or channel value."""
+        if isinstance(channel, str):
+            try:
+                channel = ChannelType(channel)
+            except ValueError:
+                return None
+        return self.adapters.get(channel)
+
     async def start_all(self) -> None:
         for ch_type, adapter in self.adapters.items():
             try:

@@ -17,6 +17,7 @@ router = APIRouter(tags=["chat"])
 _brain = None
 _channel_manager = None
 _event_queue = None
+_auth_manager = None
 
 # chat_id → WebSocket 映射，用于 Agent 事件推送
 _chat_ws_map: dict[str, WebSocket] = {}
@@ -58,11 +59,12 @@ async def forward_agent_result(chat_id: str, notify) -> None:
         pass
 
 
-def init(brain, channel_manager, event_queue=None) -> None:
-    global _brain, _channel_manager, _event_queue
+def init(brain, channel_manager, event_queue=None, auth_manager=None) -> None:
+    global _brain, _channel_manager, _event_queue, _auth_manager
     _brain = brain
     _channel_manager = channel_manager
     _event_queue = event_queue
+    _auth_manager = auth_manager
 
 
 @router.websocket("/ws/chat")
@@ -70,10 +72,17 @@ async def websocket_chat(ws: WebSocket):
     """WebSocket endpoint for desktop chat."""
     from config.settings import DESKTOP_DEFAULT_OWNER, DESKTOP_WS_CHAT_ID_PREFIX, OWNER_IDS
     from src.adapters.base import ChannelType
+    from src.api.desktop_auth import validate_desktop_token
     token = ws.query_params.get("token", "")
-    if not DESKTOP_DEFAULT_OWNER and not token:
-        await ws.close(code=4001, reason="Authentication required")
-        return
+    if DESKTOP_DEFAULT_OWNER:
+        logger.info("[ws] auth bypassed by DESKTOP_DEFAULT_OWNER")
+    else:
+        valid_api_session = bool(
+            _auth_manager is not None and _auth_manager.validate_api_session(token)
+        )
+        if not valid_api_session and not validate_desktop_token(token):
+            await ws.close(code=4401, reason="unauthorized")
+            return
 
     await ws.accept()
     connection_id = str(id(ws))

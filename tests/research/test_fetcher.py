@@ -197,8 +197,7 @@ async def test_fetch_uses_proxy_decision():
     mock_router.resolve.assert_called_once_with("https://example.com/article")
     # 构造时应带代理参数
     call_kwargs = mock_client_cls.call_args[1] if mock_client_cls.call_args[1] else {}
-    assert "proxies" in call_kwargs
-    assert call_kwargs["proxies"] == {"all://": "http://proxy:7890"}
+    assert call_kwargs.get("proxy") == "http://proxy:7890"
     mock_router.report_success.assert_called_once_with("https://example.com/article", "proxy")
 
 
