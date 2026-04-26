@@ -191,6 +191,19 @@ runtime_timeout_seconds = 60
 trigger_ratio = 0.8
 summary_max_tokens = 300
 
+[inner_tick]
+# Runtime budget for autonomous self-initiated thinking pulses. Distinct
+# from [consciousness] which controls cadence — these knobs cap how much
+# *one* tick may spend before yielding.
+enabled = true
+base_interval_seconds = 600
+min_interval_seconds = 300
+max_interval_seconds = 14400
+timeout_seconds = 120
+max_tool_rounds = 3
+no_action_budget = 2
+error_burst_threshold = 2
+
 [proactive_messages]
 # Rate limiting + quiet hours for proactive send_message calls. Direct
 # chat replies use bare assistant text and never go through send_message,

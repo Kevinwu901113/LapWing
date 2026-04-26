@@ -514,6 +514,23 @@ class LogConfig(BaseModel):
     level: str = "INFO"
 
 
+class InnerTickConfig(BaseModel):
+    """Per-tick runtime budget for the autonomous inner-thinking loop.
+
+    Distinct from [consciousness] which controls scheduling cadence.
+    These knobs cap how much one tick may spend before yielding —
+    inner ticks must not turn into long-running maintenance jobs.
+    """
+    enabled: bool = True
+    base_interval_seconds: int = 600
+    min_interval_seconds: int = 300
+    max_interval_seconds: int = 14400
+    timeout_seconds: int = 120
+    max_tool_rounds: int = 3
+    no_action_budget: int = 2
+    error_burst_threshold: int = 2
+
+
 class ProactiveMessagesConfig(BaseModel):
     """Rate limiting + quiet hours for proactive send_message calls.
 
@@ -607,6 +624,7 @@ class LapwingSettings(BaseSettings):
     focus: FocusConfig = Field(default_factory=FocusConfig)
     log: LogConfig = Field(default_factory=LogConfig)
     proactive_messages: ProactiveMessagesConfig = Field(default_factory=ProactiveMessagesConfig)
+    inner_tick: InnerTickConfig = Field(default_factory=InnerTickConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     credential_vault_path: str = ""
     phase0_mode: str = ""

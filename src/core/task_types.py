@@ -94,6 +94,22 @@ class RuntimeDeps:
 
 
 @dataclass(frozen=True)
+class RuntimeOptions:
+    """Per-call overrides for tool-loop budgets.
+
+    Used by surfaces that need a tighter budget than the TaskRuntime
+    instance default — e.g. inner_tick, which should think briefly and
+    yield rather than burning shell rounds chasing maintenance work.
+
+    Any field set to None falls back to the TaskRuntime instance default
+    (which itself comes from config.toml [task]).
+    """
+    max_tool_rounds: int | None = None
+    no_action_budget: int | None = None
+    error_burst_threshold: int | None = None
+
+
+@dataclass(frozen=True)
 class TaskLoopStep:
     completed: bool = False
     stop: bool = False

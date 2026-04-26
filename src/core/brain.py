@@ -14,7 +14,7 @@ from src.core.reasoning_tags import strip_internal_thinking_tags
 from src.core.state_serializer import serialize as _serialize_state
 from src.core.state_view import TrajectoryTurn
 from src.core.state_view_builder import StateViewBuilder
-from src.core.task_runtime import RuntimeDeps, TaskRuntime
+from src.core.task_runtime import RuntimeDeps, RuntimeOptions, TaskRuntime
 from src.core.trajectory_store import trajectory_entries_to_messages
 from src.core.shell_policy import (
     ExecutionSessionState,
@@ -255,6 +255,7 @@ class LapwingBrain:
         send_fn=None,
         focus_id: str | None = None,
         profile_override: str | None = None,
+        runtime_options: RuntimeOptions | None = None,
     ) -> str:
         constraints = extract_execution_constraints(
             user_message,
@@ -365,6 +366,7 @@ class LapwingBrain:
             user_id=user_id,
             send_fn=send_fn,
             focus_id=focus_id,
+            runtime_options=runtime_options,
         )
 
     @staticmethod
@@ -741,7 +743,7 @@ class LapwingBrain:
         self,
         *,
         urgent_items: list[dict] | None = None,
-        timeout_seconds: int = 120,
+        timeout_seconds: int | None = None,
     ) -> tuple[str, int | None, bool]:
         """One self-initiated thinking pulse — no external user message.
 
@@ -763,6 +765,22 @@ class LapwingBrain:
             build_inner_prompt,
             is_inner_did_nothing,
             parse_next_interval,
+        )
+        from config.settings import (
+            INNER_TICK_ERROR_BURST_THRESHOLD,
+            INNER_TICK_MAX_TOOL_ROUNDS,
+            INNER_TICK_NO_ACTION_BUDGET,
+            INNER_TICK_TIMEOUT_SECONDS,
+        )
+
+        # Per-call budgets — tighter than chat surface so a tick yields
+        # cleanly instead of burning rounds on maintenance work.
+        if timeout_seconds is None:
+            timeout_seconds = INNER_TICK_TIMEOUT_SECONDS
+        inner_options = RuntimeOptions(
+            max_tool_rounds=INNER_TICK_MAX_TOOL_ROUNDS,
+            no_action_budget=INNER_TICK_NO_ACTION_BUDGET,
+            error_burst_threshold=INNER_TICK_ERROR_BURST_THRESHOLD,
         )
 
         preparation_status: str | None = None
@@ -806,6 +824,7 @@ class LapwingBrain:
                     inner_prompt,
                     focus_id=None,
                     profile_override="inner_tick",
+                    runtime_options=inner_options,
                 ),
                 timeout=timeout_seconds,
             )

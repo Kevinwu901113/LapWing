@@ -153,6 +153,17 @@ SHELL_DOCKER_WORKSPACE: str = _s.shell.docker_workspace
 TASK_MAX_TOOL_ROUNDS: int = _s.task.max_tool_rounds
 TASK_NO_ACTION_BUDGET: int = _s.task.no_action_budget
 TASK_ERROR_BURST_THRESHOLD: int = _s.task.error_burst_threshold
+
+# ── Inner-tick runtime budget ───────────────
+
+INNER_TICK_ENABLED: bool = _s.inner_tick.enabled
+INNER_TICK_BASE_INTERVAL_SECONDS: int = _s.inner_tick.base_interval_seconds
+INNER_TICK_MIN_INTERVAL_SECONDS: int = _s.inner_tick.min_interval_seconds
+INNER_TICK_MAX_INTERVAL_SECONDS: int = _s.inner_tick.max_interval_seconds
+INNER_TICK_TIMEOUT_SECONDS: int = _s.inner_tick.timeout_seconds
+INNER_TICK_MAX_TOOL_ROUNDS: int = _s.inner_tick.max_tool_rounds
+INNER_TICK_NO_ACTION_BUDGET: int = _s.inner_tick.no_action_budget
+INNER_TICK_ERROR_BURST_THRESHOLD: int = _s.inner_tick.error_burst_threshold
 INTENT_ROUTER_ENABLED: bool = _s.intent_router.enabled
 INTENT_ROUTER_SESSION_TTL_SECONDS: int = _s.intent_router.session_ttl_seconds
 

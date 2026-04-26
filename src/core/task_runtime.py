@@ -46,6 +46,7 @@ from src.core.task_types import (  # noqa: F401
     LoopRecoveryState,
     NoActionBudget,
     RuntimeDeps,
+    RuntimeOptions,
     TaskLoopStep,
     TaskLoopResult,
     ToolLoopContext,
@@ -407,6 +408,7 @@ class TaskRuntime:
         user_id: str = "",
         send_fn: Callable[[str], "Awaitable[Any]"] | None = None,
         focus_id: str | None = None,
+        runtime_options: RuntimeOptions | None = None,
     ) -> str:
         mutation_log: StateMutationLog | None = (services or {}).get("mutation_log")
         iteration_id = new_iteration_id()
@@ -451,6 +453,7 @@ class TaskRuntime:
                     user_id=user_id,
                     send_fn=send_fn,
                     focus_id=focus_id,
+                    runtime_options=runtime_options,
                 )
                 # Step 5 cleanup: direct-output chat owns user-visible text;
                 # commit_promise tracks intent, and audit lives in
@@ -500,10 +503,20 @@ class TaskRuntime:
         user_id: str = "",
         send_fn: Callable[[str], "Awaitable[Any]"] | None = None,
         focus_id: str | None = None,
+        runtime_options: RuntimeOptions | None = None,
     ) -> str:
         """Original complete_chat body. Wrapped by complete_chat() which binds
         the iteration context and records ITERATION_STARTED / ITERATION_ENDED.
         """
+        # Resolve per-call budget overrides (e.g. inner_tick's tighter loop).
+        opts = runtime_options or RuntimeOptions()
+        max_tool_rounds = opts.max_tool_rounds if opts.max_tool_rounds is not None else self._max_tool_rounds
+        no_action_budget_value = (
+            opts.no_action_budget if opts.no_action_budget is not None else self._no_action_budget
+        )
+        error_burst_threshold = (
+            opts.error_burst_threshold if opts.error_burst_threshold is not None else self._error_burst_threshold
+        )
         if not tools:
             await self._emit_status(status_callback, chat_id, "stage:planning")
             reply = await self._router.complete(
@@ -558,14 +571,14 @@ class TaskRuntime:
             loop_detection_state=self._new_loop_detection_state(),
             recovery=LoopRecoveryState(),
             no_action_budget=NoActionBudget(
-                default=self._no_action_budget,
-                remaining=self._no_action_budget,
+                default=no_action_budget_value,
+                remaining=no_action_budget_value,
             ),
-            error_guard=ErrorBurstGuard(threshold=self._error_burst_threshold),
+            error_guard=ErrorBurstGuard(threshold=error_burst_threshold),
         )
 
         loop_result = await self.run_task_loop(
-            max_rounds=self._max_tool_rounds,
+            max_rounds=max_tool_rounds,
             step_runner=lambda round_index: self._run_step(ctx, round_index),
         )
 

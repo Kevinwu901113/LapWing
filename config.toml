@@ -207,6 +207,19 @@ dormant_ttl_hours = 24
 closed_ttl_hours = 72
 reactivate_threshold = 0.75
 
+[inner_tick]
+# Runtime budget for autonomous self-initiated thinking pulses. Distinct
+# from [consciousness] which controls cadence — these knobs cap how much
+# *one* tick may spend before yielding.
+enabled = true
+base_interval_seconds = 600
+min_interval_seconds = 300
+max_interval_seconds = 14400
+timeout_seconds = 120
+max_tool_rounds = 3
+no_action_budget = 2
+error_burst_threshold = 2
+
 [proactive_messages]
 enabled = true
 max_per_day = 3
