@@ -36,4 +36,3 @@ qq_export.zip
 # Eval reports (generated, not tracked)
 evals/reports/*.json
 evals/reports/*.html
-.pytest_cache/
