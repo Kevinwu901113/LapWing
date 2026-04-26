@@ -29,7 +29,7 @@ async def test_init_creates_tables(store):
 
 async def test_migration_version(store):
     version = await store._get_migration_version()
-    assert version == 2
+    assert version == 3
 
 
 async def test_save_auth_context(store):

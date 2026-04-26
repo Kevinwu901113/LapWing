@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-# 身份检索器 — 按查询、敏感度、置信度过滤并追踪检索过程
-# Identity retriever — filter claims by query, sensitivity, confidence, and trace retrieval
+# 身份检索器 — embedding 相似度 + 置信度加权排序
+# Identity retriever — embedding similarity + confidence weighted ranking.
 
 import time
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -28,37 +28,53 @@ _SENSITIVITY_ORDER: dict[str, int] = {
     Sensitivity.PUBLIC: 0,
     Sensitivity.PRIVATE: 1,
     Sensitivity.RESTRICTED: 2,
-    # 原始字符串值也映射，容错 DB 返回字符串
     "public": 0,
     "private": 1,
     "restricted": 2,
 }
 
+# Final-score weights — relevance dominates, confidence stabilises ties.
+_W_RELEVANCE = 0.7
+_W_CONFIDENCE = 0.3
+
 
 def _sensitivity_rank(s: Sensitivity | str) -> int:
-    """返回敏感度的数值排名，数值越小越不敏感。"""
     return _SENSITIVITY_ORDER.get(s, 0)
+
+
+def _sensitivity_allowed(max_sensitivity: Sensitivity) -> list[str]:
+    """Names of sensitivity buckets allowed up to and including max_sensitivity."""
+    cap = _sensitivity_rank(max_sensitivity)
+    return [name for name, rank in (("public", 0), ("private", 1), ("restricted", 2)) if rank <= cap]
 
 
 @dataclass
 class RetrievalResult:
-    """检索结果，包含匹配的主张、追踪记录和查询隐私元数据。"""
     claims: list[IdentityClaim]
     trace: RetrievalTrace | None
-    raw_query_stored: bool = True    # False 表示查询文本已脱敏后存储
-    query_summary: str = ""          # 实际写入追踪的查询内容
+    raw_query_stored: bool = True
+    query_summary: str = ""
 
 
 class IdentityRetriever:
     """身份检索器（Module 4）。
 
-    根据查询过滤活跃主张，应用敏感度上限和置信度下限，
-    写入检索追踪（killswitch 时除外）。
+    Two ranking modes:
+    - With ``vector_index``: Chroma similarity + sensitivity where-filter,
+      then ``final = relevance * 0.7 + confidence * 0.3``.
+    - Without: legacy confidence-DESC sort (preserves no-deps tests).
     """
 
-    def __init__(self, *, store: IdentityStore, flags: IdentityFlags) -> None:
+    def __init__(
+        self,
+        *,
+        store: IdentityStore,
+        flags: IdentityFlags,
+        vector_index=None,
+    ) -> None:
         self._store = store
         self._flags = flags
+        self._vector_index = vector_index
 
     async def retrieve(
         self,
@@ -70,21 +86,14 @@ class IdentityRetriever:
         top_k: int = 10,
         min_confidence: float = 0.3,
     ) -> RetrievalResult:
-        """检索与查询匹配的身份主张。
-
-        1. killswitch 开启 → 返回空结果，不写任何追踪（Addendum P0.5）
-        2. retriever_enabled=False → 返回空结果，写追踪（pass_reason=COMPONENT_DISABLED）
-        3. 过滤活跃主张（敏感度 ≤ max_sensitivity 且 confidence ≥ min_confidence）
-        4. 按置信度降序排序，取 top_k
-        5. 写检索追踪（PRIVATE/RESTRICTED 查询脱敏后存储）
-        6. 返回 RetrievalResult
-        """
-        # --- P0.5: 全局主开关，不写任何追踪 ---
+        # --- killswitch: no trace, no result ---
         if self._flags.identity_system_killswitch:
             logger.debug("identity killswitch is ON — skipping retrieval")
-            return RetrievalResult(claims=[], trace=None, raw_query_stored=False, query_summary="")
+            return RetrievalResult(
+                claims=[], trace=None, raw_query_stored=False, query_summary="",
+            )
 
-        # --- 组件开关关闭：写 disabled 追踪后返回空 ---
+        # --- component disabled: write a disabled trace, return empty ---
         if not self._flags.retriever_enabled:
             logger.debug("retriever_enabled=False — writing disabled trace")
             trace = await self._write_trace(
@@ -96,6 +105,7 @@ class IdentityRetriever:
                 latency_ms=0.0,
                 max_sensitivity=max_sensitivity,
                 pass_reason=GatePassReason.COMPONENT_DISABLED,
+                scores={},
             )
             return RetrievalResult(
                 claims=[],
@@ -104,29 +114,34 @@ class IdentityRetriever:
                 query_summary=trace.query,
             )
 
-        # --- 正常检索路径 ---
         t0 = time.monotonic()
 
-        # 列出所有 ACTIVE 主张
-        all_claims = await self._store.list_claims(auth, status=ClaimStatus.ACTIVE.value)
+        # Decide path: embedding when vector_index has entries; else fallback.
+        use_embedding = False
+        if self._vector_index is not None:
+            try:
+                use_embedding = (await self._vector_index.count()) > 0
+            except Exception:
+                logger.debug("vector_index.count() failed — falling back to confidence sort", exc_info=True)
+                use_embedding = False
 
-        max_rank = _sensitivity_rank(max_sensitivity)
-
-        # 过滤：敏感度 ≤ max_sensitivity 且 confidence ≥ min_confidence
-        candidates = [
-            c for c in all_claims
-            if _sensitivity_rank(c.sensitivity) <= max_rank
-            and c.confidence >= min_confidence
-        ]
-
-        # 按置信度降序排序，取 top_k
-        candidates.sort(key=lambda c: c.confidence, reverse=True)
-        selected = candidates[:top_k]
+        if use_embedding and query.strip():
+            selected, candidate_ids, scores = await self._retrieve_via_embedding(
+                query=query,
+                auth=auth,
+                max_sensitivity=max_sensitivity,
+                top_k=top_k,
+                min_confidence=min_confidence,
+            )
+        else:
+            selected, candidate_ids, scores = await self._retrieve_via_confidence(
+                auth=auth,
+                max_sensitivity=max_sensitivity,
+                top_k=top_k,
+                min_confidence=min_confidence,
+            )
 
         latency_ms = (time.monotonic() - t0) * 1000
-
-        candidate_ids = [c.claim_id for c in candidates]
-        selected_ids = [c.claim_id for c in selected]
 
         trace = await self._write_trace(
             query=query,
@@ -136,15 +151,96 @@ class IdentityRetriever:
             redacted_ids=[],
             latency_ms=latency_ms,
             max_sensitivity=max_sensitivity,
+            scores=scores,
         )
 
-        raw_stored = _sensitivity_rank(max_sensitivity) == 0
         return RetrievalResult(
             claims=selected,
             trace=trace,
-            raw_query_stored=raw_stored,
+            raw_query_stored=_sensitivity_rank(max_sensitivity) == 0,
             query_summary=trace.query,
         )
+
+    # ------------------------------------------------------------------
+    # Ranking strategies
+    # ------------------------------------------------------------------
+
+    async def _retrieve_via_confidence(
+        self,
+        *,
+        auth: AuthContext,
+        max_sensitivity: Sensitivity,
+        top_k: int,
+        min_confidence: float,
+    ) -> tuple[list[IdentityClaim], list[str], dict]:
+        """Legacy path: confidence DESC (used in tests + as a fallback)."""
+        all_claims = await self._store.list_claims(auth, status=ClaimStatus.ACTIVE.value)
+        max_rank = _sensitivity_rank(max_sensitivity)
+        candidates = [
+            c for c in all_claims
+            if _sensitivity_rank(c.sensitivity) <= max_rank
+            and c.confidence >= min_confidence
+        ]
+        candidates.sort(key=lambda c: c.confidence, reverse=True)
+        selected = candidates[:top_k]
+        return selected, [c.claim_id for c in candidates], {}
+
+    async def _retrieve_via_embedding(
+        self,
+        *,
+        query: str,
+        auth: AuthContext,
+        max_sensitivity: Sensitivity,
+        top_k: int,
+        min_confidence: float,
+    ) -> tuple[list[IdentityClaim], list[str], dict]:
+        """Vector path: Chroma similarity + sensitivity where-filter, weighted score."""
+        allowed = _sensitivity_allowed(max_sensitivity)
+        where: dict | None
+        if len(allowed) == 1:
+            where = {"sensitivity": allowed[0]}
+        else:
+            where = {"sensitivity": {"$in": allowed}}
+
+        # Pull 2x top_k so post-filtering by min_confidence still has headroom.
+        pairs = await self._vector_index.query(
+            query_text=query,
+            n_results=max(top_k * 2, top_k),
+            where=where,
+        )
+        if not pairs:
+            return [], [], {}
+
+        # Hydrate claims; keep only ACTIVE + min_confidence pass.
+        scored: list[tuple[IdentityClaim, float, float, float]] = []
+        candidate_ids: list[str] = []
+        scores: dict[str, dict[str, float]] = {}
+        for claim_id, distance in pairs:
+            claim = await self._store.get_claim(claim_id, auth)
+            if claim is None:
+                continue
+            status_val = claim.status.value if hasattr(claim.status, "value") else claim.status
+            if status_val != "active":
+                continue
+            if claim.confidence < min_confidence:
+                continue
+            relevance = max(0.0, 1.0 - distance)
+            final = _W_RELEVANCE * relevance + _W_CONFIDENCE * float(claim.confidence)
+            scored.append((claim, relevance, float(claim.confidence), final))
+            candidate_ids.append(claim_id)
+            scores[claim_id] = {
+                "relevance": round(relevance, 4),
+                "confidence": round(float(claim.confidence), 4),
+                "final": round(final, 4),
+            }
+
+        scored.sort(key=lambda t: t[3], reverse=True)
+        selected = [t[0] for t in scored[:top_k]]
+        return selected, candidate_ids, scores
+
+    # ------------------------------------------------------------------
+    # Trace writer
+    # ------------------------------------------------------------------
 
     async def _write_trace(
         self,
@@ -156,13 +252,13 @@ class IdentityRetriever:
         redacted_ids: list[str],
         latency_ms: float,
         max_sensitivity: Sensitivity,
+        scores: dict,
         pass_reason: GatePassReason | None = None,
     ) -> RetrievalTrace:
         """构建 RetrievalTrace 并持久化。
 
         PRIVATE/RESTRICTED 查询使用占位符代替原始文本。
         """
-        # 查询脱敏：仅 PUBLIC 级别保留原始查询
         if _sensitivity_rank(max_sensitivity) == 0:
             stored_query = query
         else:
@@ -179,13 +275,15 @@ class IdentityRetriever:
             redacted_ids=redacted_ids,
             latency_ms=latency_ms,
             created_at=datetime.now(timezone.utc).isoformat(),
+            scores=scores,
         )
 
         await self._store.write_retrieval_trace(trace)
         logger.debug(
-            "retrieval trace written trace_id=%s candidates=%d selected=%d",
+            "retrieval trace written trace_id=%s candidates=%d selected=%d scored=%d",
             trace.trace_id,
             len(candidate_ids),
             len(selected_ids),
+            len(scores),
         )
         return trace

@@ -738,6 +738,7 @@ class AppContainer:
         )
         self._identity_store = None
         self._identity_retriever = None
+        self._identity_vector_index = None
         if self._identity_flags.is_active("store"):
             from src.identity.store import IdentityStore
             self._identity_store = IdentityStore(db_path=DATA_DIR / "identity.db")
@@ -745,13 +746,34 @@ class AppContainer:
             logger.info("身份基底存储已初始化 / Identity store initialized")
             if self._identity_flags.is_active("retriever"):
                 from src.identity.retriever import IdentityRetriever
+                from src.identity.vector_index import IdentityVectorIndex, drain_outbox
+                try:
+                    self._identity_vector_index = IdentityVectorIndex(
+                        persist_dir=DATA_DIR / "chroma_identity",
+                    )
+                    drained = await drain_outbox(
+                        self._identity_store, self._identity_vector_index,
+                    )
+                    logger.info(
+                        "身份向量索引已初始化 / Identity vector index ready (%s)",
+                        drained,
+                    )
+                except Exception:
+                    # Embedding optional — retriever falls back to confidence sort.
+                    self._identity_vector_index = None
+                    logger.warning(
+                        "身份向量索引初始化失败，退回 confidence-only 排序",
+                        exc_info=True,
+                    )
                 self._identity_retriever = IdentityRetriever(
                     store=self._identity_store,
                     flags=self._identity_flags,
+                    vector_index=self._identity_vector_index,
                 )
         self.brain._identity_store = self._identity_store
         self.brain._identity_flags = self._identity_flags
         self.brain._identity_retriever = self._identity_retriever
+        self.brain._identity_vector_index = self._identity_vector_index
 
         # ── Agent Team 系统（Phase 6） ──────────────────────────────────
         from config.settings import AGENT_TEAM_ENABLED

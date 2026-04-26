@@ -40,6 +40,11 @@ def main() -> None:
         default=str(DATA_DIR / "identity"),
         help="身份文件目录 (默认: data/identity/)",
     )
+    rebuild_p.add_argument(
+        "--skip-embeddings",
+        action="store_true",
+        help="跳过 ChromaDB 同步（仅写 SQLite，不更新向量索引）",
+    )
 
     # validate — 一致性检查
     validate_p = sub.add_parser("validate", help="校验身份文件一致性")
@@ -230,6 +235,23 @@ async def _cmd_rebuild(store, args: argparse.Namespace) -> None:
         for err in report.errors:
             print(f"    [!] {err}")
         sys.exit(1)
+
+    # Drain Chroma sync outbox unless caller opted out.
+    if args.skip_embeddings:
+        print("[rebuild] --skip-embeddings: 跳过 ChromaDB 同步")
+    else:
+        try:
+            from src.identity.vector_index import IdentityVectorIndex, drain_outbox
+            vi = IdentityVectorIndex(persist_dir=DATA_DIR / "chroma_identity")
+            drained = await drain_outbox(store, vi)
+            count = await vi.count()
+            print(
+                f"[rebuild] vector index synced: upserted={drained['upserted']} "
+                f"deleted={drained['deleted']} skipped={drained['skipped']} "
+                f"failed={drained['failed']} | collection_size={count}"
+            )
+        except Exception as e:
+            print(f"[rebuild] vector index 同步失败（可手动重试）: {e}")
 
 
 # ---------------------------------------------------------------------------

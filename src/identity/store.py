@@ -418,6 +418,15 @@ class IdentityStore:
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]
 
+    async def mark_outbox_processed(self, outbox_id: int) -> None:
+        """Mark a single outbox row consumed (vector index synced)."""
+        now = datetime.now(timezone.utc).isoformat()
+        await self._db.execute(
+            "UPDATE identity_index_outbox SET processed_at=? WHERE outbox_id=?",
+            (now, outbox_id),
+        )
+        await self._db.commit()
+
     # ------------------------------------------------------------------
     # Task 7: Trace + Event Writers
     # ------------------------------------------------------------------
@@ -449,8 +458,8 @@ class IdentityStore:
         await self._db.execute(
             "INSERT INTO identity_retrieval_traces "
             "(trace_id, query, context_profile, candidate_ids, selected_ids, "
-            "redacted_ids, latency_ms, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "redacted_ids, latency_ms, scores, created_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 trace.trace_id,
                 trace.query,
@@ -460,6 +469,7 @@ class IdentityStore:
                 json.dumps(trace.selected_ids),
                 json.dumps(trace.redacted_ids),
                 trace.latency_ms,
+                json.dumps(getattr(trace, "scores", {}) or {}),
                 trace.created_at,
             ),
         )

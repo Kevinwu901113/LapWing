@@ -233,6 +233,9 @@ class RetrievalTrace:
     redacted_ids: list[str]
     latency_ms: float
     created_at: str                # ISO datetime string
+    # Per-claim breakdown {claim_id: {"relevance": float, "confidence": float, "final": float}}.
+    # Empty dict when scoring fell back to confidence-only (no vector index).
+    scores: dict = field(default_factory=dict)
 
 
 @dataclass
