@@ -254,16 +254,24 @@ class LapwingBrain:
         user_id: str = "",
         send_fn=None,
         focus_id: str | None = None,
+        profile_override: str | None = None,
     ) -> str:
         constraints = extract_execution_constraints(
             user_message,
             approved_directory=approved_directory,
         )
-        profile_name = self._fallback_profile_for_message(user_message, constraints)
-        if INTENT_ROUTER_ENABLED:
-            intent_router = getattr(self, "intent_router", None)
-            if intent_router is not None and profile_name != "task_execution":
-                profile_name = await intent_router.route(chat_id, user_message)
+        if profile_override is not None:
+            # Caller pinned a profile (e.g. think_inner uses "inner_tick").
+            # Skip IntentRouter — the caller already knows the surface it
+            # needs; routing again would either invalidate the contract or
+            # silently widen tool exposure.
+            profile_name = profile_override
+        else:
+            profile_name = self._fallback_profile_for_message(user_message, constraints)
+            if INTENT_ROUTER_ENABLED:
+                intent_router = getattr(self, "intent_router", None)
+                if intent_router is not None and profile_name != "task_execution":
+                    profile_name = await intent_router.route(chat_id, user_message)
         tools = self.task_runtime.tools_for_profile(profile_name)
         services = {}
         if self.trajectory_store is not None:
@@ -797,6 +805,7 @@ class LapwingBrain:
                     messages,
                     inner_prompt,
                     focus_id=None,
+                    profile_override="inner_tick",
                 ),
                 timeout=timeout_seconds,
             )

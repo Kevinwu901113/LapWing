@@ -10,6 +10,10 @@ class RuntimeProfile:
     name: str
     capabilities: frozenset[str]
     tool_names: frozenset[str] = frozenset()
+    # 当 capabilities 把太多工具拉进来时（例如 task_execution 同时持有 web +
+    # agent），用 exclude_tool_names 显式剔除——避免主脑在 raw 工具和
+    # delegate_to_* 之间做无意义的二选一。
+    exclude_tool_names: frozenset[str] = frozenset()
     include_internal: bool = False
     shell_policy_enabled: bool = False
 
@@ -68,6 +72,50 @@ CHAT_EXTENDED_PROFILE = RuntimeProfile(
     shell_policy_enabled=False,
 )
 
+# Inner-tick profile: autonomous self-initiated thinking pulses.
+# Companion-aligned surface — preserves memory continuity, notes, reminders,
+# commitments, focus, lightweight research/browse, and proactive messaging.
+# Explicitly excludes: create_skill / shell / arbitrary file writes /
+# Playwright browser_* automation / agent delegation / identity mutations.
+# Inner ticks are not maintenance jobs; they must not gain shell or
+# code-execution capability without explicit human ack.
+INNER_TICK_PROFILE = RuntimeProfile(
+    name="inner_tick",
+    capabilities=frozenset(),
+    tool_names=frozenset({
+        # time
+        "get_current_datetime",
+        # proactive messaging (gated by ProactiveMessageGate in commit 5)
+        "send_message",
+        # lightweight research
+        "research",
+        "browse",
+        # reminders
+        "set_reminder",
+        "view_reminders",
+        "cancel_reminder",
+        # commitments
+        "commit_promise",
+        "fulfill_promise",
+        "abandon_promise",
+        # focus
+        "close_focus",
+        "recall_focus",
+        # memory
+        "recall",
+        "write_note",
+        "read_note",
+        "list_notes",
+        "search_notes",
+        # corrections
+        "add_correction",
+        # skills (only auto-runnable stable ones — gated in commit 3)
+        "run_skill",
+    }),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
 TASK_EXECUTION_PROFILE = RuntimeProfile(
     name="task_execution",
     capabilities=frozenset({
@@ -75,6 +123,9 @@ TASK_EXECUTION_PROFILE = RuntimeProfile(
         "general", "browser", "commitment", "agent", "file",
         "code", "verify", "identity",
     }),
+    # task_execution 必须走 Agent Team 的 delegate_to_* 来做调研，
+    # 避免主脑直接调 research/browse 而绕过 Researcher 的多步推理。
+    exclude_tool_names=frozenset({"research", "browse"}),
     include_internal=False,
     shell_policy_enabled=True,
 )
@@ -142,6 +193,7 @@ _PROFILES = {
         CHAT_SHELL_PROFILE,
         CHAT_MINIMAL_PROFILE,
         CHAT_EXTENDED_PROFILE,
+        INNER_TICK_PROFILE,
         TASK_EXECUTION_PROFILE,
         CODER_SNIPPET_PROFILE,
         CODER_WORKSPACE_PROFILE,
