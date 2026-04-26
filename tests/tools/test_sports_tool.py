@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
 
-from src.core.time_utils import now
 from src.tools.sports_tool import (
-    SPORTSDB_BASE,
+    MLB_STATS_BASE,
     _classify_confidence,
     _normalize_team_name,
     get_sports_score,
@@ -56,19 +54,19 @@ async def test_normalize_team_name_uses_llm_for_unknown():
 
 @pytest.mark.asyncio
 async def test_get_sports_score_success(monkeypatch):
-    recent = (now() - timedelta(hours=2)).isoformat()
+    recent = "2026-04-25T23:15:00Z"
     fake_client = _FakeAsyncClient([
-        {"teams": [{"idTeam": "133602", "strTeam": "Los Angeles Dodgers", "strLeague": "MLB"}]},
-        {"results": [{
-            "strHomeTeam": "Dodgers",
-            "strAwayTeam": "Mets",
-            "intHomeScore": "5",
-            "intAwayScore": "3",
-            "strTimestamp": recent,
-            "strLeague": "MLB",
-            "strStatus": "Match Finished",
-        }]},
-        {"events": []},
+        {"dates": [{"games": [{
+            "gamePk": 823960,
+            "gameDate": recent,
+            "officialDate": "2026-04-25",
+            "status": {"abstractGameState": "Final", "detailedState": "Final"},
+            "teams": {
+                "home": {"team": {"name": "Los Angeles Dodgers"}, "score": 5},
+                "away": {"team": {"name": "New York Mets"}, "score": 3},
+            },
+            "venue": {"name": "Dodger Stadium"},
+        }]}]},
     ])
     monkeypatch.setattr(
         "src.tools.sports_tool.httpx.AsyncClient",
@@ -79,8 +77,13 @@ async def test_get_sports_score_success(monkeypatch):
 
     assert result["team_canonical"] == "Los Angeles Dodgers"
     assert result["last_match"]["home_score"] == "5"
-    assert result["confidence"] == "recent"
-    assert fake_client.calls[0][0] == f"{SPORTSDB_BASE}/searchteams.php"
+    assert result["last_match"]["start_time_utc"] == "2026-04-25T23:15:00+00:00"
+    assert result["last_match"]["start_time_local"] == "2026-04-26T07:15:00+08:00"
+    assert result["last_match"]["local_date"] == "2026-04-26"
+    assert result["last_match"]["local_time"] == "07:15"
+    assert result["last_match"]["timezone"] == "Asia/Shanghai"
+    assert result["source"] == "mlb_stats_api"
+    assert fake_client.calls[0][0] == f"{MLB_STATS_BASE}/schedule"
 
 
 @pytest.mark.asyncio

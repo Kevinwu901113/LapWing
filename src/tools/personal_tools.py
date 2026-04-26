@@ -10,10 +10,9 @@ import ipaddress
 import logging
 import re
 import urllib.parse
-from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo
 
+from src.core.time_utils import local_timezone_name, now as local_now
 from src.tools.types import (
     ToolExecutionContext,
     ToolExecutionRequest,
@@ -22,8 +21,6 @@ from src.tools.types import (
 )
 
 logger = logging.getLogger("lapwing.tools.personal_tools")
-
-_TZ_TAIPEI = ZoneInfo("Asia/Taipei")
 
 # 星期中文映射
 _WEEKDAY_ZH = {0: "周一", 1: "周二", 2: "周三", 3: "周四", 4: "周五", 5: "周六", 6: "周日"}
@@ -37,14 +34,14 @@ async def _get_time(
     req: ToolExecutionRequest,
     ctx: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    """返回台北时区当前时间。"""
-    now = datetime.now(_TZ_TAIPEI)
+    """返回默认本地时间。"""
+    now = local_now()
     return ToolExecutionResult(
         success=True,
         payload={
             "time": now.strftime("%Y年%m月%d日 %H:%M:%S"),
             "weekday": _WEEKDAY_ZH[now.weekday()],
-            "timezone": "Asia/Taipei",
+            "timezone": local_timezone_name(),
         },
     )
 
@@ -412,7 +409,7 @@ def register_personal_tools(registry: Any, services: dict[str, Any]) -> None:
 
     registry.register(ToolSpec(
         name="get_time",
-        description="获取当前时间（台北时区）。返回日期、时间、星期。",
+        description="获取当前时间。返回日期、时间、星期。",
         json_schema={
             "type": "object",
             "properties": {},

@@ -32,7 +32,7 @@ class TestConvertTimezone:
                 arguments={
                     "time_str": "2026-04-22 19:00",
                     "from_tz": "America/Los_Angeles",
-                    "to_tz": "Asia/Taipei",
+                    "to_tz": "Asia/Shanghai",
                 },
             ),
             _ctx(),
@@ -47,7 +47,7 @@ class TestConvertTimezone:
                 arguments={
                     "time_str": "19:00",
                     "from_tz": "America/Los_Angeles",
-                    "to_tz": "Asia/Taipei",
+                    "to_tz": "Asia/Shanghai",
                 },
             ),
             _ctx(),
@@ -67,7 +67,7 @@ class TestConvertTimezone:
             _ctx(),
         )
         assert result.success is True
-        assert "Taipei" in result.payload["to_tz"] or "Asia/Taipei" in result.payload["to_tz"]
+        assert result.payload["to_tz"] == "Asia/Shanghai"
 
     async def test_invalid_timezone(self):
         result = await convert_timezone_executor(
@@ -95,7 +95,7 @@ class TestConvertTimezone:
 
 @pytest.mark.asyncio
 class TestGetCurrentDatetime:
-    async def test_default_taipei(self):
+    async def test_default_shanghai(self):
         result = await get_current_datetime_executor(
             ToolExecutionRequest(
                 name="get_current_datetime",
@@ -104,7 +104,7 @@ class TestGetCurrentDatetime:
             _ctx(),
         )
         assert result.success is True
-        assert result.payload["timezone"] == "Asia/Taipei"
+        assert result.payload["timezone"] == "Asia/Shanghai"
         assert "datetime" in result.payload
         assert "weekday" in result.payload
 

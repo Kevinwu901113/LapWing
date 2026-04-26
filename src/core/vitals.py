@@ -7,15 +7,16 @@ import logging
 import os
 import platform
 import time
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from pathlib import Path
+
+from src.core.time_utils import local_tz, now as local_now
 
 logger = logging.getLogger("lapwing.core.vitals")
 
 # 模块加载时记录启动时间（进程级单例）
 _BOOT_TIME = datetime.now(timezone.utc)
 _BOOT_MONOTONIC = time.monotonic()
-_TAIPEI_TZ = timezone(timedelta(hours=8))
 
 _STATE_FILE: Path | None = None
 _previous_state: dict | None = None
@@ -29,8 +30,12 @@ def boot_time() -> datetime:
     return _BOOT_TIME
 
 
+def boot_time_local() -> datetime:
+    return _BOOT_TIME.astimezone(local_tz())
+
+
 def boot_time_taipei() -> datetime:
-    return _BOOT_TIME.astimezone(_TAIPEI_TZ)
+    return boot_time_local()
 
 
 def uptime_seconds() -> float:
@@ -58,14 +63,18 @@ def uptime_human() -> str:
     return f"{days}天"
 
 
+def now_local() -> datetime:
+    return local_now()
+
+
 def now_taipei() -> datetime:
-    return datetime.now(_TAIPEI_TZ)
+    return now_local()
 
 
 def get_period_name(hour: int | None = None) -> str:
     """Return human-readable period name for the given hour (0-23)."""
     if hour is None:
-        hour = now_taipei().hour
+        hour = now_local().hour
     if 0 <= hour < 5:
         return "深夜"
     elif 5 <= hour < 8:
@@ -84,10 +93,14 @@ def get_period_name(hour: int | None = None) -> str:
         return "深夜"
 
 
-def now_taipei_str() -> str:
-    now = now_taipei()
+def now_local_str() -> str:
+    now = now_local()
     weekday_names = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"]
     return f"{now.strftime('%Y年%m月%d日 %H:%M')}，{weekday_names[now.weekday()]}"
+
+
+def now_taipei_str() -> str:
+    return now_local_str()
 
 
 async def system_snapshot() -> dict:
@@ -96,9 +109,9 @@ async def system_snapshot() -> dict:
     需要 psutil。如果没装，返回基础信息。
     """
     info = {
-        "boot_time": boot_time_taipei().strftime("%m月%d日 %H:%M"),
+        "boot_time": boot_time_local().strftime("%m月%d日 %H:%M"),
         "uptime": uptime_human(),
-        "now": now_taipei_str(),
+        "now": now_local_str(),
         "hostname": platform.node(),
         "python": platform.python_version(),
     }

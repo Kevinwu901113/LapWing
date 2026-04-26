@@ -3,16 +3,18 @@
 from __future__ import annotations
 
 import logging
+from datetime import timedelta, timezone
 from typing import Any
 
 import httpx
 
-from src.core.time_utils import now, parse_iso_datetime
+from src.core.time_utils import local_timezone_name, local_tz, now, parse_iso_datetime
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult, ToolSpec
 
 logger = logging.getLogger("lapwing.tools.sports_tool")
 
 SPORTSDB_BASE = "https://www.thesportsdb.com/api/v1/json/123"
+MLB_STATS_BASE = "https://statsapi.mlb.com/api/v1"
 TIMEOUT = 10.0
 
 _TEAM_ALIASES = {
@@ -25,6 +27,10 @@ _TEAM_ALIASES = {
     "曼联": "Manchester United",
     "man utd": "Manchester United",
     "manchester united": "Manchester United",
+}
+
+_MLB_TEAM_IDS = {
+    "Los Angeles Dodgers": 119,
 }
 
 
@@ -43,6 +49,10 @@ async def get_sports_score(
 
     try:
         async with httpx.AsyncClient(timeout=TIMEOUT) as client:
+            mlb_result = await _fetch_mlb_schedule(client, canonical, league=league)
+            if mlb_result is not None:
+                return mlb_result
+
             team_resp = await client.get(
                 f"{SPORTSDB_BASE}/searchteams.php",
                 params={"t": canonical},
@@ -123,22 +133,171 @@ async def _normalize_team_name(team: str, llm_router: Any = None) -> str:
 
 
 def _format_match(event: dict[str, Any]) -> dict[str, Any]:
+    start_utc = _event_start_utc(event)
+    start_local = start_utc.astimezone(local_tz()) if start_utc is not None else None
+    start_utc_iso = start_utc.isoformat() if start_utc is not None else None
+    start_local_iso = start_local.isoformat() if start_local is not None else None
     return {
         "home": event.get("strHomeTeam"),
         "away": event.get("strAwayTeam"),
         "home_score": event.get("intHomeScore"),
         "away_score": event.get("intAwayScore"),
-        "date_utc": event.get("strTimestamp") or event.get("dateEvent"),
+        "start_time_utc": start_utc_iso,
+        "start_time_local": start_local_iso,
+        "local_date": start_local.date().isoformat() if start_local is not None else None,
+        "local_time": start_local.strftime("%H:%M") if start_local is not None else None,
+        "timezone": local_timezone_name(),
+        # Backward-compatible key. Prefer start_time_utc/start_time_local.
+        "date_utc": start_utc_iso or event.get("strTimestamp") or event.get("dateEvent"),
+        "source_time_fields": {
+            "strTimestamp": event.get("strTimestamp"),
+            "dateEvent": event.get("dateEvent"),
+            "strTime": event.get("strTime"),
+            "dateEventLocal": event.get("dateEventLocal"),
+            "strTimeLocal": event.get("strTimeLocal"),
+        },
         "league": event.get("strLeague"),
         "status": event.get("strStatus"),
     }
+
+
+async def _fetch_mlb_schedule(
+    client: httpx.AsyncClient,
+    canonical: str,
+    *,
+    league: str | None,
+) -> dict[str, Any] | None:
+    team_id = _MLB_TEAM_IDS.get(canonical)
+    if team_id is None:
+        return None
+    if league and "mlb" not in league.lower() and "baseball" not in league.lower():
+        return None
+
+    current = now()
+    start_date = (current.date() - timedelta(days=7)).isoformat()
+    end_date = (current.date() + timedelta(days=14)).isoformat()
+
+    try:
+        resp = await client.get(
+            f"{MLB_STATS_BASE}/schedule",
+            params={
+                "sportId": 1,
+                "teamId": team_id,
+                "startDate": start_date,
+                "endDate": end_date,
+                "hydrate": "probablePitcher(note)",
+            },
+        )
+        resp.raise_for_status()
+        dates = resp.json().get("dates") or []
+    except Exception as exc:
+        logger.warning("[sports] MLB StatsAPI fetch failed team=%s: %s", canonical, exc)
+        return None
+
+    games: list[dict[str, Any]] = []
+    for day in dates:
+        games.extend(day.get("games") or [])
+    if not games:
+        return None
+
+    def game_start(game: dict[str, Any]):
+        return parse_iso_datetime(game.get("gameDate"))
+
+    games_with_start = [(game_start(g), g) for g in games]
+    games_with_start = [(dt, g) for dt, g in games_with_start if dt is not None]
+    if not games_with_start:
+        return None
+    games_with_start.sort(key=lambda item: item[0])
+
+    current_utc = current.astimezone(timezone.utc)
+    final_games: list[dict[str, Any]] = []
+    live_games: list[dict[str, Any]] = []
+    upcoming_games: list[dict[str, Any]] = []
+    for start_utc, game in games_with_start:
+        status = game.get("status") or {}
+        abstract_state = str(status.get("abstractGameState") or "").lower()
+        detailed_state = str(status.get("detailedState") or "").lower()
+        if abstract_state == "live" or "in progress" in detailed_state:
+            live_games.append(game)
+        elif abstract_state == "final" or detailed_state in {"final", "game over"}:
+            final_games.append(game)
+        elif start_utc >= current_utc:
+            upcoming_games.append(game)
+
+    result = {
+        "team_canonical": canonical,
+        "last_match": _format_mlb_game(final_games[-1]) if final_games else None,
+        "live_match": _format_mlb_game(live_games[0]) if live_games else None,
+        "next_match": _format_mlb_game(upcoming_games[0]) if upcoming_games else None,
+        "source": "mlb_stats_api",
+    }
+    result["confidence"] = _classify_confidence(result)
+    return result
+
+
+def _format_mlb_game(game: dict[str, Any]) -> dict[str, Any]:
+    teams = game.get("teams") or {}
+    home = teams.get("home") or {}
+    away = teams.get("away") or {}
+    home_team = home.get("team") or {}
+    away_team = away.get("team") or {}
+    status = game.get("status") or {}
+    start_utc = parse_iso_datetime(game.get("gameDate"))
+    start_local = start_utc.astimezone(local_tz()) if start_utc is not None else None
+    return {
+        "home": home_team.get("name"),
+        "away": away_team.get("name"),
+        "home_score": _score_to_str(home.get("score")),
+        "away_score": _score_to_str(away.get("score")),
+        "start_time_utc": start_utc.isoformat() if start_utc is not None else None,
+        "start_time_local": start_local.isoformat() if start_local is not None else None,
+        "local_date": start_local.date().isoformat() if start_local is not None else None,
+        "local_time": start_local.strftime("%H:%M") if start_local is not None else None,
+        "timezone": local_timezone_name(),
+        "date_utc": start_utc.isoformat() if start_utc is not None else None,
+        "official_date": game.get("officialDate"),
+        "venue": (game.get("venue") or {}).get("name"),
+        "game_id": game.get("gamePk"),
+        "source_time_fields": {
+            "gameDate": game.get("gameDate"),
+            "officialDate": game.get("officialDate"),
+        },
+        "league": "MLB",
+        "status": status.get("detailedState") or status.get("abstractGameState"),
+        "probable_pitchers": {
+            "home": ((home.get("probablePitcher") or {}).get("fullName")),
+            "away": ((away.get("probablePitcher") or {}).get("fullName")),
+        },
+    }
+
+
+def _score_to_str(value: Any) -> str | None:
+    return None if value is None else str(value)
+
+
+def _event_start_utc(event: dict[str, Any]):
+    raw_timestamp = event.get("strTimestamp")
+    parsed = parse_iso_datetime(raw_timestamp)
+    if parsed is not None:
+        return parsed
+
+    date_event = str(event.get("dateEvent") or "").strip()
+    str_time = str(event.get("strTime") or "").strip()
+    if date_event and str_time:
+        parsed = parse_iso_datetime(f"{date_event}T{str_time}")
+        if parsed is not None:
+            return parsed
+
+    if date_event:
+        return parse_iso_datetime(date_event)
+    return None
 
 
 def _classify_confidence(result: dict[str, Any]) -> str:
     if result.get("live_match"):
         return "live"
     last = result.get("last_match") or {}
-    parsed = parse_iso_datetime(last.get("date_utc"))
+    parsed = parse_iso_datetime(last.get("start_time_utc") or last.get("date_utc"))
     if parsed is None:
         return "scheduled" if result.get("next_match") else "stale"
     hours_since = (now() - parsed.astimezone(now().tzinfo)).total_seconds() / 3600

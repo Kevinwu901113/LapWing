@@ -42,15 +42,15 @@ class TestGetTime:
         assert "weekday" in result.payload
         assert "timezone" in result.payload
 
-    async def test_timezone_is_taipei(self):
-        """timezone 固定为 Asia/Taipei。"""
+    async def test_timezone_is_shanghai(self):
+        """timezone 默认为 Asia/Shanghai。"""
         from src.tools.personal_tools import _get_time
 
         req = ToolExecutionRequest(name="get_time", arguments={})
         ctx = _make_ctx()
         result = await _get_time(req, ctx)
 
-        assert result.payload["timezone"] == "Asia/Taipei"
+        assert result.payload["timezone"] == "Asia/Shanghai"
 
     async def test_weekday_is_chinese(self):
         """weekday 为中文格式（周一~周日）。"""

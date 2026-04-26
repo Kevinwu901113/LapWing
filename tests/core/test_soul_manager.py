@@ -1,7 +1,6 @@
 """tests/core/test_soul_manager.py — SoulManager 测试。"""
 
 import json
-import time
 import pytest
 from pathlib import Path
 from unittest.mock import patch
@@ -84,13 +83,8 @@ class TestCooldown:
         soul_env.edit("# 修改", actor="lapwing")
 
         # 模拟 25 小时后
-        future_time = datetime(2099, 1, 1, tzinfo=ZoneInfo("Asia/Taipei"))
-        with patch(
-            "src.core.soul_manager.datetime"
-        ) as mock_dt:
-            mock_dt.now.return_value = future_time
-            mock_dt.fromisoformat = datetime.fromisoformat
-            mock_dt.side_effect = lambda *args, **kw: datetime(*args, **kw)
+        future_time = datetime(2099, 1, 1, tzinfo=ZoneInfo("Asia/Shanghai"))
+        with patch("src.core.soul_manager.local_now", return_value=future_time):
             result = soul_env.edit("# 冷却后修改", actor="lapwing")
             assert result["success"] is True
 

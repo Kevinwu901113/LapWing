@@ -142,7 +142,7 @@ def _render_runtime_state(state: StateView) -> str:
         period = _period_name(now.hour)
         lines.append(
             f"当前时间：{now.year}年{now.month}月{now.day}日 {weekday} "
-            f"{period}（约{now.hour}时，台北时间）"
+            f"{period}（约{now.hour}时）"
         )
 
     # Offline-gap warning: only for genuinely long absences.
@@ -250,6 +250,11 @@ def _render_memory_snippets(state: StateView) -> str:
     if not snippets:
         return ""
     body = "\n".join(f"- {s.content}" for s in snippets)
+    note = (
+        "以下是历史记忆线索，不是当前事实。"
+        "赛事、新闻、天气、股价等时效信息必须以实时工具或搜索结果为准。"
+    )
+    body = note + "\n" + body
     return "## 记忆片段\n\n" + body
 
 
@@ -276,7 +281,7 @@ def _period_name(hour: int) -> str:
 
     Boundaries copied verbatim from ``src.core.vitals.get_period_name``.
     We duplicate rather than import because the vitals helper has a
-    default-arg branch that reads ``now_taipei()`` — pulling it in
+    default-arg branch that reads the wall clock — pulling it in
     would give the serializer a wall-clock dependency and break the
     pure-function invariant. If vitals' boundaries ever shift, adjust
     here too.

@@ -14,32 +14,37 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
-from zoneinfo import ZoneInfo
 
 import aiosqlite
 
+from src.core.time_utils import local_tz
+
 logger = logging.getLogger("lapwing.core.durable_scheduler")
 
-# 台北时区
-_TAIPEI_TZ = ZoneInfo("Asia/Taipei")
+# 默认本地时区。变量名保留给旧测试和旧导入兼容。
+_TAIPEI_TZ = local_tz()
 
 
-def _now_taipei() -> datetime:
-    """返回当前台北时间（带时区信息）。"""
+def _now_local() -> datetime:
+    """返回当前默认本地时间（带时区信息）。"""
     return datetime.now(_TAIPEI_TZ)
 
 
-def _ensure_taipei(dt: datetime) -> datetime:
-    """确保 datetime 携带台北时区信息。未带时区时假定为台北时间。"""
+def _ensure_local(dt: datetime) -> datetime:
+    """确保 datetime 携带默认本地时区信息。未带时区时假定为本地时间。"""
     if dt.tzinfo is None:
         return dt.replace(tzinfo=_TAIPEI_TZ)
     return dt.astimezone(_TAIPEI_TZ)
 
 
+_now_taipei = _now_local
+_ensure_taipei = _ensure_local
+
+
 @dataclass
 class Reminder:
     reminder_id: str          # 例如 "rem_20260416_153000_a1b2"
-    due_time: datetime        # 带时区（Asia/Taipei）
+    due_time: datetime        # 带默认本地时区
     content: str
     repeat: str | None = None              # "daily" / "weekly" / "interval" / None
     interval_minutes: int | None = None    # 仅 "interval" 类型使用
@@ -51,7 +56,7 @@ class Reminder:
 
 def _make_reminder_id() -> str:
     """生成唯一提醒 ID。"""
-    now = _now_taipei()
+    now = _now_local()
     short = uuid.uuid4().hex[:8]
     return f"rem_{now.strftime('%Y%m%d_%H%M%S')}_{short}"
 
@@ -59,12 +64,12 @@ def _make_reminder_id() -> str:
 def _reminder_from_row(row: dict) -> Reminder:
     """从数据库行构造 Reminder 对象。"""
     due_dt = datetime.fromisoformat(row["due_time"])
-    due_dt = _ensure_taipei(due_dt)
+    due_dt = _ensure_local(due_dt)
 
     created_dt = None
     if row.get("created_at"):
         created_dt = datetime.fromisoformat(row["created_at"])
-        created_dt = _ensure_taipei(created_dt)
+        created_dt = _ensure_local(created_dt)
 
     return Reminder(
         reminder_id=row["reminder_id"],
@@ -161,8 +166,8 @@ class DurableScheduler:
     ) -> str:
         """创建一条提醒，写入数据库，返回 reminder_id。"""
         reminder_id = _make_reminder_id()
-        due_dt = _ensure_taipei(due_time)
-        created_dt = _now_taipei()
+        due_dt = _ensure_local(due_time)
+        created_dt = _now_local()
 
         async with aiosqlite.connect(self._db_path) as db:
             await db.execute(
@@ -217,7 +222,7 @@ class DurableScheduler:
 
     async def get_due_soon(self, minutes: int = 30) -> list[Reminder]:
         """返回未来 N 分钟内到期的提醒（供 PromptBuilder 注入上下文）。"""
-        now = _now_taipei()
+        now = _now_local()
         cutoff = now + timedelta(minutes=minutes)
 
         async with aiosqlite.connect(self._db_path) as db:
@@ -245,11 +250,11 @@ class DurableScheduler:
         params: list = []
 
         if before_ts is not None:
-            # due_time is stored as ISO in Taipei tz — convert `before_ts` to
+            # due_time is stored as ISO in the default local tz — convert `before_ts` to
             # the same tz/format so lexicographic `<` matches chronological `<`.
             cutoff_iso = datetime.fromtimestamp(
                 before_ts,
-                tz=ZoneInfo("Asia/Taipei"),
+                tz=_TAIPEI_TZ,
             ).isoformat()
             query += " AND due_time < ?"
             params.append(cutoff_iso)
@@ -277,9 +282,9 @@ class DurableScheduler:
         可直接作为 PromptBuilder 的 reminder_source 使用。
         """
         if now is None:
-            now = _now_taipei()
+            now = _now_local()
         else:
-            now = _ensure_taipei(now) if now.tzinfo else now.replace(tzinfo=_TAIPEI_TZ)
+            now = _ensure_local(now) if now.tzinfo else now.replace(tzinfo=_TAIPEI_TZ)
 
         # 用 grace_seconds 换算为向前展望的分钟数
         minutes = max(grace_seconds // 60, 1)
@@ -295,7 +300,7 @@ class DurableScheduler:
 
     async def check_and_fire(self) -> None:
         """检查所有已到期提醒并触发。"""
-        now = _now_taipei()
+        now = _now_local()
 
         async with aiosqlite.connect(self._db_path) as db:
             db.row_factory = aiosqlite.Row
@@ -536,7 +541,7 @@ class DurableScheduler:
         time_of_day: str | None = None,
     ) -> datetime:
         """计算循环提醒的下一次触发时间。"""
-        base = _ensure_taipei(current)
+        base = _ensure_local(current)
 
         if repeat == "interval":
             if not interval_minutes or interval_minutes <= 0:
@@ -584,7 +589,7 @@ def _get_scheduler(ctx: ToolExecutionContext) -> DurableScheduler | None:
 
 
 def _parse_time_str(time_str: str) -> datetime | None:
-    """解析 'YYYY-MM-DD HH:MM' 格式的时间字符串（台北时间）。"""
+    """解析 'YYYY-MM-DD HH:MM' 格式的时间字符串（默认本地时间）。"""
     time_str = time_str.strip()
     for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%dT%H:%M", "%Y/%m/%d %H:%M"):
         try:
@@ -602,7 +607,7 @@ async def set_reminder_executor(
     """设置提醒工具执行器。
 
     参数:
-      time (str, 必填): 触发时间，格式 "YYYY-MM-DD HH:MM"（台北时间）
+      time (str, 必填): 触发时间，格式 "YYYY-MM-DD HH:MM"（默认本地时间）
       content (str, 必填): 提醒内容
       repeat (str, 可选): "daily" / "weekly" / "interval"，不填表示单次
       interval_minutes (int, 可选): repeat="interval" 时的间隔分钟数

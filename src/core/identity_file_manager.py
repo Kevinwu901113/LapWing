@@ -13,7 +13,8 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
-from zoneinfo import ZoneInfo
+
+from src.core.time_utils import now as local_now
 
 logger = logging.getLogger("lapwing.core.identity_file_manager")
 
@@ -147,7 +148,7 @@ class IdentityFileManager:
     def _save_snapshot(
         self, content: str, actor: str, trigger: str, diff_summary: str
     ) -> None:
-        now = datetime.now(ZoneInfo("Asia/Taipei"))
+        now = local_now()
         timestamp = now.strftime("%Y%m%d_%H%M%S_%f")
 
         snapshot_path = self.snapshot_dir / f"{self.kind}_{timestamp}.md"

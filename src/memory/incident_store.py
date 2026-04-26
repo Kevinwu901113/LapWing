@@ -18,14 +18,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
+
+from src.core.time_utils import local_tz
 
 if TYPE_CHECKING:
     from src.memory.vector_store import MemoryVectorStore
 
 logger = logging.getLogger("lapwing.memory.incident_store")
 
-_TAIPEI = ZoneInfo("Asia/Taipei")
+_TAIPEI = local_tz()
 _NOTE_TYPE = "incident"
 
 _FAILURE_KEYWORDS = re.compile(

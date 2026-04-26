@@ -4,6 +4,7 @@ from __future__ import annotations
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+from src.core.time_utils import local_timezone_name, now as local_now
 from src.tools.types import (
     ToolExecutionContext,
     ToolExecutionRequest,
@@ -27,7 +28,7 @@ CONVERT_TIMEZONE_SCHEMA = {
         },
         "to_tz": {
             "type": "string",
-            "description": "目标时区，默认 Asia/Taipei",
+            "description": "目标时区，默认 Asia/Shanghai",
         },
     },
     "required": ["time_str", "from_tz"],
@@ -41,7 +42,7 @@ GET_CURRENT_DATETIME_SCHEMA = {
     "properties": {
         "timezone": {
             "type": "string",
-            "description": "时区名称，如 Asia/Taipei、America/Los_Angeles。默认 Asia/Taipei",
+            "description": "时区名称，如 Asia/Shanghai、America/Los_Angeles。默认 Asia/Shanghai",
         },
     },
     "additionalProperties": False,
@@ -54,7 +55,7 @@ async def convert_timezone_executor(
 ) -> ToolExecutionResult:
     time_str = str(request.arguments.get("time_str", "")).strip()
     from_tz_name = str(request.arguments.get("from_tz", "")).strip()
-    to_tz_name = str(request.arguments.get("to_tz", "Asia/Taipei")).strip()
+    to_tz_name = str(request.arguments.get("to_tz", local_timezone_name())).strip()
 
     if not time_str or not from_tz_name:
         return ToolExecutionResult(
@@ -74,8 +75,7 @@ async def convert_timezone_executor(
         )
 
     try:
-        from src.core.time_utils import now as _now
-        today = _now().date()
+        today = local_now().astimezone(from_tz).date()
 
         if len(time_str) <= 5 and ":" in time_str:
             parts = time_str.split(":")
@@ -89,8 +89,10 @@ async def convert_timezone_executor(
         return ToolExecutionResult(
             success=True,
             payload={
-                "original": dt.strftime("%Y-%m-%d %H:%M %Z"),
-                "converted": converted.strftime("%Y-%m-%d %H:%M %Z"),
+                "original": f"{dt:%Y-%m-%d %H:%M} {from_tz_name}",
+                "converted": f"{converted:%Y-%m-%d %H:%M} {to_tz_name}",
+                "original_iso": dt.isoformat(),
+                "converted_iso": converted.isoformat(),
                 "from_tz": from_tz_name,
                 "to_tz": to_tz_name,
             },
@@ -107,7 +109,7 @@ async def get_current_datetime_executor(
     request: ToolExecutionRequest,
     context: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    tz_name = str(request.arguments.get("timezone", "Asia/Taipei")).strip()
+    tz_name = str(request.arguments.get("timezone", local_timezone_name())).strip()
 
     try:
         tz = ZoneInfo(tz_name)
@@ -118,8 +120,7 @@ async def get_current_datetime_executor(
             reason=f"时区解析失败: {e}",
         )
 
-    from src.core.time_utils import now as _now
-    now = _now().astimezone(tz)
+    now = local_now().astimezone(tz)
 
     weekday_names = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
 

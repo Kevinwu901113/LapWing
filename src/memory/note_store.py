@@ -2,14 +2,11 @@ import logging
 import re
 import uuid
 import yaml
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
+
+from src.core.time_utils import now as local_now
 
 logger = logging.getLogger("lapwing.memory.note_store")
-
-# 时区：台北
-_TZ = ZoneInfo("Asia/Taipei")
 
 
 class NoteStore:
@@ -37,14 +34,14 @@ class NoteStore:
 
         - note_id 格式：note_{YYYYMMDD_HHMMSS}_{4hex}
         - 文件名格式：{note_type}_{YYYYMMDD_HHMMSS}_{4hex}.md
-        - 时区：Asia/Taipei
+        - 时区：默认本地时区
         - 若指定 path（如 "people/kevin"），在子目录下创建
         - frontmatter 字段：id, created_at, updated_at, actor, note_type,
           source_refs, trust, embedding_version, parent_note
 
         返回：{"note_id": str, "file_path": str}
         """
-        now = datetime.now(tz=_TZ)
+        now = local_now()
         ts = now.strftime("%Y%m%d_%H%M%S")
         suffix = uuid.uuid4().hex[:4]
 
@@ -143,7 +140,7 @@ class NoteStore:
         if meta is None:
             meta = {}
 
-        now = datetime.now(tz=_TZ)
+        now = local_now()
         meta["updated_at"] = now.isoformat()
         meta["embedding_version"] = "pending"
 

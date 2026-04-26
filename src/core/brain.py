@@ -646,8 +646,8 @@ class LapwingBrain:
 
         # Trust tagging：在消息进入 LLM 上下文时包装（不改变 memory 中的存储）
         from src.core.trust_tagger import TrustTagger
-        from src.core.vitals import now_taipei
-        now_str = now_taipei().isoformat()
+        from src.core.vitals import now_local
+        now_str = now_local().isoformat()
 
         if auth_level == 3 and adapter in ("qq", "desktop", ""):
             # OWNER — Kevin

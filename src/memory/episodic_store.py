@@ -24,14 +24,15 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
+
+from src.core.time_utils import local_tz
 
 if TYPE_CHECKING:
     from src.memory.vector_store import MemoryVectorStore
 
 logger = logging.getLogger("lapwing.memory.episodic_store")
 
-_TAIPEI = ZoneInfo("Asia/Taipei")
+_TAIPEI = local_tz()
 _NOTE_TYPE = "episodic"
 
 # Header-detection regex for section splitting during read-back. Accepts
@@ -89,8 +90,8 @@ class EpisodicStore:
     ) -> EpisodicEntry:
         """Record one episode.
 
-        ``occurred_at`` pins the timestamp; default is ``datetime.now``
-        (Asia/Taipei). ``title`` is the section heading — if absent we
+        ``occurred_at`` pins the timestamp; default is the current local time.
+        ``title`` is the section heading — if absent we
         derive one from the first line of ``summary``. ``summary`` is
         the body text (multi-line OK).
 

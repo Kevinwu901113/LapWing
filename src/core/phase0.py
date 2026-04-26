@@ -15,7 +15,7 @@ from __future__ import annotations
 def build_phase0_prompt() -> str:
     """Phase 0 极简 prompt：只有身份 + 宪法 + 时间。"""
     from config.settings import IDENTITY_DIR
-    from src.core.vitals import get_period_name, now_taipei
+    from src.core.vitals import get_period_name, now_local
 
     soul_path = IDENTITY_DIR / "soul_test.md"
     constitution_path = IDENTITY_DIR / "constitution_test.md"
@@ -27,13 +27,13 @@ def build_phase0_prompt() -> str:
         except FileNotFoundError:
             pass
 
-    now = now_taipei()
+    now = now_local()
     weekday_names = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"]
     weekday = weekday_names[now.weekday()]
     period = get_period_name(now.hour)
     parts.append(
         f"当前时间：{now.year}年{now.month}月{now.day}日 {weekday} "
-        f"{period}（约{now.hour}时，台北时间）"
+        f"{period}（约{now.hour}时）"
     )
 
     return "\n\n---\n\n".join(parts)

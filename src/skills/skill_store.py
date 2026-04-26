@@ -1,11 +1,10 @@
 import logging
 import shutil
 import yaml
-from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
-_TZ = ZoneInfo("Asia/Taipei")
+from src.core.time_utils import now as local_now
+
 logger = logging.getLogger("lapwing.skills.skill_store")
 
 _NEW_META_DEFAULTS = {
@@ -50,7 +49,7 @@ class SkillStore:
                         f"技能 '{skill_id}' 已为 {existing['meta']['maturity']} 状态，"
                         f"拒绝覆盖。如确需覆盖请传入 force=True"
                     )
-        now = datetime.now(tz=_TZ)
+        now = local_now()
         meta = {
             "id": skill_id, "name": name, "description": description,
             "version": "1.0.0", "maturity": "draft", "origin": origin,
@@ -93,7 +92,7 @@ class SkillStore:
             return {"success": False, "reason": "技能不存在"}
         meta = skill["meta"]
         meta["maturity"] = "draft"
-        meta["updated_at"] = datetime.now(tz=_TZ).isoformat()
+        meta["updated_at"] = local_now().isoformat()
         skill_md = self.skills_dir / skill_id / "SKILL.md"
         self._write_skill_md(skill_md, meta, new_code)
 
@@ -106,7 +105,7 @@ class SkillStore:
         meta = skill["meta"]
         for k, v in fields.items():
             meta[k] = v
-        meta["updated_at"] = datetime.now(tz=_TZ).isoformat()
+        meta["updated_at"] = local_now().isoformat()
         skill_md = self.skills_dir / skill_id / "SKILL.md"
         self._write_skill_md(skill_md, meta, skill["code"])
 
@@ -117,7 +116,7 @@ class SkillStore:
         if skill is None:
             return {"success": False, "reason": "技能不存在"}
         meta = skill["meta"]
-        now = datetime.now(tz=_TZ)
+        now = local_now()
         meta["usage_count"] = meta.get("usage_count", 0) + 1
         meta["last_tested_at"] = now.isoformat()
         if success:
@@ -220,9 +219,9 @@ class SkillStore:
             if key not in meta:
                 meta[key] = default
         if "created_at" not in meta:
-            meta["created_at"] = datetime.now(tz=_TZ).isoformat()
+            meta["created_at"] = local_now().isoformat()
         if "updated_at" not in meta:
-            meta["updated_at"] = datetime.now(tz=_TZ).isoformat()
+            meta["updated_at"] = local_now().isoformat()
         # Write to new directory
         skill_dir = self.skills_dir / skill_id
         skill_dir.mkdir(parents=True, exist_ok=True)

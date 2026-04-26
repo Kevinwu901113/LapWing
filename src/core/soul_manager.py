@@ -7,7 +7,8 @@ import json
 import logging
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
+
+from src.core.time_utils import now as local_now
 
 logger = logging.getLogger("lapwing.core.soul_manager")
 
@@ -57,7 +58,7 @@ class SoulManager:
         if actor != "kevin":
             last_edit = self._get_last_edit_time()
             if last_edit:
-                now = datetime.now(ZoneInfo("Asia/Taipei"))
+                now = local_now()
                 elapsed = (now - last_edit).total_seconds()
                 if elapsed < self.COOLDOWN_HOURS * 3600:
                     remaining = self.COOLDOWN_HOURS - (elapsed / 3600)
@@ -175,7 +176,7 @@ class SoulManager:
         self, content: str, actor: str, trigger: str, diff_summary: str
     ) -> None:
         """保存快照 + 元数据。"""
-        now = datetime.now(ZoneInfo("Asia/Taipei"))
+        now = local_now()
         timestamp = now.strftime("%Y%m%d_%H%M%S_%f")
 
         # 写快照文件

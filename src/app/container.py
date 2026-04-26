@@ -958,7 +958,7 @@ class AppContainer:
                 "properties": {
                     "time": {
                         "type": "string",
-                        "description": "提醒时间，格式 YYYY-MM-DD HH:MM（台北时间）",
+                        "description": "提醒时间，格式 YYYY-MM-DD HH:MM（默认本地时间）",
                     },
                     "content": {
                         "type": "string",

@@ -29,7 +29,6 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
-from zoneinfo import ZoneInfo
 
 from src.core.prompt_loader import load_prompt
 from src.core.state_view import (
@@ -43,6 +42,7 @@ from src.core.state_view import (
     TrajectoryTurn,
     TrajectoryWindow,
 )
+from src.core.time_utils import now as local_now
 from src.core.trajectory_store import TrajectoryEntry, TrajectoryEntryType
 
 from src.ambient.time_context import TimeContextProvider
@@ -58,7 +58,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger("lapwing.core.state_view_builder")
 
-_TAIPEI = ZoneInfo("Asia/Taipei")
 _OFFLINE_THRESHOLD_HOURS = 4.0
 
 
@@ -234,7 +233,7 @@ class StateViewBuilder:
         auth_level: int,
         group_id: str | None,
     ) -> AttentionContext:
-        now = datetime.now(tz=_TAIPEI)
+        now = local_now()
         current_conversation: str | None = None
         mode: str = "idle"
         if self._attention is not None:

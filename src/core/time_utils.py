@@ -4,15 +4,38 @@ from datetime import datetime, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+DEFAULT_TIMEZONE = "Asia/Shanghai"
+
+
+def local_timezone_name() -> str:
+    """Return Lapwing's default user-facing timezone name."""
+    from src.config import get_settings
+
+    browser = getattr(get_settings(), "browser", None)
+    if browser is None:
+        return DEFAULT_TIMEZONE
+    return getattr(browser, "timezone", DEFAULT_TIMEZONE) or DEFAULT_TIMEZONE
+
+
+def local_tz() -> ZoneInfo:
+    """Return Lapwing's default user-facing timezone."""
+    return ZoneInfo(local_timezone_name())
+
 
 def now() -> datetime:
     """统一时间入口，时区由配置决定。"""
-    from src.config import get_settings
-    tz_name = getattr(get_settings(), 'browser', None)
-    tz_str = "Asia/Shanghai"
-    if tz_name is not None:
-        tz_str = getattr(tz_name, 'timezone', "Asia/Shanghai") or "Asia/Shanghai"
-    return datetime.now(ZoneInfo(tz_str))
+    return datetime.now(local_tz())
+
+
+def ensure_local(dt: datetime) -> datetime:
+    """Convert a datetime to Lapwing's default timezone.
+
+    Naive datetimes are treated as already being in the default timezone.
+    """
+    tz = local_tz()
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=tz)
+    return dt.astimezone(tz)
 
 
 def parse_iso_datetime(value: Any) -> datetime | None:
