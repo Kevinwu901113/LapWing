@@ -206,6 +206,9 @@ def _render_runtime_state(state: StateView) -> str:
     if promise_active:
         lines.append("我对用户的承诺：\n" + "\n".join(promise_active[:5]))
 
+    if state.focus_context:
+        lines.append(state.focus_context)
+
     # Skill summary
     if state.skill_summary is not None:
         ss = state.skill_summary

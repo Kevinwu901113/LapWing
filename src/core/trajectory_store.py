@@ -5,9 +5,10 @@ with a single monotonic timeline of entries actor-on-world: what the user said,
 what Lapwing thought, what tools she invoked, what state changed. One row per
 observable behavioural moment; tool-call payload detail stays in mutation_log.
 
-Append-only. Compaction (Step 7) is a separate write path, not exposed here.
-Every ``append`` records a ``TRAJECTORY_APPENDED`` mutation — the single-truth
-invariant from Blueprint v2.0 §1.3.
+Append-only. Focus is a label layer over this single timeline: rows may carry
+``focus_id`` but are never moved into physical partitions. Every ``append``
+records a ``TRAJECTORY_APPENDED`` mutation — the single-truth invariant from
+Blueprint v2.0 §1.3.
 """
 
 from __future__ import annotations
@@ -67,6 +68,7 @@ class TrajectoryEntry:
     related_commitment_id: str | None
     related_iteration_id: str | None
     related_tool_call_id: str | None
+    focus_id: str | None = None
 
 
 class TrajectoryStore:
@@ -101,7 +103,8 @@ class TrajectoryStore:
                 content_json TEXT NOT NULL,
                 related_commitment_id TEXT,
                 related_iteration_id TEXT,
-                related_tool_call_id TEXT
+                related_tool_call_id TEXT,
+                focus_id TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_traj_timestamp
                 ON trajectory(timestamp);
@@ -117,7 +120,22 @@ class TrajectoryStore:
         # original NOT NULL schema. Idempotent — only runs when the
         # constraint is still present.
         await self._migrate_source_chat_id_nullable()
+        await self._add_column_if_missing("focus_id", "TEXT")
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trajectory_focus "
+            "ON trajectory(focus_id, timestamp)"
+        )
         await self._db.commit()
+
+    async def _add_column_if_missing(self, column: str, sql_type: str) -> None:
+        if self._db is None:
+            return
+        async with self._db.execute("PRAGMA table_info(trajectory)") as cur:
+            cols = {row[1] for row in await cur.fetchall()}
+        if column not in cols:
+            await self._db.execute(
+                f"ALTER TABLE trajectory ADD COLUMN {column} {sql_type}"
+            )
 
     async def _migrate_source_chat_id_nullable(self) -> None:
         """Drop ``NOT NULL`` on ``source_chat_id`` for legacy DBs.
@@ -202,6 +220,7 @@ class TrajectoryStore:
         related_commitment_id: str | None = None,
         related_iteration_id: str | None = None,
         related_tool_call_id: str | None = None,
+        focus_id: str | None = None,
         timestamp: float | None = None,
     ) -> int:
         """Append one entry; return its autoincrement id.
@@ -235,8 +254,9 @@ class TrajectoryStore:
         cursor = await self._db.execute(
             """INSERT INTO trajectory
                (timestamp, entry_type, source_chat_id, actor, content_json,
-                related_commitment_id, related_iteration_id, related_tool_call_id)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                related_commitment_id, related_iteration_id, related_tool_call_id,
+                focus_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 ts,
                 entry_type.value,
@@ -246,6 +266,7 @@ class TrajectoryStore:
                 related_commitment_id,
                 related_iteration_id,
                 related_tool_call_id,
+                focus_id,
             ),
         )
         await self._db.commit()
@@ -261,6 +282,7 @@ class TrajectoryStore:
                     "actor": actor,
                     "related_commitment_id": related_commitment_id,
                     "related_tool_call_id": related_tool_call_id,
+                    "focus_id": focus_id,
                 },
                 iteration_id=related_iteration_id,
                 chat_id=source_chat_id,
@@ -281,6 +303,7 @@ class TrajectoryStore:
                 related_commitment_id=related_commitment_id,
                 related_iteration_id=related_iteration_id,
                 related_tool_call_id=related_tool_call_id,
+                focus_id=focus_id,
             )
             import asyncio as _asyncio
             for listener in list(self._on_append_listeners):
@@ -347,6 +370,22 @@ class TrajectoryStore:
             order="timestamp ASC, id ASC",
         )
 
+    async def entries_by_focus(
+        self,
+        focus_id: str,
+        n: int,
+    ) -> list[TrajectoryEntry]:
+        """Most recent N entries carrying ``focus_id``, oldest→newest."""
+        if not focus_id:
+            return []
+        rows = await self._fetch(
+            "focus_id = ?",
+            (focus_id,),
+            order="timestamp DESC, id DESC",
+            limit=n,
+        )
+        return list(reversed(rows))
+
     async def in_window(
         self,
         start_ts: float,
@@ -411,7 +450,8 @@ class TrajectoryStore:
             return []
         sql = (
             "SELECT id, timestamp, entry_type, source_chat_id, actor, content_json, "
-            "related_commitment_id, related_iteration_id, related_tool_call_id "
+            "related_commitment_id, related_iteration_id, related_tool_call_id, "
+            "focus_id "
             f"FROM trajectory WHERE {where} ORDER BY {order}"
         )
         if limit is not None:
@@ -432,6 +472,7 @@ class TrajectoryStore:
             related_commitment_id=row[6],
             related_iteration_id=row[7],
             related_tool_call_id=row[8],
+            focus_id=row[9] if len(row) > 9 else None,
         )
 
 
@@ -443,11 +484,7 @@ class TrajectoryStore:
 #   - brain._load_history: hands the list to _prepare_think, which
 #     applies trust tagging in place and forwards as the builder's
 #     trajectory_turns_override.
-#   - ConversationCompactor: feeds the list into the LLM summarisation
-#     prompt, which is built outside the serializer for historical
-#     reasons (compaction predates Step 3).
-#
-# A future step can retire this helper once both callers move to the
+# A future step can retire this helper once callers move to the
 # TrajectoryTurn shape. The projection itself is the same mapping
 # Step 2g introduced in a short-lived transitional module; this is
 # the permanent home.

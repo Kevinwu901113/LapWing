@@ -60,11 +60,20 @@ class EpisodicExtractor:
         rows = await self._trajectory.relevant_to_chat(
             chat_id, n=self._window_size, include_inner=False,
         )
+        return await self.extract_from_entries(rows, session_key=f"episodic:{chat_id}")
+
+    async def extract_from_entries(
+        self,
+        rows: list[TrajectoryEntry],
+        *,
+        session_key: str = "episodic:focus",
+    ) -> bool:
+        """Extract one episode from an already-filtered trajectory slice."""
         pairs = _user_assistant_pairs(rows)
         if len(pairs) < self._min_turns:
             logger.debug(
-                "[episodic] chat %s has %d usable turns (< %d), skipping",
-                chat_id, len(pairs), self._min_turns,
+                "[episodic] entry slice has %d usable turns (< %d), skipping",
+                len(pairs), self._min_turns,
             )
             return False
 
@@ -87,13 +96,13 @@ class EpisodicExtractor:
                 [{"role": "user", "content": prompt}],
                 slot="memory_processing",
                 max_tokens=400,
-                session_key=f"episodic:{chat_id}",
+                session_key=session_key,
                 origin="memory.episodic_extractor",
             )
         except Exception as exc:
             logger.warning("[episodic] LLM call failed: %s", exc)
             await self._record_incident(
-                f"情景提取 LLM 调用失败 (chat={chat_id}): {exc}",
+                f"情景提取 LLM 调用失败 (session={session_key}): {exc}",
                 source="episodic_extractor",
             )
             return False
@@ -113,7 +122,7 @@ class EpisodicExtractor:
         except Exception as exc:
             logger.warning("[episodic] add_episode failed: %s", exc)
             await self._record_incident(
-                f"情景写入失败 (chat={chat_id}): {exc}",
+                f"情景写入失败 (session={session_key}): {exc}",
                 source="episodic_extractor",
             )
             return False

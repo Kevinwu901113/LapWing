@@ -61,6 +61,14 @@ BLOCK_PATTERNS: tuple[str, ...] = (
     r"dd\s+.*of=/dev/",
 )
 
+WRITE_INTENT_PATTERNS: tuple[str, ...] = (
+    r"(?:^|\s)(?:rm|mv|cp|touch|mkdir|rmdir|tee|truncate|chmod|chown|ln)\b",
+    r"(?:^|\s)sed\b.*(?:^|\s)-i(?:\s|$)",
+    r"(?:^|\s)perl\b.*(?:^|\s)-i(?:\s|$)",
+    r"(?:^|\s)dd\b.*\bof=",
+    r">>|>",
+)
+
 
 def _is_locked(p: Path) -> bool:
     """检查路径是否在锁定范围内。使用 realpath 解析符号链接防绕过。"""
@@ -101,7 +109,7 @@ def check(command: str, *, relaxed: bool = False) -> GuardResult:
 
     paths = _resolve_paths(tokens[1:])
     locked = [p for p in paths if _is_locked(p)]
-    if locked:
+    if locked and _has_write_intent(cmd_lower):
         return GuardResult(Verdict.BLOCK, f"不能修改锁定路径: {', '.join(str(p) for p in locked)}")
 
     return GuardResult(Verdict.PASS, "")
@@ -134,6 +142,11 @@ def extract_vital_shell_targets(command: str) -> list[Path]:
     except ValueError:
         tokens = command.split()
     return [p for p in _resolve_paths(tokens[1:]) if _is_locked(p)]
+
+
+def _has_write_intent(command_lower: str) -> bool:
+    """只在命令明显会写入/修改文件时触发锁定路径保护。"""
+    return any(re.search(pattern, command_lower) for pattern in WRITE_INTENT_PATTERNS)
 
 
 def _resolve_paths(tokens: list[str]) -> list[Path]:

@@ -62,6 +62,7 @@ class Commitment:
     # Step 5: 关闭时的简短说明——fulfill 时写完成结果摘要，abandon 时
     # 写放弃原因。审计回看不用翻 mutation_log。
     closing_note: str | None = None
+    source_focus_id: str | None = None
 
 
 class CommitmentStore:
@@ -95,7 +96,8 @@ class CommitmentStore:
                 status TEXT NOT NULL,
                 status_changed_at REAL NOT NULL,
                 fulfilled_by_entry_ids TEXT,
-                reasoning TEXT
+                reasoning TEXT,
+                source_focus_id TEXT
             );
             CREATE INDEX IF NOT EXISTS idx_commit_status
                 ON commitments(status, created_at);
@@ -107,9 +109,14 @@ class CommitmentStore:
         # ADD COLUMN 是廉价 op；旧库升级到 Step 5 自动获得新列。
         await self._add_column_if_missing("deadline", "REAL")
         await self._add_column_if_missing("closing_note", "TEXT")
+        await self._add_column_if_missing("source_focus_id", "TEXT")
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_commit_deadline "
             "ON commitments(deadline) WHERE deadline IS NOT NULL"
+        )
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_commit_focus "
+            "ON commitments(source_focus_id, status)"
         )
         await self._db.commit()
 
@@ -138,6 +145,7 @@ class CommitmentStore:
         *,
         reasoning: str | None = None,
         deadline: float | None = None,
+        source_focus_id: str | None = None,
     ) -> str:
         """Create a new pending commitment; returns its id.
 
@@ -157,11 +165,13 @@ class CommitmentStore:
             """INSERT INTO commitments
                (id, created_at, target_chat_id, content,
                 source_trajectory_entry_id, status, status_changed_at,
-                fulfilled_by_entry_ids, reasoning, deadline, closing_note)
-               VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL)""",
+                fulfilled_by_entry_ids, reasoning, deadline, closing_note,
+                source_focus_id)
+               VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, NULL, ?)""",
             (
                 commitment_id, now, target_chat_id, content,
                 source_trajectory_entry_id, status, now, reasoning, deadline,
+                source_focus_id,
             ),
         )
         await self._db.commit()
@@ -176,6 +186,7 @@ class CommitmentStore:
                     "source_trajectory_entry_id": source_trajectory_entry_id,
                     "reasoning": reasoning,
                     "deadline": deadline,
+                    "source_focus_id": source_focus_id,
                 },
                 iteration_id=current_iteration_id(),
                 chat_id=target_chat_id,
@@ -259,7 +270,8 @@ class CommitmentStore:
     _SELECT_COLS = (
         "id, created_at, target_chat_id, content, "
         "source_trajectory_entry_id, status, status_changed_at, "
-        "fulfilled_by_entry_ids, reasoning, deadline, closing_note"
+        "fulfilled_by_entry_ids, reasoning, deadline, closing_note, "
+        "source_focus_id"
     )
 
     async def list_open(
@@ -325,4 +337,5 @@ class CommitmentStore:
             reasoning=row[8],
             deadline=row[9] if len(row) > 9 else None,
             closing_note=row[10] if len(row) > 10 else None,
+            source_focus_id=row[11] if len(row) > 11 else None,
         )

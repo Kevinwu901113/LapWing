@@ -334,6 +334,9 @@ class TaskRuntime:
         # 纠正记录工具——OWNER 可在对话中记录行为纠正
         if self._tool_registry.get("add_correction") is not None:
             tool_names.add("add_correction")
+        for focus_tool in ("close_focus", "recall_focus"):
+            if self._tool_registry.get(focus_tool) is not None:
+                tool_names.add(focus_tool)
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
         if web_enabled:
@@ -401,6 +404,7 @@ class TaskRuntime:
         adapter: str = "",
         user_id: str = "",
         send_fn: Callable[[str], "Awaitable[Any]"] | None = None,
+        focus_id: str | None = None,
     ) -> str:
         mutation_log: StateMutationLog | None = (services or {}).get("mutation_log")
         iteration_id = new_iteration_id()
@@ -444,6 +448,7 @@ class TaskRuntime:
                     adapter=adapter,
                     user_id=user_id,
                     send_fn=send_fn,
+                    focus_id=focus_id,
                 )
                 # Step 5 cleanup: direct-output chat owns user-visible text;
                 # commit_promise tracks intent, and audit lives in
@@ -492,6 +497,7 @@ class TaskRuntime:
         adapter: str = "",
         user_id: str = "",
         send_fn: Callable[[str], "Awaitable[Any]"] | None = None,
+        focus_id: str | None = None,
     ) -> str:
         """Original complete_chat body. Wrapped by complete_chat() which binds
         the iteration context and records ITERATION_STARTED / ITERATION_ENDED.
@@ -545,6 +551,7 @@ class TaskRuntime:
             adapter=adapter,
             user_id=user_id,
             send_fn=send_fn,
+            focus_id=focus_id,
             state=state,
             loop_detection_state=self._new_loop_detection_state(),
             recovery=LoopRecoveryState(),
@@ -953,18 +960,23 @@ class TaskRuntime:
                     pass
 
             tool_started_at = time.perf_counter()
+            execute_kwargs: dict[str, Any] = {
+                "tool_call": tool_call,
+                "state": ctx.state,
+                "deps": ctx.deps,
+                "task_id": ctx.task_id,
+                "chat_id": ctx.chat_id,
+                "event_bus": ctx.event_bus,
+                "profile": ctx.profile_obj,
+                "services": ctx.services,
+                "adapter": ctx.adapter,
+                "user_id": ctx.user_id,
+                "send_fn": ctx.send_fn,
+            }
+            if ctx.focus_id is not None:
+                execute_kwargs["focus_id"] = ctx.focus_id
             tool_result_text, payload, execution_success = await self._execute_tool_call(
-                tool_call=tool_call,
-                state=ctx.state,
-                deps=ctx.deps,
-                task_id=ctx.task_id,
-                chat_id=ctx.chat_id,
-                event_bus=ctx.event_bus,
-                profile=ctx.profile_obj,
-                services=ctx.services,
-                adapter=ctx.adapter,
-                user_id=ctx.user_id,
-                send_fn=ctx.send_fn,
+                **execute_kwargs
             )
             duration_ms = max(int((time.perf_counter() - tool_started_at) * 1000), 0)
             logger.debug(
@@ -1294,6 +1306,7 @@ class TaskRuntime:
         adapter: str = "",
         user_id: str = "",
         send_fn: Callable[[str], "Awaitable[Any]"] | None = None,
+        focus_id: str | None = None,
     ) -> ToolExecutionResult:
         profile_obj = self._resolve_profile(profile)
         tool = self._tool_registry.get(request.name)
@@ -1403,6 +1416,7 @@ class TaskRuntime:
             user_id=user_id,
             auth_level=auth_level,
             chat_id=chat_id or "",
+            focus_id=focus_id,
             memory=None,
             memory_index=self._memory_index,
             send_fn=send_fn,
@@ -1606,10 +1620,13 @@ class TaskRuntime:
         adapter: str = "",
         user_id: str = "",
         send_fn: Callable[[str], "Awaitable[Any]"] | None = None,
+        focus_id: str | None = None,
     ) -> tuple[str, dict[str, Any], bool]:
         dispatcher = (services or {}).get("dispatcher")
         mutation_log: StateMutationLog | None = (services or {}).get("mutation_log")
         circuit_breaker = (services or {}).get("circuit_breaker")
+        trajectory_store = (services or {}).get("trajectory_store")
+        focus_manager = (services or {}).get("focus_manager")
         iteration_id = current_iteration_id()
 
         cb_key = ""
@@ -1659,6 +1676,28 @@ class TaskRuntime:
             except Exception:
                 logger.warning("TOOL_CALLED mutation record failed", exc_info=True)
 
+        if trajectory_store is not None:
+            try:
+                from src.core.trajectory_store import TrajectoryEntryType
+
+                await trajectory_store.append(
+                    TrajectoryEntryType.TOOL_CALL,
+                    chat_id,
+                    "lapwing",
+                    {
+                        "tool_name": tool_call.name,
+                        "tool_call_id": getattr(tool_call, "id", None),
+                        "arguments": tool_call.arguments,
+                    },
+                    related_iteration_id=iteration_id,
+                    related_tool_call_id=getattr(tool_call, "id", None),
+                    focus_id=focus_id,
+                )
+                if focus_id and focus_manager is not None:
+                    await focus_manager.accumulate(focus_id)
+            except Exception:
+                logger.debug("TOOL_CALL trajectory append failed", exc_info=True)
+
         tool_start_mono = time.monotonic()
         execution = await self.execute_tool(
             request=ToolExecutionRequest(name=tool_call.name, arguments=tool_call.arguments),
@@ -1672,6 +1711,7 @@ class TaskRuntime:
             adapter=adapter,
             user_id=user_id,
             send_fn=send_fn,
+            focus_id=focus_id,
         )
         elapsed_ms = (time.monotonic() - tool_start_mono) * 1000
 
@@ -1718,6 +1758,30 @@ class TaskRuntime:
                 )
             except Exception:
                 logger.warning("TOOL_RESULT mutation record failed", exc_info=True)
+
+        if trajectory_store is not None:
+            try:
+                from src.core.trajectory_store import TrajectoryEntryType
+
+                await trajectory_store.append(
+                    TrajectoryEntryType.TOOL_RESULT,
+                    chat_id,
+                    "system",
+                    {
+                        "tool_name": tool_call.name,
+                        "tool_call_id": getattr(tool_call, "id", None),
+                        "success": execution.success,
+                        "reason": execution.reason or "",
+                        "result_preview": _truncate_result(payload, max_chars=1200),
+                    },
+                    related_iteration_id=iteration_id,
+                    related_tool_call_id=getattr(tool_call, "id", None),
+                    focus_id=focus_id,
+                )
+                if focus_id and focus_manager is not None:
+                    await focus_manager.accumulate(focus_id)
+            except Exception:
+                logger.debug("TOOL_RESULT trajectory append failed", exc_info=True)
 
         if circuit_breaker is not None:
             if execution.success:

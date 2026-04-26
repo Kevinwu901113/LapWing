@@ -8,7 +8,7 @@ from typing import Set, Tuple, Type
 
 import httpx
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("lapwing.utils.retry")
 
 DEFAULT_RETRYABLE_STATUSES: Set[int] = {429, 500, 502, 503, 529}
 DEFAULT_RETRYABLE_EXCEPTIONS: Tuple[Type[Exception], ...] = (

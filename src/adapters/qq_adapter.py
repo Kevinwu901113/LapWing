@@ -121,6 +121,21 @@ class QQAdapter(BaseAdapter):
                     raise RuntimeError(f"QQ 消息发送失败: retcode={result.get('retcode')}")
                 await asyncio.sleep(0.5)
 
+    async def send_private_message(self, user_id: str, text: str) -> None:
+        """发送 QQ 私信，供个人工具直接调用。"""
+        await self.send_text(user_id, text)
+
+    async def send_group_message(self, group_id: str, text: str) -> None:
+        """发送 QQ 群消息，供个人工具直接调用。"""
+        text = self._markdown_to_plain(text)
+        chunks = [text] if len(text) <= MAX_QQ_MSG_LENGTH else self._split_text(text, MAX_QQ_MSG_LENGTH)
+        for chunk in chunks:
+            result = await self._send_group_msg(group_id, chunk)
+            if result.get("status") != "ok":
+                raise RuntimeError(f"QQ 群消息发送失败: retcode={result.get('retcode')}")
+            if len(chunks) > 1:
+                await asyncio.sleep(0.5)
+
     # ── WebSocket 连接管理 ──────────────────────────────
 
     async def _connection_loop(self) -> None:

@@ -26,9 +26,12 @@ class CodeResult:
 async def run_python(code: str, timeout: int = 10) -> CodeResult:
     """在 Docker STRICT 沙盒中执行 Python 代码。"""
     tmp_dir = tempfile.mkdtemp(prefix="lapwing_coder_")
-    script_path = Path(tmp_dir) / "script.py"
+    tmp_path = Path(tmp_dir)
+    script_path = tmp_path / "script.py"
     try:
         script_path.write_text(code, encoding="utf-8")
+        tmp_path.chmod(0o755)
+        script_path.chmod(0o644)
 
         result = await _sandbox.run(
             ["python3", "/workspace/script.py"],

@@ -24,7 +24,9 @@
 | 文件 | 用途 |
 |------|------|
 | `memory_extract.md` | 记忆提取 Prompt — 从对话中提取关键事实 |
-| `compaction.md` | 对话 Compaction Prompt — 压缩过长对话历史 |
+| `focus_continuity.md` | Focus 话题连续性判断 |
+| `focus_match_dormant.md` | 休眠 Focus 复活匹配 |
+| `focus_summarize.md` | Focus 休眠摘要与关键词提取 |
 
 ## QQ 群聊
 

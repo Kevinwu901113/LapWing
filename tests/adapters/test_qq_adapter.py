@@ -1,6 +1,7 @@
 """QQAdapter 单元测试。"""
 
 import pytest
+from unittest.mock import AsyncMock
 
 from src.adapters.qq_adapter import QQAdapter
 
@@ -128,6 +129,25 @@ class TestSplitText:
         chunks = adapter._split_text(text, 8)
         assert all(len(c) <= 8 for c in chunks)
         assert "".join(chunks) == text
+
+
+@pytest.mark.asyncio
+class TestPublicSendHelpers:
+    async def test_send_private_message_delegates_to_private_api(self):
+        adapter = _make_adapter()
+        adapter._send_private_msg = AsyncMock(return_value={"status": "ok"})
+
+        await adapter.send_private_message("200", "**hello**")
+
+        adapter._send_private_msg.assert_awaited_once_with("200", "hello")
+
+    async def test_send_group_message_uses_group_api(self):
+        adapter = _make_adapter()
+        adapter._send_group_msg = AsyncMock(return_value={"status": "ok"})
+
+        await adapter.send_group_message("123", "`group hello`")
+
+        adapter._send_group_msg.assert_awaited_once_with("123", "group hello")
 
 
 class TestBuildMessageSegments:

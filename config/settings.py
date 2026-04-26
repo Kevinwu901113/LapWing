@@ -34,11 +34,6 @@ AUTH_DIR = LAPWING_HOME / "auth"
 AUTH_PROFILES_PATH = AUTH_DIR / "auth-profiles.json"
 API_BOOTSTRAP_TOKEN_PATH = AUTH_DIR / "api-bootstrap-token"
 
-# ── Compaction ───────────────────────────────
-
-COMPACTION_TRIGGER_RATIO: float = _s.compaction.trigger_ratio
-COMPACTION_SUMMARY_MAX_TOKENS: int = _s.compaction.summary_max_tokens
-
 # ── 网络代理 ─────────────────────────────────
 
 SEARCH_PROXY_URL: str = _s.proxy.search_url
@@ -160,6 +155,17 @@ TASK_NO_ACTION_BUDGET: int = _s.task.no_action_budget
 TASK_ERROR_BURST_THRESHOLD: int = _s.task.error_burst_threshold
 INTENT_ROUTER_ENABLED: bool = _s.intent_router.enabled
 INTENT_ROUTER_SESSION_TTL_SECONDS: int = _s.intent_router.session_ttl_seconds
+
+# ── Focus ───────────────────────────────────
+
+FOCUS_ENABLED: bool = _s.focus.enabled
+FOCUS_TIMEOUT_SECONDS: int = _s.focus.timeout_seconds
+FOCUS_RAPID_GAP_SECONDS: int = _s.focus.rapid_gap_seconds
+FOCUS_MIN_ENTRIES_TO_KEEP: int = _s.focus.min_entries_to_keep
+FOCUS_MAX_DORMANT: int = _s.focus.max_dormant
+FOCUS_DORMANT_TTL_HOURS: int = _s.focus.dormant_ttl_hours
+FOCUS_CLOSED_TTL_HOURS: int = _s.focus.closed_ttl_hours
+FOCUS_REACTIVATE_THRESHOLD: float = _s.focus.reactivate_threshold
 
 # ── SLO ──────────────────────────────────────
 

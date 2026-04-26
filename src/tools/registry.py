@@ -42,6 +42,7 @@ from src.tools.plan_tools import (
     update_plan_executor,
 )
 from src.tools.correction_tools import ADD_CORRECTION_SPEC
+from src.tools.focus_tools import CLOSE_FOCUS_SPEC, RECALL_FOCUS_SPEC
 from src.tools.sports_tool import SPORTS_TOOL_SPEC
 from src.tools.types import (
     ToolExecutionContext,
@@ -459,6 +460,8 @@ def build_default_tool_registry() -> ToolRegistry:
 
     # 纠正记录工具
     registry.register(ADD_CORRECTION_SPEC)
+    registry.register(CLOSE_FOCUS_SPEC)
+    registry.register(RECALL_FOCUS_SPEC)
     registry.register(SPORTS_TOOL_SPEC)
 
     # 时区工具

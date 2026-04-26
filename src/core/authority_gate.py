@@ -54,6 +54,8 @@ OPERATION_AUTH: dict[str, AuthLevel] = {
     "commit_promise": AuthLevel.GUEST,
     "fulfill_promise": AuthLevel.GUEST,
     "abandon_promise": AuthLevel.GUEST,
+    "close_focus": AuthLevel.OWNER,
+    "recall_focus": AuthLevel.OWNER,
     # 信息查询类
     "research": AuthLevel.TRUSTED,
     "file_list_directory": AuthLevel.TRUSTED,

@@ -246,8 +246,15 @@ _ENV_MAP: dict[str, list[str]] = {
     "OPENAI_CODEX_AUTH_REDIRECT_PATH": ["codex", "auth_redirect_path"],
     "OPENAI_CODEX_AUTH_PROXY_URL": ["codex", "auth_proxy_url"],
     "CODEX_FALLBACK_MODEL": ["codex", "fallback_model"],
-    # ── compaction ──
-    "COMPACTION_TRIGGER_RATIO": ["compaction", "trigger_ratio"],
+    # ── focus ──
+    "FOCUS_ENABLED": ["focus", "enabled"],
+    "FOCUS_TIMEOUT_SECONDS": ["focus", "timeout_seconds"],
+    "FOCUS_RAPID_GAP_SECONDS": ["focus", "rapid_gap_seconds"],
+    "FOCUS_MIN_ENTRIES_TO_KEEP": ["focus", "min_entries_to_keep"],
+    "FOCUS_MAX_DORMANT": ["focus", "max_dormant"],
+    "FOCUS_DORMANT_TTL_HOURS": ["focus", "dormant_ttl_hours"],
+    "FOCUS_CLOSED_TTL_HOURS": ["focus", "closed_ttl_hours"],
+    "FOCUS_REACTIVATE_THRESHOLD": ["focus", "reactivate_threshold"],
     # ── identity ──
     "IDENTITY_PARSER_ENABLED": ["identity", "parser_enabled"],
     "IDENTITY_STORE_ENABLED": ["identity", "store_enabled"],
@@ -492,9 +499,15 @@ class CodexConfig(BaseModel):
     fallback_model: str = "gpt-5.3-codex"
 
 
-class CompactionConfig(BaseModel):
-    trigger_ratio: float = 0.8
-    summary_max_tokens: int = 300
+class FocusConfig(BaseModel):
+    enabled: bool = True
+    timeout_seconds: int = Field(default=1800, ge=1)
+    rapid_gap_seconds: int = Field(default=60, ge=0)
+    min_entries_to_keep: int = Field(default=4, ge=0)
+    max_dormant: int = Field(default=10, ge=0)
+    dormant_ttl_hours: int = Field(default=24, ge=1)
+    closed_ttl_hours: int = Field(default=72, ge=1)
+    reactivate_threshold: float = Field(default=0.75, ge=0.0, le=1.0)
 
 
 class LogConfig(BaseModel):
@@ -573,7 +586,7 @@ class LapwingSettings(BaseSettings):
     sandbox: SandboxConfig = Field(default_factory=SandboxConfig)
     agent_team: AgentTeamConfig = Field(default_factory=AgentTeamConfig)
     codex: CodexConfig = Field(default_factory=CodexConfig)
-    compaction: CompactionConfig = Field(default_factory=CompactionConfig)
+    focus: FocusConfig = Field(default_factory=FocusConfig)
     log: LogConfig = Field(default_factory=LogConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     credential_vault_path: str = ""

@@ -54,6 +54,8 @@ CHAT_EXTENDED_PROFILE = RuntimeProfile(
         "commit_promise",
         "fulfill_promise",
         "abandon_promise",
+        "close_focus",
+        "recall_focus",
         "recall",
         "write_note",
         "read_note",

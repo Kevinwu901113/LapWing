@@ -21,6 +21,24 @@ class TestAdd:
         count = vector_store.collection.count()
         assert count == 1
 
+    async def test_add_normalizes_empty_metadata_values(self, vector_store):
+        await vector_store.add(
+            note_id="note_empty_meta",
+            content="metadata normalization check",
+            metadata={
+                "note_type": "observation",
+                "trust": "self",
+                "created_at": "2026-04-26T10:00:00+08:00",
+                "source_refs": [],
+                "parent_note": None,
+            },
+        )
+
+        raw = vector_store.collection.get(ids=["note_empty_meta"], include=["metadatas"])
+        metadata = raw["metadatas"][0]
+        assert "source_refs" not in metadata
+        assert metadata["parent_note"] == ""
+
 
 class TestRecall:
     async def test_recall_returns_results(self, vector_store):

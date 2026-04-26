@@ -29,6 +29,7 @@ from src.tools.types import ToolExecutionRequest
 from config.settings import (
     BROWSER_ENABLED,
     CHAT_WEB_TOOLS_ENABLED,
+    FOCUS_ENABLED,
     INTENT_ROUTER_ENABLED,
     MAX_HISTORY_TURNS,
     SHELL_ALLOW_SUDO,
@@ -59,6 +60,7 @@ class _ThinkCtx:
     effective_user_message: str
     approved_directory: str | None
     early_reply: str | None = None
+    focus_id: str | None = None
 
 
 class LapwingBrain:
@@ -82,8 +84,6 @@ class LapwingBrain:
             no_action_budget=TASK_NO_ACTION_BUDGET,
             error_burst_threshold=TASK_ERROR_BURST_THRESHOLD,
         )
-        from src.memory.compactor import ConversationCompactor
-        self.compactor = ConversationCompactor(self.router)
         # v2.0 Step 3: StateViewBuilder is the sole prompt-assembly entry.
         # Default builder has no store wiring — every section but identity
         # docs collapses to empty. AppContainer replaces this at prepare()
@@ -101,6 +101,7 @@ class LapwingBrain:
         self.inner_tick_scheduler = None  # Set externally — Step 4 M3
         self.attention_manager = None  # Set externally (AttentionManager | None) — v2.0 Step 2
         self.trajectory_store = None  # Set externally (TrajectoryStore | None) — v2.0 Step 2f
+        self.focus_manager = None  # Set externally (FocusManager | None)
         self._conversation_end_task: asyncio.Task | None = None
 
     async def init_db(self) -> None:
@@ -118,6 +119,7 @@ class LapwingBrain:
         content: str,
         *,
         is_inner: bool = False,
+        focus_id: str | None = None,
     ) -> None:
         """Write a conversation turn directly to TrajectoryStore."""
         if self.trajectory_store is None:
@@ -141,15 +143,19 @@ class LapwingBrain:
             else:
                 return
             await self.trajectory_store.append(
-                entry_type, source_chat_id, actor, payload,
+                entry_type, source_chat_id, actor, payload, focus_id=focus_id,
             )
+            if focus_id and self.focus_manager is not None:
+                await self.focus_manager.accumulate(focus_id)
         except Exception:
             logger.warning(
                 "trajectory write failed for chat %s (role=%s)",
                 chat_id, role, exc_info=True,
             )
 
-    async def _load_history(self, chat_id: str) -> list[dict]:
+    async def _load_history(
+        self, chat_id: str, focus_id: str | None = None,
+    ) -> list[dict]:
         """Legacy-shape conversation history for the LLM context.
 
         Reads from ``TrajectoryStore.relevant_to_chat`` and projects via
@@ -159,9 +165,14 @@ class LapwingBrain:
         out of the user-facing exchange.
         """
         if self.trajectory_store is not None:
-            rows = await self.trajectory_store.relevant_to_chat(
-                chat_id, n=MAX_HISTORY_TURNS * 2, include_inner=False,
-            )
+            if focus_id:
+                rows = await self.trajectory_store.entries_by_focus(
+                    focus_id, n=MAX_HISTORY_TURNS * 2,
+                )
+            else:
+                rows = await self.trajectory_store.relevant_to_chat(
+                    chat_id, n=MAX_HISTORY_TURNS * 2, include_inner=False,
+                )
             return trajectory_entries_to_messages(rows)
         return []
 
@@ -242,6 +253,7 @@ class LapwingBrain:
         adapter: str = "",
         user_id: str = "",
         send_fn=None,
+        focus_id: str | None = None,
     ) -> str:
         constraints = extract_execution_constraints(
             user_message,
@@ -256,6 +268,8 @@ class LapwingBrain:
         services = {}
         if self.trajectory_store is not None:
             services["trajectory_store"] = self.trajectory_store
+        if self.focus_manager is not None:
+            services["focus_manager"] = self.focus_manager
         # commitment 工具需要 commitment_store
         commitment_store = getattr(self, "_commitment_store_ref", None)
         if commitment_store is not None:
@@ -342,6 +356,7 @@ class LapwingBrain:
             adapter=adapter,
             user_id=user_id,
             send_fn=send_fn,
+            focus_id=focus_id,
         )
 
     @staticmethod
@@ -433,24 +448,19 @@ class LapwingBrain:
         notifies the InnerTickScheduler so inner ticks resume on the
         post-chat schedule.
 
-        Step 7 M3.a: when ``chat_id`` is provided and an episodic
-        extractor is wired, trigger one extraction. Runs *after* the
-        end-of-conversation bookkeeping so the trajectory view used for
-        extraction sees a stable conversation slice (no race with
-        incoming messages).
+        Focus owns content boundaries. Session end only marks the
+        conversing→idle transition; episodic extraction runs when a focus
+        becomes dormant.
         """
         if (
             self.inner_tick_scheduler is None
             and self.attention_manager is None
-            and getattr(self, "_episodic_extractor", None) is None
         ):
             return
         if self._conversation_end_task is not None:
             self._conversation_end_task.cancel()
 
         from config.settings import CONSCIOUSNESS_CONVERSATION_END_DELAY
-
-        extractor = getattr(self, "_episodic_extractor", None)
 
         async def _delayed_end():
             await asyncio.sleep(CONSCIOUSNESS_CONVERSATION_END_DELAY)
@@ -461,13 +471,6 @@ class LapwingBrain:
                     await self.attention_manager.end_session()
                 except Exception:
                     logger.warning("attention_manager.end_session failed", exc_info=True)
-            if extractor is not None and chat_id:
-                try:
-                    await extractor.extract_from_chat(chat_id)
-                except Exception:
-                    logger.warning(
-                        "episodic extraction failed for %s", chat_id, exc_info=True,
-                    )
 
         self._conversation_end_task = asyncio.create_task(_delayed_end())
 
@@ -551,19 +554,33 @@ class LapwingBrain:
         send_fn 非空时，immediate_reply / agent_reply 会通过它发送（用于 conversational 模式）。
         返回 _ThinkCtx；若 early_reply 非 None 则表示已完成回复，调用方直接返回该值即可。
         """
+        focus_id: str | None = None
+        if (
+            FOCUS_ENABLED
+            and self.focus_manager is not None
+            and not chat_id.startswith("_")
+        ):
+            try:
+                focus = await self.focus_manager.resolve_focus(chat_id, user_message)
+                focus_id = focus.id
+            except Exception:
+                logger.warning("focus resolution failed for %s", chat_id, exc_info=True)
+
         # 存储文本到记忆（图片不持久化，只在当前 LLM 调用中传递）
         stored_text = user_message
         if images:
             img_tag = f"[用户发送了{len(images)}张图片]" if len(images) > 1 else "[用户发送了图片]"
             stored_text = f"{user_message}\n{img_tag}" if user_message.strip() else img_tag
 
-        await self._record_turn(chat_id, "user", stored_text)
+        await self._record_turn(chat_id, "user", stored_text, focus_id=focus_id)
 
         effective_user_message, approved_directory, immediate_reply = (
             self.task_runtime.resolve_pending_confirmation(chat_id, user_message)
         )
         if immediate_reply is not None:
-            await self._record_turn(chat_id, "assistant", immediate_reply)
+            await self._record_turn(
+                chat_id, "assistant", immediate_reply, focus_id=focus_id,
+            )
             if send_fn is not None:
                 from src.core.system_send import send_system_message
                 await send_system_message(
@@ -574,13 +591,14 @@ class LapwingBrain:
                     adapter=adapter,
                     trajectory_store=self.trajectory_store,
                     mutation_log=getattr(self, "_mutation_log_ref", None),
+                    focus_id=focus_id,
                 )
             return _ThinkCtx(messages=[], effective_user_message=effective_user_message,
-                             approved_directory=approved_directory, early_reply=immediate_reply)
+                             approved_directory=approved_directory,
+                             early_reply=immediate_reply, focus_id=focus_id)
 
-        # 压缩 + 组装 messages
-        await self.compactor.try_compact(chat_id)
-        history = await self._load_history(chat_id)
+        # 组装 messages
+        history = await self._load_history(chat_id, focus_id=focus_id)
         recent_messages = self._recent_messages(
             history,
             user_message=effective_user_message,
@@ -624,6 +642,7 @@ class LapwingBrain:
             messages=messages,
             effective_user_message=effective_user_message,
             approved_directory=approved_directory,
+            focus_id=focus_id,
         )
 
     async def think(self, chat_id: str, user_message: str, status_callback=None) -> str:
@@ -648,11 +667,14 @@ class LapwingBrain:
                 ctx.effective_user_message,
                 approved_directory=ctx.approved_directory,
                 status_callback=status_callback,
+                focus_id=ctx.focus_id,
             )
             reply = strip_internal_thinking_tags(reply)
 
             try:
-                await self._record_turn(chat_id, "assistant", reply)
+                await self._record_turn(
+                    chat_id, "assistant", reply, focus_id=ctx.focus_id,
+                )
                 logger.debug(f"[{chat_id}] 回复生成成功，长度: {len(reply)}")
             except Exception as post_exc:
                 logger.warning(
@@ -735,6 +757,7 @@ class LapwingBrain:
                     session_key,
                     messages,
                     inner_prompt,
+                    focus_id=None,
                 ),
                 timeout=timeout_seconds,
             )
@@ -860,6 +883,7 @@ class LapwingBrain:
                 adapter=adapter,
                 user_id=user_id,
                 send_fn=send_fn,
+                focus_id=ctx.focus_id,
             )
 
             # 最后一轮的裸文本也需要发送给用户
@@ -877,7 +901,9 @@ class LapwingBrain:
             memory_text = "\n\n".join(spoken_parts) if spoken_parts else ""
             try:
                 if memory_text:
-                    await self._record_turn(chat_id, "assistant", memory_text)
+                    await self._record_turn(
+                        chat_id, "assistant", memory_text, focus_id=ctx.focus_id,
+                    )
                 logger.debug(
                     "[%s] spoken_parts=%d 条",
                     chat_id, len(spoken_parts),
@@ -897,6 +923,7 @@ class LapwingBrain:
                 reason="owner_message_preempt",
                 adapter=adapter,
                 kind="conversational",
+                focus_id=ctx.focus_id,
             )
             raise
         except Exception as e:
@@ -911,6 +938,7 @@ class LapwingBrain:
                 adapter=adapter,
                 trajectory_store=self.trajectory_store,
                 mutation_log=getattr(self, "_mutation_log_ref", None),
+                focus_id=ctx.focus_id,
             )
             return error_msg
         finally:
@@ -924,6 +952,7 @@ class LapwingBrain:
         reason: str,
         adapter: str = "",
         kind: str = "conversational",
+        focus_id: str | None = None,
     ) -> None:
         """Write an INTERRUPTED trajectory entry for a cancelled handler.
 
@@ -951,6 +980,7 @@ class LapwingBrain:
                 source_chat_id,
                 "lapwing",
                 payload,
+                focus_id=focus_id,
             )
         except Exception:
             logger.warning(
@@ -1038,6 +1068,7 @@ class LapwingBrain:
                 deps=deps,
                 adapter="",
                 user_id="",
+                focus_id=None,
             )
         else:
             # 无工具：单次 LLM 调用

@@ -205,6 +205,7 @@ class ToolLoopContext:
     # send_message 工具的用户通道，由 brain 透传；inner tick / agent
     # 等无用户通道的 caller 留 None。带默认值放在所有非默认字段之后。
     send_fn: Callable[[str], Awaitable[Any]] | None = None
+    focus_id: str | None = None
 
     # 运行时累积状态
     last_payload: dict[str, Any] | None = None
@@ -213,4 +214,3 @@ class ToolLoopContext:
     simulated_tool_retries: int = 0
     has_used_tools: bool = False
     start_time: float = field(default_factory=time.perf_counter)
-

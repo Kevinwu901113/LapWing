@@ -36,6 +36,27 @@ def _safe_collection_name(chat_id: str) -> str:
     return name
 
 
+def _normalize_chroma_metadata(metadata: dict[str, Any] | None) -> dict[str, Any]:
+    """Convert app metadata into values accepted by Chroma."""
+    normalized: dict[str, Any] = {}
+    for key, value in dict(metadata or {}).items():
+        if value is None:
+            normalized[key] = ""
+        elif isinstance(value, (list, tuple)):
+            items = [item for item in value if item is not None]
+            if not items:
+                continue
+            normalized[key] = [
+                item if isinstance(item, (str, int, float, bool)) else str(item)
+                for item in items
+            ]
+        elif isinstance(value, (str, int, float, bool)):
+            normalized[key] = value
+        else:
+            normalized[key] = str(value)
+    return normalized
+
+
 class VectorStore:
     """封装 ChromaDB PersistentClient，并提供 async 接口。"""
 
@@ -61,6 +82,7 @@ class VectorStore:
 
         payload = dict(metadata or {})
         payload.setdefault("chat_id", chat_id)
+        payload = _normalize_chroma_metadata(payload)
 
         async with self._lock:
             await asyncio.to_thread(
@@ -180,6 +202,16 @@ class RecallResult:
             object.__setattr__(self, "metadata", {})
 
 
+@dataclass(frozen=True)
+class VectorHit:
+    """Generic hit for auxiliary ChromaDB collections."""
+
+    doc_id: str
+    text: str
+    score: float
+    metadata: dict[str, Any]
+
+
 class MemoryVectorStore:
     """记忆向量库。基于 ChromaDB 单一 collection，为 recall() 提供语义检索 + 排序。"""
 
@@ -208,11 +240,79 @@ class MemoryVectorStore:
         )
         self._lock = asyncio.Lock()
 
+    async def upsert_collection(
+        self,
+        *,
+        collection: str,
+        doc_id: str,
+        text: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Upsert text into a named auxiliary collection."""
+        if not text.strip():
+            return
+        async with self._lock:
+            coll = await asyncio.to_thread(
+                self._client.get_or_create_collection,
+                name=collection,
+                metadata={"hnsw:space": "cosine"},
+            )
+            await asyncio.to_thread(
+                coll.upsert,
+                ids=[str(doc_id)],
+                documents=[text],
+                metadatas=[_normalize_chroma_metadata(metadata)],
+            )
+
+    async def query_collection(
+        self,
+        *,
+        collection: str,
+        query_text: str,
+        n_results: int = 3,
+    ) -> list[VectorHit]:
+        """Query a named auxiliary collection with cosine similarity."""
+        if not query_text.strip():
+            return []
+        async with self._lock:
+            coll = await asyncio.to_thread(
+                self._client.get_or_create_collection,
+                name=collection,
+                metadata={"hnsw:space": "cosine"},
+            )
+            count = await asyncio.to_thread(coll.count)
+            if count == 0:
+                return []
+            raw = await asyncio.to_thread(
+                coll.query,
+                query_texts=[query_text],
+                n_results=min(n_results, count),
+                include=["documents", "metadatas", "distances"],
+            )
+
+        ids = (raw.get("ids") or [[]])[0]
+        documents = (raw.get("documents") or [[]])[0]
+        metadatas = (raw.get("metadatas") or [[]])[0]
+        distances = (raw.get("distances") or [[]])[0]
+        hits: list[VectorHit] = []
+        for idx, doc in enumerate(documents):
+            if not doc:
+                continue
+            dist = distances[idx] if idx < len(distances) else 1.0
+            hits.append(VectorHit(
+                doc_id=ids[idx] if idx < len(ids) else "",
+                text=doc,
+                score=max(0.0, 1.0 - float(dist)),
+                metadata=dict(metadatas[idx] if idx < len(metadatas) else {}),
+            ))
+        return hits
+
     async def add(self, note_id: str, content: str, metadata: dict) -> None:
         """Upsert 一条笔记到向量库。"""
         stored_meta = dict(metadata)
         stored_meta.setdefault("access_count", 0)
         stored_meta.setdefault("parent_note", "")
+        stored_meta = _normalize_chroma_metadata(stored_meta)
 
         async with self._lock:
             await asyncio.to_thread(
@@ -386,6 +486,7 @@ class MemoryVectorStore:
             meta = dict(note.get("meta", {}))
             meta.setdefault("access_count", 0)
             meta.setdefault("parent_note", "")
+            meta = _normalize_chroma_metadata(meta)
             await asyncio.to_thread(
                 self.collection.upsert,
                 ids=[note["note_id"]],
