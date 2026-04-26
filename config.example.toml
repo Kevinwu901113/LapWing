@@ -57,6 +57,9 @@ working_set_top_k = 10
 
 [shell]
 enabled = true
+# Sudo is denied by default. To enable, flip to true and ensure the host
+# user can run sudo without a password — the shell executor blocks
+# `sudo` regardless of profile when this is false.
 allow_sudo = false
 timeout = 30
 default_cwd = "/home/kevin/lapwing"

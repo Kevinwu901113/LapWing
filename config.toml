@@ -61,7 +61,10 @@ working_set_top_k = 10
 
 [shell]
 enabled = true
-allow_sudo = true
+# Sudo is denied by default. Enabling it requires both flipping this flag
+# and configuring sudoers — the shell executor blocks `sudo` regardless
+# of the calling profile when this is false (see shell_executor._blocked_reason).
+allow_sudo = false
 timeout = 30
 default_cwd = "/home/kevin/lapwing"
 max_output_chars = 4000
