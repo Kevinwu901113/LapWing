@@ -59,7 +59,11 @@ from src.core.llm_exceptions import (
     APITimeoutError,
     APIConnectionError,
 )
-from src.core.runtime_profiles import RuntimeProfile, get_runtime_profile
+from src.core.runtime_profiles import (
+    COMPOSE_PROACTIVE_PROFILE,
+    RuntimeProfile,
+    get_runtime_profile,
+)
 from src.core.shell_policy import (
     ExecutionConstraints,
     ExecutionSessionState,
@@ -313,40 +317,33 @@ class TaskRuntime:
         web_enabled: bool = True,
         browser_enabled: bool = False,
     ) -> list[dict[str, Any]]:
-        """chat 场景工具集：按需暴露 shell / web / browser。
-        send_message 用于主动消息（意识 tick 等）；正常对话中模型裸文本直接发送。
+        """Resolve the proactive-composition tool surface.
+
+        Source of truth for the always-on tool list is
+        ``COMPOSE_PROACTIVE_PROFILE`` (defined in runtime_profiles.py) —
+        this method layers shell / web / browser / ambient-knowledge
+        capabilities on top based on caller flags, but the base names
+        are not duplicated here.
+
+        send_message is included so proactive paths (inner ticks,
+        compose_proactive) can talk to the user; direct chat replies
+        use bare model text and never go through this surface.
         """
-        tool_names: set[str] = {
-            "send_message",
-            "get_time",
-            "send_image", "view_image",
-            "set_reminder", "view_reminders", "cancel_reminder",
-            "delegate_to_researcher",
-            "delegate_to_coder",
-        }
-        # Step 5 M2: 承诺三件套若已注册则纳入（M1 时尚未注册）
-        for promise_tool in (
-            "commit_promise", "fulfill_promise", "abandon_promise",
-        ):
-            if self._tool_registry.get(promise_tool) is not None:
-                tool_names.add(promise_tool)
-        # 任务规划工具
-        for plan_tool in ("plan_task", "update_plan"):
-            if self._tool_registry.get(plan_tool) is not None:
-                tool_names.add(plan_tool)
-        # 纠正记录工具——OWNER 可在对话中记录行为纠正
-        if self._tool_registry.get("add_correction") is not None:
-            tool_names.add("add_correction")
-        for focus_tool in ("close_focus", "recall_focus"):
-            if self._tool_registry.get(focus_tool) is not None:
-                tool_names.add(focus_tool)
+        # Start from the centralized profile.
+        base_specs = self._tool_registry.get_tools_for_profile(
+            COMPOSE_PROACTIVE_PROFILE,
+            include_internal=False,
+        )
+        tool_names: set[str] = {spec.name for spec in base_specs}
+
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
         if web_enabled:
             tool_names.update({"research", "browse"})
-        # 环境知识工具
+        # Ambient knowledge tools — only when registered (subsystem optional).
         for ambient_tool in (
-            "prepare_ambient_knowledge", "check_ambient_knowledge",
+            "prepare_ambient_knowledge",
+            "check_ambient_knowledge",
             "manage_interest_profile",
         ):
             if self._tool_registry.get(ambient_tool) is not None:
@@ -355,6 +352,7 @@ class TaskRuntime:
             for name in self._BROWSER_TOOL_NAMES:
                 if self._tool_registry.get(name) is not None:
                     tool_names.add(name)
+
         return self._tool_registry.function_tools(
             include_internal=False,
             tool_names=tool_names,

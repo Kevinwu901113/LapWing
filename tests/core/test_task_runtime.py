@@ -186,13 +186,28 @@ async def test_chat_tools_browser_enabled_safe_when_not_registered():
 
 
 @pytest.mark.asyncio
-async def test_chat_tools_raises_when_whitelisted_tool_not_registered():
-    """Step 1i: silent skip is forbidden; an unregistered whitelist entry raises."""
-    from src.tools.registry import ToolNotRegisteredError, build_default_tool_registry
+async def test_chat_tools_silently_skips_unregistered_profile_tools():
+    """After centralization (commit 7), chat_tools resolves through
+    COMPOSE_PROACTIVE_PROFILE which silently filters unregistered tool
+    names. Subsystems that aren't wired (e.g. personal_tools without
+    register_personal_tools) leave their tools out of the surface
+    instead of raising — production callers register on demand and the
+    profile is the source of truth."""
+    from src.tools.registry import build_default_tool_registry
 
     runtime = TaskRuntime(router=MagicMock(), tool_registry=build_default_tool_registry())
-    with pytest.raises(ToolNotRegisteredError):
-        runtime.chat_tools(shell_enabled=False, web_enabled=False)
+    tools = runtime.chat_tools(shell_enabled=False, web_enabled=False)
+    names = {item["function"]["name"] for item in tools}
+    # Tools that ARE registered in build_default_tool_registry survive…
+    assert {"commit_promise", "fulfill_promise", "abandon_promise"}.issubset(names)
+    assert {"plan_task", "update_plan", "add_correction"}.issubset(names)
+    assert {"close_focus", "recall_focus"}.issubset(names)
+    # …and tools whose subsystem isn't wired (personal_tools / research
+    # / agent_tools / scheduler) are silently skipped, not raised on.
+    assert "send_message" not in names
+    assert "research" not in names
+    assert "delegate_to_researcher" not in names
+    assert "set_reminder" not in names
 
 
 @pytest.mark.asyncio

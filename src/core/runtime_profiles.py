@@ -189,6 +189,44 @@ AGENT_CODER_PROFILE = RuntimeProfile(
     shell_policy_enabled=False,
 )
 
+# compose_proactive: the always-on tool surface used by Brain.compose_proactive
+# and any other path that needs the "talk to Kevin + check state + delegate
+# heavy work" surface without raw shell access. Source of truth for the
+# tool names — replaces the hardcoded list previously inlined in
+# TaskRuntime.chat_tools(). Shell, raw web, browser, ambient knowledge
+# are layered on dynamically by chat_tools() based on caller flags.
+COMPOSE_PROACTIVE_PROFILE = RuntimeProfile(
+    name="compose_proactive",
+    capabilities=frozenset(),
+    tool_names=frozenset({
+        # talk to user / view shared media
+        "send_message",
+        "get_time",
+        "send_image",
+        "view_image",
+        # reminders
+        "set_reminder",
+        "view_reminders",
+        "cancel_reminder",
+        # heavy lifting via delegation
+        "delegate_to_researcher",
+        "delegate_to_coder",
+        # commitments
+        "commit_promise",
+        "fulfill_promise",
+        "abandon_promise",
+        # planning + corrections + focus
+        "plan_task",
+        "update_plan",
+        "add_correction",
+        "close_focus",
+        "recall_focus",
+    }),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
+
 _PROFILES = {
     profile.name: profile
     for profile in (
@@ -196,6 +234,7 @@ _PROFILES = {
         CHAT_MINIMAL_PROFILE,
         CHAT_EXTENDED_PROFILE,
         INNER_TICK_PROFILE,
+        COMPOSE_PROACTIVE_PROFILE,
         TASK_EXECUTION_PROFILE,
         CODER_SNIPPET_PROFILE,
         CODER_WORKSPACE_PROFILE,
