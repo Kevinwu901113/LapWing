@@ -53,6 +53,48 @@ async def _get_time(
 _PROACTIVE_PROFILES = frozenset({"inner_tick"})
 
 
+async def _record_proactive_decision(
+    *,
+    ctx: ToolExecutionContext,
+    decision,
+    target: str,
+    category: str | None,
+    urgent: bool,
+) -> None:
+    """Emit a PROACTIVE_MESSAGE_DECISION mutation log entry. Best-effort —
+    errors are logged at warning and swallowed; the user-visible decision
+    path is unaffected."""
+    services = ctx.services or {}
+    mutation_log = services.get("mutation_log")
+    if mutation_log is None:
+        return
+    try:
+        from src.logging.state_mutation_log import (
+            MutationType,
+            current_chat_id,
+            current_iteration_id,
+        )
+        await mutation_log.record(
+            MutationType.PROACTIVE_MESSAGE_DECISION,
+            {
+                "decision": decision.decision,
+                "reason": decision.reason,
+                "category": category,
+                "urgent": bool(urgent),
+                "bypassed": bool(getattr(decision, "bypassed", False)),
+                "target": target,
+                "runtime_profile": ctx.runtime_profile or "",
+            },
+            iteration_id=current_iteration_id(),
+            chat_id=current_chat_id() or (ctx.chat_id or None),
+        )
+    except Exception:
+        logger.warning(
+            "[send_message] PROACTIVE_MESSAGE_DECISION record failed",
+            exc_info=True,
+        )
+
+
 def _is_proactive_context(ctx: ToolExecutionContext) -> bool:
     """send_message is always proactive in the current architecture: bare
     assistant text is the direct-reply path, so any send_message call is
@@ -96,6 +138,15 @@ async def _send_message(
     gate = (ctx.services or {}).get("proactive_message_gate")
     if gate is not None and _is_proactive_context(ctx):
         gate_decision = gate.evaluate(category=category, urgent=urgent)
+        # Audit every decision (allow / defer / deny) into the mutation log
+        # so allow:defer:deny ratios can be inspected after the fact.
+        await _record_proactive_decision(
+            ctx=ctx,
+            decision=gate_decision,
+            target=target,
+            category=category,
+            urgent=urgent,
+        )
         if gate_decision.decision != "allow":
             logger.info(
                 "[send_message] proactive_gate=%s reason=%s target=%s",

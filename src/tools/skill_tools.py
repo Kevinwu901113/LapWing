@@ -311,6 +311,32 @@ async def run_skill_executor(
                 "[run_skill] gate denied: profile=%s skill_id=%s reason=%s",
                 profile, skill_id, deny_reason,
             )
+            mutation_log = services.get("mutation_log")
+            if mutation_log is not None:
+                try:
+                    from src.logging.state_mutation_log import (
+                        MutationType,
+                        current_chat_id,
+                        current_iteration_id,
+                    )
+                    await mutation_log.record(
+                        MutationType.TOOL_DENIED,
+                        {
+                            "tool": "run_skill",
+                            "guard": "run_skill_gate",
+                            "reason": deny_reason,
+                            "auth_level": int(context.auth_level),
+                            "profile": profile,
+                            "skill_id": skill_id,
+                        },
+                        iteration_id=current_iteration_id(),
+                        chat_id=current_chat_id() or (context.chat_id or None),
+                    )
+                except Exception:
+                    logger.warning(
+                        "[run_skill] TOOL_DENIED record failed",
+                        exc_info=True,
+                    )
             return ToolExecutionResult(
                 success=False,
                 payload={

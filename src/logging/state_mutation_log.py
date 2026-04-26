@@ -132,6 +132,21 @@ class MutationType(str, Enum):
     AGENT_FAILED = "agent.task_failed"
     AGENT_TOOL_CALL = "agent.tool_called"
 
+    # --- Reduction-pass audit (commit 9) ---
+    # TOOL_DENIED fires whenever a guard refuses a tool call before it
+    # reaches the executor: AuthorityGate, VitalGuard, ShellPolicy,
+    # BrowserGuard, run_skill approval gate. Payload always includes:
+    #   {"tool": str, "guard": str, "reason": str, "auth_level": int}
+    # plus guard-specific extras.
+    TOOL_DENIED = "tool.denied"
+
+    # PROACTIVE_MESSAGE_DECISION fires for every ProactiveMessageGate
+    # outcome so allow/defer/deny ratios can be audited. Payload:
+    #   {"decision": "allow"|"defer"|"deny", "reason": str,
+    #    "category": str|None, "urgent": bool, "bypassed": bool,
+    #    "target": str}
+    PROACTIVE_MESSAGE_DECISION = "proactive_message.decision"
+
 
 @dataclass
 class Mutation:
