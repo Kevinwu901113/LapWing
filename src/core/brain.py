@@ -441,6 +441,41 @@ class LapwingBrain:
 
         return [{"role": "system", "content": system_content}, *rendered]
 
+    def _schedule_identity_shadow_retrieval(self, user_message: str) -> None:
+        """Fire-and-forget shadow query against the identity retriever.
+
+        Pure observation: writes a row to identity_retrieval_traces so we
+        can study score distribution before plumbing claims into the
+        prompt. Never affects the reply path; all errors swallowed.
+        """
+        retriever = getattr(self, "_identity_retriever", None)
+        flags = getattr(self, "_identity_flags", None)
+        if retriever is None:
+            return
+        if flags is not None and getattr(flags, "identity_system_killswitch", False):
+            return
+        query = (user_message or "").strip()[:200]
+        if not query:
+            return
+
+        async def _shadow() -> None:
+            try:
+                from src.identity.auth import create_system_auth
+                await retriever.retrieve(
+                    query=query,
+                    auth=create_system_auth(),
+                    top_k=5,
+                    min_confidence=0.0,
+                )
+            except Exception:
+                logger.debug("identity shadow retrieval failed", exc_info=True)
+
+        try:
+            asyncio.create_task(_shadow())
+        except RuntimeError:
+            # No running loop (sync context) — safe to skip.
+            pass
+
     def _schedule_conversation_end(self, chat_id: str | None = None) -> None:
         """延迟判定对话结束。用户最后一条消息后 N 秒无新消息算结束。
 
@@ -573,6 +608,10 @@ class LapwingBrain:
             stored_text = f"{user_message}\n{img_tag}" if user_message.strip() else img_tag
 
         await self._record_turn(chat_id, "user", stored_text, focus_id=focus_id)
+
+        # Shadow identity retrieval — observe-only, fire-and-forget.
+        # Writes identity_retrieval_traces but does not affect prompt or reply.
+        self._schedule_identity_shadow_retrieval(user_message)
 
         effective_user_message, approved_directory, immediate_reply = (
             self.task_runtime.resolve_pending_confirmation(chat_id, user_message)

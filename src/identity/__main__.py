@@ -194,9 +194,30 @@ async def _cmd_rebuild(store, args: argparse.Namespace) -> None:
         return
 
     auth = create_system_auth()
-    parser = IdentityParser(store=store, identity_dir=identity_dir)
 
-    print(f"[rebuild] 开始重建: {identity_dir}")
+    # Wire heartbeat-slot LLM for type/sensitivity/confidence classification.
+    # On router-construction failure, fall back to defaults (CLI keeps working
+    # in offline / no-credential environments).
+    llm_router = None
+    model_id = "default"
+    try:
+        from src.core.llm_router import LLMRouter
+        from src.auth.service import AuthManager
+        from config.settings import NIM_MODEL
+        llm_router = LLMRouter(auth_manager=AuthManager())
+        model_id = NIM_MODEL or "heartbeat"
+    except Exception as e:
+        print(f"[rebuild] LLM router 初始化失败，回退到默认分类: {e}")
+
+    parser = IdentityParser(
+        store=store,
+        identity_dir=identity_dir,
+        llm_router=llm_router,
+        prompt_version="v2-llm" if llm_router else "v1",
+        model_id=model_id,
+    )
+
+    print(f"[rebuild] 开始重建: {identity_dir} (llm={'on' if llm_router else 'off'})")
     report = await parser.rebuild(auth)
 
     print(f"[rebuild] 完成:")

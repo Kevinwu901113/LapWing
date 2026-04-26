@@ -391,8 +391,8 @@ class IdentityParser:
                 return cached
 
         # 无 LLM router → 从 effective_metadata 提取默认值
+        meta = block.effective_metadata()
         if self._llm_router is None:
-            meta = block.effective_metadata()
             result = {
                 "type": meta.get("type", "belief"),
                 "owner": meta.get("owner", "lapwing"),
@@ -400,21 +400,116 @@ class IdentityParser:
                 "sensitivity": meta.get("sensitivity", "public"),
             }
         else:
-            # TODO: 实现 LLM 调用分类
-            # 目前回退到默认值
-            meta = block.effective_metadata()
-            result = {
-                "type": meta.get("type", "belief"),
-                "owner": meta.get("owner", "lapwing"),
-                "confidence": float(meta.get("confidence", 0.5)),
-                "sensitivity": meta.get("sensitivity", "public"),
-            }
+            # owner 来自 metadata（LLM 不分类归属方）
+            owner = meta.get("owner", "lapwing")
+            llm_result = await self._classify_via_llm(block)
+            if llm_result is None:
+                # LLM 失败 → 退回 metadata 默认值
+                result = {
+                    "type": meta.get("type", "belief"),
+                    "owner": owner,
+                    "confidence": float(meta.get("confidence", 0.5)),
+                    "sensitivity": meta.get("sensitivity", "public"),
+                }
+            else:
+                result = {
+                    "type": llm_result["type"],
+                    "owner": owner,
+                    "confidence": float(llm_result["confidence"]),
+                    "sensitivity": llm_result["sensitivity"],
+                }
 
         # 缓存结果
         if self._store is not None:
             await self._store.set_extraction_cache(cache_key, result)
 
         return result
+
+    async def _classify_via_llm(self, block: RawBlock) -> dict | None:
+        """用 heartbeat slot 调轻量模型对单个块做 type/sensitivity/confidence 分类。
+
+        失败（异常、schema 不符、字段缺失）一律返回 None，由调用方退回默认值。
+        """
+        schema = {
+            "type": "object",
+            "properties": {
+                "type": {
+                    "type": "string",
+                    "enum": [
+                        "trait", "value", "preference", "belief",
+                        "boundary", "fact", "relationship",
+                    ],
+                },
+                "sensitivity": {
+                    "type": "string",
+                    "enum": ["public", "private", "restricted"],
+                },
+                "confidence": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+            },
+            "required": ["type", "sensitivity", "confidence"],
+        }
+
+        system_prompt = (
+            "你是 Lapwing 身份系统的分类器。给定一段身份描述，输出 JSON。\n\n"
+            "type 七选一：\n"
+            "- trait：固有特征（外貌、长期个性）\n"
+            "- value：价值观、信念中根深蒂固的部分\n"
+            "- preference：偏好、习惯、关注的话题\n"
+            "- belief：陈述性的观点或信念\n"
+            "- boundary：宪法约束、底线、不可违反的规则\n"
+            "- fact：客观事实（账号、文件、能力清单）\n"
+            "- relationship：与某人或某物的关系\n\n"
+            "sensitivity 三选一：\n"
+            "- public：可对任何人提及\n"
+            "- private：仅对 OWNER（Kevin）提及\n"
+            "- restricted：高度敏感，避免主动暴露\n\n"
+            "confidence 是 0.0-1.0 的浮点数，表示该陈述本身的可信度（不是分类信心）。\n"
+            "Lapwing 自述类的 confidence 通常 0.85+；推断类的 0.5-0.7；外部观察的 0.3-0.6。"
+        )
+
+        user_prompt = (
+            f"来源文件：{block.source_file}\n"
+            f"文本：\n{block.text.strip()}"
+        )
+
+        try:
+            result = await self._llm_router.complete_structured(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                result_schema=schema,
+                result_tool_name="submit_classification",
+                result_tool_description="提交身份块的分类结果",
+                slot="heartbeat",
+                max_tokens=200,
+                allow_failover=True,
+                origin="identity.parser.classify",
+            )
+        except Exception as e:
+            logger.warning("LLM classify failed for %s: %s", block.raw_block_id, e)
+            return None
+
+        # 校验
+        try:
+            t = str(result["type"])
+            s = str(result["sensitivity"])
+            c = float(result["confidence"])
+        except (KeyError, TypeError, ValueError) as e:
+            logger.warning("LLM classify returned malformed result for %s: %r (%s)",
+                           block.raw_block_id, result, e)
+            return None
+
+        if t not in {"trait", "value", "preference", "belief", "boundary", "fact", "relationship"}:
+            logger.warning("LLM classify returned unknown type=%r for %s", t, block.raw_block_id)
+            return None
+        if s not in {"public", "private", "restricted"}:
+            logger.warning("LLM classify returned unknown sensitivity=%r for %s", s, block.raw_block_id)
+            return None
+        if not (0.0 <= c <= 1.0):
+            c = max(0.0, min(1.0, c))
+
+        return {"type": t, "sensitivity": s, "confidence": c}
 
     # ------------------------------------------------------------------
     # 重建流程 (Task 13)
