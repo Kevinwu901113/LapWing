@@ -210,6 +210,72 @@ async def create_skill_executor(
     )
 
 
+# ── Approval gate for run_skill ──────────────────────────────────────────
+#
+# Profiles where run_skill is exposed but must NOT execute arbitrary skills
+# without an explicit maturity/tag check. Two-tier policy:
+#   - chat_extended: only stable skills whose trust_required is satisfied
+#                    by the caller's auth_level
+#   - inner_tick:    only stable skills explicitly marked autonomous via
+#                    tags "auto_run" or "inner_tick"
+# Any other profile (CLI / OWNER tooling) bypasses the gate — those
+# surfaces have their own access controls.
+
+_GATED_PROFILES = frozenset({"chat_extended", "inner_tick"})
+_AUTONOMOUS_TAGS = frozenset({"auto_run", "inner_tick"})
+
+# auth_level integers — keep aligned with src.core.authority_gate.AuthLevel
+# (0=GUEST / 1=TRUSTED / 2=OWNER).
+_TRUST_RANK = {"guest": 0, "trusted": 1, "owner": 2}
+
+
+def _trust_satisfied(required: str, auth_level: int) -> bool:
+    """Return True if auth_level meets or exceeds the required trust tier."""
+    needed = _TRUST_RANK.get(str(required or "guest").lower(), 0)
+    return int(auth_level) >= needed
+
+
+def _gate_run_skill(
+    skill: dict | None,
+    *,
+    profile: str,
+    auth_level: int,
+) -> str | None:
+    """Return a deny reason if the gate refuses execution, else None.
+
+    The gate fires only on profiles in ``_GATED_PROFILES``. Non-gated
+    profiles return None (allowed) regardless of skill state.
+    """
+    if profile not in _GATED_PROFILES:
+        return None
+    if skill is None:
+        return "技能不存在"
+    meta = skill.get("meta") or {}
+    maturity = str(meta.get("maturity", "")).lower()
+    if maturity != "stable":
+        return (
+            f"run_skill 在 {profile} 下只能执行 maturity=stable 的技能，"
+            f"当前技能状态为 {maturity or 'unmarked'}"
+        )
+    if profile == "chat_extended":
+        required = meta.get("trust_required", "guest")
+        if not _trust_satisfied(required, auth_level):
+            return (
+                f"run_skill 拒绝执行：技能要求 trust_required={required}，"
+                f"当前 auth_level={auth_level} 不满足"
+            )
+        return None
+    if profile == "inner_tick":
+        tags = {str(t).lower() for t in (meta.get("tags") or [])}
+        if not tags & _AUTONOMOUS_TAGS:
+            return (
+                "run_skill 拒绝执行：inner_tick 只能运行明确标记 auto_run "
+                "或 inner_tick 的稳定技能"
+            )
+        return None
+    return None
+
+
 async def run_skill_executor(
     request: ToolExecutionRequest,
     context: ToolExecutionContext,
@@ -230,6 +296,32 @@ async def run_skill_executor(
             payload={"executed": False, "reason": "skill_id 不能为空"},
             reason="run_skill 缺少 skill_id",
         )
+
+    profile = (context.runtime_profile or "").strip()
+    if profile in _GATED_PROFILES:
+        store = services.get("skill_store")
+        skill = store.read(skill_id) if store is not None else None
+        deny_reason = _gate_run_skill(
+            skill,
+            profile=profile,
+            auth_level=context.auth_level,
+        )
+        if deny_reason is not None:
+            logger.info(
+                "[run_skill] gate denied: profile=%s skill_id=%s reason=%s",
+                profile, skill_id, deny_reason,
+            )
+            return ToolExecutionResult(
+                success=False,
+                payload={
+                    "executed": False,
+                    "skill_id": skill_id,
+                    "denied": True,
+                    "profile": profile,
+                    "reason": deny_reason,
+                },
+                reason=deny_reason,
+            )
 
     arguments = request.arguments.get("arguments") or {}
     timeout = int(request.arguments.get("timeout", 30) or 30)

@@ -35,6 +35,10 @@ class ToolExecutionContext:
     memory_index: Any = None  # MemoryIndex 实例（可选）
     # send_message 工具的用户通道。None 表示当前上下文没有可达用户。
     send_fn: Callable[[str], Awaitable[Any]] | None = None
+    # The RuntimeProfile name under which this tool is being executed.
+    # Lets approval gates (e.g. run_skill) refuse autonomous execution of
+    # draft/testing/broken skills from chat_extended or inner_tick.
+    runtime_profile: str = ""
 
 
 @dataclass

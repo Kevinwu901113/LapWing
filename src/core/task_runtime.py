@@ -290,7 +290,9 @@ class TaskRuntime:
                 capabilities=set(profile.capabilities),
                 include_internal=include_internal,
             )
-        return {spec.name for spec in specs}
+        names = {spec.name for spec in specs}
+        exclude = set(getattr(profile, "exclude_tool_names", frozenset()))
+        return names - exclude
 
     def tools_for_profile(self, profile: str | RuntimeProfile) -> list[dict[str, Any]]:
         profile_obj = self._resolve_profile(profile)
@@ -1420,6 +1422,7 @@ class TaskRuntime:
             memory=None,
             memory_index=self._memory_index,
             send_fn=send_fn,
+            runtime_profile=profile_obj.name,
         )
 
         policy_hook = str(tool.metadata.get("policy_hook", "")).strip()
