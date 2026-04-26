@@ -164,6 +164,7 @@ async def test_browser_fetch_hard_timeout(monkeypatch):
     "https://example.com/photo.JPG",
     "https://example.com/doc.pdf",
     "https://cdn.example.com/song.mp3",
+    "https://waptianqi.2345.com/weather/los-angeles-ca/",
 ])
 async def test_blacklisted_urls_short_circuit(url):
     """黑名单域名/后缀直接返回 None，不发起 httpx 请求。"""

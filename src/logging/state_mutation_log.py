@@ -111,6 +111,7 @@ class MutationType(str, Enum):
     ATTENTION_CHANGED = "attention.changed"            # Step 2
     COMMITMENT_CREATED = "commitment.created"          # Step 5
     COMMITMENT_STATUS_CHANGED = "commitment.status_changed"  # Step 5
+    FOCUS_CHANGED = "focus.changed"
     IDENTITY_EDITED = "identity.edited"                # Step 3+
     MEMORY_RAPTOR_UPDATED = "memory.raptor_updated"    # Step 3+
     MEMORY_FILE_EDITED = "memory.file_edited"          # Step 3+

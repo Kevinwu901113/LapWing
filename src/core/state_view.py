@@ -202,6 +202,7 @@ class StateView:
     skill_summary: SkillSummary | None = None
     time_context: TimeContext | None = None
     ambient_entries: tuple[AmbientEntry, ...] = ()
+    focus_context: str | None = None
 
 
 # ── Serializer output ────────────────────────────────────────────────

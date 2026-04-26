@@ -153,6 +153,7 @@ class AppContainer:
         # dual-written alongside the legacy conversations table during the
         # sub-phase-A window; becomes read-side truth in sub-phase B.
         self.trajectory_store: TrajectoryStore | None = None
+        self.focus_manager = None
 
         # v2.0 Step 5: CommitmentStore — durable record of Lapwing's
         # outstanding promises. Wired into brain services so the
@@ -210,7 +211,6 @@ class AppContainer:
             self._data_dir / "lapwing.db", self.mutation_log,
         )
         await self.trajectory_store.init()
-        self.brain.compactor.set_trajectory(self.trajectory_store)
         self.brain.trajectory_store = self.trajectory_store
         _wire_trajectory_to_dispatcher(self.brain.trajectory_store, self.dispatcher)
         logger.info("TrajectoryStore 已初始化（dual-write + read-path wired）")
@@ -465,6 +465,13 @@ class AppContainer:
                 logger.warning("trajectory_store close failed", exc_info=True)
             self.trajectory_store = None
 
+        if self.focus_manager is not None:
+            try:
+                await self.focus_manager.close_db()
+            except Exception:
+                logger.warning("focus_manager close failed", exc_info=True)
+            self.focus_manager = None
+
         # v2.0 Step 5: same ordering rule for CommitmentStore — flush before
         # mutation_log so COMMITMENT_* events land in the audit trail.
         if self.commitment_store is not None:
@@ -510,6 +517,7 @@ class AppContainer:
             voice_prompt_name="lapwing_voice",
             attention_manager=self.brain.attention_manager,
             trajectory_store=self.brain.trajectory_store,
+            focus_manager=None,
             commitment_store=self.commitment_store,
             task_store=None,
             reminder_source=None,
@@ -680,6 +688,30 @@ class AppContainer:
             )
         else:
             self.brain._semantic_distiller = None
+
+        from config.settings import FOCUS_ENABLED
+        from src.core.focus_archiver import EpisodicArchiver
+        from src.core.focus_manager import FocusManager
+        focus_archiver = EpisodicArchiver(
+            episodic_store=episodic_store,
+            llm_router=self.brain.router,
+        )
+        self.focus_manager = FocusManager(
+            db_path=self._data_dir / "lapwing.db",
+            trajectory_store=self.trajectory_store,
+            attention_manager=self.attention_manager,
+            llm_router=self.brain.router,
+            vector_store=memory_vector_store,
+            archiver=focus_archiver,
+            episodic_extractor=getattr(self.brain, "_episodic_extractor", None),
+            mutation_log=self.mutation_log,
+            enabled=FOCUS_ENABLED,
+        )
+        await self.focus_manager.init_db()
+        await self.focus_manager.startup_load()
+        self.brain.focus_manager = self.focus_manager
+        self.brain.state_view_builder._focus_manager = self.focus_manager
+        logger.info("FocusManager 已初始化（enabled=%s）", FOCUS_ENABLED)
 
         logger.info(
             "Step 7 记忆树已装配（Episodic + Semantic + WorkingSet + "

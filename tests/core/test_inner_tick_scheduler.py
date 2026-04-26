@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -101,8 +102,13 @@ def test_drain_urgency_returns_all_pushed_items():
 
 
 @pytest.mark.asyncio
-async def test_conversation_pause_blocks_ticks():
+async def test_conversation_pause_blocks_ticks(monkeypatch):
     """While in conversation, the scheduler should not produce ticks."""
+    monkeypatch.setattr(
+        "src.core.time_utils.now",
+        lambda: datetime(2026, 4, 25, 12, 0, tzinfo=ZoneInfo("Asia/Shanghai")),
+    )
+
     q = EventQueue()
     sched = InnerTickScheduler(q)
     sched._next_interval = 0  # fire as fast as possible  # type: ignore[attr-defined]

@@ -121,6 +121,28 @@ class TestPrepareAmbientKnowledge:
         store.put.assert_awaited_once()
         engine.research.assert_awaited_once()
 
+    async def test_low_confidence_without_evidence_not_cached(self) -> None:
+        store = AsyncMock()
+        store.put = AsyncMock()
+        research_result = _mock_research_result()
+        research_result.answer = "没有找到可靠信息"
+        research_result.confidence = 0.3
+        research_result.evidence = []
+        engine = _mock_engine(research_result)
+
+        result = await prepare_ambient_knowledge_executor(
+            ToolExecutionRequest(
+                name="prepare_ambient_knowledge",
+                arguments={"topic": "道奇小熊4月25日先发投手", "category": "MLB棒球"},
+            ),
+            _ctx(engine=engine, ambient_store=store),
+        )
+
+        assert result.success is True
+        assert result.payload["cached"] is False
+        assert result.reason == "low_confidence_no_evidence"
+        store.put.assert_not_awaited()
+
     async def test_custom_ttl(self) -> None:
         store = AsyncMock()
         store.put = AsyncMock()

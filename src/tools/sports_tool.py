@@ -10,7 +10,7 @@ import httpx
 from src.core.time_utils import now, parse_iso_datetime
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult, ToolSpec
 
-logger = logging.getLogger("lapwing.tools.sports")
+logger = logging.getLogger("lapwing.tools.sports_tool")
 
 SPORTSDB_BASE = "https://www.thesportsdb.com/api/v1/json/123"
 TIMEOUT = 10.0

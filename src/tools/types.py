@@ -30,6 +30,7 @@ class ToolExecutionContext:
     auth_level: int = 2  # 2 = AuthLevel.OWNER
     # 对话上下文（供需要写入数据库的工具使用，如 reminder 相关工具）
     chat_id: str = ""
+    focus_id: str | None = None
     memory: Any = None  # 保留供 Agent ToolExecutionContext 兼容
     memory_index: Any = None  # MemoryIndex 实例（可选）
     # send_message 工具的用户通道。None 表示当前上下文没有可达用户。

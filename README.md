@@ -206,7 +206,7 @@ Brain._complete_chat()
 | `user_facts.py` | 81 | SQLite user_facts 表的结构化事实 |
 | `fact_extractor.py` | 231 | LLM 驱动的事实自动提取 |
 | `auto_extractor.py` | 214 | 自动记忆提取管线 |
-| `compactor.py` | 138 | LLM 驱动的历史压缩，输出到 `conversations/summaries/` |
+| `episodic_extractor.py` | 113 | Focus dormant 后抽取情景记忆，写入 EpisodicStore |
 | `interest_tracker.py` | 172 | 兴趣图谱追踪 |
 | `reminders.py` | 326 | 提醒管理（SQLite） |
 | `todos.py` | 84 | 待办追踪 |
@@ -596,7 +596,7 @@ data/
 tests/
 ├── core/          (27 文件) — brain、task_runtime、llm_router、evolution、authority、shell_policy 等
 ├── tools/         (14 文件) — registry、shell、file、web、memory、browser 等
-├── memory/        (10 文件) — conversation、fact、interest、compactor 等
+├── memory/        (10 文件) — conversation、fact、interest、episodic 等
 ├── heartbeat/     (11 文件) — engine、registry、各 action
 ├── app/           (5 文件)  — container、telegram、task_view
 ├── auth/          (4 文件)  — oauth、storage、routing
@@ -620,7 +620,7 @@ prompts/
 ├── lapwing_examples.md          # 使用示例
 ├── self_reflection.md           # 自省 prompt
 ├── constitution_check.md        # 宪法检查 prompt
-├── compaction.md                # 历史压缩指令
+├── focus_*.md (3 个)            # 焦点连续性、休眠匹配、焦点摘要 prompt
 ├── evolution_diff.md            # Diff 应用模板
 ├── heartbeat_*.md (5 个)        # 心跳 action prompt
 ├── memory_extract.md            # 事实提取模板

@@ -59,6 +59,7 @@ class AttentionState:
     # attention transition — there's no separate "sessions" subsystem
     # any more (the SQL table was dropped in Step 2j).
     session_started_at: float | None = None
+    current_focus_id: str | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {
@@ -68,6 +69,7 @@ class AttentionState:
             "last_action_at": self.last_action_at,
             "mode": self.mode,
             "session_started_at": self.session_started_at,
+            "current_focus_id": self.current_focus_id,
         }
 
     @classmethod
@@ -80,6 +82,7 @@ class AttentionState:
             last_action_at=float(payload.get("last_action_at", 0.0)),
             mode=str(payload.get("mode", "idle")),
             session_started_at=float(ssa) if ssa is not None else None,
+            current_focus_id=payload.get("current_focus_id"),
         )
 
 
@@ -109,6 +112,7 @@ class AttentionManager:
             last_action_at=now,
             mode="idle",
             session_started_at=None,
+            current_focus_id=None,
         )
 
     async def initialize(self) -> None:
@@ -144,6 +148,7 @@ class AttentionManager:
         current_conversation: Any = UNSET,
         current_action: Any = UNSET,
         mode: Any = UNSET,
+        current_focus_id: Any = UNSET,
     ) -> AttentionState:
         """Atomic partial update. Only fields passed explicitly change.
 
@@ -181,6 +186,10 @@ class AttentionManager:
                 changes["mode"] = mode
                 if old.mode != mode:
                     changed_fields.append("mode")
+            if current_focus_id is not UNSET:
+                changes["current_focus_id"] = current_focus_id
+                if old.current_focus_id != current_focus_id:
+                    changed_fields.append("current_focus_id")
 
             if not changes:
                 return old

@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src.ambient.models import AmbientEntry
+from src.research.types import normalize_confidence
 from src.tools.types import (
     ToolExecutionContext,
     ToolExecutionRequest,
@@ -89,6 +90,24 @@ async def prepare_ambient_knowledge_executor(
         evidence_dicts = [ev.to_dict() for ev in result.evidence]
     except Exception:
         pass
+    confidence = normalize_confidence(getattr(result, "confidence", 0.0))
+
+    if confidence <= 0.3 and not evidence_dicts:
+        logger.info(
+            "prepare_ambient_knowledge 跳过缓存：低置信且无证据 topic=%r confidence=%.2f",
+            topic[:80],
+            confidence,
+        )
+        return ToolExecutionResult(
+            success=True,
+            payload={
+                "answer": result.answer,
+                "cached": False,
+                "confidence": confidence,
+                "reason": "low_confidence_no_evidence",
+            },
+            reason="low_confidence_no_evidence",
+        )
 
     entry = AmbientEntry(
         key=key,
@@ -97,14 +116,14 @@ async def prepare_ambient_knowledge_executor(
         data=json.dumps({
             "answer": result.answer,
             "evidence": evidence_dicts,
-            "confidence": result.confidence,
+            "confidence": confidence,
             "backends": result.search_backend_used,
         }, ensure_ascii=False),
         summary=result.answer[:300] if result.answer else "",
         fetched_at=now.isoformat(),
         expires_at=expires.isoformat(),
         source="research_engine",
-        confidence=result.confidence,
+        confidence=confidence,
     )
 
     try:
@@ -128,7 +147,7 @@ async def prepare_ambient_knowledge_executor(
             "cached": True,
             "category": category,
             "expires_at": expires.isoformat(),
-            "confidence": result.confidence,
+            "confidence": confidence,
         },
         reason=f"cached as {key}",
     )

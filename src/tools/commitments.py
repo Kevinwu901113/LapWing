@@ -98,6 +98,7 @@ async def commit_promise_executor(
             source_id,
             reasoning=reasoning,
             deadline=deadline,
+            source_focus_id=context.focus_id,
         )
     except Exception as exc:
         logger.warning("commit_promise create 失败: %s", exc, exc_info=True)

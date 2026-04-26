@@ -26,6 +26,20 @@ class TestCheck:
         result = check("rm -rf src/core/brain.py")
         assert result.verdict == Verdict.BLOCK
 
+    def test_pass_readonly_locked_src_path(self):
+        result = check('grep -R "QQAdapter" /home/kevin/lapwing/src')
+        assert result.verdict == Verdict.PASS
+
+    def test_pass_python_import_from_locked_src(self):
+        result = check(
+            'python3 -c "from src.adapters.qq_adapter import QQAdapter; print(QQAdapter)"'
+        )
+        assert result.verdict == Verdict.PASS
+
+    def test_block_redirect_to_locked_src_path(self):
+        result = check("echo patched > src/core/brain.py")
+        assert result.verdict == Verdict.BLOCK
+
     def test_pass_empty(self):
         result = check("")
         assert result.verdict == Verdict.PASS

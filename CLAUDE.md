@@ -223,7 +223,7 @@ src/
                        semantic_store / semantic_distiller (kevin / lapwing / world facts)
                        working_set (cross-layer retrieval with MemorySnippets)
                        vector_store (ChromaDB)
-                       embedding_worker / note_store / compactor
+                       embedding_worker / note_store / focus summaries
                        conversation (in-memory cache + trajectory mirror)
   models/            RichMessage shared data model
   research/          ResearchEngine (scope_router → fetcher → refiner → backends)

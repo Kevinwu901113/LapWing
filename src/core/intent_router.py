@@ -9,7 +9,7 @@ from typing import Any
 from config.settings import INTENT_ROUTER_SESSION_TTL_SECONDS
 from src.core.time_utils import now
 
-logger = logging.getLogger("lapwing.intent_router")
+logger = logging.getLogger("lapwing.core.intent_router")
 
 
 class IntentRouter:

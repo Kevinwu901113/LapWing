@@ -1,5 +1,8 @@
 """code_runner 集成测试（Docker STRICT 沙盒执行）。"""
 
+import os
+import stat
+
 import pytest
 from unittest.mock import patch, AsyncMock
 from src.tools.code_runner import run_python
@@ -121,6 +124,38 @@ async def test_uses_docker_strict_sandbox():
     assert "docker" in cmd_str, "Must run via Docker"
     assert "--network none" in cmd_str or "--network\nnone" in " ".join(f"\n{a}" for a in captured_cmd), "STRICT must use --network none"
     assert "--cap-drop" in cmd_str, "Must drop all capabilities"
+
+
+@pytest.mark.asyncio
+async def test_script_readable_by_sandbox_user():
+    """STRICT 容器内的非 root 用户必须能读取挂载的脚本。"""
+    captured_workspace = None
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        nonlocal captured_workspace
+        for arg in args:
+            if isinstance(arg, str) and ":/workspace" in arg:
+                captured_workspace = arg.split(":/workspace", 1)[0]
+                break
+        assert captured_workspace is not None
+
+        script_path = os.path.join(captured_workspace, "script.py")
+        dir_mode = stat.S_IMODE(os.stat(captured_workspace).st_mode)
+        file_mode = stat.S_IMODE(os.stat(script_path).st_mode)
+        assert dir_mode & 0o005 == 0o005
+        assert file_mode & 0o004 == 0o004
+
+        mock_proc = AsyncMock()
+        mock_proc.communicate.return_value = (b"hello\n", b"")
+        mock_proc.returncode = 0
+        return mock_proc
+
+    with patch("src.core.execution_sandbox.asyncio.create_subprocess_exec", side_effect=fake_create_subprocess_exec):
+        result = await run_python('print("hello")')
+
+    assert result.exit_code == 0
+    assert captured_workspace is not None
+    assert not os.path.exists(captured_workspace)
 
 
 @pytest.mark.asyncio

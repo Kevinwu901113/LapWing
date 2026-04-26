@@ -50,6 +50,7 @@ async def send_system_message(
     adapter: str | None = None,
     trajectory_store: Any = None,
     mutation_log: Any = None,
+    focus_id: str | None = None,
 ) -> bool:
     """Deliver a framework-level message to the user and record it.
 
@@ -107,6 +108,7 @@ async def send_system_message(
                     "delivered": delivered,
                 },
                 related_iteration_id=current_iteration_id(),
+                focus_id=focus_id,
             )
         except Exception:
             logger.warning("system_send trajectory append 失败", exc_info=True)

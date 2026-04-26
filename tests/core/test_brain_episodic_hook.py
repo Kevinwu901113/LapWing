@@ -1,8 +1,8 @@
-"""brain._schedule_conversation_end triggers episodic extraction (Step 7 M3).
+"""brain._schedule_conversation_end only closes the attention session.
 
 Lightweight tests: patch `asyncio.sleep` so the delayed task fires
-immediately, then verify the extractor's ``extract_from_chat`` gets
-called with the right chat_id.
+immediately. Focus dormant now owns episodic extraction; session end no
+longer defines a memory boundary.
 """
 
 from __future__ import annotations
@@ -35,11 +35,11 @@ async def _run_scheduled(brain):
         return await asyncio.gather(brain._conversation_end_task)
 
 
-class TestExtractorTrigger:
-    async def test_extractor_called_with_chat_id(self, brain):
+class TestSessionEnd:
+    async def test_session_end_does_not_call_episodic_extractor(self, brain):
         brain.inner_tick_scheduler = None
-        brain.attention_manager = None
-        extractor = MagicMock()
+        brain.attention_manager = AsyncMock()
+        extractor = AsyncMock()
         extractor.extract_from_chat = AsyncMock(return_value=True)
         brain._episodic_extractor = extractor
 
@@ -47,32 +47,18 @@ class TestExtractorTrigger:
             brain._schedule_conversation_end("chat_abc")
             await brain._conversation_end_task
 
-        extractor.extract_from_chat.assert_awaited_once_with("chat_abc")
-
-    async def test_extractor_not_called_when_chat_id_missing(self, brain):
-        brain.inner_tick_scheduler = None
-        brain.attention_manager = None
-        extractor = MagicMock()
-        extractor.extract_from_chat = AsyncMock(return_value=True)
-        brain._episodic_extractor = extractor
-
-        with patch("src.core.brain.asyncio.sleep", new=AsyncMock()):
-            brain._schedule_conversation_end(None)
-            await brain._conversation_end_task
-
         extractor.extract_from_chat.assert_not_called()
+        brain.attention_manager.end_session.assert_awaited_once()
 
-    async def test_extractor_failure_does_not_crash_end_task(self, brain):
-        brain.inner_tick_scheduler = None
+    async def test_inner_tick_scheduler_notified(self, brain):
+        brain.inner_tick_scheduler = MagicMock()
         brain.attention_manager = None
-        extractor = MagicMock()
-        extractor.extract_from_chat = AsyncMock(side_effect=RuntimeError("x"))
-        brain._episodic_extractor = extractor
 
         with patch("src.core.brain.asyncio.sleep", new=AsyncMock()):
             brain._schedule_conversation_end("chat_xyz")
-            # Must not raise.
             await brain._conversation_end_task
+
+        brain.inner_tick_scheduler.note_conversation_end.assert_called_once()
 
     async def test_no_schedule_when_nothing_wired(self, brain):
         brain.inner_tick_scheduler = None

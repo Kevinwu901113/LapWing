@@ -7,6 +7,7 @@ import fcntl
 import json
 import logging
 import os
+import sys
 from logging.handlers import RotatingFileHandler
 from typing import Any
 
@@ -22,8 +23,8 @@ _PID_FILE = None  # 模块级引用，防止 GC 释放文件描述符
 
 
 def setup_logging() -> logging.Logger:
-    LOGS_DIR.mkdir(exist_ok=True)
-    level = getattr(logging, LOG_LEVEL)
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    level = getattr(logging, str(LOG_LEVEL).upper(), logging.INFO)
     fmt = logging.Formatter(
         "%(asctime)s [%(name)s] %(levelname)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
@@ -46,15 +47,18 @@ def setup_logging() -> logging.Logger:
         main_fh.setFormatter(fmt)
         main_fh.setLevel(level)
 
-        # Console: same level
-        console_sh = logging.StreamHandler()
-        console_sh.setFormatter(fmt)
-        console_sh.setLevel(level)
-
         lapwing_logger.addHandler(main_fh)
-        lapwing_logger.addHandler(console_sh)
+
+        # Keep foreground development logs visible, but avoid duplicating every
+        # service log line through systemd's stdout/stderr capture.
+        if sys.stderr.isatty():
+            console_sh = logging.StreamHandler()
+            console_sh.setFormatter(fmt)
+            console_sh.setLevel(level)
+            lapwing_logger.addHandler(console_sh)
 
     # ── 业务信息由 StateMutationLog 负责，内部模块降噪到 WARNING ──
+    noisy_module_level = logging.DEBUG if level <= logging.DEBUG else logging.WARNING
     for module_name in (
         "lapwing.core.brain",
         "lapwing.core.task_runtime",
@@ -64,7 +68,7 @@ def setup_logging() -> logging.Logger:
         "lapwing.tools",
         "lapwing.core.channel_manager",
     ):
-        logging.getLogger(module_name).setLevel(logging.WARNING)
+        logging.getLogger(module_name).setLevel(noisy_module_level)
 
     # 保持 INFO 的模块（启动/关闭等关键流程）
     logging.getLogger("lapwing.app.container").setLevel(logging.INFO)

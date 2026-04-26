@@ -66,12 +66,28 @@ class MaintenanceTimer:
                 await asyncio.sleep(self.TICK_SECONDS)
                 if not self._alive:
                     break
+                await self._run_focus_maintenance()
                 await self._maybe_run_daily()
             except asyncio.CancelledError:
                 break
             except Exception:
                 logger.exception("MaintenanceTimer loop crashed; backing off 30s")
                 await asyncio.sleep(30)
+
+    async def _run_focus_maintenance(self) -> None:
+        manager = getattr(self._brain, "focus_manager", None)
+        if manager is None:
+            return
+        try:
+            deactivated = await manager.deactivate_expired_active()
+            reaped = await manager.reap_expired()
+            if deactivated or reaped:
+                logger.info(
+                    "focus maintenance deactivated=%d reaped=%d",
+                    deactivated, reaped,
+                )
+        except Exception:
+            logger.warning("focus maintenance failed", exc_info=True)
 
     async def _maybe_run_daily(self) -> None:
         hour = now().hour

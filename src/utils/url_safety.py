@@ -12,7 +12,7 @@ import socket
 import urllib.parse
 from dataclasses import dataclass
 
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("lapwing.utils.url_safety")
 
 
 @dataclass

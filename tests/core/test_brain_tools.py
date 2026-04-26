@@ -224,7 +224,6 @@ class TestBrainTools:
 
             brain = LapwingBrain(db_path=Path("test.db"))
             _register_chat_tools(brain)
-            brain.compactor.try_compact = AsyncMock()
             brain.task_runtime.complete_chat = AsyncMock(return_value="普通回复")
 
             result = await brain.think("chat1", "请执行 pwd")
@@ -1010,4 +1009,3 @@ class TestBrainTools:
             assert failed_payload["chat_id"] == "chat1"
             assert failed_payload["phase"] == "failed"
             assert "text" in failed_payload
-

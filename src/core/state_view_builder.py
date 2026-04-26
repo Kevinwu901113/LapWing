@@ -25,6 +25,7 @@ tolerated partial wiring (phase-0, unit tests, pre-container boot).
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -52,6 +53,7 @@ if TYPE_CHECKING:
     from src.core.commitments import CommitmentStore
     from src.core.task_model import TaskStore
     from src.core.trajectory_store import TrajectoryStore
+    from src.core.focus_manager import FocusManager
     from src.memory.working_set import WorkingSet
 
 logger = logging.getLogger("lapwing.core.state_view_builder")
@@ -81,6 +83,7 @@ class StateViewBuilder:
         voice_prompt_name: str = "lapwing_voice",
         attention_manager: "AttentionManager | None" = None,
         trajectory_store: "TrajectoryStore | None" = None,
+        focus_manager: "FocusManager | None" = None,
         commitment_store: "CommitmentStore | None" = None,
         task_store: "TaskStore | None" = None,
         reminder_source: object = None,  # duck-typed: has async get_due_reminders
@@ -96,6 +99,7 @@ class StateViewBuilder:
         self._voice_prompt_name = voice_prompt_name
         self._attention = attention_manager
         self._trajectory = trajectory_store
+        self._focus_manager = focus_manager
         self._commitments = commitment_store
         self._tasks = task_store
         self._reminders = reminder_source
@@ -150,6 +154,7 @@ class StateViewBuilder:
         skill_summary = self._build_skill_summary()
         time_context = self._time_provider.get_context(attention_context.now)
         ambient_entries = await self._build_ambient_entries()
+        focus_context = await self._build_focus_context(chat_id)
 
         return StateView(
             identity_docs=identity_docs,
@@ -161,6 +166,7 @@ class StateViewBuilder:
             skill_summary=skill_summary,
             time_context=time_context,
             ambient_entries=ambient_entries,
+            focus_context=focus_context,
         )
 
     async def build_for_inner(
@@ -193,6 +199,7 @@ class StateViewBuilder:
         skill_summary = self._build_skill_summary()
         time_context = self._time_provider.get_context(attention_context.now)
         ambient_entries = await self._build_ambient_entries()
+        focus_context = await self._build_inner_focus_context()
 
         return StateView(
             identity_docs=identity_docs,
@@ -204,6 +211,7 @@ class StateViewBuilder:
             skill_summary=skill_summary,
             time_context=time_context,
             ambient_entries=ambient_entries,
+            focus_context=focus_context,
         )
 
     # ── Identity ─────────────────────────────────────────────────────
@@ -282,10 +290,55 @@ class StateViewBuilder:
     ) -> TrajectoryWindow:
         if self._trajectory is None:
             return TrajectoryWindow(turns=())
-        entries = await self._trajectory.relevant_to_chat(
-            chat_id, n=self._history_turns * 2, include_inner=False,
-        )
+        entries = None
+        if self._focus_manager is not None:
+            try:
+                focus = await self._focus_manager.get_active_focus(chat_id)
+                if focus is not None:
+                    entries = await self._trajectory.entries_by_focus(
+                        focus.id, n=self._history_turns * 2,
+                    )
+            except Exception:
+                logger.debug("focus-scoped trajectory build failed", exc_info=True)
+        if entries is None:
+            entries = await self._trajectory.relevant_to_chat(
+                chat_id, n=self._history_turns * 2, include_inner=False,
+            )
         return TrajectoryWindow(turns=tuple(_entries_to_turns(entries)))
+
+    async def _build_focus_context(self, chat_id: str) -> str | None:
+        if self._focus_manager is None:
+            return None
+        parts: list[str] = []
+        try:
+            focus = await self._focus_manager.get_active_focus(chat_id)
+            if focus is not None:
+                elapsed = int((time.time() - focus.started_at) / 60)
+                desc = focus.summary or "刚开始的对话"
+                parts.append(
+                    f"当前焦点：{desc}（已持续 {elapsed} 分钟，{focus.entry_count} 条交互）"
+                )
+            dormant = await self._focus_manager.get_dormant_summaries(n=3)
+            if dormant:
+                parts.append("最近休眠的话题：" + "、".join(dormant))
+        except Exception:
+            logger.debug("focus context build failed", exc_info=True)
+            return None
+        return "\n".join(parts) if parts else None
+
+    async def _build_inner_focus_context(self) -> str | None:
+        if self._focus_manager is None:
+            return None
+        try:
+            dormant = await self._focus_manager.get_dormant_summaries(n=5)
+        except Exception:
+            logger.debug("inner focus context build failed", exc_info=True)
+            return None
+        if not dormant:
+            return None
+        lines = ["最近休眠的话题：", *[f"- {item}" for item in dormant]]
+        lines.append("如果有值得主动提起的事情，可以使用 recall_focus 工具回忆详情。")
+        return "\n".join(lines)
 
     async def _build_trajectory_for_inner(self) -> TrajectoryWindow:
         if self._trajectory is None:

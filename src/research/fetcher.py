@@ -40,6 +40,7 @@ _BLACKLIST_DOMAINS = (
     "douyin.com",
     "open.spotify.com",
     "music.apple.com",
+    "waptianqi.2345.com",
 )
 # B 站视频页（视频播放页）单独处理，避免误伤文章/专栏页。
 _BLACKLIST_PATH_PREFIXES = (
