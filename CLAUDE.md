@@ -57,7 +57,7 @@ main.py
 A user turn:
 
 1. Channel adapter (`src/adapters/qq_adapter.py`, `desktop_adapter.py`) drops an event into `EventQueue`.
-2. `MainLoop` calls `LapwingBrain.think_conversational(chat_id, text, send_fn, adapter, user_id)`.
+2. `MainLoop` calls `LapwingBrain.think_conversational(chat_id, user_message, send_fn, typing_fn=None, status_callback=None, adapter="", user_id="", metadata=None, images=None)`.
 3. Brain trust-tags the user, builds `StateView` from `TrajectoryStore`, calls `_complete_chat` → `TaskRuntime.complete_chat`.
 4. `TaskRuntime` loops: `LLMRouter.complete_with_tools` → execute tool calls → append results → repeat until no tool calls. Sub-agent work (research, coding) is dispatched as a tool call into `AgentRegistry`, not inline in the main loop.
 5. **Bare assistant text from the model is the user-visible reply** (split on blank lines and emitted via `send_fn`). Text accompanying a tool call is treated as internal scratch and is NOT sent.
@@ -85,7 +85,7 @@ A user turn:
 
 ## Tools System (where most behavior lives)
 
-- `src/tools/registry.py::build_default_tool_registry()` registers every tool. `chat_tools()` filters by `RuntimeProfile` (`chat_shell` / `coder_snippet` / `coder_workspace` / `file_ops`).
+- `src/tools/registry.py::build_default_tool_registry()` registers every tool. `chat_tools()` filters by `RuntimeProfile` (defined in `src/core/runtime_profiles.py` — 9 profiles: `chat_shell`, `chat_minimal`, `chat_extended`, `task_execution`, `coder_snippet`, `coder_workspace`, `file_ops`, `agent_researcher`, `agent_coder`).
 - A tool is a `ToolSpec` (`src/tools/types.py`) with: `executor`, `capability` (e.g. `shell` / `web` / `file` / `memory` / `browser`), `risk_level`, and `visibility`. `internal` tools are not exposed to the LLM.
 - `ToolExecutionContext` carries `auth_level` (`0=GUEST / 1=TRUSTED / 2=OWNER`), adapter, chat_id, services dict, and shell config. Authorization gate: `src/core/authority_gate.py`.
 - Pre-execution guards run inside `TaskRuntime`: `VitalGuard` (core file protection), `AuthorityGate` (per-tool), and loop detection (`config.toml [loop_detection]` — by default `enabled = true, blocking = false`, i.e. observation mode: warnings emit but tool calls aren't blocked).
@@ -95,7 +95,7 @@ To add a tool: implement the executor, register the `ToolSpec` in `registry.py`,
 ## Testing
 
 - Tests mirror `src/` layout under `tests/`. File pattern `test_*.py`. Async tests work without decorators (`asyncio_mode = auto`).
-- Standard pattern: mock `LLMRouter`, `ConversationMemory`, adapters, and tool results — do not hit live APIs in tests.
+- Standard pattern: mock `LLMRouter`, `TrajectoryStore`, adapters, and tool results — do not hit live APIs in tests.
 - Run focused tests first (`PYTHONPATH=. python -m pytest tests/<area>/test_x.py::test_y -q`), then the full suite. The full suite has historically hung on browser/network paths; if `tests/ -x` stalls, suspect a test that opens Playwright or DNS-resolves before mocks are applied.
 - For UI changes in `desktop-v2/`, `npm run build` is the type-check; there is no separate `tsc` script.
 
@@ -106,7 +106,7 @@ In rough order of usefulness:
 1. `logs/lapwing.log` — search for `Refiner`, `think_inner timed out`, `send_fn`, `其他用户目录`, `401`, `tell_user`.
 2. `logs/shell_execution.log` — was the model blocked by shell policy rather than reasoning poorly?
 3. `logs/libraries.log` — Playwright / httpx unhandled futures.
-4. `data/lapwing.db` — `trajectory`, `user_facts`, `reminders_v2`, `commitments`.
+4. `data/lapwing.db` — tables: `trajectory`, `reminders_v2`, `commitments`, `focuses`.
 5. `data/mutation_log.db` — `llm.request`, `tool.called`, `tool.result`. Compare per-chat counts.
 6. Current prompt stack: `src/core/state_serializer.py`, `prompts/lapwing_voice.md`, `data/identity/soul.md`, `data/identity/constitution.md`.
 

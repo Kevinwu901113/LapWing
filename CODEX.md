@@ -4,6 +4,8 @@ This document is for future Codex sessions only. It is a fast project briefing a
 
 Last updated: 2026-04-24.
 
+> **Status note (2026-04-26)**: Several issues listed below have been fixed in the working tree but their commits are recent. Verify against `docs/log_audit_20260426.md` and `docs/health-check-2026-04-25.md` before acting on any audit item — e.g. `httpx` `proxies=` is gone, `loop_detection.enabled = true` in current `config.toml`, and `desktop send_message` no longer imports a non-existent module.
+
 ## What Lapwing Is
 
 Lapwing is a long-running personal AI companion for Kevin, not a stateless chatbot. The backend is Python 3.12+ and the desktop client is Tauri v2 with React/TypeScript.
