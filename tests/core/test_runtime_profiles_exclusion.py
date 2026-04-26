@@ -196,6 +196,40 @@ class TestExcludeMechanism:
         assert "delegate_to_researcher" in names
 
 
+class TestCreateSkillExclusion:
+    """create_skill must not be in conversational or autonomous profiles.
+
+    Authoring a new skill is a deliberate, reviewed action — not something
+    a chat reply or an autonomous tick should do. Skill authoring stays
+    out of these surfaces; it can still happen via explicit operator
+    workflows that use a different profile.
+    """
+
+    def test_chat_extended_excludes_create_skill(self):
+        registry = _make_full_registry()
+        names = _resolve_tool_names(registry, CHAT_EXTENDED_PROFILE)
+        assert "create_skill" not in names, (
+            "chat_extended must not expose create_skill — skill authoring "
+            "is a deliberate, reviewed action"
+        )
+        # run_skill stays available — chat needs to be able to invoke
+        # already-approved skills (gated by maturity in commit 3).
+        assert "run_skill" in names
+
+    def test_inner_tick_excludes_create_skill(self):
+        registry = _make_full_registry()
+        names = _resolve_tool_names(registry, INNER_TICK_PROFILE)
+        assert "create_skill" not in names
+
+    def test_no_chat_or_inner_profile_exposes_create_skill(self):
+        registry = _make_full_registry()
+        for profile in (CHAT_MINIMAL_PROFILE, CHAT_EXTENDED_PROFILE, INNER_TICK_PROFILE):
+            names = _resolve_tool_names(registry, profile)
+            assert "create_skill" not in names, (
+                f"{profile.name} must not expose create_skill"
+            )
+
+
 class TestInnerTickProfile:
     """inner_tick is the autonomous self-initiated thinking surface.
 

@@ -65,7 +65,9 @@ CHAT_EXTENDED_PROFILE = RuntimeProfile(
         "read_note",
         "list_notes",
         "search_notes",
-        "create_skill",
+        # create_skill removed: skill authoring is a deliberate, reviewed
+        # action, not something the chat surface should do mid-conversation.
+        # run_skill stays, gated by an approval check (see commit 3).
         "run_skill",
     }),
     include_internal=False,
