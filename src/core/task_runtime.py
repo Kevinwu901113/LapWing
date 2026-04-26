@@ -1406,10 +1406,21 @@ class TaskRuntime:
                 if file_guard.verdict == Verdict.VERIFY_FIRST:
                     await auto_backup([target])
 
-        # ── BrowserGuard：浏览器 URL 安全检查（工具层做操作级检查） ──────────
-        elif tool.capability == "browser" and request.name == "browser_open":
+        # ── BrowserGuard: 浏览器自动化的 URL/动作/JS 安全检查 ──────────────
+        # 当 guard 未挂载时，统一拒绝执行——浏览器工具不可在裸状态下运行。
+        elif tool.capability == "browser":
             bg = getattr(self, "_browser_guard", None)
-            if bg is not None:
+            if bg is None:
+                reason = (
+                    f"[BrowserGuard] 未挂载，浏览器工具 '{request.name}' 被拒绝。"
+                    "browser 子系统启用时必须装载 BrowserGuard；详见 "
+                    "src/core/browser_guard.py。"
+                )
+                if state is not None:
+                    state.record_failure(reason, "blocked")
+                payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command="")
+                return ToolExecutionResult(success=False, payload=payload, reason=reason)
+            if request.name == "browser_open":
                 url = str(request.arguments.get("url", "")).strip()
                 if url:
                     bg_result = bg.check_url(url)
