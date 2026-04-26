@@ -514,6 +514,24 @@ class LogConfig(BaseModel):
     level: str = "INFO"
 
 
+class ProactiveMessagesConfig(BaseModel):
+    """Rate limiting + quiet hours for proactive send_message calls.
+
+    Direct chat replies use bare assistant text and never go through
+    send_message — this gate only fires on proactive/background flows
+    (inner ticks, reminders, agent compose_proactive paths).
+    """
+    enabled: bool = True
+    max_per_day: int = 3
+    min_minutes_between: int = 90
+    quiet_hours_start: str = "23:00"
+    quiet_hours_end: str = "08:00"
+    allow_urgent_bypass: bool = True
+    urgent_bypass_categories: list[str] = Field(
+        default_factory=lambda: ["reminder_due", "safety", "explicit_commitment"]
+    )
+
+
 class IdentityConfig(BaseModel):
     parser_enabled: bool = True
     store_enabled: bool = True
@@ -588,6 +606,7 @@ class LapwingSettings(BaseSettings):
     codex: CodexConfig = Field(default_factory=CodexConfig)
     focus: FocusConfig = Field(default_factory=FocusConfig)
     log: LogConfig = Field(default_factory=LogConfig)
+    proactive_messages: ProactiveMessagesConfig = Field(default_factory=ProactiveMessagesConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     credential_vault_path: str = ""
     phase0_mode: str = ""

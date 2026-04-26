@@ -207,6 +207,15 @@ dormant_ttl_hours = 24
 closed_ttl_hours = 72
 reactivate_threshold = 0.75
 
+[proactive_messages]
+enabled = true
+max_per_day = 3
+min_minutes_between = 90
+quiet_hours_start = "23:00"
+quiet_hours_end = "08:00"
+allow_urgent_bypass = true
+urgent_bypass_categories = ["reminder_due", "safety", "explicit_commitment"]
+
 [log]
 level = "INFO"
 

@@ -50,6 +50,24 @@ async def _get_time(
 # 2. send_message
 # ─────────────────────────────────────────────────────────────────────────────
 
+_PROACTIVE_PROFILES = frozenset({"inner_tick"})
+
+
+def _is_proactive_context(ctx: ToolExecutionContext) -> bool:
+    """send_message is always proactive in the current architecture: bare
+    assistant text is the direct-reply path, so any send_message call is
+    a cross-channel or autonomous outbound. We still gate explicitly on
+    the inner_tick profile + any context flagged ``proactive=True`` in
+    services, so future direct-reply paths (if added) can opt out.
+    """
+    if (ctx.runtime_profile or "") in _PROACTIVE_PROFILES:
+        return True
+    services = ctx.services or {}
+    if services.get("proactive_send_active"):
+        return True
+    return False
+
+
 async def _send_message(
     req: ToolExecutionRequest,
     ctx: ToolExecutionContext,
@@ -57,6 +75,8 @@ async def _send_message(
     """向指定目标发送文本消息。支持 kevin_desktop、kevin_qq、qq_group:{group_id}。"""
     target = str(req.arguments.get("target", "")).strip()
     content = str(req.arguments.get("content", "")).strip()
+    category = str(req.arguments.get("category", "")).strip() or None
+    urgent = bool(req.arguments.get("urgent", False))
 
     if not target:
         return ToolExecutionResult(
@@ -70,6 +90,28 @@ async def _send_message(
             payload={"error": "缺少 content 参数"},
             reason="missing content",
         )
+
+    # Proactive gate — fires only on background/autonomous flows. Direct
+    # assistant replies use bare model text and never reach this code.
+    gate = (ctx.services or {}).get("proactive_message_gate")
+    if gate is not None and _is_proactive_context(ctx):
+        gate_decision = gate.evaluate(category=category, urgent=urgent)
+        if gate_decision.decision != "allow":
+            logger.info(
+                "[send_message] proactive_gate=%s reason=%s target=%s",
+                gate_decision.decision, gate_decision.reason, target,
+            )
+            return ToolExecutionResult(
+                success=False,
+                payload={
+                    "sent": False,
+                    "gate_decision": gate_decision.decision,
+                    "gate_reason": gate_decision.reason,
+                    "target": target,
+                    "category": category,
+                },
+                reason=f"proactive_gate:{gate_decision.decision}:{gate_decision.reason}",
+            )
 
     channel_manager = ctx.services.get("channel_manager")
     if channel_manager is None:
@@ -427,6 +469,8 @@ def register_personal_tools(registry: Any, services: dict[str, Any]) -> None:
             "向指定目标发送文字消息。"
             "target 支持：kevin_qq（Kevin 的 QQ）、kevin_desktop（桌面客户端）、"
             "qq_group:{group_id}（QQ 群）。"
+            "在 inner_tick 等自主流程下会被 ProactiveMessageGate 限速；"
+            "可设置 category=reminder_due/safety/explicit_commitment 触发紧急豁免。"
         ),
         json_schema={
             "type": "object",
@@ -438,6 +482,17 @@ def register_personal_tools(registry: Any, services: dict[str, Any]) -> None:
                 "content": {
                     "type": "string",
                     "description": "消息正文",
+                },
+                "category": {
+                    "type": "string",
+                    "description": (
+                        "消息分类（可选）。仅 reminder_due/safety/explicit_commitment "
+                        "在配置允许时才能跳过限流；其他分类按常规速率限制处理。"
+                    ),
+                },
+                "urgent": {
+                    "type": "boolean",
+                    "description": "显式标记紧急（可选）；与 category 任一命中即触发豁免。",
                 },
             },
             "required": ["target", "content"],
