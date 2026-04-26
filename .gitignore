@@ -15,7 +15,10 @@ desktop-v2/src-tauri/target/
 
 # Config & runtime data
 config/.env
-data/
+data/*
+!data/identity/
+data/identity/*
+!data/identity/*.md
 logs/
 
 # Testing
