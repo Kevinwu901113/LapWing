@@ -1378,6 +1378,15 @@ class TaskRuntime:
                 cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
                 command="",
             )
+            await self._record_tool_denied(
+                tool_name=request.name,
+                guard="unknown_tool",
+                reason=reason,
+                auth_level=AuthLevel.OWNER,
+                services=services,
+                chat_id=chat_id,
+                extras={"profile": profile_obj.name},
+            )
             return ToolExecutionResult(success=False, payload=payload, reason=reason)
 
         allowed_names = self._tool_names_for_profile(
@@ -1392,6 +1401,15 @@ class TaskRuntime:
                 reason=reason,
                 cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
                 command=str(request.arguments.get("command", "")).strip(),
+            )
+            await self._record_tool_denied(
+                tool_name=request.name,
+                guard="profile_not_allowed",
+                reason=reason,
+                auth_level=AuthLevel.OWNER,
+                services=services,
+                chat_id=chat_id,
+                extras={"profile": profile_obj.name},
             )
             return ToolExecutionResult(success=False, payload=payload, reason=reason)
 

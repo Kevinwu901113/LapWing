@@ -1,33 +1,65 @@
-# Repository Guidelines
+# AGENT.md
 
-## Project Structure & Module Organization
+Behavioral guidelines to reduce common LLM coding mistakes. Merge with project-specific instructions as needed.
 
-Lapwing is a Python 3.12+ backend with a Tauri v2 desktop client. The main entrypoint is `main.py`; backend code lives in `src/`, including `src/core/`, `src/tools/`, `src/memory/`, `src/api/`, `src/adapters/`, `src/agents/`, and `src/auth/`. Tests live in `tests/` and generally mirror the source layout. Prompt Markdown lives in `prompts/`. Runtime state, databases, browser profiles, and generated artifacts live under `data/` and `logs/`. The desktop app is in `desktop-v2/`, with React/TypeScript in `desktop-v2/src/` and Rust/Tauri code in `desktop-v2/src-tauri/`.
+**Tradeoff:** These guidelines bias toward caution over speed. For trivial tasks, use judgment.
 
-## Build, Test, and Development Commands
+## 1. Think Before Coding
 
-- `pip install -r requirements.txt`: install backend dependencies.
-- `cp config/.env.example config/.env`: create local environment config, then fill secrets.
-- `python -m pytest tests/ -x -q`: run the full backend test suite.
-- `python -m pytest tests/core/test_brain.py::test_name -x -q`: run one focused test.
-- `python main.py auth list`: inspect configured auth profiles.
-- `bash scripts/deploy.sh`: deploy/restart the service.
-- `cd desktop-v2 && npm run dev`: start the Vite desktop frontend.
-- `cd desktop-v2 && npm run tauri dev`: run the full Tauri app.
-- `cd desktop-v2 && npm run build`: type-check and build the desktop frontend.
+**Don't assume. Don't hide confusion. Surface tradeoffs.**
 
-## Coding Style & Naming Conventions
+Before implementing:
+- State your assumptions explicitly. If uncertain, ask.
+- If multiple interpretations exist, present them - don't pick silently.
+- If a simpler approach exists, say so. Push back when warranted.
+- If something is unclear, stop. Name what's confusing. Ask.
 
-Use absolute Python imports from the repository root, for example `from src.core.brain import LapwingBrain`. Keep core dataclasses and protocol types in dedicated modules such as `task_types.py`, `llm_types.py`, `shell_types.py`, or `src/tools/types.py`. Python comments may be Chinese; commits and maintainer docs are English. Use `logging.getLogger("lapwing.module_name")` for project logging. No repo-wide linter, formatter, type checker, or CI gate is configured, so match nearby style.
+## 2. Simplicity First
 
-## Testing Guidelines
+**Minimum code that solves the problem. Nothing speculative.**
 
-Tests use `pytest` with `pytest-asyncio` and `asyncio_mode = auto` in `pytest.ini`. Name test files `test_*.py`, colocated by subsystem under `tests/core/`, `tests/memory/`, `tests/api/`, and similar directories. Prefer mocked `LLMRouter`, memory stores, adapters, and tool results over live API calls. Run focused tests first, then the full suite for shared behavior.
+- No features beyond what was asked.
+- No abstractions for single-use code.
+- No "flexibility" or "configurability" that wasn't requested.
+- No error handling for impossible scenarios.
+- If you write 200 lines and it could be 50, rewrite it.
 
-## Commit & Pull Request Guidelines
+Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
-Recent commits mostly use concise English Conventional Commit style, for example `feat(proxy): ...` and `fix(browser): ...`. Keep subjects imperative and scoped. Pull requests should describe behavior changes, list tests run, mention config or migration impact, and include screenshots for visible `desktop-v2` UI changes.
+## 3. Surgical Changes
 
-## Security & Configuration Tips
+**Touch only what you must. Clean up only your own mess.**
 
-Keep secrets in `config/.env` or local runtime config, not in source. Avoid committing generated state from `data/`, `logs/`, browser profiles, screenshots, or local databases unless a task requires a fixture.
+When editing existing code:
+- Don't "improve" adjacent code, comments, or formatting.
+- Don't refactor things that aren't broken.
+- Match existing style, even if you'd do it differently.
+- If you notice unrelated dead code, mention it - don't delete it.
+
+When your changes create orphans:
+- Remove imports/variables/functions that YOUR changes made unused.
+- Don't remove pre-existing dead code unless asked.
+
+The test: Every changed line should trace directly to the user's request.
+
+## 4. Goal-Driven Execution
+
+**Define success criteria. Loop until verified.**
+
+Transform tasks into verifiable goals:
+- "Add validation" → "Write tests for invalid inputs, then make them pass"
+- "Fix the bug" → "Write a test that reproduces it, then make it pass"
+- "Refactor X" → "Ensure tests pass before and after"
+
+For multi-step tasks, state a brief plan:
+```
+1. [Step] → verify: [check]
+2. [Step] → verify: [check]
+3. [Step] → verify: [check]
+```
+
+Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
+
+---
+
+**These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

@@ -38,3 +38,39 @@ class TestCoderCreate:
         c = Coder.create(router, registry, mutation_log)
         assert "communication" not in c.spec.runtime_profile.capabilities
         assert "tell_user" not in c.spec.runtime_profile.tool_names
+
+
+class TestCoderConfig:
+    """修复 C：max_rounds / timeout / tokens 来自 config，不再硬编码。"""
+
+    def test_reads_overrides_from_settings(self, monkeypatch):
+        from src.agents import coder as coder_module
+        from src.config.settings import (
+            AgentRoleConfig, AgentTeamConfig, LapwingSettings,
+        )
+
+        def _fake_get_settings():
+            base = LapwingSettings()
+            base.agent_team = AgentTeamConfig(
+                enabled=True,
+                coder=AgentRoleConfig(
+                    max_rounds=7, timeout_seconds=99, max_tokens=2048,
+                ),
+            )
+            return base
+
+        monkeypatch.setattr(coder_module, "get_settings", _fake_get_settings)
+
+        router, registry, mutation_log = _make_deps()
+        c = Coder.create(router, registry, mutation_log)
+        assert c.spec.max_rounds == 7
+        assert c.spec.timeout_seconds == 99
+        assert c.spec.max_tokens == 2048
+
+    def test_defaults_when_no_override(self):
+        router, registry, mutation_log = _make_deps()
+        c = Coder.create(router, registry, mutation_log)
+        # 与 config.toml [agent_team.coder] 默认值一致
+        assert c.spec.max_rounds == 20
+        assert c.spec.timeout_seconds == 600
+        assert c.spec.max_tokens == 50000

@@ -237,6 +237,12 @@ _ENV_MAP: dict[str, list[str]] = {
     "SANDBOX_PRIVILEGED_TIMEOUT": ["sandbox", "privileged", "timeout"],
     # ── agent_team ──
     "AGENT_TEAM_ENABLED": ["agent_team", "enabled"],
+    "AGENT_TEAM_RESEARCHER_MAX_ROUNDS": ["agent_team", "researcher", "max_rounds"],
+    "AGENT_TEAM_RESEARCHER_TIMEOUT_SECONDS": ["agent_team", "researcher", "timeout_seconds"],
+    "AGENT_TEAM_RESEARCHER_MAX_TOKENS": ["agent_team", "researcher", "max_tokens"],
+    "AGENT_TEAM_CODER_MAX_ROUNDS": ["agent_team", "coder", "max_rounds"],
+    "AGENT_TEAM_CODER_TIMEOUT_SECONDS": ["agent_team", "coder", "timeout_seconds"],
+    "AGENT_TEAM_CODER_MAX_TOKENS": ["agent_team", "coder", "max_tokens"],
     # ── codex ──
     "OPENAI_CODEX_AUTH_AUTHORIZE_URL": ["codex", "auth_authorize_url"],
     "OPENAI_CODEX_AUTH_TOKEN_URL": ["codex", "auth_token_url"],
@@ -484,8 +490,25 @@ class SandboxConfig(BaseModel):
     ))
 
 
+class AgentRoleConfig(BaseModel):
+    """单个 agent 的运行参数。"""
+    max_rounds: int = Field(default=15, ge=1)
+    timeout_seconds: int = Field(default=300, ge=1)
+    max_tokens: int = Field(default=40000, ge=256)
+
+
 class AgentTeamConfig(BaseModel):
     enabled: bool = True
+    researcher: AgentRoleConfig = Field(
+        default_factory=lambda: AgentRoleConfig(
+            max_rounds=15, timeout_seconds=300, max_tokens=40000,
+        )
+    )
+    coder: AgentRoleConfig = Field(
+        default_factory=lambda: AgentRoleConfig(
+            max_rounds=20, timeout_seconds=600, max_tokens=50000,
+        )
+    )
 
 
 class CodexConfig(BaseModel):

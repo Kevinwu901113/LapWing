@@ -241,45 +241,37 @@ class LapwingBrain:
     def reset_model(self, chat_id: str) -> dict[str, Any]:
         return self.router.clear_session_model(session_key=self._chat_session_key(chat_id))
 
-    async def _complete_chat(
-        self,
-        chat_id: str,
-        messages: list[dict],
-        user_message: str,
-        approved_directory: str | None = None,
-        status_callback=None,
-        on_interim_text=None,
-        on_typing=None,
-        adapter: str = "",
-        user_id: str = "",
-        send_fn=None,
-        focus_id: str | None = None,
-        profile_override: str | None = None,
-        runtime_options: RuntimeOptions | None = None,
-    ) -> str:
-        constraints = extract_execution_constraints(
-            user_message,
-            approved_directory=approved_directory,
-        )
-        if profile_override is not None:
-            # Caller pinned a profile (e.g. think_inner uses "inner_tick").
-            # Skip IntentRouter — the caller already knows the surface it
-            # needs; routing again would either invalidate the contract or
-            # silently widen tool exposure.
-            profile_name = profile_override
-        else:
-            profile_name = self._fallback_profile_for_message(user_message, constraints)
-            if INTENT_ROUTER_ENABLED:
-                intent_router = getattr(self, "intent_router", None)
-                if intent_router is not None and profile_name != "task_execution":
-                    profile_name = await intent_router.route(chat_id, user_message)
-        tools = self.task_runtime.tools_for_profile(profile_name)
-        services = {}
+    def _reset_session_budgets(self) -> None:
+        """Reset per-session counters at session boundaries.
+
+        Called at the entry of ``think_inner`` and ``think_conversational``
+        so BrowserGuard's per-session action budget starts fresh on every
+        new autonomous tick or user turn — otherwise the counter
+        accumulates across independent sessions and the budget ceases
+        to be a real cap. Best-effort: missing guard / errors don't
+        block the turn.
+        """
+        bg = getattr(self.task_runtime, "_browser_guard", None)
+        if bg is None:
+            return
+        try:
+            bg.reset_budget()
+        except Exception:
+            logger.debug("BrowserGuard.reset_budget failed", exc_info=True)
+
+    def _build_services(self) -> dict[str, Any]:
+        """Construct the services dict passed into TaskRuntime.complete_chat.
+
+        Centralised so both ``_complete_chat`` (regular user turns) and
+        ``compose_proactive`` (autonomous outbound) see the same set of
+        injected services. Every ref is read via ``getattr`` so a stub
+        brain (test fixture, Phase 0) can omit any ref without breaking.
+        """
+        services: dict[str, Any] = {}
         if self.trajectory_store is not None:
             services["trajectory_store"] = self.trajectory_store
         if self.focus_manager is not None:
             services["focus_manager"] = self.focus_manager
-        # commitment 工具需要 commitment_store
         commitment_store = getattr(self, "_commitment_store_ref", None)
         if commitment_store is not None:
             services["commitment_store"] = commitment_store
@@ -297,14 +289,12 @@ class LapwingBrain:
         if mutation_log is not None:
             services["mutation_log"] = mutation_log
         services["router"] = self.router
-        # Phase 3 记忆系统
         note_store = getattr(self, "_note_store", None)
         if note_store is not None:
             services["note_store"] = note_store
         memory_vector_store = getattr(self, "_memory_vector_store", None)
         if memory_vector_store is not None:
             services["vector_store"] = memory_vector_store
-        # Phase 4: DurableScheduler + 个人工具所需服务
         durable_scheduler = getattr(self, "_durable_scheduler_ref", None)
         if durable_scheduler is not None:
             services["durable_scheduler"] = durable_scheduler
@@ -341,6 +331,49 @@ class LapwingBrain:
             services["correction_manager"] = correction_manager
         if getattr(self, "router", None) is not None:
             services["llm_router"] = self.router
+        # ProactiveMessageGate — sent to send_message executor so proactive
+        # paths (inner_tick, compose_proactive) can be rate-limited /
+        # quiet-hours-gated. Direct chat replies use bare text and never
+        # reach send_message, so this never throttles user-visible output.
+        proactive_gate = getattr(self, "_proactive_message_gate_ref", None)
+        if proactive_gate is not None:
+            services["proactive_message_gate"] = proactive_gate
+        return services
+
+    async def _complete_chat(
+        self,
+        chat_id: str,
+        messages: list[dict],
+        user_message: str,
+        approved_directory: str | None = None,
+        status_callback=None,
+        on_interim_text=None,
+        on_typing=None,
+        adapter: str = "",
+        user_id: str = "",
+        send_fn=None,
+        focus_id: str | None = None,
+        profile_override: str | None = None,
+        runtime_options: RuntimeOptions | None = None,
+    ) -> str:
+        constraints = extract_execution_constraints(
+            user_message,
+            approved_directory=approved_directory,
+        )
+        if profile_override is not None:
+            # Caller pinned a profile (e.g. think_inner uses "inner_tick").
+            # Skip IntentRouter — the caller already knows the surface it
+            # needs; routing again would either invalidate the contract or
+            # silently widen tool exposure.
+            profile_name = profile_override
+        else:
+            profile_name = self._fallback_profile_for_message(user_message, constraints)
+            if INTENT_ROUTER_ENABLED:
+                intent_router = getattr(self, "intent_router", None)
+                if intent_router is not None and profile_name != "task_execution":
+                    profile_name = await intent_router.route(chat_id, user_message)
+        tools = self.task_runtime.tools_for_profile(profile_name)
+        services = self._build_services()
 
         deps = RuntimeDeps(
             execute_shell=execute_shell,
@@ -783,6 +816,11 @@ class LapwingBrain:
             error_burst_threshold=INNER_TICK_ERROR_BURST_THRESHOLD,
         )
 
+        # Inner tick is a fresh autonomous session — reset BrowserGuard's
+        # action budget so a previous tick (or user turn) cannot starve
+        # this one. No-op when browser is disabled.
+        self._reset_session_budgets()
+
         preparation_status: str | None = None
         prep_engine = getattr(self, "_preparation_engine", None)
         if prep_engine is not None:
@@ -895,6 +933,11 @@ class LapwingBrain:
         """
         if self.inner_tick_scheduler is not None:
             self.inner_tick_scheduler.note_conversation_start()
+
+        # New user turn — reset per-session BrowserGuard budget so a
+        # prior turn's spend doesn't starve this one. Counters are
+        # per-session by design, not global.
+        self._reset_session_budgets()
 
         # v2.0 Step 2: focus moves to this conversation at the entry point.
         # Other call sites (inner loop, action start) get wired in Step 3/4.
@@ -1127,12 +1170,21 @@ class LapwingBrain:
             )
             constraints = extract_execution_constraints("")
 
+            # compose_proactive is an autonomous outbound path — every
+            # send_message invocation must consult ProactiveMessageGate.
+            # Flag the services dict so the executor knows the call is
+            # proactive even though the runtime profile is not
+            # "inner_tick" (compose_proactive may run on chat profiles).
+            services = self._build_services()
+            services["proactive_send_active"] = True
+
             response_text = await self.task_runtime.complete_chat(
                 chat_id=resolved_chat_id,
                 messages=messages,
                 constraints=constraints,
                 tools=tool_specs,
                 deps=deps,
+                services=services,
                 adapter="",
                 user_id="",
                 focus_id=None,

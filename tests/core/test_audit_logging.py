@@ -147,6 +147,71 @@ class TestTaskRuntimeRecordToolDenied:
         assert denied[0][1]["guard"] == "browser_guard_missing"
 
     @pytest.mark.asyncio
+    async def test_unknown_tool_denial_recorded(self):
+        """An LLM that hallucinates a tool name is a soft attack on the
+        loop budget; record it so we can spot patterns."""
+        from src.core.task_runtime import TaskRuntime
+        from src.tools.registry import ToolRegistry
+        from src.tools.types import ToolExecutionRequest
+
+        runtime = TaskRuntime(router=MagicMock(), tool_registry=ToolRegistry())
+        log = _FakeMutationLog()
+        result = await runtime.execute_tool(
+            request=ToolExecutionRequest(name="hallucinated_tool", arguments={}),
+            profile="chat_shell",
+            services={"mutation_log": log},
+            chat_id="c1",
+        )
+        assert result.success is False
+        denied = _by_type(log.records, MutationType.TOOL_DENIED)
+        assert len(denied) == 1
+        _, payload, meta = denied[0]
+        assert payload["tool"] == "hallucinated_tool"
+        assert payload["guard"] == "unknown_tool"
+        assert payload["profile"] == "chat_shell"
+        assert meta["chat_id"] == "c1"
+
+    @pytest.mark.asyncio
+    async def test_profile_not_allowed_denial_recorded(self):
+        """A real tool called from a profile that doesn't expose it is
+        also a denial — log it the same way as guard rejections."""
+        from src.core.task_runtime import TaskRuntime
+        from src.tools.registry import ToolRegistry
+        from src.tools.types import ToolExecutionRequest, ToolExecutionResult, ToolSpec
+
+        async def _exec(req, ctx):
+            return ToolExecutionResult(success=True, payload={})
+
+        registry = ToolRegistry()
+        # browser_open is registered globally but is not part of chat_shell
+        # profile's allowed tool names — calling it from chat_shell denies.
+        registry.register(ToolSpec(
+            name="browser_open",
+            description="open",
+            json_schema={"type": "object", "properties": {}},
+            executor=_exec,
+            capability="browser",
+        ))
+        runtime = TaskRuntime(router=MagicMock(), tool_registry=registry)
+        log = _FakeMutationLog()
+        result = await runtime.execute_tool(
+            request=ToolExecutionRequest(
+                name="browser_open", arguments={"url": "https://x.com/"}
+            ),
+            profile="chat_minimal",  # does not expose browser_open
+            services={"mutation_log": log},
+            chat_id="c1",
+        )
+        assert result.success is False
+        denied = _by_type(log.records, MutationType.TOOL_DENIED)
+        assert len(denied) == 1
+        _, payload, meta = denied[0]
+        assert payload["tool"] == "browser_open"
+        assert payload["guard"] == "profile_not_allowed"
+        assert payload["profile"] == "chat_minimal"
+        assert meta["chat_id"] == "c1"
+
+    @pytest.mark.asyncio
     async def test_browser_guard_url_block_recorded(self):
         from src.core.browser_guard import BrowserGuard
         from src.core.task_runtime import TaskRuntime

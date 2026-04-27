@@ -1,7 +1,8 @@
 """Agent Team 工具：delegate_to_researcher + delegate_to_coder。
 
-两层调度（Lapwing → Agent），取代旧的三层（Lapwing → TeamLead → Agent）。
-Lapwing 通过两个直达工具分别调度 Researcher 和 Coder，省掉 TeamLead。
+两层架构：主脑 LLM 通过 tool_call 名称（delegate_to_researcher 或
+delegate_to_coder）选择目标 agent；AgentRegistry 按名取实例并执行。
+没有独立 Dispatcher 组件——"路由"由 LLM 在主脑外层 tool 选择中完成。
 """
 
 from __future__ import annotations
@@ -14,8 +15,6 @@ from src.agents.types import AgentMessage, AgentResult
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult, ToolSpec
 
 logger = logging.getLogger("lapwing.tools.agent_tools")
-
-_AGENT_MAX_ITERATIONS = 30
 
 
 def _generate_task_id() -> str:

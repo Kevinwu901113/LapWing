@@ -35,3 +35,40 @@ class TestResearcherCreate:
         r = Researcher.create(router, registry, mutation_log)
         assert "communication" not in r.spec.runtime_profile.capabilities
         assert "tell_user" not in r.spec.runtime_profile.tool_names
+
+
+class TestResearcherConfig:
+    """修复 C：max_rounds / timeout / tokens 来自 config，不再硬编码。"""
+
+    def test_reads_overrides_from_settings(self, monkeypatch):
+        from src.agents import researcher as researcher_module
+        from src.config.settings import (
+            AgentRoleConfig, AgentTeamConfig, LapwingSettings,
+        )
+
+        def _fake_get_settings():
+            base = LapwingSettings()
+            base.agent_team = AgentTeamConfig(
+                enabled=True,
+                researcher=AgentRoleConfig(
+                    max_rounds=5, timeout_seconds=42, max_tokens=1024,
+                ),
+            )
+            return base
+
+        monkeypatch.setattr(researcher_module, "get_settings", _fake_get_settings)
+
+        router, registry, mutation_log = _make_deps()
+        r = Researcher.create(router, registry, mutation_log)
+        assert r.spec.max_rounds == 5
+        assert r.spec.timeout_seconds == 42
+        assert r.spec.max_tokens == 1024
+
+    def test_defaults_when_no_override(self):
+        """没有覆盖时，spec 的值与 AgentRoleConfig 默认值一致。"""
+        router, registry, mutation_log = _make_deps()
+        r = Researcher.create(router, registry, mutation_log)
+        # 与 config.toml [agent_team.researcher] 默认值一致
+        assert r.spec.max_rounds == 15
+        assert r.spec.timeout_seconds == 300
+        assert r.spec.max_tokens == 40000

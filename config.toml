@@ -181,6 +181,16 @@ sandbox_timeout = 30
 [agent_team]
 enabled = true
 
+[agent_team.researcher]
+max_rounds = 15
+timeout_seconds = 300
+max_tokens = 40000
+
+[agent_team.coder]
+max_rounds = 20
+timeout_seconds = 600
+max_tokens = 50000
+
 [whisper]
 base_url = "https://api.openai.com/v1"
 model = "whisper-1"

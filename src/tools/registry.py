@@ -142,6 +142,9 @@ class ToolRegistry:
                 capabilities=set(getattr(profile, "capabilities", frozenset())),
                 include_internal=bool(getattr(profile, "include_internal", False)),
             )
+        exclude = set(getattr(profile, "exclude_tool_names", frozenset()))
+        if exclude:
+            specs = [tool for tool in specs if tool.name not in exclude]
         return specs
 
     def function_tools_for_profile(self, profile: Any) -> list[dict[str, Any]]:

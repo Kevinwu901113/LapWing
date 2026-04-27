@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from src.config import get_settings
 from src.core.runtime_profiles import AGENT_RESEARCHER_PROFILE
 
 from .base import BaseAgent
@@ -60,14 +61,15 @@ class Researcher(BaseAgent):
         mutation_log: "StateMutationLog | None",
         services: dict | None = None,
     ) -> "Researcher":
+        cfg = get_settings().agent_team.researcher
         spec = AgentSpec(
             name="researcher",
             description="搜索和调研",
             system_prompt=RESEARCHER_SYSTEM_PROMPT,
             model_slot="agent_researcher",
             runtime_profile=AGENT_RESEARCHER_PROFILE,
-            max_rounds=15,
-            max_tokens=40000,
-            timeout_seconds=300,
+            max_rounds=cfg.max_rounds,
+            max_tokens=cfg.max_tokens,
+            timeout_seconds=cfg.timeout_seconds,
         )
         return cls(spec, llm_router, tool_registry, mutation_log, services)

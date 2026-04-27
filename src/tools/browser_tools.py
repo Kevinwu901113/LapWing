@@ -14,6 +14,11 @@ from src.core.browser_manager import (
     BrowserTimeoutError,
     PageState,
 )
+from src.logging.state_mutation_log import (
+    MutationType,
+    current_chat_id,
+    current_iteration_id,
+)
 from src.tools.types import (
     ToolExecutionContext,
     ToolExecutionRequest,
@@ -22,6 +27,43 @@ from src.tools.types import (
 )
 
 logger = logging.getLogger("lapwing.tools.browser_tools")
+
+
+async def _record_browser_guard_denial(
+    *,
+    ctx: ToolExecutionContext,
+    tool_name: str,
+    reason: str,
+    extras: dict | None = None,
+) -> None:
+    """Emit TOOL_DENIED for a guard-level browser denial.
+
+    TaskRuntime audits browser_open URL blocks and the missing-guard
+    refusal; everything else (sensitive verbs on click, login consent,
+    type/select budget) lands here. Best-effort — log failures are
+    swallowed.
+    """
+    services = ctx.services or {}
+    mutation_log = services.get("mutation_log")
+    if mutation_log is None:
+        return
+    payload: dict[str, Any] = {
+        "tool": tool_name,
+        "guard": "browser_guard",
+        "reason": reason,
+        "auth_level": int(getattr(ctx, "auth_level", 0)),
+    }
+    if extras:
+        payload.update(extras)
+    try:
+        await mutation_log.record(
+            MutationType.TOOL_DENIED,
+            payload,
+            iteration_id=current_iteration_id(),
+            chat_id=current_chat_id() or (ctx.chat_id or None),
+        )
+    except Exception:
+        logger.warning("[browser_tools] TOOL_DENIED record failed", exc_info=True)
 
 # ── 错误消息映射 ─────────────────────────────────────────────────────────────
 
@@ -168,6 +210,12 @@ def register_browser_tools(
                 )
                 if guard_result.action == "block":
                     reason = guard_result.reason or "操作被安全策略拦截"
+                    await _record_browser_guard_denial(
+                        ctx=ctx,
+                        tool_name="browser_click",
+                        reason=reason,
+                        extras={"element": element[:80], "outcome": "block"},
+                    )
                     return ToolExecutionResult(
                         success=False,
                         payload={"error": reason},
@@ -175,6 +223,12 @@ def register_browser_tools(
                     )
                 if guard_result.action == "require_consent":
                     reason = guard_result.reason or "此操作需要用户确认"
+                    await _record_browser_guard_denial(
+                        ctx=ctx,
+                        tool_name="browser_click",
+                        reason=reason,
+                        extras={"element": element[:80], "outcome": "require_consent"},
+                    )
                     return ToolExecutionResult(
                         success=False,
                         payload={
@@ -236,6 +290,52 @@ def register_browser_tools(
                 payload={"error": "缺少 element 参数"},
                 reason="缺少 element 参数",
             )
+
+        # BrowserGuard: bound the per-session action budget on type as
+        # well — without this a flooded type loop bypasses the cap and
+        # only click/login/select would be counted.
+        if browser_guard is not None:
+            element_text = ""
+            page_url = ""
+            try:
+                page_state = await browser_manager.get_page_state(tab_id)
+                page_url = page_state.url
+                for elem in page_state.elements:
+                    if f"[{elem.index}]" == element:
+                        element_text = elem.text or elem.aria_label or ""
+                        break
+            except BrowserError:
+                pass
+            guard_result = browser_guard.check_action("type", element_text, page_url)
+            if guard_result.action == "block":
+                reason = guard_result.reason or "操作被安全策略拦截"
+                await _record_browser_guard_denial(
+                    ctx=ctx,
+                    tool_name="browser_type",
+                    reason=reason,
+                    extras={"element": element[:80], "outcome": "block"},
+                )
+                return ToolExecutionResult(
+                    success=False,
+                    payload={"error": reason},
+                    reason=reason,
+                )
+            if guard_result.action == "require_consent":
+                reason = guard_result.reason or "此操作需要用户确认"
+                await _record_browser_guard_denial(
+                    ctx=ctx,
+                    tool_name="browser_type",
+                    reason=reason,
+                    extras={"element": element[:80], "outcome": "require_consent"},
+                )
+                return ToolExecutionResult(
+                    success=False,
+                    payload={
+                        "error": reason,
+                        "requires_consent": True,
+                    },
+                    reason=reason,
+                )
 
         try:
             page_state = await browser_manager.type_text(
@@ -675,6 +775,30 @@ def register_browser_tools(
                 payload={"error": "缺少 service 参数"},
                 reason="缺少 service 参数",
             )
+
+        # BrowserGuard: browser_login always requires explicit OWNER
+        # consent — guard.check_action("login") returns require_consent.
+        # Until the harness surfaces a consent confirmation channel, the
+        # tool refuses, audit-logs, and returns requires_consent so the
+        # LLM knows to surface the situation to Kevin.
+        if browser_guard is not None:
+            guard_result = browser_guard.check_action("login")
+            if guard_result.action != "allow":
+                reason = guard_result.reason or "browser_login 需要 OWNER 显式确认"
+                await _record_browser_guard_denial(
+                    ctx=ctx,
+                    tool_name="browser_login",
+                    reason=reason,
+                    extras={"service": service, "outcome": guard_result.action},
+                )
+                return ToolExecutionResult(
+                    success=False,
+                    payload={
+                        "error": reason,
+                        "requires_consent": True,
+                    },
+                    reason=reason,
+                )
 
         # 1. 从凭据保险库获取凭据
         if credential_vault is None:

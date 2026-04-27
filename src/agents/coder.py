@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from config.settings import DATA_DIR
+from src.config import get_settings
 from src.core.runtime_profiles import AGENT_CODER_PROFILE
 
 from .base import BaseAgent
@@ -56,14 +57,15 @@ class Coder(BaseAgent):
         mutation_log: "StateMutationLog | None",
         services: dict | None = None,
     ) -> "Coder":
+        cfg = get_settings().agent_team.coder
         spec = AgentSpec(
             name="coder",
             description="写代码和执行",
             system_prompt=CODER_SYSTEM_PROMPT,
             model_slot="agent_coder",
             runtime_profile=AGENT_CODER_PROFILE,
-            max_rounds=20,
-            max_tokens=50000,
-            timeout_seconds=600,
+            max_rounds=cfg.max_rounds,
+            max_tokens=cfg.max_tokens,
+            timeout_seconds=cfg.timeout_seconds,
         )
         return cls(spec, llm_router, tool_registry, mutation_log, services)

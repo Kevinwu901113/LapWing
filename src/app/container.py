@@ -16,7 +16,9 @@ from config.settings import (
 from src.api.event_bus import DesktopEventBus
 from src.api.server import LocalApiServer
 from src.app.task_view import TaskViewStore
+from src.config import get_settings
 from src.core.brain import LapwingBrain
+from src.core.browser_guard import BrowserGuard
 from src.core.channel_manager import ChannelManager
 from src.core.dispatcher import Dispatcher
 from src.core.durable_scheduler import DurableScheduler
@@ -26,6 +28,7 @@ from src.core.commitments import CommitmentStore
 from src.core.inner_tick_scheduler import InnerTickScheduler
 from src.core.main_loop import MainLoop
 from src.core.maintenance_timer import MaintenanceTimer
+from src.core.proactive_message_gate import ProactiveMessageGate
 from src.core.trajectory_store import TrajectoryStore
 from src.logging.state_mutation_log import MutationType, StateMutationLog
 
@@ -137,7 +140,18 @@ class AppContainer:
         # 浏览器子系统（可选）
         self._browser_manager = None
         self._credential_vault = None
-        self._browser_guard = None
+        self._browser_guard: BrowserGuard | None = None
+
+        # ProactiveMessageGate — rate limit / quiet-hours / urgent bypass
+        # for proactive send_message calls. Built unconditionally so any
+        # background path (inner ticks, reminders, compose_proactive) can
+        # consult it. Direct chat replies use bare model text and do not
+        # reach send_message, so this gate never throttles user replies.
+        _s = get_settings()
+        self.proactive_message_gate = ProactiveMessageGate.from_settings(
+            _s.proactive_messages,
+        )
+        self.brain._proactive_message_gate_ref = self.proactive_message_gate
 
         # Dispatcher — 内存 pub/sub 总线，给桌面端 SSE 和子系统实时广播用。
         # 持久化由 StateMutationLog 负责；dispatcher 只是 live stream。
@@ -1016,7 +1030,13 @@ class AppContainer:
         """初始化浏览器子系统组件。"""
         from src.core.browser_manager import BrowserManager
 
-        self._browser_guard = None  # BrowserGuard 已移除（Phase 1 减法）
+        # BrowserGuard is mandatory whenever browser automation runs:
+        # TaskRuntime / browser_tools / BrowserManager all refuse to act
+        # on browser_* tools when the guard is absent. Build it from the
+        # BrowserConfig section (url_blacklist / url_whitelist / sensitive
+        # words / block_internal_network).
+        _s = get_settings()
+        self._browser_guard = BrowserGuard.from_settings(_s.browser)
         self._browser_manager = BrowserManager()
         self._browser_manager.set_proxy_router(self.proxy_router)
         await self._browser_manager.start()

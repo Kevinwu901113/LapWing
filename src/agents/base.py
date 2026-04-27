@@ -48,6 +48,10 @@ class BaseAgent:
         self.tool_registry = tool_registry
         self.mutation_log = mutation_log
         self._services = services or {}
+        # 即时收集的 evidence——_execute_tool 在工具成功后追加。
+        # 比从 messages 回猜 role/格式更可靠（旧的 _extract_evidence 在
+        # Anthropic 风格 tool_result block 下永远拿不到）。
+        self._collected_evidence: list[dict] = []
 
     async def execute(self, message: AgentMessage) -> AgentResult:
         """执行任务：独立 tool loop。"""
@@ -55,6 +59,8 @@ class BaseAgent:
         start_ts = time.perf_counter()
         tool_calls_made = 0
         execution_trace: list[str] = []
+        # 防止跨次调用污染——每次 execute 重置即时收集器。
+        self._collected_evidence = []
 
         loop_detector = LoopDetector(LoopDetectorConfig(
             warning_threshold=max(3, self.spec.max_rounds // 3),
@@ -114,7 +120,7 @@ class BaseAgent:
             if not response.tool_calls:
                 execution_trace.append(f"completed: final text ({len(response.text)} chars)")
                 return await self._finalize_done(
-                    message, response.text, self._extract_evidence(messages),
+                    message, response.text, list(self._collected_evidence),
                     start_ts, tool_calls_made,
                     execution_trace=execution_trace,
                 )
@@ -333,6 +339,12 @@ class BaseAgent:
         req = ToolExecutionRequest(name=tool_call.name, arguments=tool_call.arguments)
         try:
             result = await self.tool_registry.execute(req, context=ctx)
+            if result.success and isinstance(result.payload, dict):
+                entries = self._extract_evidence_from_payload(
+                    tool_name=tool_call.name,
+                    payload=result.payload,
+                )
+                self._collected_evidence.extend(entries)
             return json.dumps(result.payload, ensure_ascii=False, default=str)
         except Exception as exc:
             logger.exception("Agent '%s' tool '%s' failed", self.spec.name, tool_call.name)
@@ -343,17 +355,65 @@ class BaseAgent:
                 ensure_ascii=False,
             )
 
-    def _extract_evidence(self, messages: list[dict]) -> list[dict]:
-        evidence = []
-        for msg in messages:
-            if msg.get("role") == "tool":
-                try:
-                    content = json.loads(msg.get("content", "{}"))
-                    if isinstance(content, dict):
-                        if "url" in content:
-                            evidence.append({"type": "url", "value": content["url"]})
-                        if "file_path" in content:
-                            evidence.append({"type": "file", "value": content["file_path"]})
-                except Exception:
-                    pass
-        return evidence
+    @staticmethod
+    def _extract_evidence_from_payload(
+        *, tool_name: str, payload: dict,
+    ) -> list[dict]:
+        """从工具 payload 提取 evidence 条目。
+
+        识别两类形态：
+        - 顶层 source_url / url / link / file_path → 一条 evidence
+        - 顶层 evidence: list[dict] 或 sources: list[dict] → 逐条展开
+
+        没有以上字段时返回空列表，调用方据此判断是否值得记录。
+        """
+        entries: list[dict] = []
+
+        nested_sources = payload.get("evidence") or payload.get("sources")
+        if isinstance(nested_sources, list):
+            for item in nested_sources:
+                if not isinstance(item, dict):
+                    continue
+                source_url = (
+                    item.get("source_url")
+                    or item.get("url")
+                    or item.get("link")
+                )
+                snippet = (
+                    item.get("snippet")
+                    or item.get("title")
+                    or item.get("summary")
+                )
+                if source_url or snippet:
+                    entries.append({
+                        "tool": tool_name,
+                        "source_url": source_url,
+                        "snippet": snippet,
+                    })
+
+        top_url = (
+            payload.get("source_url")
+            or payload.get("url")
+            or payload.get("link")
+        )
+        top_snippet = payload.get("snippet")
+        if top_snippet is None:
+            answer = payload.get("answer") or payload.get("summary")
+            if isinstance(answer, str) and answer:
+                top_snippet = answer[:200]
+
+        top_file = payload.get("file_path")
+
+        if top_url or top_snippet:
+            entries.append({
+                "tool": tool_name,
+                "source_url": top_url,
+                "snippet": top_snippet,
+            })
+        if top_file:
+            entries.append({
+                "tool": tool_name,
+                "file_path": top_file,
+            })
+
+        return entries

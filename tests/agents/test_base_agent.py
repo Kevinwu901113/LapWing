@@ -206,6 +206,145 @@ class TestBaseAgentTimeout:
         assert MutationType.AGENT_FAILED in types
 
 
+class TestEvidenceCollection:
+    """修复 B：evidence 应在 _execute_tool 中即时收集，而不是回头解析 messages。"""
+
+    async def test_evidence_collected_from_top_level_source_url(self):
+        """工具 payload 含顶层 source_url → evidence 至少一条。"""
+        from src.core.llm_types import ToolCallRequest, ToolTurnResult
+        from src.tools.types import ToolExecutionResult
+
+        round1 = ToolTurnResult(
+            text="",
+            tool_calls=[ToolCallRequest(id="tc1", name="web_search",
+                                        arguments={"query": "RAG"})],
+            continuation_message={"role": "assistant", "content": ""},
+        )
+        round2 = ToolTurnResult(text="done", tool_calls=[],
+                                continuation_message=None)
+
+        router, registry, mutation_log = _make_deps()
+        router.complete_with_tools = AsyncMock(side_effect=[round1, round2])
+        registry.execute = AsyncMock(return_value=ToolExecutionResult(
+            success=True,
+            payload={
+                "answer": "RAG 论文摘要",
+                "source_url": "https://arxiv.org/abs/2026.12345",
+                "snippet": "This paper proposes a new method.",
+            },
+        ))
+
+        agent = BaseAgent(_make_spec(), router, registry, mutation_log)
+        result = await agent.execute(_make_message())
+
+        assert result.status == "done"
+        assert len(result.evidence) >= 1
+        urls = [e.get("source_url") for e in result.evidence]
+        assert "https://arxiv.org/abs/2026.12345" in urls
+        assert all(e["tool"] == "web_search" for e in result.evidence)
+
+    async def test_evidence_collected_from_nested_evidence_list(self):
+        """payload.evidence 是 list[dict] → 每条 source_url 都被收进来。"""
+        from src.core.llm_types import ToolCallRequest, ToolTurnResult
+        from src.tools.types import ToolExecutionResult
+
+        round1 = ToolTurnResult(
+            text="",
+            tool_calls=[ToolCallRequest(id="tc1", name="web_search",
+                                        arguments={"q": "x"})],
+            continuation_message={"role": "assistant", "content": ""},
+        )
+        round2 = ToolTurnResult(text="ok", tool_calls=[],
+                                continuation_message=None)
+
+        router, registry, mutation_log = _make_deps()
+        router.complete_with_tools = AsyncMock(side_effect=[round1, round2])
+        registry.execute = AsyncMock(return_value=ToolExecutionResult(
+            success=True,
+            payload={
+                "answer": "综合答案",
+                "evidence": [
+                    {"source_url": "https://a.example/1", "title": "A"},
+                    {"source_url": "https://b.example/2", "title": "B"},
+                ],
+            },
+        ))
+
+        agent = BaseAgent(_make_spec(), router, registry, mutation_log)
+        result = await agent.execute(_make_message())
+
+        urls = {e.get("source_url") for e in result.evidence
+                if e.get("source_url")}
+        assert "https://a.example/1" in urls
+        assert "https://b.example/2" in urls
+
+    async def test_evidence_empty_when_no_source(self):
+        """无 url / 文件 / answer 字段 → evidence 应为空。"""
+        from src.core.llm_types import ToolCallRequest, ToolTurnResult
+        from src.tools.types import ToolExecutionResult
+
+        round1 = ToolTurnResult(
+            text="",
+            tool_calls=[ToolCallRequest(id="tc1", name="run_python_code",
+                                        arguments={"code": "1+1"})],
+            continuation_message={"role": "assistant", "content": ""},
+        )
+        round2 = ToolTurnResult(text="ok", tool_calls=[],
+                                continuation_message=None)
+
+        router, registry, mutation_log = _make_deps()
+        router.complete_with_tools = AsyncMock(side_effect=[round1, round2])
+        registry.execute = AsyncMock(return_value=ToolExecutionResult(
+            success=True,
+            payload={"stdout": "2\n", "exit_code": 0},
+        ))
+
+        agent = BaseAgent(_make_spec(), router, registry, mutation_log)
+        result = await agent.execute(_make_message())
+
+        assert result.status == "done"
+        assert result.evidence == []
+
+    async def test_evidence_reset_between_executions(self):
+        """同一个 agent 实例跑两次任务，第二次 evidence 不应包含第一次的内容。"""
+        from src.core.llm_types import ToolCallRequest, ToolTurnResult
+        from src.tools.types import ToolExecutionResult
+
+        def _make_round_pair(url):
+            r1 = ToolTurnResult(
+                text="",
+                tool_calls=[ToolCallRequest(id="tc1", name="web_search",
+                                            arguments={})],
+                continuation_message={"role": "assistant", "content": ""},
+            )
+            r2 = ToolTurnResult(text="ok", tool_calls=[],
+                                continuation_message=None)
+            return r1, r2
+
+        router, registry, mutation_log = _make_deps()
+        first_pair = _make_round_pair("first")
+        second_pair = _make_round_pair("second")
+        router.complete_with_tools = AsyncMock(side_effect=[
+            *first_pair, *second_pair,
+        ])
+
+        # 第一次返回 url=first，第二次返回不带 url 的 payload
+        registry.execute = AsyncMock(side_effect=[
+            ToolExecutionResult(success=True,
+                                payload={"source_url": "https://first/x"}),
+            ToolExecutionResult(success=True,
+                                payload={"stdout": "no source"}),
+        ])
+
+        agent = BaseAgent(_make_spec(), router, registry, mutation_log)
+        r1 = await agent.execute(_make_message(task_id="t1"))
+        r2 = await agent.execute(_make_message(task_id="t2"))
+
+        assert any(e.get("source_url") == "https://first/x"
+                   for e in r1.evidence)
+        assert r2.evidence == [], "第二次 execute 不应残留第一次的 evidence"
+
+
 class TestBaseAgentRuntimeProfile:
     """Step 6 改动 2：_get_tools 走 RuntimeProfile 过滤。"""
 
