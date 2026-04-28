@@ -277,21 +277,33 @@ class TestSendMessageIntegration:
         result = await _send_message(req, ctx)
         return result, cm.qq.sent
 
-    async def test_no_gate_in_chat_extended_passes(self):
-        """chat_extended without proactive_send_active is direct-reply
-        territory; the gate must not block."""
-        # Even with a strict gate present, chat_extended profile alone
-        # does not flag the call as proactive.
-        gate = _gate(
-            datetime(2026, 1, 1, 23, 30),  # quiet hours
-            max_per_day=0,                  # would normally deny
-        )
+    async def test_chat_extended_hard_rejected_even_without_gate(self):
+        """chat_extended is direct-reply territory: send_message must be
+        hard-rejected regardless of gate state, and no message goes out.
+        Direct replies are bare assistant text — there's no legitimate
+        send_message path here."""
         result, sent = await self._execute(
             runtime_profile="chat_extended",
-            gate=gate,
         )
-        assert result.success is True
-        assert len(sent) == 1
+        assert result.success is False
+        assert result.reason == "send_message_forbidden_in_direct_chat"
+        assert sent == []
+
+    async def test_chat_minimal_hard_rejected(self):
+        result, sent = await self._execute(
+            runtime_profile="chat_minimal",
+        )
+        assert result.success is False
+        assert result.reason == "send_message_forbidden_in_direct_chat"
+        assert sent == []
+
+    async def test_task_execution_hard_rejected(self):
+        result, sent = await self._execute(
+            runtime_profile="task_execution",
+        )
+        assert result.success is False
+        assert result.reason == "send_message_forbidden_in_direct_chat"
+        assert sent == []
 
     async def test_inner_tick_gate_blocks_during_quiet_hours(self):
         gate = _gate(datetime(2026, 1, 1, 23, 30))

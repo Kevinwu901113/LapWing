@@ -26,6 +26,11 @@ CHAT_SHELL_PROFILE = RuntimeProfile(
         "shell", "web", "skill", "memory", "schedule",
         "general", "browser", "commitment",
     }),
+    # send_message is proactive-only (inner_tick / compose_proactive). Direct
+    # chat replies are bare assistant text — exposing send_message here lets
+    # the model emit "side-door" messages mid-turn, splitting one reply into
+    # multiple official messages.
+    exclude_tool_names=frozenset({"send_message"}),
     include_internal=False,
     shell_policy_enabled=True,
 )
@@ -35,7 +40,6 @@ CHAT_MINIMAL_PROFILE = RuntimeProfile(
     capabilities=frozenset({"general"}),
     tool_names=frozenset({
         "get_current_datetime",
-        "send_message",
         "add_correction",
     }),
     include_internal=False,
@@ -47,7 +51,6 @@ CHAT_EXTENDED_PROFILE = RuntimeProfile(
     capabilities=frozenset({"general", "memory", "web", "schedule", "skill", "commitment"}),
     tool_names=frozenset({
         "get_current_datetime",
-        "send_message",
         "add_correction",
         "research",
         "get_sports_score",
@@ -127,7 +130,9 @@ TASK_EXECUTION_PROFILE = RuntimeProfile(
     }),
     # task_execution 必须走 Agent Team 的 delegate_to_* 来做调研，
     # 避免主脑直接调 research/browse 而绕过 Researcher 的多步推理。
-    exclude_tool_names=frozenset({"research", "browse"}),
+    # send_message 是 proactive-only 出口（见 _send_message hard reject），
+    # task_execution 的 turn 内回复仍然是 bare assistant text。
+    exclude_tool_names=frozenset({"research", "browse", "send_message"}),
     include_internal=False,
     shell_policy_enabled=True,
 )

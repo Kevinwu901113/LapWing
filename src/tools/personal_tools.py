@@ -133,6 +133,28 @@ async def _send_message(
             reason="missing content",
         )
 
+    # Defense-in-depth: profiles already exclude send_message from chat /
+    # task_execution surfaces, but if anything slips through (custom profile,
+    # registry mistake, future regression) the executor itself rejects calls
+    # outside proactive context. Bare assistant text is the only legitimate
+    # direct-reply path.
+    if not _is_proactive_context(ctx):
+        logger.warning(
+            "[send_message] non-proactive context rejected; profile=%s",
+            ctx.runtime_profile,
+        )
+        return ToolExecutionResult(
+            success=False,
+            payload={
+                "error": (
+                    "send_message 仅允许 proactive 场景使用"
+                    "（inner_tick / compose_proactive）。"
+                    "普通聊天回复请直接用 assistant 文本输出。"
+                ),
+            },
+            reason="send_message_forbidden_in_direct_chat",
+        )
+
     # Proactive gate — fires only on background/autonomous flows. Direct
     # assistant replies use bare model text and never reach this code.
     gate = (ctx.services or {}).get("proactive_message_gate")

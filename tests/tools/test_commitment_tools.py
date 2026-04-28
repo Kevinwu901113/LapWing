@@ -323,3 +323,20 @@ class TestListOverdue:
 
         overdue = await store.list_overdue(time.time())
         assert [c.id for c in overdue] == [c1, c2]
+
+
+class TestCommitPromiseDescription:
+    """The trigger criterion for commit_promise was relaxed: light intra-turn
+    queries (a single research / tool call) must NOT trigger a promise. Only
+    cross-turn / long-running / multi-step deferred work qualifies. The model
+    description must reflect that — wording like "等我查一下" / "我去看看" used
+    to be the trigger and is now explicitly NOT a trigger."""
+
+    def test_description_no_longer_uses_wait_check_phrasings(self):
+        from src.tools.commitments import COMMIT_PROMISE_DESCRIPTION
+        assert "等我查一下" not in COMMIT_PROMISE_DESCRIPTION
+        assert "我去看看" not in COMMIT_PROMISE_DESCRIPTION
+
+    def test_description_uses_turn_completability_criterion(self):
+        from src.tools.commitments import COMMIT_PROMISE_DESCRIPTION
+        assert "当前 turn" in COMMIT_PROMISE_DESCRIPTION

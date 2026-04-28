@@ -160,6 +160,35 @@ class TestProfileExclusivity:
         assert not violations, "下列 profile 同时暴露 raw + delegate：\n" + "\n".join(violations)
 
 
+class TestChatProfileSendMessageExclusion:
+    """send_message 仅允许 proactive 场景（inner_tick / compose_proactive）使用。
+    所有普通聊天/任务执行 profile 都必须不暴露它，否则模型会在 user turn 中途
+    通过 tool call 发"侧门消息"。
+    """
+
+    def test_chat_minimal_does_not_expose_send_message(self):
+        assert "send_message" not in CHAT_MINIMAL_PROFILE.tool_names
+
+    def test_chat_extended_does_not_expose_send_message(self):
+        assert "send_message" not in CHAT_EXTENDED_PROFILE.tool_names
+
+    def test_chat_shell_resolved_excludes_send_message(self):
+        registry = _make_full_registry()
+        names = _resolve_tool_names(registry, CHAT_SHELL_PROFILE)
+        assert "send_message" not in names, (
+            "chat_shell 通过 general capability 会拉入 send_message，"
+            "必须经由 exclude_tool_names 排除"
+        )
+
+    def test_task_execution_resolved_excludes_send_message(self):
+        registry = _make_full_registry()
+        names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
+        assert "send_message" not in names, (
+            "task_execution 通过 general capability 会拉入 send_message，"
+            "必须经由 exclude_tool_names 排除"
+        )
+
+
 class TestExcludeMechanism:
     """exclude_tool_names 字段本身工作正常。"""
 

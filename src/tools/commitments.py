@@ -24,10 +24,11 @@ logger = logging.getLogger("lapwing.tools.commitments")
 # ── commit_promise ────────────────────────────────────────────────────
 
 COMMIT_PROMISE_DESCRIPTION = (
-    "登记一个你对用户的承诺。当你对用户说了"
-    "'等我查一下'/'我去看看'/'帮你做X'这类需要工具执行的承诺时，"
-    "在说完话后调用此工具。判断标准：如果你承诺了一个"
-    "需要工具执行的动作 → commit_promise；如果只是说'我在思考'→ 不需要。"
+    "登记一个你对用户的承诺。判断标准：这件事能不能在当前 turn 内完成？\n"
+    "当前 turn 内能完成的小查询（一次 research、一次工具调用）→ 不需要 commit，直接做。\n"
+    "需要跨 turn、较长等待、多步骤耗时、未来交付、或用户可以先离开的事情 → commit。\n"
+    "例如：'查个比分' → 不 commit，直接 research；\n"
+    "'调研一份报告' → commit；'今晚提醒我' → commit；'查完发你' → commit。\n"
     "deadline_minutes 默认 10 分钟，搜索类轻任务通常 5 分钟够用。"
 )
 

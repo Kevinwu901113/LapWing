@@ -81,7 +81,13 @@ class TestSendMessage:
         mock_cm = MagicMock()
         mock_cm.get_adapter = MagicMock(return_value=mock_qq_adapter)
 
-        ctx = _make_ctx(services={"channel_manager": mock_cm, "owner_qq_id": "12345"})
+        # send_message is proactive-only; tests of the actual send path must
+        # use a proactive runtime profile (inner_tick) or set
+        # services["proactive_send_active"]=True.
+        ctx = _make_ctx(
+            services={"channel_manager": mock_cm, "owner_qq_id": "12345"},
+            runtime_profile="inner_tick",
+        )
         req = ToolExecutionRequest(name="send_message", arguments={
             "target": "kevin_qq",
             "content": "你好",
@@ -105,7 +111,10 @@ class TestSendMessage:
         mock_cm = MagicMock()
         mock_cm.get_adapter = MagicMock(return_value=mock_desktop_adapter)
 
-        ctx = _make_ctx(services={"channel_manager": mock_cm})
+        ctx = _make_ctx(
+            services={"channel_manager": mock_cm},
+            runtime_profile="inner_tick",
+        )
         req = ToolExecutionRequest(name="send_message", arguments={
             "target": "kevin_desktop",
             "content": "桌面消息",
@@ -127,7 +136,10 @@ class TestSendMessage:
         mock_cm = MagicMock()
         mock_cm.get_adapter = MagicMock(return_value=mock_desktop_adapter)
 
-        ctx = _make_ctx(services={"channel_manager": mock_cm})
+        ctx = _make_ctx(
+            services={"channel_manager": mock_cm},
+            runtime_profile="inner_tick",
+        )
         req = ToolExecutionRequest(name="send_message", arguments={
             "target": "kevin_desktop",
             "content": "测试",
@@ -142,7 +154,10 @@ class TestSendMessage:
         from src.tools.personal_tools import _send_message
 
         mock_cm = MagicMock()
-        ctx = _make_ctx(services={"channel_manager": mock_cm})
+        ctx = _make_ctx(
+            services={"channel_manager": mock_cm},
+            runtime_profile="inner_tick",
+        )
         req = ToolExecutionRequest(name="send_message", arguments={
             "target": "unknown_target",
             "content": "测试",
