@@ -332,6 +332,22 @@ class LapwingBrain:
             services["correction_manager"] = correction_manager
         if getattr(self, "router", None) is not None:
             services["llm_router"] = self.router
+        # Per-turn BudgetLedger (Blueprint §5) — fresh ledger every call so
+        # Brain + delegated agents share the same caps across the turn but
+        # new turns start with full budget.
+        try:
+            from src.agents.budget import BudgetLedger
+            from src.config import get_settings
+            bcfg = get_settings().budget
+            services["budget_ledger"] = BudgetLedger(
+                max_llm_calls=bcfg.max_llm_calls,
+                max_tool_calls=bcfg.max_tool_calls,
+                max_total_tokens=bcfg.max_total_tokens,
+                max_wall_time_seconds=bcfg.max_wall_time_seconds,
+                max_delegation_depth=bcfg.max_delegation_depth,
+            )
+        except Exception:
+            logger.debug("BudgetLedger not initialised", exc_info=True)
         # ProactiveMessageGate — sent to send_message executor so proactive
         # paths (inner_tick, compose_proactive) can be rate-limited /
         # quiet-hours-gated. Direct chat replies use bare text and never
