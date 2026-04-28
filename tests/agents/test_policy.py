@@ -174,6 +174,22 @@ def test_validate_tool_access_blocks_when_in_spec_denylist():
     assert pol.validate_tool_access(spec, "research") is False
 
 
+def test_validate_tool_access_unknown_profile_logs_and_denies(caplog):
+    """Follow-up #1: a bad runtime_profile name must log a warning, not
+    silently deny — otherwise a profile rename creates an invisible
+    "all tools blocked" state."""
+    import logging
+
+    pol = AgentPolicy(catalog=MagicMock())
+    spec = AgentSpec(name="x", runtime_profile="nonexistent_profile_name")
+    with caplog.at_level(logging.WARNING, logger="lapwing.agents.policy"):
+        assert pol.validate_tool_access(spec, "research") is False
+    assert any(
+        "unknown runtime_profile" in r.message
+        for r in caplog.records
+    ), "expected warning log when profile lookup fails"
+
+
 # ── T-11: save_agent stricter validation ──
 
 @pytest.mark.asyncio

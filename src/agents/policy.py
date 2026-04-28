@@ -179,22 +179,30 @@ class AgentPolicy:
         if tool_name in spec.tool_denylist:
             return False
         # Profile gate: tool must be in the resolved RuntimeProfile.
+        from src.core.runtime_profiles import get_runtime_profile
         try:
-            from src.core import runtime_profiles as rp
+            profile = get_runtime_profile(spec.runtime_profile)
+        except ValueError:
+            # Unknown profile name — treat as fail-closed but log so a typo
+            # or rename in runtime_profiles doesn't silently deny everything.
+            logger.warning(
+                "[policy] unknown runtime_profile %r on spec %r — denying %r",
+                spec.runtime_profile, spec.name, tool_name,
+            )
+            return False
+        except Exception:
+            # Anything else is a real bug (e.g. import-time failure). Surface
+            # it loudly; deny defensively.
+            logger.exception(
+                "[policy] validate_tool_access failed for spec=%r tool=%r",
+                spec.name, tool_name,
+            )
+            return False
 
-            profile_attr = {
-                "agent_researcher": "AGENT_RESEARCHER_PROFILE",
-                "agent_coder": "AGENT_CODER_PROFILE",
-            }.get(spec.runtime_profile)
-            profile = getattr(rp, profile_attr, None) if profile_attr else None
-            if profile is not None and tool_name in profile.tool_names:
-                return True
-            # If tool_names is empty (capability-driven profile), permit by default.
-            if profile is not None and not profile.tool_names:
-                return True
-        except Exception:  # pragma: no cover - defensive
-            pass
-        return False
+        # Capability-driven profile (no tool_names allowlist) → permit by default.
+        if not profile.tool_names:
+            return True
+        return tool_name in profile.tool_names
 
     async def validate_save(self, spec: AgentSpec, run_history: list[str]) -> None:
         """Validate a save_agent request. Raises AgentPolicyViolation on failure."""
