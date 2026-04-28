@@ -191,6 +191,19 @@ max_rounds = 20
 timeout_seconds = 600
 max_tokens = 50000
 
+[agent_team.dynamic]
+enabled = true
+max_persistent_agents = 10
+max_session_agents = 5
+session_cleanup_interval_seconds = 300
+
+[budget]
+max_llm_calls = 50
+max_tool_calls = 100
+max_total_tokens = 200000
+max_wall_time_seconds = 600
+max_delegation_depth = 1
+
 [whisper]
 base_url = "https://api.openai.com/v1"
 model = "whisper-1"
