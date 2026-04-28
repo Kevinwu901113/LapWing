@@ -613,24 +613,27 @@ class TaskRuntime:
         )
         if ctx.final_reply is not None:
             # current-info gate: if this turn was flagged as needing real-time
-            # info (sports/weather/news/price) and the model didn't actually
-            # call any of the required tools, replace its reply with an honest
-            # fallback rather than letting an unverified guess go out.
+            # info (sports/weather/news/price) and the model invoked NO tools
+            # at all, replace the reply with an honest fallback — it's an
+            # unverified guess. If the model called any tool (even one that
+            # wasn't in `required`), trust that it engaged with the message;
+            # multi-intent turns ("查天气 + 设提醒") legitimately end up with
+            # successful={set_reminder} ∩ required={research} == ∅, and
+            # forcing fallback there destroys the half the model handled
+            # correctly.
             reply_to_send = ctx.final_reply
-            if opts.required_tool_names:
-                required = set(opts.required_tool_names)
-                if not (required & ctx.successful_tool_names):
-                    logger.warning(
-                        "[runtime] current-info gate: required=%s successful=%s "
-                        "domain=%s — forcing honest fallback",
-                        required,
-                        ctx.successful_tool_names,
-                        opts.current_info_domain,
-                    )
-                    reply_to_send = self._current_info_fallback(
-                        reply_to_send,
-                        domain=opts.current_info_domain,
-                    )
+            if opts.required_tool_names and not ctx.successful_tool_names:
+                logger.warning(
+                    "[runtime] current-info gate: required=%s successful=%s "
+                    "domain=%s — no tools called, forcing honest fallback",
+                    set(opts.required_tool_names),
+                    ctx.successful_tool_names,
+                    opts.current_info_domain,
+                )
+                reply_to_send = self._current_info_fallback(
+                    reply_to_send,
+                    domain=opts.current_info_domain,
+                )
             # 清理最终回复中可能残留的内部标记
             from src.core.output_sanitizer import sanitize_outgoing
             final_reply = sanitize_outgoing(reply_to_send)
