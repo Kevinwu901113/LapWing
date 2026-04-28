@@ -153,20 +153,25 @@ async def test_session_stickiness():
 
 
 @pytest.mark.asyncio
-async def test_session_stickiness_with_current_info():
+async def test_current_info_decisions_are_not_cached():
+    """Current-info decisions (sports/weather/news/price) carry
+    required_tool_names that the runtime gate enforces. Caching them and
+    sticky-applying to unrelated follow-ups makes the gate fire on
+    normal turns. So they're re-classified every time. The trade-off is
+    one extra lightweight_judgment LLM call per current-info turn —
+    cheap, and gives the gate a clean per-turn signal."""
     router = AsyncMock()
-    router.complete.return_value = "chat_extended sports"
+    router.complete.side_effect = ["chat_extended sports", "chat none"]
     intent = IntentRouter(router)
 
     d1 = await intent.route("chat_1", "道奇今天比赛")
     assert d1.requires_current_info is True
 
-    d2 = await intent.route("chat_1", "几点开始")
-    assert d2.profile_name == d1.profile_name
-    # Cached domain carries over too — caller can re-use the requirement
-    # for follow-up questions in the same conversation context.
-    assert d2.requires_current_info is True
-    assert router.complete.call_count == 1
+    # Follow-up — cache must NOT serve a stale weather/sports decision.
+    # The fresh LLM call decides whether this turn still needs current-info.
+    d2 = await intent.route("chat_1", "在等结果")
+    assert d2.requires_current_info is False
+    assert router.complete.call_count == 2
 
 
 @pytest.mark.asyncio
@@ -199,6 +204,23 @@ async def test_obvious_task_breaks_session_stickiness():
 
     d2 = await intent.route("chat_1", "帮我跑 git status")
     assert d2.profile_name == "task_execution"
+
+
+@pytest.mark.asyncio
+async def test_chat_decision_is_cached_and_reused():
+    """Plain chat decisions ARE cached — re-classifying every turn would
+    be wasteful when the conversation is just casual back-and-forth."""
+    router = AsyncMock()
+    router.complete.return_value = "chat none"
+    intent = IntentRouter(router)
+
+    d1 = await intent.route("chat_1", "你好")
+    d2 = await intent.route("chat_1", "嗯嗯")
+    d3 = await intent.route("chat_1", "好的")
+
+    assert all(d.profile_name == "chat_minimal" for d in (d1, d2, d3))
+    # Only one LLM call — d2 and d3 served from cache.
+    assert router.complete.call_count == 1
 
 
 # ── T9: _parse_decision edge cases ────────────────────────────────────

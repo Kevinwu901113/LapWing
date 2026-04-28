@@ -72,7 +72,15 @@ class IntentRouter:
                     return decision
 
         decision = await self._llm_classify(user_message)
-        self._cache[chat_id] = (decision, now())
+        # Only cache non-current-info decisions. Current-info decisions
+        # carry required_tool_names that the runtime gate enforces; if a
+        # weather decision sticks to an unrelated follow-up turn, the gate
+        # forces an honest-fallback on a normal reply (2026-04-28 incident:
+        # "明天天气" + "想看电影" → cached weather → next turn "在等结果" →
+        # gate fired on it). Re-classifying every current-info turn costs
+        # one extra lightweight_judgment LLM call but isolates the gate.
+        if not decision.requires_current_info:
+            self._cache[chat_id] = (decision, now())
         logger.info(
             "[intent_router] chat=%s profile=%s current_info=%s domain=%s msg=%r",
             chat_id,
