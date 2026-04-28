@@ -94,3 +94,30 @@ class TestAgentResult:
         )
         assert r.error_detail == "asyncio.TimeoutError"
         assert len(r.execution_trace) == 3
+
+
+def test_agent_result_budget_status_default():
+    r = AgentResult(task_id="t1", status="done", result="ok")
+    assert r.budget_status == ""
+
+
+def test_agent_result_budget_status_set():
+    r = AgentResult(task_id="t1", status="done", result="ok",
+                    budget_status="budget_exhausted")
+    assert r.budget_status == "budget_exhausted"
+
+
+def test_legacy_spec_alias():
+    from src.agents.types import LegacyAgentSpec
+    s = LegacyAgentSpec(name="x", description="", system_prompt="",
+                        model_slot="agent_researcher")
+    assert s.name == "x"
+
+
+def test_agent_spec_alias_still_works():
+    s = AgentSpec(name="x", description="", system_prompt="",
+                  model_slot="agent_researcher")
+    assert s.name == "x"
+    # confirm it's literally the same class as LegacyAgentSpec
+    from src.agents.types import LegacyAgentSpec
+    assert AgentSpec is LegacyAgentSpec
