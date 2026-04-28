@@ -17,6 +17,10 @@ import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from src.agents.builtin_specs import (
+    builtin_coder_spec as _builtin_coder_spec,
+    builtin_researcher_spec as _builtin_researcher_spec,
+)
 from src.agents.spec import AgentSpec, AgentLifecyclePolicy
 
 if TYPE_CHECKING:
@@ -26,39 +30,6 @@ if TYPE_CHECKING:
     from src.agents.policy import AgentPolicy, CreateAgentInput
 
 logger = logging.getLogger("lapwing.agents.registry")
-
-
-# Builtin specs (defined here for now; Task 16 may move them to builtin_specs.py).
-def _builtin_researcher_spec() -> AgentSpec:
-    return AgentSpec(
-        id="builtin_researcher",
-        name="researcher",
-        display_name="Researcher",
-        description="搜索和浏览网页，收集信息，适合调研和信息查找任务",
-        kind="builtin",
-        system_prompt="",
-        model_slot="agent_researcher",
-        runtime_profile="agent_researcher",
-        lifecycle=AgentLifecyclePolicy(mode="persistent", ttl_seconds=None, max_runs=None),
-        created_by="system",
-        created_reason="builtin agent",
-    )
-
-
-def _builtin_coder_spec() -> AgentSpec:
-    return AgentSpec(
-        id="builtin_coder",
-        name="coder",
-        display_name="Coder",
-        description="文件读写和 Python 代码执行，适合实现和调试任务",
-        kind="builtin",
-        system_prompt="",
-        model_slot="agent_coder",
-        runtime_profile="agent_coder",
-        lifecycle=AgentLifecyclePolicy(mode="persistent", ttl_seconds=None, max_runs=None),
-        created_by="system",
-        created_reason="builtin agent",
-    )
 
 
 @dataclass
