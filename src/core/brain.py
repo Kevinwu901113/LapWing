@@ -405,7 +405,17 @@ class LapwingBrain:
                 current_info_domain=route_decision.current_info_domain,
             )
 
-        tools = self.task_runtime.tools_for_profile(profile_name)
+        # Zero-tool fast path: chat_minimal turns without a current-info
+        # requirement skip the OpenAI tool-call protocol entirely. We still
+        # route through TaskRuntime.complete_chat to keep ITERATION audit
+        # records aligned with the tool path — TaskRuntime's `if not tools`
+        # branch dispatches directly to router.complete(slot="main_conversation").
+        zero_tools_path = (
+            profile_override is None
+            and profile_name == "chat_minimal"
+            and (route_decision is None or not route_decision.requires_current_info)
+        )
+        tools = [] if zero_tools_path else self.task_runtime.tools_for_profile(profile_name)
         services = self._build_services()
 
         deps = RuntimeDeps(
@@ -415,7 +425,8 @@ class LapwingBrain:
             shell_allow_sudo=SHELL_ALLOW_SUDO,
         )
 
-        return await self.task_runtime.complete_chat(
+        t_start = time.monotonic()
+        reply = await self.task_runtime.complete_chat(
             chat_id=chat_id,
             messages=messages,
             constraints=constraints,
@@ -434,6 +445,15 @@ class LapwingBrain:
             focus_id=focus_id,
             runtime_options=runtime_options,
         )
+        elapsed_ms = (time.monotonic() - t_start) * 1000
+        logger.info(
+            "[brain.complete_chat] path=%s profile=%s latency_ms=%.0f response_length=%d",
+            "zero_tools" if zero_tools_path else "tool_call",
+            profile_name,
+            elapsed_ms,
+            len(reply),
+        )
+        return reply
 
     @staticmethod
     def _fallback_profile_for_message(user_message: str, constraints) -> str:
