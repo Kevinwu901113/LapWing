@@ -43,6 +43,10 @@ if TYPE_CHECKING:
     from src.memory.vector_store import VectorStore
 
 logger = logging.getLogger("lapwing.core.brain")
+# Dedicated metrics logger — bypasses lapwing.core.brain's WARNING-level
+# noisy-module throttle in main.py:setup_logging. Keeps per-turn path /
+# latency / response_length INFO records visible in lapwing.log.
+_metrics_logger = logging.getLogger("lapwing.metrics.complete_chat")
 
 # 直接输出模式：模型裸文本 = 用户可见消息。工具调用是内部操作。
 # send_message 工具仅用于主动消息场景（意识 tick / 定时提醒等无对话上下文时）。
@@ -446,7 +450,7 @@ class LapwingBrain:
             runtime_options=runtime_options,
         )
         elapsed_ms = (time.monotonic() - t_start) * 1000
-        logger.info(
+        _metrics_logger.info(
             "[brain.complete_chat] path=%s profile=%s latency_ms=%.0f response_length=%d",
             "zero_tools" if zero_tools_path else "tool_call",
             profile_name,
