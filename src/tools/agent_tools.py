@@ -349,6 +349,8 @@ async def destroy_agent_executor(
     name = (req.arguments.get("agent_name") or "").strip()
     if not name:
         return ToolExecutionResult(success=False, payload={}, reason="agent_name 不能为空")
+    # Capture run count BEFORE destroy clears it.
+    total_runs = _ephemeral_run_counts.get(name, 0)
     ok = await registry.destroy_agent(name)
     if not ok:
         return ToolExecutionResult(
@@ -367,7 +369,7 @@ async def destroy_agent_executor(
                     "agent_id": name,
                     "agent_name": name,
                     "reason": "manual",
-                    "total_runs": 0,
+                    "total_runs": total_runs,
                 },
             )
         except Exception:
@@ -402,6 +404,16 @@ async def save_agent_executor(
             reason=f"policy_violation: {exc.reason}",
         )
 
+    # Fetch the post-save spec for the audit hash. Best-effort.
+    saved_hash = ""
+    if hasattr(registry, "_lookup_spec"):
+        try:
+            saved_spec = await registry._lookup_spec(name)
+            if saved_spec is not None:
+                saved_hash = saved_spec.spec_hash()
+        except Exception:
+            pass
+
     ml = ctx.services.get("mutation_log")
     if ml is not None:
         try:
@@ -411,7 +423,7 @@ async def save_agent_executor(
                     "agent_id": name,
                     "agent_name": name,
                     "save_reason": reason,
-                    "spec_hash": "",
+                    "spec_hash": saved_hash,
                     "run_count": run_count,
                 },
             )
