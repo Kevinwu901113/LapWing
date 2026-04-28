@@ -50,6 +50,14 @@ class NoteStore:
 
         # 确定目标目录
         if path:
+            # path 是分类目录，不能与笔记文件名约定冲突。
+            # 任意片段以 .md 结尾会造成目录与笔记文件同名，
+            # 后续 rglob("*.md") 等遍历会把目录当成文件读取。
+            for part in Path(path).parts:
+                if part.endswith(".md"):
+                    raise ValueError(
+                        f"path 片段不能以 .md 结尾（与笔记文件命名冲突）：{part}"
+                    )
             target_dir = self.notes_dir / path
         else:
             target_dir = self.notes_dir

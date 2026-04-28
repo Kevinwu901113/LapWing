@@ -35,6 +35,14 @@ class TestWrite:
             result = note_store.write(content=f"test {nt}", note_type=nt)
             assert result["note_id"].startswith("note_")
 
+    def test_write_rejects_md_suffix_in_path(self, note_store):
+        # path 是目录；以 .md 结尾会与笔记文件命名冲突，
+        # 让 rglob("*.md") 把目录当文件读取。
+        with pytest.raises(ValueError, match=r"\.md"):
+            note_store.write(content="x", path="consciousness/scratch_pad.md")
+        with pytest.raises(ValueError, match=r"\.md"):
+            note_store.write(content="x", path="foo.md/bar")
+
 
 class TestRead:
     def test_read_by_note_id(self, note_store):
