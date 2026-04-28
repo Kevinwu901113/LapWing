@@ -223,23 +223,41 @@ async def _run_agent(
 async def delegate_to_researcher_executor(
     req: ToolExecutionRequest, ctx: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    request = req.arguments.get("request", "").strip()
-    if not request:
-        return ToolExecutionResult(success=False, payload={}, reason="request 不能为空")
+    """Compatibility shim — forwards to delegate_to_agent_executor.
 
-    context_digest = req.arguments.get("context_digest", "")
-    return await _run_agent("researcher", request, context_digest, ctx)
+    Per blueprint §7.4: legacy delegate tools remain registered for any
+    persisted plans / older clients, but the implementation is the new
+    delegate_to_agent path. They're removed from RuntimeProfile.tool_names
+    in Task 13 so the Brain LLM no longer sees them.
+    """
+    return await delegate_to_agent_executor(
+        ToolExecutionRequest(
+            name="delegate_to_agent",
+            arguments={
+                "agent_name": "researcher",
+                "task": req.arguments.get("request", ""),
+                "context": req.arguments.get("context_digest", ""),
+            },
+        ),
+        ctx,
+    )
 
 
 async def delegate_to_coder_executor(
     req: ToolExecutionRequest, ctx: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    request = req.arguments.get("request", "").strip()
-    if not request:
-        return ToolExecutionResult(success=False, payload={}, reason="request 不能为空")
-
-    context_digest = req.arguments.get("context_digest", "")
-    return await _run_agent("coder", request, context_digest, ctx)
+    """Compatibility shim — forwards to delegate_to_agent_executor."""
+    return await delegate_to_agent_executor(
+        ToolExecutionRequest(
+            name="delegate_to_agent",
+            arguments={
+                "agent_name": "coder",
+                "task": req.arguments.get("request", ""),
+                "context": req.arguments.get("context_digest", ""),
+            },
+        ),
+        ctx,
+    )
 
 
 # ── Blueprint §7.2: 5 个新 agent 工具 ──
