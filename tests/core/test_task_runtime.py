@@ -1505,3 +1505,193 @@ async def test_on_circuit_breaker_open_exception_does_not_break_circuit_behavior
         event_bus=SimpleNamespace(publish=AsyncMock()),
     )
     assert "需用户介入" in result
+
+
+# ── Phase 2 T7: current-info gate ───────────────────────────────────────
+
+
+class TestCurrentInfoFallback:
+    """Unit tests for the static fallback helper. The gate replaces a model
+    reply when the current-info requirement wasn't satisfied — but only if
+    the model didn't already disclaim uncertainty itself."""
+
+    def test_replaces_confident_reply(self):
+        out = TaskRuntime._current_info_fallback("道奇赢了 5 比 3", domain="sports")
+        assert "道奇赢了" not in out
+        assert "赛事信息" in out
+        assert "再查一次" in out
+
+    def test_preserves_honest_reply(self):
+        original = "我这边不确定道奇今天有没有比赛，没查到"
+        assert TaskRuntime._current_info_fallback(original, domain="sports") == original
+
+    def test_unknown_domain_uses_generic_phrasing(self):
+        out = TaskRuntime._current_info_fallback("结果是 X", domain=None)
+        assert "实时信息" in out
+
+    @pytest.mark.parametrize("domain,hint", [
+        ("sports", "赛事信息"),
+        ("weather", "天气信息"),
+        ("news", "新闻"),
+        ("price", "价格信息"),
+    ])
+    def test_domain_hint_in_output(self, domain, hint):
+        out = TaskRuntime._current_info_fallback("肯定是 X", domain=domain)
+        assert hint in out
+
+
+@pytest.mark.asyncio
+async def test_current_info_gate_replaces_reply_when_no_required_tool_called():
+    """Model replies confidently without calling any required tool —
+    gate must overwrite with the honest fallback."""
+    from src.core.task_types import RuntimeOptions
+
+    router = MagicMock()
+    runtime = TaskRuntime(router=router, tool_registry=_chat_ready_registry(), no_action_budget=0)
+
+    router.complete_with_tools = AsyncMock(
+        return_value=SimpleNamespace(
+            text="道奇今天没比赛",
+            tool_calls=[],
+            continuation_message=None,
+        ),
+    )
+
+    deps = RuntimeDeps(
+        execute_shell=AsyncMock(),
+        policy=_make_policy(AsyncMock()),
+        shell_default_cwd="/tmp",
+        shell_allow_sudo=False,
+    )
+
+    result = await runtime.complete_chat(
+        chat_id="chat_1",
+        messages=[
+            {"role": "system", "content": "你是 Lapwing。"},
+            {"role": "user", "content": "道奇今天比赛怎么样"},
+        ],
+        constraints=extract_execution_constraints("道奇今天比赛怎么样"),
+        tools=runtime.chat_tools(shell_enabled=False),
+        deps=deps,
+        profile="chat_extended",
+        event_bus=None,
+        runtime_options=RuntimeOptions(
+            required_tool_names=("get_sports_score", "research"),
+            current_info_domain="sports",
+        ),
+    )
+
+    assert "道奇今天没比赛" not in result
+    assert "赛事信息" in result and "再查一次" in result
+
+
+@pytest.mark.asyncio
+async def test_current_info_gate_passes_when_required_tool_succeeded():
+    """Model called research and it succeeded — gate must let the model's
+    reply through unchanged."""
+    from src.core.task_types import RuntimeOptions
+
+    router = MagicMock()
+    runtime = TaskRuntime(router=router, tool_registry=_chat_ready_registry(), no_action_budget=0)
+
+    router.complete_with_tools = AsyncMock(
+        side_effect=[
+            SimpleNamespace(
+                text="",
+                tool_calls=[
+                    ToolCallRequest(
+                        id="c1",
+                        name="research",
+                        arguments={"question": "道奇今天比赛"},
+                    ),
+                ],
+                continuation_message={
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [{"id": "c1"}],
+                },
+            ),
+            SimpleNamespace(
+                text="道奇今天下午三点打教士",
+                tool_calls=[],
+                continuation_message=None,
+            ),
+        ],
+    )
+    router.build_tool_result_message = MagicMock(
+        return_value=[{
+            "role": "tool",
+            "tool_call_id": "c1",
+            "name": "research",
+            "content": '{"answer": "..."}',
+        }],
+    )
+
+    async def _fake_execute(**kwargs):
+        return ('{"answer": "..."}', {"answer": "..."}, True)
+    runtime._execute_tool_call = _fake_execute
+
+    deps = RuntimeDeps(
+        execute_shell=AsyncMock(),
+        policy=_make_policy(AsyncMock()),
+        shell_default_cwd="/tmp",
+        shell_allow_sudo=False,
+    )
+
+    result = await runtime.complete_chat(
+        chat_id="chat_1",
+        messages=[
+            {"role": "system", "content": "你是 Lapwing。"},
+            {"role": "user", "content": "道奇今天比赛怎么样"},
+        ],
+        constraints=extract_execution_constraints("道奇今天比赛怎么样"),
+        tools=runtime.chat_tools(shell_enabled=False),
+        deps=deps,
+        profile="chat_extended",
+        event_bus=None,
+        runtime_options=RuntimeOptions(
+            required_tool_names=("get_sports_score", "research"),
+            current_info_domain="sports",
+        ),
+    )
+
+    assert "道奇今天下午三点打教士" in result
+
+
+@pytest.mark.asyncio
+async def test_current_info_gate_inert_when_no_required_tools_set():
+    """Without required_tool_names, the gate must not engage even when no
+    tool call happens. Normal chat replies pass through verbatim."""
+    router = MagicMock()
+    runtime = TaskRuntime(router=router, tool_registry=_chat_ready_registry(), no_action_budget=0)
+
+    router.complete_with_tools = AsyncMock(
+        return_value=SimpleNamespace(
+            text="道奇今天没比赛",
+            tool_calls=[],
+            continuation_message=None,
+        ),
+    )
+
+    deps = RuntimeDeps(
+        execute_shell=AsyncMock(),
+        policy=_make_policy(AsyncMock()),
+        shell_default_cwd="/tmp",
+        shell_allow_sudo=False,
+    )
+
+    result = await runtime.complete_chat(
+        chat_id="chat_1",
+        messages=[
+            {"role": "system", "content": "你是 Lapwing。"},
+            {"role": "user", "content": "道奇今天比赛怎么样"},
+        ],
+        constraints=extract_execution_constraints("道奇今天比赛怎么样"),
+        tools=runtime.chat_tools(shell_enabled=False),
+        deps=deps,
+        profile="chat_extended",
+        event_bus=None,
+        # no runtime_options → no required_tool_names
+    )
+
+    assert "道奇今天没比赛" in result

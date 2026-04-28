@@ -95,18 +95,22 @@ class RuntimeDeps:
 
 @dataclass(frozen=True)
 class RuntimeOptions:
-    """Per-call overrides for tool-loop budgets.
+    """Per-call overrides for tool-loop budgets and current-info gating.
 
-    Used by surfaces that need a tighter budget than the TaskRuntime
-    instance default — e.g. inner_tick, which should think briefly and
-    yield rather than burning shell rounds chasing maintenance work.
+    Budget fields (max_tool_rounds / no_action_budget / error_burst_threshold)
+    fall back to the TaskRuntime instance default when None — used by surfaces
+    that need a tighter loop than the default (e.g. inner_tick).
 
-    Any field set to None falls back to the TaskRuntime instance default
-    (which itself comes from config.toml [task]).
+    Current-info fields (required_tool_names / current_info_domain) are set by
+    IntentRouter when the user message asks for real-time data (sports score,
+    weather, news, price). The runtime uses them to decide whether the model's
+    final reply needs an honest fallback when no required tool was called.
     """
     max_tool_rounds: int | None = None
     no_action_budget: int | None = None
     error_burst_threshold: int | None = None
+    required_tool_names: tuple[str, ...] = ()
+    current_info_domain: str | None = None
 
 
 @dataclass(frozen=True)
@@ -230,3 +234,7 @@ class ToolLoopContext:
     simulated_tool_retries: int = 0
     has_used_tools: bool = False
     start_time: float = field(default_factory=time.perf_counter)
+    # current-info gate: names of tools that returned execution_success=True
+    # this turn. Consumed by _complete_chat_body to decide whether the
+    # required-tool gate is satisfied.
+    successful_tool_names: set[str] = field(default_factory=set)

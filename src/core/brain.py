@@ -14,6 +14,7 @@ from src.core.reasoning_tags import strip_internal_thinking_tags
 from src.core.state_serializer import serialize as _serialize_state
 from src.core.state_view import TrajectoryTurn
 from src.core.state_view_builder import StateViewBuilder
+from src.core.intent_router import RouteDecision
 from src.core.task_runtime import RuntimeDeps, RuntimeOptions, TaskRuntime
 from src.core.trajectory_store import trajectory_entries_to_messages
 from src.core.shell_policy import (
@@ -360,6 +361,7 @@ class LapwingBrain:
             user_message,
             approved_directory=approved_directory,
         )
+        route_decision: RouteDecision | None = None
         if profile_override is not None:
             # Caller pinned a profile (e.g. think_inner uses "inner_tick").
             # Skip IntentRouter — the caller already knows the surface it
@@ -371,7 +373,22 @@ class LapwingBrain:
             if INTENT_ROUTER_ENABLED:
                 intent_router = getattr(self, "intent_router", None)
                 if intent_router is not None and profile_name != "task_execution":
-                    profile_name = await intent_router.route(chat_id, user_message)
+                    route_decision = await intent_router.route(chat_id, user_message)
+                    profile_name = route_decision.profile_name
+
+        # If IntentRouter flagged a current-info domain, propagate the
+        # required-tool list into runtime_options so TaskRuntime's gate
+        # can check whether the model actually called one of them.
+        if route_decision is not None and route_decision.requires_current_info:
+            base_opts = runtime_options or RuntimeOptions()
+            runtime_options = RuntimeOptions(
+                max_tool_rounds=base_opts.max_tool_rounds,
+                no_action_budget=base_opts.no_action_budget,
+                error_burst_threshold=base_opts.error_burst_threshold,
+                required_tool_names=route_decision.required_tool_names,
+                current_info_domain=route_decision.current_info_domain,
+            )
+
         tools = self.task_runtime.tools_for_profile(profile_name)
         services = self._build_services()
 
