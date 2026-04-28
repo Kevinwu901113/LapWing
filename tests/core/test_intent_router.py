@@ -93,7 +93,7 @@ async def test_route_sports_detection():
     assert decision.requires_current_info is True
     assert decision.current_info_domain == "sports"
     assert "get_sports_score" in decision.required_tool_names
-    assert "research" in decision.required_tool_names
+    assert "delegate_to_agent" in decision.required_tool_names
 
 
 @pytest.mark.asyncio
@@ -104,7 +104,7 @@ async def test_route_weather_detection():
     decision = await intent.route("chat_1", "明天会下雨吗")
     assert decision.requires_current_info is True
     assert decision.current_info_domain == "weather"
-    assert "research" in decision.required_tool_names
+    assert "delegate_to_agent" in decision.required_tool_names
 
 
 @pytest.mark.asyncio
@@ -135,6 +135,29 @@ async def test_route_no_current_info():
     decision = await intent.route("chat_1", "今天心情不好")
     assert decision.requires_current_info is False
     assert decision.required_tool_names == ()
+
+
+def test_domain_tool_map_only_references_chat_extended_tools():
+    """Guard: every tool name in _DOMAIN_TOOL_MAP must exist in the
+    chat_extended profile's tool_names. Listing a tool the model can't
+    see (e.g. raw `research`, which moved to delegate_to_agent under
+    Blueprint §10.1) silently breaks the current-info gate — the gate's
+    system-prompt reminder tells the model to call a tool that isn't in
+    its tool list, the model gives up and answers blindly, then the gate
+    forces fallback. (2026-04-29 incident.)
+    """
+    from src.core.intent_router import _DOMAIN_TOOL_MAP
+    from src.core.runtime_profiles import CHAT_EXTENDED_PROFILE
+
+    chat_extended_tools = CHAT_EXTENDED_PROFILE.tool_names
+    for domain, tools in _DOMAIN_TOOL_MAP.items():
+        for tool in tools:
+            assert tool in chat_extended_tools, (
+                f"_DOMAIN_TOOL_MAP[{domain!r}] references {tool!r} but it's "
+                f"not in CHAT_EXTENDED_PROFILE.tool_names. Either add it to "
+                f"the profile or change the domain mapping. Current "
+                f"chat_extended tools: {sorted(chat_extended_tools)}"
+            )
 
 
 # ── T4: session stickiness with RouteDecision ─────────────────────────

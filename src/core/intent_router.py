@@ -31,11 +31,19 @@ class RouteDecision:
 
 # current-info domain → preferred tool names. The gate is satisfied if
 # *any* of these were successfully invoked during the tool loop.
+#
+# IMPORTANT: tool names here MUST exist in the chat_extended profile's
+# tool_names. Per Blueprint §10.1, raw `research`/`browse` are no longer
+# exposed at the chat tier — research-class queries go through
+# `delegate_to_agent` (agent_type=researcher). Listing `research` here
+# would tell the runtime to nudge the model toward a tool it can't see,
+# leading the model to skip tools entirely and the gate to force-fallback
+# every weather/news/price turn (2026-04-29 incident).
 _DOMAIN_TOOL_MAP: dict[str, tuple[str, ...]] = {
-    "sports": ("get_sports_score", "research"),
-    "weather": ("research",),
-    "news": ("research",),
-    "price": ("research",),
+    "sports": ("get_sports_score", "delegate_to_agent"),
+    "weather": ("delegate_to_agent",),
+    "news": ("delegate_to_agent",),
+    "price": ("delegate_to_agent",),
 }
 
 
