@@ -377,3 +377,147 @@ class TestBaseAgentRuntimeProfile:
         # 走 legacy 路径：registry.get(tool_name) 按名取 spec
         assert registry.get.called
         assert not registry.function_tools.called
+
+
+# ----------------------------------------------------------------------------
+# Task 9: BudgetLedger hooks (T-08)
+# ----------------------------------------------------------------------------
+
+import pytest
+from src.agents.budget import BudgetLedger
+
+
+def _build_simple_agent(ledger: BudgetLedger | None = None,
+                        max_rounds: int = 5, fake_llm_response=None):
+    """Construct a BaseAgent backed by a fake LLM router that loops."""
+    from src.agents.types import LegacyAgentSpec
+
+    spec = LegacyAgentSpec(
+        name="probe", description="", system_prompt="p",
+        model_slot="agent_researcher", max_rounds=max_rounds,
+    )
+    router = MagicMock()
+    if fake_llm_response is None:
+        from dataclasses import dataclass, field as _f
+
+        @dataclass
+        class _R:
+            text: str = ""
+            tool_calls: list = _f(default_factory=list)
+            continuation_message: dict | None = None
+
+        @dataclass
+        class _TC:
+            name: str = "research"
+            arguments: dict = _f(default_factory=dict)
+            id: str = "c1"
+
+        n = {"i": 0}
+
+        async def _complete(**kwargs):
+            n["i"] += 1
+            if n["i"] <= max_rounds:
+                return _R(
+                    tool_calls=[_TC()],
+                    continuation_message={"role": "assistant", "content": ""},
+                )
+            return _R(text="done")
+
+        router.complete_with_tools = AsyncMock(side_effect=_complete)
+    else:
+        router.complete_with_tools = AsyncMock(return_value=fake_llm_response)
+    router.build_tool_result_message = MagicMock(
+        return_value={"role": "user", "content": "x"},
+    )
+
+    class _Reg:
+        def __init__(self):
+            self.executed = []
+
+        def function_tools(self, **kw):
+            return []
+
+        def get(self, name):
+            return None
+
+        async def execute(self, req, context):
+            self.executed.append(req.name)
+            from src.tools.types import ToolExecutionResult
+            return ToolExecutionResult(success=True, payload={})
+
+    class _Log:
+        def __init__(self):
+            self.events = []
+
+        async def record(self, event_type, payload, **kwargs):
+            self.events.append((event_type, payload))
+
+    services = {}
+    if ledger is not None:
+        services["budget_ledger"] = ledger
+    log = _Log()
+    agent = BaseAgent(spec, router, _Reg(), log, services=services)
+    return agent, log
+
+
+@pytest.mark.asyncio
+async def test_t08_llm_call_budget_exhausted():
+    """Ledger with max_llm_calls=2: third LLM call raises → AgentResult.budget_status."""
+    ledger = BudgetLedger(max_llm_calls=2)
+    agent, log = _build_simple_agent(ledger=ledger, max_rounds=10)
+    msg = AgentMessage(
+        from_agent="lapwing", to_agent="probe", task_id="t1",
+        content="x", message_type="request",
+    )
+    result = await agent.execute(msg)
+    assert result.budget_status == "budget_exhausted"
+    assert result.status == "done"
+    types = [evt[0] for evt in log.events]
+    assert MutationType.AGENT_BUDGET_EXHAUSTED in types
+
+
+@pytest.mark.asyncio
+async def test_t08_tool_call_budget_exhausted():
+    """Ledger with max_tool_calls=1: second tool call raises → done with budget_status."""
+    ledger = BudgetLedger(max_llm_calls=100, max_tool_calls=1)
+    agent, log = _build_simple_agent(ledger=ledger, max_rounds=10)
+    msg = AgentMessage(
+        from_agent="lapwing", to_agent="probe", task_id="t",
+        content="x", message_type="request",
+    )
+    result = await agent.execute(msg)
+    assert result.budget_status == "budget_exhausted"
+
+
+@pytest.mark.asyncio
+async def test_no_ledger_means_no_budget_enforcement():
+    """When services has no 'budget_ledger', tool loop runs unchanged."""
+    agent, log = _build_simple_agent(ledger=None, max_rounds=2)
+    msg = AgentMessage(
+        from_agent="lapwing", to_agent="probe", task_id="t",
+        content="x", message_type="request",
+    )
+    result = await agent.execute(msg)
+    assert result.budget_status == ""
+
+
+@pytest.mark.asyncio
+async def test_budget_exhausted_payload_structure():
+    """AGENT_BUDGET_EXHAUSTED payload contains required keys per blueprint §11.2."""
+    ledger = BudgetLedger(max_llm_calls=1)
+    agent, log = _build_simple_agent(ledger=ledger, max_rounds=10)
+    msg = AgentMessage(
+        from_agent="lapwing", to_agent="probe", task_id="task42",
+        content="x", message_type="request",
+    )
+    await agent.execute(msg)
+    bx = [(t, p) for (t, p) in log.events
+          if t == MutationType.AGENT_BUDGET_EXHAUSTED]
+    assert bx, "expected AGENT_BUDGET_EXHAUSTED event"
+    payload = bx[0][1]
+    assert payload["agent_name"] == "probe"
+    assert payload["task_id"] == "task42"
+    assert payload["dimension"] == "llm_calls"
+    assert payload["used"] == 2  # incremented before exception
+    assert payload["limit"] == 1
+    assert "partial_result" in payload
