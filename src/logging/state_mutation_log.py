@@ -132,6 +132,13 @@ class MutationType(str, Enum):
     AGENT_FAILED = "agent.task_failed"
     AGENT_TOOL_CALL = "agent.tool_called"
 
+    # --- Dynamic Agent 生命周期（Blueprint §11.1） ---
+    AGENT_CREATED = "agent.created"
+    AGENT_SAVED = "agent.saved"
+    AGENT_DESTROYED = "agent.destroyed"
+    AGENT_SPEC_UPDATED = "agent.spec_updated"
+    AGENT_BUDGET_EXHAUSTED = "agent.budget_exhausted"
+
     # --- Reduction-pass audit (commit 9) ---
     # TOOL_DENIED fires whenever a guard refuses a tool call before it
     # reaches the executor: AuthorityGate, VitalGuard, ShellPolicy,
