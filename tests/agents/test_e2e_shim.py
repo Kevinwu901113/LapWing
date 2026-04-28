@@ -111,3 +111,121 @@ async def test_shim_preserves_context_digest_field():
     )
     msg = fake_agent.execute.call_args.args[0]
     assert msg.context_digest == "user wants Y"
+
+
+# ── New-style schema (task / freshness_hint) ──────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_researcher_accepts_task_param():
+    """Primary parameter is now ``task`` (matches the new schema)."""
+    ctx, fake_agent = _make_ctx(agent_name="researcher")
+    await delegate_to_researcher_executor(
+        ToolExecutionRequest(
+            name="delegate_to_researcher",
+            arguments={"task": "今天 LA 天气"},
+        ),
+        ctx,
+    )
+    msg = fake_agent.execute.call_args.args[0]
+    assert msg.content == "今天 LA 天气"
+
+
+@pytest.mark.asyncio
+async def test_researcher_propagates_freshness_hint():
+    ctx, fake_agent = _make_ctx(agent_name="researcher")
+    await delegate_to_researcher_executor(
+        ToolExecutionRequest(
+            name="delegate_to_researcher",
+            arguments={"task": "现在比分", "freshness_hint": "realtime"},
+        ),
+        ctx,
+    )
+    msg = fake_agent.execute.call_args.args[0]
+    assert msg.freshness_hint == "realtime"
+
+
+@pytest.mark.asyncio
+async def test_researcher_freshness_hint_omitted_means_none():
+    ctx, fake_agent = _make_ctx(agent_name="researcher")
+    await delegate_to_researcher_executor(
+        ToolExecutionRequest(
+            name="delegate_to_researcher",
+            arguments={"task": "解释 RAG"},
+        ),
+        ctx,
+    )
+    msg = fake_agent.execute.call_args.args[0]
+    assert msg.freshness_hint is None
+
+
+@pytest.mark.asyncio
+async def test_coder_accepts_task_param():
+    ctx, fake_agent = _make_ctx(agent_name="coder")
+    await delegate_to_coder_executor(
+        ToolExecutionRequest(
+            name="delegate_to_coder",
+            arguments={"task": "写个 hello.py"},
+        ),
+        ctx,
+    )
+    msg = fake_agent.execute.call_args.args[0]
+    assert msg.content == "写个 hello.py"
+
+
+@pytest.mark.asyncio
+async def test_researcher_rejects_empty_task():
+    ctx, _ = _make_ctx(agent_name="researcher")
+    res = await delegate_to_researcher_executor(
+        ToolExecutionRequest(
+            name="delegate_to_researcher",
+            arguments={},
+        ),
+        ctx,
+    )
+    assert res.success is False
+    assert "task" in (res.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_researcher_task_param_takes_precedence_over_request():
+    """When both legacy and new args appear, ``task`` wins."""
+    ctx, fake_agent = _make_ctx(agent_name="researcher")
+    await delegate_to_researcher_executor(
+        ToolExecutionRequest(
+            name="delegate_to_researcher",
+            arguments={"task": "new", "request": "old"},
+        ),
+        ctx,
+    )
+    msg = fake_agent.execute.call_args.args[0]
+    assert msg.content == "new"
+
+
+def test_researcher_schema_advertises_new_shape():
+    """Schema must require ``task`` (not ``request``) and offer the
+    freshness_hint enum, so the LLM sees the new contract.
+    """
+    from src.tools.registry import ToolRegistry
+    from src.tools.agent_tools import register_agent_tools
+    registry = ToolRegistry()
+    register_agent_tools(registry)
+    spec = registry.get("delegate_to_researcher")
+    assert spec is not None
+    schema = spec.json_schema
+    assert schema["required"] == ["task"]
+    assert "task" in schema["properties"]
+    assert "freshness_hint" in schema["properties"]
+    assert schema["properties"]["freshness_hint"]["enum"] == [
+        "realtime", "recent", "anytime",
+    ]
+
+
+def test_coder_schema_advertises_task_param():
+    from src.tools.registry import ToolRegistry
+    from src.tools.agent_tools import register_agent_tools
+    registry = ToolRegistry()
+    register_agent_tools(registry)
+    spec = registry.get("delegate_to_coder")
+    assert spec is not None
+    assert spec.json_schema["required"] == ["task"]

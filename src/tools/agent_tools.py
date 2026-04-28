@@ -1,17 +1,17 @@
-"""Agent Team 工具：delegate_to_researcher + delegate_to_coder + 5 个新 agent 工具。
+"""Agent Team 工具:delegate_to_researcher + delegate_to_coder + 动态 agent 工具。
 
-两层架构：主脑 LLM 通过 tool_call 名称（delegate_to_researcher/coder/agent）
-选择目标 agent；AgentRegistry 按名取实例并执行。Blueprint §7 引入了
-delegate_to_agent + list/create/destroy/save_agent 五个工具，覆盖动态
-agent 的全生命周期；旧的 delegate_to_researcher/coder 暂时保留（Task 12
-将其转为 shim）。
+agents-as-tools 架构(2026-04-29 重构):Lapwing 的外向接口固定为两个具名
+delegate(``delegate_to_researcher`` / ``delegate_to_coder``)。Researcher
+负责所有外部信息检索,Coder 负责所有代码/脚本/文件执行。``delegate_to_agent``
+和 5 个动态 agent 工具(create/destroy/save_agent/list_agents)只在
+TASK_EXECUTION profile 中暴露,用于动态 agent 全生命周期管理。
 
 Module-level side-tables:
-  - ``_ephemeral_run_counts``: 跟踪 ephemeral agent 已运行次数，用于
+  - ``_ephemeral_run_counts``: 跟踪 ephemeral agent 已运行次数,用于
     达到 max_runs 后自动 destroy。
-  - ``_completed_delegations``: 跟踪每个 agent 的成功完成次数，供
+  - ``_completed_delegations``: 跟踪每个 agent 的成功完成次数,供
     save_agent 构造 run_history 给 policy 校验。
-两个表都按 agent name 索引，destroy 时清理。
+两个表都按 agent name 索引,destroy 时清理。
 """
 
 from __future__ import annotations
@@ -129,6 +129,8 @@ async def _run_agent(
     ctx: ToolExecutionContext,
     parent_task_id: str | None = None,
     expected_output: str = "",
+    *,
+    freshness_hint: str | None = None,
 ) -> ToolExecutionResult:
     """直接调度指定 agent 执行任务。Budget-aware via ctx.services['budget_ledger']。"""
     agent_registry = ctx.services.get("agent_registry")
@@ -172,6 +174,7 @@ async def _run_agent(
         context_digest=digest,
         message_type="request",
         parent_task_id=parent_task_id,
+        freshness_hint=freshness_hint,
     )
 
     result: AgentResult | None = None
@@ -229,43 +232,71 @@ async def _run_agent(
     return _serialize_agent_result(result, task_id)
 
 
+def _resolve_delegate_task(args: dict, tool_name: str) -> str:
+    """Pick task text from args. Prefers ``task`` (the new param name);
+    falls back to ``request`` for backward compatibility with persisted
+    plans / older clients that still use the original schema. Logs a
+    deprecation note when only ``request`` is present.
+    """
+    task = (args.get("task") or "").strip()
+    if task:
+        return task
+    legacy = (args.get("request") or "").strip()
+    if legacy:
+        logger.info(
+            "[agent_tools] %s called with legacy `request` arg; "
+            "switch to `task` (deprecated)",
+            tool_name,
+        )
+    return legacy
+
+
 async def delegate_to_researcher_executor(
     req: ToolExecutionRequest, ctx: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    """Compatibility shim — forwards to delegate_to_agent_executor.
+    """Lapwing's primary outward seam for external information.
 
-    Per blueprint §7.4: legacy delegate tools remain registered for any
-    persisted plans / older clients, but the implementation is the new
-    delegate_to_agent path. They're removed from RuntimeProfile.tool_names
-    in Task 13 so the Brain LLM no longer sees them.
+    Used for any question whose answer is not already in Lapwing's own
+    state — weather, scores, news, prices, free-form web queries. The
+    Researcher does the actual searching in its own tool loop and
+    returns a ``{summary, sources}`` payload.
     """
-    return await delegate_to_agent_executor(
-        ToolExecutionRequest(
-            name="delegate_to_agent",
-            arguments={
-                "agent_name": "researcher",
-                "task": req.arguments.get("request", ""),
-                "context": req.arguments.get("context_digest", ""),
-            },
-        ),
-        ctx,
+    args = req.arguments
+    task = _resolve_delegate_task(args, "delegate_to_researcher")
+    if not task:
+        return ToolExecutionResult(
+            success=False, payload={},
+            reason="task 不能为空",
+        )
+    freshness_hint = (args.get("freshness_hint") or "").strip() or None
+    return await _run_agent(
+        agent_name="researcher",
+        request=task,
+        context_digest=args.get("context_digest", "") or args.get("context", ""),
+        ctx=ctx,
+        freshness_hint=freshness_hint,
     )
 
 
 async def delegate_to_coder_executor(
     req: ToolExecutionRequest, ctx: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    """Compatibility shim — forwards to delegate_to_agent_executor."""
-    return await delegate_to_agent_executor(
-        ToolExecutionRequest(
-            name="delegate_to_agent",
-            arguments={
-                "agent_name": "coder",
-                "task": req.arguments.get("request", ""),
-                "context": req.arguments.get("context_digest", ""),
-            },
-        ),
-        ctx,
+    """Lapwing's outward seam for code, scripts, and file work.
+
+    The Coder runs in a sandboxed agent loop and returns the result.
+    """
+    args = req.arguments
+    task = _resolve_delegate_task(args, "delegate_to_coder")
+    if not task:
+        return ToolExecutionResult(
+            success=False, payload={},
+            reason="task 不能为空",
+        )
+    return await _run_agent(
+        agent_name="coder",
+        request=task,
+        context_digest=args.get("context_digest", "") or args.get("context", ""),
+        ctx=ctx,
     )
 
 
@@ -461,28 +492,65 @@ async def save_agent_executor(
 
 
 def register_agent_tools(registry, agent_registry=None) -> None:
-    """注册 7 个 agent 工具：legacy delegate_to_researcher/coder + 新 5 个。"""
+    """Register the agent-team tool surface.
 
-    _DELEGATE_SCHEMA = {
+    Two first-class delegate tools (``delegate_to_researcher`` /
+    ``delegate_to_coder``) are Lapwing's outward seams to the world.
+    The remaining tools manage the dynamic-agent lifecycle for power
+    profiles (TASK_EXECUTION) — the chat surface only sees the two
+    delegates.
+    """
+
+    DELEGATE_RESEARCHER_SCHEMA = {
         "type": "object",
         "properties": {
-            "request": {"type": "string", "description": "你的需求——清晰具体地描述任务"},
+            "task": {
+                "type": "string",
+                "description": "要查的内容——清晰具体地描述你想知道什么",
+            },
+            "freshness_hint": {
+                "type": "string",
+                "enum": ["realtime", "recent", "anytime"],
+                "description": (
+                    "时效要求。"
+                    "realtime = 当前事实(天气/比分/股价/汇率),必须查新;"
+                    "recent = 近期事实(新闻/版本变化),允许短期缓存;"
+                    "anytime = 稳定事实(概念/历史),允许较长缓存。"
+                    "不确定时不填,由 Researcher 自行判断。"
+                ),
+            },
             "context_digest": {
                 "type": "string",
-                "description": "当前对话的背景摘要，帮助 agent 理解上下文",
+                "description": "当前对话的背景摘要(可选)",
             },
         },
-        "required": ["request"],
+        "required": ["task"],
+    }
+
+    DELEGATE_CODER_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "task": {
+                "type": "string",
+                "description": "要执行的任务——清晰具体地描述",
+            },
+            "context_digest": {
+                "type": "string",
+                "description": "当前对话的背景摘要(可选)",
+            },
+        },
+        "required": ["task"],
     }
 
     registry.register(ToolSpec(
         name="delegate_to_researcher",
         description=(
-            "把调研任务交给 Researcher。"
-            "擅长：网络搜索、信息整理、多源综合、写摘要。"
-            "不擅长：写代码、执行脚本、文件操作。"
+            "需要查外部信息时用这个——天气、比分、新闻、搜索、价格、"
+            "任何你不确定或需要实时数据的问题。"
+            "Researcher 会帮你搜索、整理、返回摘要和来源。"
+            "你不需要知道具体用哪个搜索引擎或 API,只需要说清楚你想知道什么。"
         ),
-        json_schema=_DELEGATE_SCHEMA,
+        json_schema=DELEGATE_RESEARCHER_SCHEMA,
         executor=delegate_to_researcher_executor,
         capability="agent",
         risk_level="low",
@@ -492,11 +560,10 @@ def register_agent_tools(registry, agent_registry=None) -> None:
     registry.register(ToolSpec(
         name="delegate_to_coder",
         description=(
-            "把代码任务交给 Coder。"
-            "擅长：写代码、调试、跑脚本、文件读写。"
-            "不擅长：网络搜索、信息调研。"
+            "需要写代码、跑脚本、操作文件时用这个。"
+            "Coder 会在沙箱里执行,返回结果。"
         ),
-        json_schema=_DELEGATE_SCHEMA,
+        json_schema=DELEGATE_CODER_SCHEMA,
         executor=delegate_to_coder_executor,
         capability="agent",
         risk_level="low",
