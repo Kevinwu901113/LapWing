@@ -1512,8 +1512,10 @@ async def test_on_circuit_breaker_open_exception_does_not_break_circuit_behavior
 
 class TestCurrentInfoFallback:
     """Unit tests for the static fallback helper. The gate replaces a model
-    reply when the current-info requirement wasn't satisfied — but only if
-    the model didn't already disclaim uncertainty itself."""
+    reply when the current-info requirement wasn't satisfied — always.
+    Earlier we tried to preserve replies that 'sounded honest', but that
+    let confidently-hedged guesses ('我不确定，但 X 应该没比赛') through.
+    No tool call → unverified → replace, full stop."""
 
     def test_replaces_confident_reply(self):
         out = TaskRuntime._current_info_fallback("道奇赢了 5 比 3", domain="sports")
@@ -1521,9 +1523,19 @@ class TestCurrentInfoFallback:
         assert "赛事信息" in out
         assert "再查一次" in out
 
-    def test_preserves_honest_reply(self):
-        original = "我这边不确定道奇今天有没有比赛，没查到"
-        assert TaskRuntime._current_info_fallback(original, domain="sports") == original
+    def test_replaces_even_self_disclaimed_reply(self):
+        out = TaskRuntime._current_info_fallback(
+            "我不确定，但道奇今天应该没比赛", domain="sports"
+        )
+        assert "道奇" not in out
+        assert "应该没比赛" not in out
+        assert "赛事信息" in out
+
+    def test_fallback_always_replaces_when_no_tool(self):
+        for reply in ("没查到", "我不确定", "无法确认", "肯定的答案", ""):
+            out = TaskRuntime._current_info_fallback(reply, domain="sports")
+            assert out.startswith("我这边没拿到可靠的")
+            assert "赛事信息" in out
 
     def test_unknown_domain_uses_generic_phrasing(self):
         out = TaskRuntime._current_info_fallback("结果是 X", domain=None)

@@ -705,16 +705,11 @@ class TaskRuntime:
         except Exception:
             pass
 
-    # current-info gate fallback: tells the user honestly that the answer
-    # could not be confirmed without a tool call. Preserves replies where
-    # the model already disclaimed uncertainty so we don't flatten a nuanced
-    # answer into a generic apology.
-    _HONEST_FALLBACK_INDICATORS: tuple[str, ...] = (
-        "不确定", "无法确认", "没查到", "没有拿到", "不能确认",
-        "查不到", "没有找到", "暂时无法", "我不确定", "不太确定",
-        "没有可靠", "无法获取",
-    )
-
+    # current-info gate fallback: replaces the model's reply when no
+    # required tool was successfully called. Always replaces — even an
+    # apparently-uncertain reply is unverified, and inspecting the prose
+    # for "honest" markers was just letting confidently hedged guesses
+    # ("我不确定，但 X 应该没比赛") sneak through.
     _DOMAIN_HINT_MAP: dict[str, str] = {
         "sports": "赛事信息",
         "weather": "天气信息",
@@ -724,8 +719,6 @@ class TaskRuntime:
 
     @staticmethod
     def _current_info_fallback(original_reply: str, *, domain: str | None = None) -> str:
-        if any(token in original_reply for token in TaskRuntime._HONEST_FALLBACK_INDICATORS):
-            return original_reply
         domain_hint = TaskRuntime._DOMAIN_HINT_MAP.get(domain or "", "实时信息")
         return (
             f"我这边没拿到可靠的{domain_hint}，不能直接确认。"

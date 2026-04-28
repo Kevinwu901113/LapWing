@@ -42,6 +42,18 @@ _DOMAIN_TOOL_MAP: dict[str, tuple[str, ...]] = {
 class IntentRouter:
     """Classify a user message into a runtime profile + current-info hint."""
 
+    # Cheap keyword sniff used to break a stale chat cache when the user
+    # pivots to a real-time question. Cached chat_minimal/chat_extended
+    # decisions don't carry a current_info_domain, so without this a
+    # follow-up "道奇今天比赛" would inherit the previous turn's
+    # requires_current_info=False and slip past the gate.
+    _CURRENT_INFO_HINTS: frozenset[str] = frozenset({
+        "今天", "现在", "今晚", "刚才", "最新", "新闻", "天气", "比分",
+        "赛况", "比赛", "赢了", "输了", "价格", "股价", "汇率",
+        "道奇", "dodgers", "湖人", "lakers", "mlb", "nba", "nfl",
+        "weather", "score", "price",
+    })
+
     def __init__(self, llm_router: Any, session_ttl_seconds: int | None = None) -> None:
         self._llm_router = llm_router
         self._ttl = session_ttl_seconds or INTENT_ROUTER_SESSION_TTL_SECONDS
@@ -54,6 +66,8 @@ class IntentRouter:
             if (now() - ts).total_seconds() < self._ttl:
                 if self._is_obvious_task(user_message) and decision.profile_name != "task_execution":
                     pass  # fall through to re-classify
+                elif self._looks_like_current_info(user_message) and not decision.requires_current_info:
+                    pass  # cached decision predates a current-info pivot — re-classify
                 else:
                     return decision
 
@@ -76,6 +90,10 @@ class IntentRouter:
         ]
         lowered = msg.lower()
         return any(item in lowered for item in task_indicators)
+
+    def _looks_like_current_info(self, msg: str) -> bool:
+        lowered = msg.lower()
+        return any(hint in lowered for hint in self._CURRENT_INFO_HINTS)
 
     async def _llm_classify(self, msg: str) -> RouteDecision:
         prompt = f"""判断这条消息属于哪类需求。
@@ -133,6 +151,11 @@ task none
             profile = "chat_extended"
 
         if domain in _DOMAIN_TOOL_MAP:
+            # Real-time queries always need at least the chat_extended tool
+            # surface (research, get_sports_score, ...). chat_minimal would
+            # leave the model with no way to satisfy the gate.
+            if profile == "chat_minimal":
+                profile = "chat_extended"
             return RouteDecision(
                 profile_name=profile,
                 requires_current_info=True,

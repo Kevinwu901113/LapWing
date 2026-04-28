@@ -170,6 +170,25 @@ async def test_session_stickiness_with_current_info():
 
 
 @pytest.mark.asyncio
+async def test_current_info_breaks_chat_cache():
+    """A cached chat decision (no current_info) must not silently swallow
+    a follow-up real-time question. The keyword sniff in route() should
+    force a re-classification when the new message looks like sports/
+    weather/news/price even though the cache says plain chat."""
+    router = AsyncMock()
+    router.complete.side_effect = ["chat none", "chat_extended sports"]
+    intent = IntentRouter(router)
+
+    d1 = await intent.route("chat_1", "你好")
+    assert d1.requires_current_info is False
+
+    d2 = await intent.route("chat_1", "道奇今天比赛怎么样")
+    assert d2.requires_current_info is True
+    assert d2.current_info_domain == "sports"
+    assert router.complete.call_count == 2
+
+
+@pytest.mark.asyncio
 async def test_obvious_task_breaks_session_stickiness():
     router = AsyncMock()
     router.complete.side_effect = ["chat none", "task none"]
@@ -211,3 +230,15 @@ def test_parse_decision_empty():
     d = router._parse_decision("")
     assert d.profile_name == "chat_extended"
     assert d.requires_current_info is False
+
+
+def test_domain_forces_profile_upgrade():
+    """If the LLM picks chat_minimal but the domain needs a real tool, the
+    profile must be upgraded to chat_extended — chat_minimal exposes
+    nothing that can satisfy the gate, so leaving it would guarantee the
+    fallback fires every time."""
+    router = IntentRouter(llm_router=AsyncMock())
+    d = router._parse_decision("chat sports")
+    assert d.profile_name == "chat_extended"
+    assert d.requires_current_info is True
+    assert d.current_info_domain == "sports"
