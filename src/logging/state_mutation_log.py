@@ -154,6 +154,20 @@ class MutationType(str, Enum):
     #    "target": str}
     PROACTIVE_MESSAGE_DECISION = "proactive_message.decision"
 
+    # --- Memory wiki layer (Phase 2+) ---
+    # All wiki write paths funnel through wiki_store.apply_patch();
+    # these events let us audit every page change without re-reading
+    # the markdown files. Payloads are documented next to the emitter
+    # in wiki_store.py.
+    MEMORY_WIKI_PATCH_CREATED = "memory.wiki_patch_created"
+    MEMORY_WIKI_PATCH_APPLIED = "memory.wiki_patch_applied"
+    MEMORY_WIKI_PATCH_REJECTED = "memory.wiki_patch_rejected"
+    MEMORY_WIKI_PAGE_CREATED = "memory.wiki_page_created"
+    MEMORY_WIKI_PAGE_UPDATED = "memory.wiki_page_updated"
+    MEMORY_WIKI_LINT_RESULT = "memory.wiki_lint_result"
+    MEMORY_ENTITY_ALIAS_UPDATED = "memory.entity_alias_updated"
+    MEMORY_WIKI_GUARD_BLOCKED = "memory.wiki_guard_blocked"
+
 
 @dataclass
 class Mutation:
