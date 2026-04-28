@@ -34,10 +34,18 @@ class _FakeWorkingSet:
         self._snippets = snippets or ()
         self.captured_query = None
         self.captured_top_k = None
+        self.captured_wiki_entities = None
 
-    async def retrieve(self, query_text: str, *, top_k: int = 10):
+    async def retrieve(
+        self,
+        query_text: str,
+        *,
+        top_k: int = 10,
+        wiki_entities=None,
+    ):
         self.captured_query = query_text
         self.captured_top_k = top_k
+        self.captured_wiki_entities = wiki_entities
         return MemorySnippets(snippets=tuple(self._snippets))
 
 
@@ -94,9 +102,11 @@ class TestBuildForChat:
             "desk",
             trajectory_turns_override=(),
         )
-        # No turns → no query → WorkingSet not called → empty snippets.
+        # No turns → empty query string. Wiki injection still runs at
+        # owner auth_level so the call happens with query_text="".
         assert view.memory_snippets.snippets == ()
-        assert ws.captured_query is None
+        assert ws.captured_query == ""
+        assert ws.captured_wiki_entities == ["entity.kevin", "entity.lapwing"]
 
     async def test_system_turns_excluded_from_query(self, tmp_path):
         ws = _FakeWorkingSet()

@@ -647,6 +647,10 @@ class AppContainer:
             EPISODIC_EXTRACT_MIN_TURNS,
             EPISODIC_EXTRACT_WINDOW_SIZE,
             MEMORY_DIR,
+            MEMORY_WIKI_CONTEXT_BUDGET_RATIO,
+            MEMORY_WIKI_CONTEXT_ENABLED,
+            MEMORY_WIKI_DIR,
+            MEMORY_WIKI_ENABLED,
             MEMORY_WORKING_SET_TOP_K,
             SEMANTIC_DISTILL_DEDUP_THRESHOLD,
             SEMANTIC_DISTILL_ENABLED,
@@ -677,6 +681,9 @@ class AppContainer:
         self.brain._working_set = WorkingSet(
             episodic_store=episodic_store,
             semantic_store=semantic_store,
+            wiki_dir=MEMORY_WIKI_DIR,
+            wiki_enabled=(MEMORY_WIKI_ENABLED and MEMORY_WIKI_CONTEXT_ENABLED),
+            wiki_budget_ratio=MEMORY_WIKI_CONTEXT_BUDGET_RATIO,
         )
         self.brain.state_view_builder._working_set = self.brain._working_set
         self.brain.state_view_builder._memory_top_k = MEMORY_WORKING_SET_TOP_K

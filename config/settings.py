@@ -113,6 +113,16 @@ EPISODIC_EXTRACT_WINDOW_SIZE: int = _s.memory.episodic_extract_window_size
 SEMANTIC_DISTILL_ENABLED: bool = _s.memory.semantic_distill_enabled
 SEMANTIC_DISTILL_EPISODES_WINDOW: int = _s.memory.semantic_distill_episodes_window
 SEMANTIC_DISTILL_DEDUP_THRESHOLD: float = _s.memory.semantic_distill_dedup_threshold
+
+# ── Memory wiki layer (Phase 1+) ────────────
+MEMORY_WIKI_ENABLED: bool = _s.memory.wiki.enabled
+MEMORY_WIKI_CONTEXT_ENABLED: bool = _s.memory.wiki.context_enabled
+MEMORY_WIKI_WRITE_ENABLED: bool = _s.memory.wiki.write_enabled
+MEMORY_WIKI_GATE_ENABLED: bool = _s.memory.wiki.gate_enabled
+MEMORY_WIKI_LINT_ENABLED: bool = _s.memory.wiki.lint_enabled
+MEMORY_WIKI_DIR: Path = ROOT_DIR / _s.memory.wiki.wiki_dir
+MEMORY_WIKI_CONTEXT_BUDGET_RATIO: float = _s.memory.wiki.context_budget_ratio
+
 AGENT_TEAM_ENABLED: bool = _s.agent_team.enabled
 SKILL_SYSTEM_ENABLED: bool = _s.skill.enabled
 SKILL_SANDBOX_IMAGE: str = _s.skill.sandbox_image

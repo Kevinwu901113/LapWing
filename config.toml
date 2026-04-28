@@ -59,6 +59,17 @@ semantic_distill_episodes_window = 20
 semantic_distill_dedup_threshold = 0.85
 working_set_top_k = 10
 
+[memory.wiki]
+# Phase 1: read-only injection of wiki pages into working set context.
+# write_enabled stays false until Phase 2 has been validated.
+enabled = true
+context_enabled = true
+write_enabled = false
+gate_enabled = true
+lint_enabled = false
+wiki_dir = "data/memory/wiki"
+context_budget_ratio = 0.40
+
 [shell]
 enabled = true
 # Sudo is denied by default. Enabling it requires both flipping this flag

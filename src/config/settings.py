@@ -133,6 +133,14 @@ _ENV_MAP: dict[str, list[str]] = {
     "SEMANTIC_DISTILL_ENABLED": ["memory", "semantic_distill_enabled"],
     "SEMANTIC_DISTILL_EPISODES_WINDOW": ["memory", "semantic_distill_episodes_window"],
     "SEMANTIC_DISTILL_DEDUP_THRESHOLD": ["memory", "semantic_distill_dedup_threshold"],
+    # ── memory.wiki ──
+    "MEMORY_WIKI_ENABLED": ["memory", "wiki", "enabled"],
+    "MEMORY_WIKI_CONTEXT_ENABLED": ["memory", "wiki", "context_enabled"],
+    "MEMORY_WIKI_WRITE_ENABLED": ["memory", "wiki", "write_enabled"],
+    "MEMORY_WIKI_GATE_ENABLED": ["memory", "wiki", "gate_enabled"],
+    "MEMORY_WIKI_LINT_ENABLED": ["memory", "wiki", "lint_enabled"],
+    "MEMORY_WIKI_DIR": ["memory", "wiki", "wiki_dir"],
+    "MEMORY_WIKI_CONTEXT_BUDGET_RATIO": ["memory", "wiki", "context_budget_ratio"],
     # ── shell ──
     "SHELL_ENABLED": ["shell", "enabled"],
     "SHELL_ALLOW_SUDO": ["shell", "allow_sudo"],
@@ -337,6 +345,22 @@ class MessageConfig(BaseModel):
     buffer_seconds: float = 4.0
 
 
+class MemoryWikiConfig(BaseModel):
+    """Wiki layer (Phase 1+) — controlled rollout via flags.
+
+    Phase 1 ships read-only injection; ``write_enabled`` stays off until
+    Phase 2. ``context_budget_ratio`` is the Phase 1 hard ceiling; Phase 3
+    replaces it with a dynamic allocator.
+    """
+    enabled: bool = True
+    context_enabled: bool = True
+    write_enabled: bool = False
+    gate_enabled: bool = True
+    lint_enabled: bool = False
+    wiki_dir: str = "data/memory/wiki"
+    context_budget_ratio: float = Field(default=0.40, ge=0.0, le=1.0)
+
+
 class MemoryConfig(BaseModel):
     episodic_extract_enabled: bool = True
     episodic_extract_min_turns: int = 3
@@ -345,6 +369,7 @@ class MemoryConfig(BaseModel):
     semantic_distill_episodes_window: int = 20
     semantic_distill_dedup_threshold: float = 0.85
     working_set_top_k: int = 10
+    wiki: MemoryWikiConfig = Field(default_factory=MemoryWikiConfig)
 
 
 class ShellConfig(BaseModel):
