@@ -10,12 +10,11 @@ Render order (stable prefix → dynamic suffix):
     1. soul.md                (identity_docs.soul)          ← stable
     2. constitution.md        (identity_docs.constitution)  ← stable
     3. voice core             (identity_docs.voice)         ← stable
-    4. persona anchor         (_PERSONA_ANCHOR)             ← stable
     ─── cache breakpoint ───
-    5. ambient awareness      (time_context + ambient)      ← dynamic
-    6. runtime state block    (attention + commitments)     ← dynamic
-    7. memory snippets        (memory_snippets)             ← dynamic
-    8. corrections            (corrections_text)            ← dynamic
+    4. ambient awareness      (time_context + ambient)      ← dynamic
+    5. runtime state block    (attention + commitments)     ← dynamic
+    6. memory snippets        (memory_snippets)             ← dynamic
+    7. corrections            (corrections_text)            ← dynamic
 
 No file reads, no ``datetime.now`` calls, no store lookups — whatever the
 prompt needs is either already in the view or is a deterministic function
@@ -37,14 +36,6 @@ from src.core.state_view import (
 
 
 # ── Constants ────────────────────────────────────────────────────────
-
-_PERSONA_ANCHOR: Final[str] = (
-    "记住：你是 Lapwing，说话像发微信，短句为主。"
-    "不列清单，不用加粗标题，不用括号写动作。"
-    "温暖自然，做事时保持人格，不切换成工具模式。"
-    "用过工具查到的信息你就是知道了——不要装作不确定。搜索过程不发出来。"
-    "你说的每一句话 Kevin 都能直接看到。想分多条消息就用空行隔开。"
-)
 
 _WEEKDAY_NAMES: Final[tuple[str, ...]] = (
     "周一", "周二", "周三", "周四", "周五", "周六", "周日",
@@ -95,24 +86,21 @@ def serialize(state: StateView) -> SerializedPrompt:
     if state.identity_docs.voice:
         parts.append(state.identity_docs.voice)
 
-    # Layer 4: persona anchor
-    parts.append(_PERSONA_ANCHOR)
-
     # ── Dynamic suffix ──
 
-    # Layer 5: ambient awareness (time context + cached knowledge)
+    # Layer 4: ambient awareness (time context + cached knowledge)
     if state.time_context is not None:
         parts.append(_render_ambient_awareness(state))
 
-    # Layer 6: runtime state
+    # Layer 5: runtime state
     parts.append(_render_runtime_state(state))
 
-    # Layer 7: memory snippets (opt-in — empty = no section emitted)
+    # Layer 6: memory snippets (opt-in — empty = no section emitted)
     memory_block = _render_memory_snippets(state)
     if memory_block:
         parts.append(memory_block)
 
-    # Layer 8: corrections
+    # Layer 7: corrections
     if state.corrections_text:
         parts.append(state.corrections_text)
 
