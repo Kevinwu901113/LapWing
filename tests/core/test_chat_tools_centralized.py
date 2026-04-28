@@ -69,9 +69,11 @@ class TestProfileExists:
         assert "set_reminder" in names
         assert "view_reminders" in names
         assert "cancel_reminder" in names
-        # Delegation
-        assert "delegate_to_researcher" in names
-        assert "delegate_to_coder" in names
+        # Delegation (Blueprint §10.1 — legacy tools dropped, new tools added)
+        assert "delegate_to_agent" in names
+        assert "list_agents" in names
+        assert "delegate_to_researcher" not in names
+        assert "delegate_to_coder" not in names
         # Commitments
         assert "commit_promise" in names
         assert "fulfill_promise" in names
@@ -121,7 +123,7 @@ class TestChatToolsResolvesViaProfile:
             assert n in names
         # And the profile names are still there
         assert "send_message" in names
-        assert "delegate_to_researcher" in names
+        assert "delegate_to_agent" in names
 
     @pytest.mark.asyncio
     async def test_chat_tools_layers_web_on_top(self):

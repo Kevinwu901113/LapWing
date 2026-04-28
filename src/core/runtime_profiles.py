@@ -48,13 +48,14 @@ CHAT_MINIMAL_PROFILE = RuntimeProfile(
 
 CHAT_EXTENDED_PROFILE = RuntimeProfile(
     name="chat_extended",
-    capabilities=frozenset({"general", "memory", "web", "schedule", "skill", "commitment"}),
+    capabilities=frozenset({"general", "memory", "schedule", "skill", "commitment"}),
     tool_names=frozenset({
         "get_current_datetime",
         "add_correction",
-        "research",
+        # research/browse moved to agent delegation (Blueprint §10.2 mutual
+        # exclusion). get_sports_score stays — it's a specialized real-time
+        # query, not multi-step research.
         "get_sports_score",
-        "browse",
         "set_reminder",
         "view_reminders",
         "cancel_reminder",
@@ -72,6 +73,9 @@ CHAT_EXTENDED_PROFILE = RuntimeProfile(
         # action, not something the chat surface should do mid-conversation.
         # run_skill stays, gated by an approval check (see commit 3).
         "run_skill",
+        # Agent delegation (Blueprint §10.1)
+        "delegate_to_agent",
+        "list_agents",
     }),
     include_internal=False,
     shell_policy_enabled=False,
@@ -128,11 +132,16 @@ TASK_EXECUTION_PROFILE = RuntimeProfile(
         "general", "browser", "commitment", "agent", "file",
         "code", "verify", "identity",
     }),
-    # task_execution 必须走 Agent Team 的 delegate_to_* 来做调研，
+    # task_execution 必须走 Agent Team 的 delegate_to_agent 来做调研，
     # 避免主脑直接调 research/browse 而绕过 Researcher 的多步推理。
     # send_message 是 proactive-only 出口（见 _send_message hard reject），
     # task_execution 的 turn 内回复仍然是 bare assistant text。
-    exclude_tool_names=frozenset({"research", "browse", "send_message"}),
+    # Legacy delegate_to_researcher / delegate_to_coder are kept as compatibility
+    # shims (Task 12) but hidden from the LLM via this exclude list.
+    exclude_tool_names=frozenset({
+        "research", "browse", "send_message",
+        "delegate_to_researcher", "delegate_to_coder",
+    }),
     include_internal=False,
     shell_policy_enabled=True,
 )
@@ -213,9 +222,9 @@ COMPOSE_PROACTIVE_PROFILE = RuntimeProfile(
         "set_reminder",
         "view_reminders",
         "cancel_reminder",
-        # heavy lifting via delegation
-        "delegate_to_researcher",
-        "delegate_to_coder",
+        # heavy lifting via delegation (Blueprint §10.1)
+        "delegate_to_agent",
+        "list_agents",
         # commitments
         "commit_promise",
         "fulfill_promise",

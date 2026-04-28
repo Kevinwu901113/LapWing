@@ -26,7 +26,7 @@ from src.tools.types import ToolExecutionRequest, ToolExecutionResult, ToolSpec
 
 
 _RESEARCH_NAMES = {"research", "browse"}
-_DELEGATE_NAMES = {"delegate_to_researcher", "delegate_to_coder"}
+_DELEGATE_NAMES = {"delegate_to_researcher", "delegate_to_coder", "delegate_to_agent"}
 
 
 async def _noop_executor(req: ToolExecutionRequest, ctx) -> ToolExecutionResult:
@@ -53,9 +53,14 @@ def _make_full_registry() -> ToolRegistry:
     # research 系
     registry.register(_spec("research", "web"))
     registry.register(_spec("browse", "browser"))
-    # delegate 系
+    # delegate 系 (legacy shims + new dynamic agent tools — Blueprint §7)
     registry.register(_spec("delegate_to_researcher", "agent"))
     registry.register(_spec("delegate_to_coder", "agent"))
+    registry.register(_spec("delegate_to_agent", "agent"))
+    registry.register(_spec("list_agents", "agent"))
+    registry.register(_spec("create_agent", "agent"))
+    registry.register(_spec("destroy_agent", "agent"))
+    registry.register(_spec("save_agent", "agent"))
     # 其他被 profile 直接引用的工具
     extras = [
         ("get_current_datetime", "general"),
@@ -119,36 +124,53 @@ def _resolve_tool_names(registry: ToolRegistry, profile) -> set[str]:
 
 
 class TestProfileExclusivity:
-    def test_chat_extended_has_research_no_delegate(self):
+    def test_chat_extended_has_delegate_to_agent_no_research(self):
+        """Per Blueprint §10: chat_extended now goes through delegate_to_agent
+        for research instead of exposing raw research/browse."""
         registry = _make_full_registry()
         names = _resolve_tool_names(registry, CHAT_EXTENDED_PROFILE)
-        assert "research" in names
-        assert "browse" in names
+        assert "delegate_to_agent" in names
+        assert "list_agents" in names
+        # Legacy raw research tools and create/destroy/save not exposed at chat tier
+        assert "research" not in names
+        assert "browse" not in names
+        for forbidden in ("create_agent", "destroy_agent", "save_agent",
+                          "delegate_to_researcher", "delegate_to_coder"):
+            assert forbidden not in names, f"chat_extended must not expose {forbidden}"
+
+    def test_task_execution_has_all_five_dynamic_agent_tools(self):
+        """T-12: TASK_EXECUTION exposes delegate_to_agent + list_agents +
+        create_agent + destroy_agent + save_agent."""
+        registry = _make_full_registry()
+        names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
+        for required in ("delegate_to_agent", "list_agents", "create_agent",
+                         "destroy_agent", "save_agent"):
+            assert required in names, f"task_execution must expose {required}"
+        # Raw research stays gated; legacy delegate shims hidden.
+        assert "research" not in names
+        assert "browse" not in names
         assert "delegate_to_researcher" not in names
         assert "delegate_to_coder" not in names
 
-    def test_task_execution_has_delegate_no_research(self):
-        registry = _make_full_registry()
-        names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
-        assert "delegate_to_researcher" in names
-        assert "delegate_to_coder" in names
-        assert "research" not in names, (
-            "task_execution 应通过 delegate_to_researcher 走 Agent Team，"
-            "不应让主脑直接调 research"
-        )
-        assert "browse" not in names
-
-    def test_chat_minimal_has_neither(self):
+    def test_chat_minimal_has_no_agent_tools(self):
+        """T-12: chat_minimal exposes none of the agent tools."""
         registry = _make_full_registry()
         names = _resolve_tool_names(registry, CHAT_MINIMAL_PROFILE)
-        for n in _RESEARCH_NAMES | _DELEGATE_NAMES:
+        for n in _RESEARCH_NAMES | _DELEGATE_NAMES | {
+            "create_agent", "destroy_agent", "save_agent", "list_agents",
+        }:
             assert n not in names, f"chat_minimal 不应暴露 {n}"
 
     def test_no_profile_exposes_research_and_delegate_simultaneously(self):
-        """全部 profile 扫一遍，断言不变量：不能同时持有两类工具。"""
+        """Blueprint §10.2: research/browse mutually exclusive with delegate_to_agent.
+        Exception: AGENT_RESEARCHER_PROFILE keeps research/browse — that's the
+        agent's own surface, not the brain's.
+        """
         registry = _make_full_registry()
         violations: list[str] = []
         for pname, profile in _PROFILES.items():
+            if pname == "agent_researcher":
+                continue  # exempt — agent's own profile
             names = _resolve_tool_names(registry, profile)
             has_raw = bool(names & _RESEARCH_NAMES)
             has_delegate = bool(names & _DELEGATE_NAMES)

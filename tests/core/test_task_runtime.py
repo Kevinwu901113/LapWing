@@ -116,7 +116,12 @@ async def test_chat_tools_from_registry():
     assert {"execute_shell", "read_file", "write_file"}.issubset(names)
     assert {"get_time", "send_message", "send_image", "view_image"}.issubset(names)
     assert {"set_reminder", "view_reminders", "cancel_reminder"}.issubset(names)
-    assert {"research", "browse", "delegate_to_researcher", "delegate_to_coder"}.issubset(names)
+    # research/browse layered on by chat_tools when web_enabled=True (default).
+    # Legacy delegate_to_researcher/coder removed from COMPOSE_PROACTIVE per
+    # Blueprint §10.1; replaced by delegate_to_agent + list_agents.
+    assert {"research", "browse", "delegate_to_agent", "list_agents"}.issubset(names)
+    assert "delegate_to_researcher" not in names
+    assert "delegate_to_coder" not in names
     # `get_weather` + `image_search` are gone from the whitelist (Step 1i)
     assert "get_weather" not in names
     assert "image_search" not in names
