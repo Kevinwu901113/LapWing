@@ -35,50 +35,69 @@ CHAT_SHELL_PROFILE = RuntimeProfile(
     shell_policy_enabled=True,
 )
 
-CHAT_MINIMAL_PROFILE = RuntimeProfile(
-    name="chat_minimal",
-    capabilities=frozenset({"general"}),
+# ── agents-as-tools refactor (2026-04-29): zero_tools / standard ────
+# ZERO_TOOLS is the pure-text reply path — IntentRouter routes pure
+# chitchat here so the model skips the OpenAI tool-call protocol
+# entirely. STANDARD is Lapwing's full self-capability surface; every
+# external seam goes through delegate_to_researcher / delegate_to_coder.
+
+ZERO_TOOLS_PROFILE = RuntimeProfile(
+    name="zero_tools",
+    capabilities=frozenset(),
+    tool_names=frozenset(),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
+STANDARD_PROFILE = RuntimeProfile(
+    name="standard",
+    capabilities=frozenset(),
     tool_names=frozenset({
-        "get_current_datetime",
+        # ── memory ──
+        "recall", "write_note", "read_note", "list_notes", "search_notes",
+        # ── time ──
+        "get_current_datetime", "convert_timezone",
+        # ── reminders ──
+        "set_reminder", "view_reminders", "cancel_reminder",
+        # ── promises ──
+        "commit_promise", "fulfill_promise", "abandon_promise",
+        # ── self-correction ──
         "add_correction",
+        # ── conversation focus ──
+        "close_focus", "recall_focus",
+        # ── outward seams (the only edges out to the world) ──
+        "delegate_to_researcher", "delegate_to_coder",
+        # ── skills ──
+        "run_skill",
+        # ── planning ──
+        "plan_task", "update_plan",
+        # send_message intentionally excluded — proactive-only, see
+        # COMPOSE_PROACTIVE_PROFILE / INNER_TICK_PROFILE.
     }),
     include_internal=False,
     shell_policy_enabled=False,
 )
 
+
+# Legacy aliases — same tool surface as the new profiles, but the
+# legacy ``name`` is preserved so older callers / tests that compare
+# ``profile.name == "chat_minimal"`` keep working. Both keys are
+# registered in _PROFILES so resolution works either way. Removed in
+# the cleanup commit at the end of this refactor.
+CHAT_MINIMAL_PROFILE = RuntimeProfile(
+    name="chat_minimal",
+    capabilities=ZERO_TOOLS_PROFILE.capabilities,
+    tool_names=ZERO_TOOLS_PROFILE.tool_names,
+    include_internal=ZERO_TOOLS_PROFILE.include_internal,
+    shell_policy_enabled=ZERO_TOOLS_PROFILE.shell_policy_enabled,
+)
+
 CHAT_EXTENDED_PROFILE = RuntimeProfile(
     name="chat_extended",
-    capabilities=frozenset({"general", "memory", "schedule", "skill", "commitment"}),
-    tool_names=frozenset({
-        "get_current_datetime",
-        "add_correction",
-        # research/browse moved to agent delegation (Blueprint §10.2 mutual
-        # exclusion). get_sports_score stays — it's a specialized real-time
-        # query, not multi-step research.
-        "get_sports_score",
-        "set_reminder",
-        "view_reminders",
-        "cancel_reminder",
-        "commit_promise",
-        "fulfill_promise",
-        "abandon_promise",
-        "close_focus",
-        "recall_focus",
-        "recall",
-        "write_note",
-        "read_note",
-        "list_notes",
-        "search_notes",
-        # create_skill removed: skill authoring is a deliberate, reviewed
-        # action, not something the chat surface should do mid-conversation.
-        # run_skill stays, gated by an approval check (see commit 3).
-        "run_skill",
-        # Agent delegation (Blueprint §10.1)
-        "delegate_to_agent",
-        "list_agents",
-    }),
-    include_internal=False,
-    shell_policy_enabled=False,
+    capabilities=STANDARD_PROFILE.capabilities,
+    tool_names=STANDARD_PROFILE.tool_names,
+    include_internal=STANDARD_PROFILE.include_internal,
+    shell_policy_enabled=STANDARD_PROFILE.shell_policy_enabled,
 )
 
 # Inner-tick profile: autonomous self-initiated thinking pulses.
@@ -125,22 +144,22 @@ INNER_TICK_PROFILE = RuntimeProfile(
     shell_policy_enabled=False,
 )
 
+# TEMPORARY LEGACY ESCAPE HATCH (Step 1 only).
+# task_execution still aggregates shell/browser/file capabilities so
+# specific power flows can run. This is *not* the target architecture
+# — Step 2 must migrate the execution tools to Coder, at which point
+# task_execution either becomes a thin alias for STANDARD or is
+# deleted. send_message stays excluded (proactive-only) and raw web
+# retrieval stays out (goes through delegate_to_researcher).
 TASK_EXECUTION_PROFILE = RuntimeProfile(
     name="task_execution",
     capabilities=frozenset({
-        "shell", "web", "skill", "memory", "schedule",
+        "shell", "skill", "memory", "schedule",
         "general", "browser", "commitment", "agent", "file",
         "code", "verify", "identity",
     }),
-    # task_execution 必须走 Agent Team 的 delegate_to_agent 来做调研，
-    # 避免主脑直接调 research/browse 而绕过 Researcher 的多步推理。
-    # send_message 是 proactive-only 出口（见 _send_message hard reject），
-    # task_execution 的 turn 内回复仍然是 bare assistant text。
-    # Legacy delegate_to_researcher / delegate_to_coder are kept as compatibility
-    # shims (Task 12) but hidden from the LLM via this exclude list.
     exclude_tool_names=frozenset({
-        "research", "browse", "send_message",
-        "delegate_to_researcher", "delegate_to_coder",
+        "research", "browse", "get_sports_score", "send_message",
     }),
     include_internal=False,
     shell_policy_enabled=True,
@@ -222,9 +241,9 @@ COMPOSE_PROACTIVE_PROFILE = RuntimeProfile(
         "set_reminder",
         "view_reminders",
         "cancel_reminder",
-        # heavy lifting via delegation (Blueprint §10.1)
-        "delegate_to_agent",
-        "list_agents",
+        # outward seams (the only edges out to the world)
+        "delegate_to_researcher",
+        "delegate_to_coder",
         # commitments
         "commit_promise",
         "fulfill_promise",
@@ -245,6 +264,8 @@ _PROFILES = {
     profile.name: profile
     for profile in (
         CHAT_SHELL_PROFILE,
+        ZERO_TOOLS_PROFILE,
+        STANDARD_PROFILE,
         CHAT_MINIMAL_PROFILE,
         CHAT_EXTENDED_PROFILE,
         INNER_TICK_PROFILE,
