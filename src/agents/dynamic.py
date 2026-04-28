@@ -28,7 +28,12 @@ class DynamicAgent(BaseAgent):
         services: dict[str, Any] | None = None,
     ):
         # Adapt the new AgentSpec to a LegacyAgentSpec so BaseAgent can consume it.
-        # Task 8 may revisit this if BaseAgent grows native AgentSpec support.
+        # NOTE: only the fields BaseAgent already understands are mapped here.
+        # Tasks 8 & 9 read the remaining resource_limits fields directly off
+        # self.dynamic_spec.resource_limits — specifically max_llm_calls and
+        # max_child_agents are NOT mirrored into the legacy spec because
+        # BaseAgent has no concept of them. Enforcement happens via
+        # BudgetLedger / runtime denylist, not via the legacy spec.
         legacy = LegacyAgentSpec(
             name=spec.name,
             description=spec.description,
@@ -41,5 +46,6 @@ class DynamicAgent(BaseAgent):
             timeout_seconds=spec.resource_limits.max_wall_time_seconds,
         )
         super().__init__(legacy, llm_router, tool_registry, mutation_log, services)
-        # Keep the new spec accessible for the runtime denylist check (Task 8).
+        # Keep the new spec accessible for the runtime denylist check (Task 8)
+        # and the budget hooks (Task 9 reads dynamic_spec.resource_limits).
         self.dynamic_spec = spec

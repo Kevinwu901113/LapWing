@@ -7,6 +7,9 @@ import os
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
+from src.agents.coder import Coder
+from src.agents.dynamic import DynamicAgent
+from src.agents.researcher import Researcher
 from src.agents.spec import AgentSpec, DYNAMIC_AGENT_DENYLIST
 from src.core.runtime_profiles import RuntimeProfile, get_runtime_profile
 
@@ -50,12 +53,10 @@ class AgentFactory:
 
     def _create_builtin(self, spec: AgentSpec) -> "BaseAgent":
         if spec.name == "researcher":
-            from src.agents.researcher import Researcher
             return Researcher.create(
                 self.llm_router, self.tool_registry, self.mutation_log
             )
         if spec.name == "coder":
-            from src.agents.coder import Coder
             return Coder.create(
                 self.llm_router, self.tool_registry, self.mutation_log
             )
@@ -63,10 +64,11 @@ class AgentFactory:
 
     def _create_dynamic(self, spec: AgentSpec) -> "BaseAgent":
         profile = self._resolve_profile(spec)
+        # Side effect: create the workspace dir on disk so shell_default_cwd
+        # is valid before BaseAgent runs any shell tool.
         workspace = os.path.join(DYNAMIC_AGENT_WORKSPACE_ROOT, spec.id)
         os.makedirs(workspace, exist_ok=True)
         services: dict[str, Any] = {"shell_default_cwd": workspace}
-        from src.agents.dynamic import DynamicAgent
         return DynamicAgent(
             spec=spec,
             profile=profile,
