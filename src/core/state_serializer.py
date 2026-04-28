@@ -164,6 +164,11 @@ def _render_runtime_state(state: StateView) -> str:
             f"（{att.actor_id}，权限：{level_name}）"
         )
 
+    # Available agents (Blueprint §9.3 — render before commitments).
+    if state.agent_summary:
+        lines.append("")
+        lines.append(state.agent_summary)
+
     # Due reminders (commitments with kind=reminder)
     reminder_lines = [
         f"  - {c.description}（{c.due_at or ''}）"

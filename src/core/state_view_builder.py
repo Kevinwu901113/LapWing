@@ -92,6 +92,7 @@ class StateViewBuilder:
         inner_history_turns: int = 50,
         memory_top_k: int = 10,
         memory_query_chat_turns: int = 3,
+        agent_registry=None,  # Blueprint §9.1: optional, for compact agent list
     ) -> None:
         self._soul_path = Path(soul_path)
         self._constitution_path = Path(constitution_path)
@@ -114,6 +115,7 @@ class StateViewBuilder:
         self._skill_store = None  # set by container when skill system is enabled
         self._ambient: AmbientKnowledgeStore | None = None
         self._time_provider = TimeContextProvider()
+        self._agent_registry = agent_registry  # Blueprint §9: AgentRegistry facade
 
     # ── Entry points ─────────────────────────────────────────────────
 
@@ -166,6 +168,7 @@ class StateViewBuilder:
             time_context=time_context,
             ambient_entries=ambient_entries,
             focus_context=focus_context,
+            agent_summary=self._build_agent_summary(),
         )
 
     async def build_for_inner(
@@ -211,7 +214,24 @@ class StateViewBuilder:
             time_context=time_context,
             ambient_entries=ambient_entries,
             focus_context=focus_context,
+            agent_summary=self._build_agent_summary(),
         )
+
+    # ── Agents ───────────────────────────────────────────────────────
+
+    def _build_agent_summary(self) -> str | None:
+        """Compact agent list for StateView injection (Blueprint §9).
+
+        Sync method — AgentRegistry.render_agent_summary_for_stateview()
+        only reads in-memory state (builtins + active session/ephemeral
+        specs), never the catalog DB.
+        """
+        if self._agent_registry is None:
+            return None
+        try:
+            return self._agent_registry.render_agent_summary_for_stateview()
+        except Exception:
+            return None
 
     # ── Identity ─────────────────────────────────────────────────────
 

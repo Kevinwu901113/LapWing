@@ -203,6 +203,9 @@ class StateView:
     time_context: TimeContext | None = None
     ambient_entries: tuple[AmbientEntry, ...] = ()
     focus_context: str | None = None
+    # Compact list of available agents (Blueprint §9 — sync builder fills via
+    # AgentRegistry.render_agent_summary_for_stateview()).
+    agent_summary: str | None = None
 
 
 # ── Serializer output ────────────────────────────────────────────────
