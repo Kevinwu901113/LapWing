@@ -409,14 +409,16 @@ class LapwingBrain:
                 current_info_domain=route_decision.current_info_domain,
             )
 
-        # Zero-tool fast path: chat_minimal turns without a current-info
-        # requirement skip the OpenAI tool-call protocol entirely. We still
-        # route through TaskRuntime.complete_chat to keep ITERATION audit
-        # records aligned with the tool path — TaskRuntime's `if not tools`
-        # branch dispatches directly to router.complete(slot="main_conversation").
+        # Zero-tool fast path: pure-chat turns skip the OpenAI tool-call
+        # protocol entirely. We still route through TaskRuntime.complete_chat
+        # to keep ITERATION audit records aligned with the tool path —
+        # TaskRuntime's `if not tools` branch dispatches directly to
+        # router.complete(slot="main_conversation"). Both legacy
+        # ("chat_minimal") and new ("zero_tools") names trigger this so
+        # behaviour is identical during the transition.
         zero_tools_path = (
             profile_override is None
-            and profile_name == "chat_minimal"
+            and profile_name in ("zero_tools", "chat_minimal")
             and (route_decision is None or not route_decision.requires_current_info)
         )
         tools = [] if zero_tools_path else self.task_runtime.tools_for_profile(profile_name)
@@ -468,7 +470,7 @@ class LapwingBrain:
         lowered = user_message.lower()
         if any(hint in lowered for hint in _TASK_PROFILE_HINTS):
             return "task_execution"
-        return "chat_extended"
+        return "standard"
 
     async def _render_messages(
         self,
