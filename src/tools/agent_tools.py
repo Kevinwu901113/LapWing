@@ -64,7 +64,13 @@ def _extract_context_digest(ctx: ToolExecutionContext) -> str:
 
 
 def _serialize_agent_result(result: AgentResult, task_id: str) -> ToolExecutionResult:
-    """统一将 AgentResult 序列化为 ToolExecutionResult。"""
+    """统一将 AgentResult 序列化为 ToolExecutionResult。
+
+    When the agent returned a ``structured_result`` (Researcher emits
+    ``{"summary": ..., "sources": [...]}``), surface its keys directly
+    on the payload so the calling LLM doesn't have to parse JSON-in-
+    JSON. ``result`` is still emitted for backward compatibility.
+    """
     trace_tail = result.execution_trace[-5:] if result.execution_trace else []
 
     if result.status == "done":
@@ -74,6 +80,9 @@ def _serialize_agent_result(result: AgentResult, task_id: str) -> ToolExecutionR
             "artifacts": result.artifacts,
             "evidence": result.evidence,
         }
+        if isinstance(result.structured_result, dict):
+            for key, value in result.structured_result.items():
+                payload.setdefault(key, value)
         if trace_tail:
             payload["execution_trace"] = trace_tail
         return ToolExecutionResult(

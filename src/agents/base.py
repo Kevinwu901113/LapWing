@@ -240,13 +240,26 @@ class BaseAgent:
                 "tool_calls_made": tool_calls_made,
             },
         )
+        result_text, structured = self._postprocess_result(text, evidence)
         return AgentResult(
             task_id=message.task_id,
             status="done",
-            result=text,
+            result=result_text,
             evidence=evidence,
             execution_trace=execution_trace or [],
+            structured_result=structured,
         )
+
+    def _postprocess_result(
+        self, text: str, evidence: list[dict],
+    ) -> tuple[str, dict | None]:
+        """Hook for subclasses to wrap final text + evidence.
+
+        Default: pass-through. Subclasses (e.g. Researcher) override to
+        return a structured payload — ``result`` becomes the JSON form
+        and ``structured_result`` holds the parsed dict.
+        """
+        return text, None
 
     async def _finalize_failed(
         self,
