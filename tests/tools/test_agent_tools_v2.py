@@ -8,7 +8,6 @@ from src.agents.spec import AgentSpec, AgentLifecyclePolicy
 from src.agents.types import AgentResult
 from src.tools.agent_tools import (
     delegate_to_agent_executor,
-    list_agents_executor,
     create_agent_executor,
     destroy_agent_executor,
     save_agent_executor,
@@ -139,29 +138,9 @@ async def test_delegate_passes_context_and_expected_output():
     assert "markdown bullet list" in msg.content
 
 
-# ── list_agents ──
-
-async def test_list_agents():
-    registry = MagicMock()
-    registry.list_agents = AsyncMock(return_value=[
-        {"name": "researcher", "kind": "builtin"},
-        {"name": "coder", "kind": "builtin"},
-    ])
-    ctx = _make_ctx(registry=registry)
-    req = ToolExecutionRequest(name="list_agents", arguments={})
-    res = await list_agents_executor(req, ctx)
-    assert res.success is True
-    assert len(res.payload["agents"]) == 2
-    registry.list_agents.assert_awaited_with(full=False)
-
-
-async def test_list_agents_full():
-    registry = MagicMock()
-    registry.list_agents = AsyncMock(return_value=[])
-    ctx = _make_ctx(registry=registry)
-    req = ToolExecutionRequest(name="list_agents", arguments={"full": True})
-    await list_agents_executor(req, ctx)
-    registry.list_agents.assert_awaited_with(full=True)
+# Note: list_agents tool was removed in the agents-as-tools refactor.
+# AgentRegistry.list_agents() the *method* is still used by the API
+# routes; the LLM-facing tool was removed as it had no real use case.
 
 
 # ── create_agent ──

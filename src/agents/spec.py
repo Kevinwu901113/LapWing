@@ -79,7 +79,7 @@ ALLOWED_DYNAMIC_PROFILES: frozenset[str] = frozenset({
 })
 
 DYNAMIC_AGENT_DENYLIST: frozenset[str] = frozenset({
-    "create_agent", "list_agents", "save_agent", "destroy_agent",
+    "create_agent", "save_agent", "destroy_agent",
     "delegate_to_agent",
     "delegate_to_researcher", "delegate_to_coder",
     "send_message", "send_image", "proactive_send",

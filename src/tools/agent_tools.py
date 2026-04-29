@@ -3,8 +3,8 @@
 agents-as-tools 架构(2026-04-29 重构):Lapwing 的外向接口固定为两个具名
 delegate(``delegate_to_researcher`` / ``delegate_to_coder``)。Researcher
 负责所有外部信息检索,Coder 负责所有代码/脚本/文件执行。``delegate_to_agent``
-和 5 个动态 agent 工具(create/destroy/save_agent/list_agents)只在
-TASK_EXECUTION profile 中暴露,用于动态 agent 全生命周期管理。
++ create_agent / destroy_agent / save_agent 只在 TASK_EXECUTION profile
+中暴露,用于动态 agent 全生命周期管理。
 
 Module-level side-tables:
   - ``_ephemeral_run_counts``: 跟踪 ephemeral agent 已运行次数,用于
@@ -323,16 +323,6 @@ async def delegate_to_agent_executor(
     )
 
 
-async def list_agents_executor(
-    req: ToolExecutionRequest, ctx: ToolExecutionContext,
-) -> ToolExecutionResult:
-    registry = ctx.services.get("agent_registry")
-    if not registry:
-        return ToolExecutionResult(success=False, payload={}, reason="Agent Team 未就绪")
-    items = await registry.list_agents(full=req.arguments.get("full", False))
-    return ToolExecutionResult(success=True, payload={"agents": items}, reason="")
-
-
 async def create_agent_executor(
     req: ToolExecutionRequest, ctx: ToolExecutionContext,
 ) -> ToolExecutionResult:
@@ -582,12 +572,6 @@ def register_agent_tools(registry, agent_registry=None) -> None:
         },
         "required": ["agent_name", "task"],
     }
-    LIST_AGENTS_SCHEMA = {
-        "type": "object",
-        "properties": {
-            "full": {"type": "boolean", "description": "是否返回完整信息", "default": False},
-        },
-    }
     CREATE_AGENT_SCHEMA = {
         "type": "object",
         "properties": {
@@ -627,15 +611,6 @@ def register_agent_tools(registry, agent_registry=None) -> None:
         capability="agent",
         risk_level="low",
         max_result_tokens=3000,
-    ))
-    registry.register(ToolSpec(
-        name="list_agents",
-        description="列出当前可用的 agent（builtin + 已创建的 dynamic）。",
-        json_schema=LIST_AGENTS_SCHEMA,
-        executor=list_agents_executor,
-        capability="agent",
-        risk_level="low",
-        max_result_tokens=2000,
     ))
     registry.register(ToolSpec(
         name="create_agent",

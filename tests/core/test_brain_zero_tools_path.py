@@ -1,15 +1,14 @@
 """Regression: zero-tool fast path for pure-chat turns.
 
-When IntentRouter returns ``profile_name="zero_tools"`` (or the
-legacy alias ``"chat_minimal"``), ``_complete_chat`` must hand
-``tools=[]`` to ``TaskRuntime.complete_chat``. TaskRuntime's existing
-``if not tools`` branch then dispatches directly to
-``router.complete(slot="main_conversation")``, which means no tool
-schemas occupy the model's attention and no tool-call decision step
-runs.
+When IntentRouter returns ``profile_name="zero_tools"``,
+``_complete_chat`` must hand ``tools=[]`` to ``TaskRuntime.complete_chat``.
+TaskRuntime's existing ``if not tools`` branch then dispatches
+directly to ``router.complete(slot="main_conversation")``, which means
+no tool schemas occupy the model's attention and no tool-call
+decision step runs.
 
 Other branches must remain on the tool-call path:
-- standard / chat_extended → tools populated
+- standard → tools populated
 - profile_override (e.g. inner_tick) → tools populated regardless of
   the override name
 """
@@ -82,25 +81,6 @@ async def test_zero_tools_decision_uses_zero_tools(brain):
         "zero_tools must hit the zero-tool fast path (tools should be []), "
         f"got {captured['tools']!r}"
     )
-
-
-async def test_chat_minimal_alias_uses_zero_tools(brain):
-    """Legacy ``chat_minimal`` alias still triggers the fast path."""
-    from src.core.brain import LapwingBrain
-    from src.core.intent_router import RouteDecision
-
-    decision = RouteDecision(profile_name="chat_minimal")
-    captured = _wire_brain_with_router_decision(brain, decision)
-
-    with patch("src.core.brain.INTENT_ROUTER_ENABLED", True):
-        await LapwingBrain._complete_chat(
-            brain,
-            chat_id="kevin",
-            messages=[{"role": "user", "content": "在干嘛"}],
-            user_message="在干嘛",
-        )
-
-    assert captured["tools"] == []
 
 
 async def test_standard_keeps_tools(brain):

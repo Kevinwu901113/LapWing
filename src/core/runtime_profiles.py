@@ -79,26 +79,8 @@ STANDARD_PROFILE = RuntimeProfile(
 )
 
 
-# Legacy aliases — same tool surface as the new profiles, but the
-# legacy ``name`` is preserved so older callers / tests that compare
-# ``profile.name == "chat_minimal"`` keep working. Both keys are
-# registered in _PROFILES so resolution works either way. Removed in
-# the cleanup commit at the end of this refactor.
-CHAT_MINIMAL_PROFILE = RuntimeProfile(
-    name="chat_minimal",
-    capabilities=ZERO_TOOLS_PROFILE.capabilities,
-    tool_names=ZERO_TOOLS_PROFILE.tool_names,
-    include_internal=ZERO_TOOLS_PROFILE.include_internal,
-    shell_policy_enabled=ZERO_TOOLS_PROFILE.shell_policy_enabled,
-)
-
-CHAT_EXTENDED_PROFILE = RuntimeProfile(
-    name="chat_extended",
-    capabilities=STANDARD_PROFILE.capabilities,
-    tool_names=STANDARD_PROFILE.tool_names,
-    include_internal=STANDARD_PROFILE.include_internal,
-    shell_policy_enabled=STANDARD_PROFILE.shell_policy_enabled,
-)
+# Legacy aliases removed in the agents-as-tools cleanup commit.
+# Use ZERO_TOOLS_PROFILE / STANDARD_PROFILE directly.
 
 # Inner-tick profile: autonomous self-initiated thinking pulses.
 # Companion-aligned surface — preserves memory continuity, notes, reminders,
@@ -274,8 +256,6 @@ _PROFILES = {
         CHAT_SHELL_PROFILE,
         ZERO_TOOLS_PROFILE,
         STANDARD_PROFILE,
-        CHAT_MINIMAL_PROFILE,
-        CHAT_EXTENDED_PROFILE,
         INNER_TICK_PROFILE,
         COMPOSE_PROACTIVE_PROFILE,
         TASK_EXECUTION_PROFILE,

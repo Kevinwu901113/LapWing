@@ -251,7 +251,7 @@ class TestRuntimeOptionsAppliedInTaskRuntime:
             constraints=constraints,
             tools=[{"type": "function", "function": {"name": "x", "description": "x", "parameters": {}}}],
             deps=deps,
-            profile="chat_extended",
+            profile="standard",
         )
 
         assert captured == [42], (

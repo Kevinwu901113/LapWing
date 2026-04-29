@@ -398,12 +398,10 @@ class LapwingBrain:
         # protocol entirely. We still route through TaskRuntime.complete_chat
         # to keep ITERATION audit records aligned with the tool path —
         # TaskRuntime's `if not tools` branch dispatches directly to
-        # router.complete(slot="main_conversation"). Both legacy
-        # ("chat_minimal") and new ("zero_tools") names trigger this so
-        # behaviour is identical during the transition.
+        # router.complete(slot="main_conversation").
         zero_tools_path = (
             profile_override is None
-            and profile_name in ("zero_tools", "chat_minimal")
+            and profile_name == "zero_tools"
         )
         tools = [] if zero_tools_path else self.task_runtime.tools_for_profile(profile_name)
         services = self._build_services()

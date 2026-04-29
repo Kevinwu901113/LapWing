@@ -283,7 +283,7 @@ class TestSendMessageIntegration:
         Direct replies are bare assistant text — there's no legitimate
         send_message path here."""
         result, sent = await self._execute(
-            runtime_profile="chat_extended",
+            runtime_profile="standard",
         )
         assert result.success is False
         assert result.reason == "send_message_forbidden_in_direct_chat"
@@ -291,7 +291,7 @@ class TestSendMessageIntegration:
 
     async def test_chat_minimal_hard_rejected(self):
         result, sent = await self._execute(
-            runtime_profile="chat_minimal",
+            runtime_profile="zero_tools",
         )
         assert result.success is False
         assert result.reason == "send_message_forbidden_in_direct_chat"
@@ -344,7 +344,7 @@ class TestSendMessageIntegration:
         """A non-inner_tick caller can opt in via services flag."""
         gate = _gate(datetime(2026, 1, 1, 23, 30))
         result, sent = await self._execute(
-            runtime_profile="chat_extended",
+            runtime_profile="standard",
             proactive_active=True,
             gate=gate,
         )

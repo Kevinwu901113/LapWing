@@ -198,7 +198,7 @@ class TestTaskRuntimeRecordToolDenied:
             request=ToolExecutionRequest(
                 name="browser_open", arguments={"url": "https://x.com/"}
             ),
-            profile="chat_minimal",  # does not expose browser_open
+            profile="zero_tools",  # does not expose browser_open
             services={"mutation_log": log},
             chat_id="c1",
         )
@@ -208,7 +208,7 @@ class TestTaskRuntimeRecordToolDenied:
         _, payload, meta = denied[0]
         assert payload["tool"] == "browser_open"
         assert payload["guard"] == "profile_not_allowed"
-        assert payload["profile"] == "chat_minimal"
+        assert payload["profile"] == "zero_tools"
         assert meta["chat_id"] == "c1"
 
     @pytest.mark.asyncio
@@ -279,7 +279,7 @@ class TestRunSkillGateRecordsDenial:
             },
             auth_level=2,
             chat_id="c1",
-            runtime_profile="chat_extended",
+            runtime_profile="standard",
         )
         req = ToolExecutionRequest(name="run_skill", arguments={"skill_id": "s1"})
         result = await run_skill_executor(req, ctx)
@@ -289,7 +289,7 @@ class TestRunSkillGateRecordsDenial:
         assert len(denied) == 1
         _, payload, _ = denied[0]
         assert payload["guard"] == "run_skill_gate"
-        assert payload["profile"] == "chat_extended"
+        assert payload["profile"] == "standard"
         assert payload["skill_id"] == "s1"
 
 

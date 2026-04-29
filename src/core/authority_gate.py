@@ -82,10 +82,9 @@ OPERATION_AUTH: dict[str, AuthLevel] = {
     "view_reminders": AuthLevel.OWNER,
     "cancel_reminder": AuthLevel.OWNER,
     # 委派（agent_tools 实际注册名）
-    "delegate_to_researcher": AuthLevel.OWNER,  # legacy shim, see Task 12
-    "delegate_to_coder": AuthLevel.OWNER,        # legacy shim, see Task 12
+    "delegate_to_researcher": AuthLevel.OWNER,
+    "delegate_to_coder": AuthLevel.OWNER,
     "delegate_to_agent": AuthLevel.OWNER,
-    "list_agents": AuthLevel.OWNER,
     "create_agent": AuthLevel.OWNER,
     "destroy_agent": AuthLevel.OWNER,
     "save_agent": AuthLevel.OWNER,

@@ -66,7 +66,7 @@ async def test_complete_chat_profile_override_skips_intent_router(brain):
     class _RouterSpy:
         async def route(self, chat_id, message):
             routed_calls.append((chat_id, message))
-            return RouteDecision(profile_name="chat_extended")
+            return RouteDecision(profile_name="standard")
 
     brain.intent_router = _RouterSpy()
     brain.task_runtime = AsyncMock()
@@ -117,7 +117,7 @@ async def test_complete_chat_without_override_still_uses_router(brain):
     class _RouterSpy:
         async def route(self, chat_id, message):
             routed_calls.append((chat_id, message))
-            return RouteDecision(profile_name="chat_extended")
+            return RouteDecision(profile_name="standard")
 
     brain.intent_router = _RouterSpy()
     brain.task_runtime = AsyncMock()

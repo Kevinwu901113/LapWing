@@ -360,10 +360,14 @@ class TestBaseAgentRuntimeProfile:
         agent = BaseAgent(spec, router, registry, mutation_log)
         await agent.execute(_make_message())
 
-        # 走 profile 路径：function_tools(capabilities=None, tool_names={research,browse})
+        # 走 profile 路径：function_tools(capabilities=None, tool_names={
+        # research, browse, get_sports_score}) — get_sports_score migrated
+        # to the Researcher's surface in the agents-as-tools refactor.
         assert registry.function_tools.called
         call_kwargs = registry.function_tools.call_args.kwargs
-        assert call_kwargs.get("tool_names") == {"research", "browse"}
+        assert call_kwargs.get("tool_names") == {
+            "research", "browse", "get_sports_score",
+        }
         assert call_kwargs.get("include_internal") is False
 
     async def test_legacy_tools_fallback(self):

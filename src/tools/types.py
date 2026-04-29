@@ -37,7 +37,7 @@ class ToolExecutionContext:
     send_fn: Callable[[str], Awaitable[Any]] | None = None
     # The RuntimeProfile name under which this tool is being executed.
     # Lets approval gates (e.g. run_skill) refuse autonomous execution of
-    # draft/testing/broken skills from chat_extended or inner_tick.
+    # draft/testing/broken skills from standard or inner_tick.
     runtime_profile: str = ""
 
 

@@ -214,14 +214,14 @@ async def create_skill_executor(
 #
 # Profiles where run_skill is exposed but must NOT execute arbitrary skills
 # without an explicit maturity/tag check. Two-tier policy:
-#   - chat_extended: only stable skills whose trust_required is satisfied
-#                    by the caller's auth_level
-#   - inner_tick:    only stable skills explicitly marked autonomous via
-#                    tags "auto_run" or "inner_tick"
+#   - standard:   only stable skills whose trust_required is satisfied by
+#                 the caller's auth_level
+#   - inner_tick: only stable skills explicitly marked autonomous via
+#                 tags "auto_run" or "inner_tick"
 # Any other profile (CLI / OWNER tooling) bypasses the gate — those
 # surfaces have their own access controls.
 
-_GATED_PROFILES = frozenset({"chat_extended", "standard", "inner_tick"})
+_GATED_PROFILES = frozenset({"standard", "inner_tick"})
 _AUTONOMOUS_TAGS = frozenset({"auto_run", "inner_tick"})
 
 # auth_level integers — keep aligned with src.core.authority_gate.AuthLevel
@@ -257,7 +257,7 @@ def _gate_run_skill(
             f"run_skill 在 {profile} 下只能执行 maturity=stable 的技能，"
             f"当前技能状态为 {maturity or 'unmarked'}"
         )
-    if profile in ("chat_extended", "standard"):
+    if profile == "standard":
         required = meta.get("trust_required", "guest")
         if not _trust_satisfied(required, auth_level):
             return (

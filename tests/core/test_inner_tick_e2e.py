@@ -178,7 +178,7 @@ async def test_inner_tick_end_to_end(tmp_path):
     class _IntentRouterSpy:
         async def route(self, chat_id, message):
             routed.append((chat_id, message))
-            return "chat_extended"  # would widen the surface — must not fire
+            return "standard"  # would widen the surface — must not fire
 
     brain.intent_router = _IntentRouterSpy()
     brain._mutation_log_ref = mutation_log

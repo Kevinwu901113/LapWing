@@ -7,9 +7,6 @@ These tests encode the target architecture from refactor blueprint
   reads or changes the external world (web, shell, files) goes through
   delegate_to_researcher / delegate_to_coder — the only out-going seams.
 
-Tests covering target-state invariants are marked xfail until the
-relevant commit lands; the markers are removed in the cleanup commit.
-
 CRITICAL: All boundary checks use ToolRegistry.get_tools_for_profile()
 to resolve the *actual* tool set (capabilities + tool_names + exclude),
 not just profile.tool_names. capability-based pulls otherwise leak
@@ -23,8 +20,8 @@ import pytest
 from src.core.runtime_profiles import (
     AGENT_CODER_PROFILE,
     AGENT_RESEARCHER_PROFILE,
-    CHAT_EXTENDED_PROFILE,
-    CHAT_MINIMAL_PROFILE,
+    STANDARD_PROFILE,
+    ZERO_TOOLS_PROFILE,
     CHAT_SHELL_PROFILE,
     COMPOSE_PROACTIVE_PROFILE,
     INNER_TICK_PROFILE,
@@ -108,7 +105,6 @@ def _make_full_registry() -> ToolRegistry:
     registry.register(_spec("delegate_to_coder", "agent"))
     # Generic delegate + dynamic agent tools (kept for power profiles)
     registry.register(_spec("delegate_to_agent", "agent"))
-    registry.register(_spec("list_agents", "agent"))
     registry.register(_spec("create_agent", "agent"))
     registry.register(_spec("destroy_agent", "agent"))
     registry.register(_spec("save_agent", "agent"))
@@ -200,7 +196,7 @@ class TestStableBoundaries:
 
     def test_send_message_not_in_user_chat_profiles(self):
         """send_message is proactive-only — never in user chat surface."""
-        for profile in (CHAT_MINIMAL_PROFILE, CHAT_EXTENDED_PROFILE,
+        for profile in (ZERO_TOOLS_PROFILE, STANDARD_PROFILE,
                         CHAT_SHELL_PROFILE, TASK_EXECUTION_PROFILE):
             names = _resolved_tool_names(profile)
             assert "send_message" not in names, (
@@ -227,12 +223,10 @@ class TestStandardProfileTarget:
     seam goes through delegate_to_*.
     """
 
-    @pytest.mark.xfail(reason="STANDARD_PROFILE introduced in Commit 4", strict=False)
     def test_standard_profile_exists(self):
         from src.core.runtime_profiles import STANDARD_PROFILE  # noqa: F401
         assert "standard" in _PROFILES
 
-    @pytest.mark.xfail(reason="STANDARD_PROFILE introduced in Commit 4", strict=False)
     def test_standard_profile_has_only_self_capabilities(self):
         from src.core.runtime_profiles import STANDARD_PROFILE
         names = _resolved_tool_names(STANDARD_PROFILE)
@@ -243,7 +237,6 @@ class TestStandardProfileTarget:
         )
         assert not leaks, f"standard exposes non-self-capability tools: {leaks}"
 
-    @pytest.mark.xfail(reason="STANDARD_PROFILE introduced in Commit 4", strict=False)
     def test_standard_profile_has_delegate_seams(self):
         from src.core.runtime_profiles import STANDARD_PROFILE
         names = _resolved_tool_names(STANDARD_PROFILE)
@@ -252,7 +245,6 @@ class TestStandardProfileTarget:
 
 
 class TestZeroToolsProfileTarget:
-    @pytest.mark.xfail(reason="ZERO_TOOLS_PROFILE introduced in Commit 4", strict=False)
     def test_zero_tools_profile_has_no_tools(self):
         from src.core.runtime_profiles import ZERO_TOOLS_PROFILE
         names = _resolved_tool_names(ZERO_TOOLS_PROFILE)

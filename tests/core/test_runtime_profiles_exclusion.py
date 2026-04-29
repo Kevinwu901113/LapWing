@@ -10,8 +10,8 @@ from __future__ import annotations
 from src.core.runtime_profiles import (
     AGENT_CODER_PROFILE,
     AGENT_RESEARCHER_PROFILE,
-    CHAT_EXTENDED_PROFILE,
-    CHAT_MINIMAL_PROFILE,
+    STANDARD_PROFILE,
+    ZERO_TOOLS_PROFILE,
     CHAT_SHELL_PROFILE,
     CODER_SNIPPET_PROFILE,
     CODER_WORKSPACE_PROFILE,
@@ -57,7 +57,6 @@ def _make_full_registry() -> ToolRegistry:
     registry.register(_spec("delegate_to_researcher", "agent"))
     registry.register(_spec("delegate_to_coder", "agent"))
     registry.register(_spec("delegate_to_agent", "agent"))
-    registry.register(_spec("list_agents", "agent"))
     registry.register(_spec("create_agent", "agent"))
     registry.register(_spec("destroy_agent", "agent"))
     registry.register(_spec("save_agent", "agent"))
@@ -130,25 +129,27 @@ class TestProfileExclusivity:
         uses delegate_to_researcher / delegate_to_coder, not the
         generic delegate_to_agent."""
         registry = _make_full_registry()
-        names = _resolve_tool_names(registry, CHAT_EXTENDED_PROFILE)
+        names = _resolve_tool_names(registry, STANDARD_PROFILE)
         assert "delegate_to_researcher" in names
         assert "delegate_to_coder" in names
         # Raw research / dynamic-agent management not on the chat tier
         assert "research" not in names
         assert "browse" not in names
         for forbidden in ("create_agent", "destroy_agent", "save_agent",
-                          "delegate_to_agent", "list_agents"):
+                          "delegate_to_agent"):
             assert forbidden not in names, f"chat_extended must not expose {forbidden}"
 
     def test_task_execution_has_dynamic_agent_tools(self):
         """task_execution still exposes the dynamic-agent management
         tools for power flows (create/destroy/save_agent + the generic
-        delegate_to_agent + list_agents). Raw research stays gated."""
+        delegate_to_agent). Raw research stays gated. list_agents was
+        removed in the cleanup commit."""
         registry = _make_full_registry()
         names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
-        for required in ("delegate_to_agent", "list_agents", "create_agent",
+        for required in ("delegate_to_agent", "create_agent",
                          "destroy_agent", "save_agent"):
             assert required in names, f"task_execution must expose {required}"
+        assert "list_agents" not in names
         assert "research" not in names
         assert "browse" not in names
 
@@ -156,9 +157,9 @@ class TestProfileExclusivity:
         """chat_minimal (zero_tools alias) exposes nothing — pure-text
         replies don't need any tool access."""
         registry = _make_full_registry()
-        names = _resolve_tool_names(registry, CHAT_MINIMAL_PROFILE)
+        names = _resolve_tool_names(registry, ZERO_TOOLS_PROFILE)
         for n in _RESEARCH_NAMES | _DELEGATE_NAMES | {
-            "create_agent", "destroy_agent", "save_agent", "list_agents",
+            "create_agent", "destroy_agent", "save_agent",
         }:
             assert n not in names, f"chat_minimal 不应暴露 {n}"
 
@@ -191,10 +192,10 @@ class TestChatProfileSendMessageExclusion:
     """
 
     def test_chat_minimal_does_not_expose_send_message(self):
-        assert "send_message" not in CHAT_MINIMAL_PROFILE.tool_names
+        assert "send_message" not in ZERO_TOOLS_PROFILE.tool_names
 
     def test_chat_extended_does_not_expose_send_message(self):
-        assert "send_message" not in CHAT_EXTENDED_PROFILE.tool_names
+        assert "send_message" not in STANDARD_PROFILE.tool_names
 
     def test_chat_shell_resolved_excludes_send_message(self):
         registry = _make_full_registry()
@@ -260,7 +261,7 @@ class TestCreateSkillExclusion:
 
     def test_chat_extended_excludes_create_skill(self):
         registry = _make_full_registry()
-        names = _resolve_tool_names(registry, CHAT_EXTENDED_PROFILE)
+        names = _resolve_tool_names(registry, STANDARD_PROFILE)
         assert "create_skill" not in names, (
             "chat_extended must not expose create_skill — skill authoring "
             "is a deliberate, reviewed action"
@@ -276,7 +277,7 @@ class TestCreateSkillExclusion:
 
     def test_no_chat_or_inner_profile_exposes_create_skill(self):
         registry = _make_full_registry()
-        for profile in (CHAT_MINIMAL_PROFILE, CHAT_EXTENDED_PROFILE, INNER_TICK_PROFILE):
+        for profile in (ZERO_TOOLS_PROFILE, STANDARD_PROFILE, INNER_TICK_PROFILE):
             names = _resolve_tool_names(registry, profile)
             assert "create_skill" not in names, (
                 f"{profile.name} must not expose create_skill"
