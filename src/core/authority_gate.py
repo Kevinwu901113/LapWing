@@ -19,7 +19,7 @@ class AuthLevel(IntEnum):
     GUEST = 1
     TRUSTED = 2
     OWNER = 3
-    AGENT = 4  # Internal child agent calls
+    AGENT = 3  # Internal child agent calls (same ceiling as OWNER)
 
 
 def identify(adapter: str, user_id: str) -> AuthLevel:
@@ -50,8 +50,7 @@ def identify(adapter: str, user_id: str) -> AuthLevel:
 # 声明 checkPermissions/isReadOnly/isDestructive）。
 OPERATION_AUTH: dict[str, AuthLevel] = {
     "chat": AuthLevel.GUEST,
-    # 基础通讯能力——所有人都可以让 Lapwing 说话/承诺
-    "send_message": AuthLevel.GUEST,
+    # 基础通讯能力
     "commit_promise": AuthLevel.GUEST,
     "fulfill_promise": AuthLevel.GUEST,
     "abandon_promise": AuthLevel.GUEST,

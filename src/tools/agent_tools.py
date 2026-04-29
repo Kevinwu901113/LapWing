@@ -106,7 +106,11 @@ def _serialize_agent_result(result: AgentResult, task_id: str) -> ToolExecutionR
         )
 
 
-async def _resolve_agent(agent_registry, agent_name: str):
+async def _resolve_agent(
+    agent_registry,
+    agent_name: str,
+    services_override: dict | None = None,
+):
     """Prefer the v2 ``get_or_create_instance`` async method; fall back to
     legacy ``get`` for the pre-v2 registry.
 
@@ -116,7 +120,7 @@ async def _resolve_agent(agent_registry, agent_name: str):
     """
     method = getattr(agent_registry, "get_or_create_instance", None)
     if method is not None and inspect.iscoroutinefunction(method):
-        return await method(agent_name)
+        return await method(agent_name, services_override=services_override)
     if hasattr(agent_registry, "get"):
         return agent_registry.get(agent_name)
     return None
@@ -137,7 +141,11 @@ async def _run_agent(
     if not agent_registry:
         return ToolExecutionResult(success=False, payload={}, reason="Agent Team 未就绪")
 
-    agent = await _resolve_agent(agent_registry, agent_name)
+    agent = await _resolve_agent(
+        agent_registry,
+        agent_name,
+        services_override=ctx.services,
+    )
     if not agent:
         return ToolExecutionResult(
             success=False, payload={},

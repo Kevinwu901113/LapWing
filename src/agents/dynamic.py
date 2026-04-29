@@ -13,14 +13,11 @@ agents share the per-turn BudgetLedger.
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import TYPE_CHECKING, Any
 
 from src.agents.base import BaseAgent
-from src.agents.spec import DYNAMIC_AGENT_DENYLIST
 from src.agents.types import LegacyAgentSpec
-from src.logging.state_mutation_log import MutationType
 
 if TYPE_CHECKING:
     from src.agents.spec import AgentSpec
@@ -39,8 +36,7 @@ class DynamicAgent(BaseAgent):
     Differences from BaseAgent:
       1. Constructor takes the new AgentSpec; adapts to LegacyAgentSpec
          internally so BaseAgent's existing tool loop still works.
-      2. _execute_tool checks DYNAMIC_AGENT_DENYLIST + spec.tool_denylist
-         before delegating to super(); denied calls emit TOOL_DENIED.
+      2. Dispatcher receives dynamic spec for runtime policy checks.
     """
 
     def __init__(
@@ -80,3 +76,7 @@ class DynamicAgent(BaseAgent):
         # It no longer implements parallel policy checks. It simply relies on the 
         # parent's dispatch which passes self.spec (dynamic_spec) to the dispatcher.
         return await super()._execute_tool(tool_call, message)
+
+    def _dispatch_agent_spec(self):
+        """Always pass the new dynamic spec to ToolDispatcher policy gate."""
+        return self.dynamic_spec

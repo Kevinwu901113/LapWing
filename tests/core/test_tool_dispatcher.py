@@ -1,9 +1,8 @@
 import pytest
 from unittest.mock import AsyncMock, MagicMock
-from src.core.tool_dispatcher import ToolDispatcher, ServiceContextView
+from src.core.tool_dispatcher import ToolDispatcher
 from src.core.task_runtime import TaskRuntime
 from src.tools.types import ToolExecutionRequest, ToolExecutionResult
-from src.core.authority_gate import AuthLevel
 from src.logging.state_mutation_log import MutationType
 
 @pytest.fixture
@@ -16,6 +15,7 @@ def mock_runtime():
     )
     runtime._tool_registry = MagicMock()
     runtime._tool_names_for_profile.return_value = {"allowed_tool"}
+    runtime._memory_index = None
     return runtime
 
 @pytest.fixture
@@ -71,7 +71,7 @@ async def test_tool_dispatcher_authority_gate(dispatcher, mock_runtime):
         request=req,
         profile="test_profile",
         services=services,
-        adapter="agent", # adapter triggers auth check
+        adapter="qq",  # guest path should be denied for execute_shell
         user_id="untrusted_user",
     )
     
@@ -98,7 +98,7 @@ async def test_tool_dispatcher_agent_policy_missing_fail_closed(dispatcher, mock
     )
     
     assert not result.success
-    assert "missing AgentPolicy in services (fail-closed)" in result.reason
+    assert result.reason == "missing_agent_policy"
     services["mutation_log"].record.assert_called_once()
     args, kwargs = services["mutation_log"].record.call_args
     assert args[0] == MutationType.TOOL_DENIED
@@ -126,7 +126,7 @@ async def test_tool_dispatcher_agent_policy_denied(dispatcher, mock_runtime):
     )
     
     assert not result.success
-    assert "blocked by AgentPolicy" in result.reason
+    assert result.reason == "policy_denied_tool"
     services["mutation_log"].record.assert_called_once()
     args, kwargs = services["mutation_log"].record.call_args
     assert args[0] == MutationType.TOOL_DENIED

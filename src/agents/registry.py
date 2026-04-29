@@ -96,7 +96,11 @@ class AgentRegistry:
             )
         return spec
 
-    async def get_or_create_instance(self, name: str) -> "BaseAgent | None":
+    async def get_or_create_instance(
+        self,
+        name: str,
+        services_override: dict[str, Any] | None = None,
+    ) -> "BaseAgent | None":
         """Return a fresh agent instance. Search order:
         ephemeral → session → catalog (builtin / persistent) → legacy → None.
         """
@@ -114,7 +118,7 @@ class AgentRegistry:
         if name in self._session_agents:
             self._session_agents[name].last_used_at = time.monotonic()
 
-        return self._factory.create(spec)
+        return self._factory.create(spec, services_override=services_override)
 
     async def _lookup_spec(self, name: str) -> AgentSpec | None:
         if name in self._ephemeral_agents:

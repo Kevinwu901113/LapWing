@@ -143,7 +143,7 @@ class ToolDispatcher:
         if agent_spec is not None and getattr(agent_spec, "kind", None) == "dynamic":
             agent_policy = ctx.agent_policy
             if agent_policy is None:
-                reason = "missing AgentPolicy in services (fail-closed)"
+                reason = "missing_agent_policy"
                 if state is not None:
                     state.record_failure(reason, "blocked")
                 payload = self._blocked_payload(
@@ -163,7 +163,7 @@ class ToolDispatcher:
                 return ToolExecutionResult(success=False, payload=payload, reason=reason)
             
             if not agent_policy.validate_tool_access(agent_spec, request.name):
-                reason = "blocked by AgentPolicy"
+                reason = "policy_denied_tool"
                 if state is not None:
                     state.record_failure(reason, "blocked")
                 payload = self._blocked_payload(

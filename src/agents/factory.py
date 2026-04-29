@@ -46,29 +46,50 @@ class AgentFactory:
         self.tool_registry = tool_registry
         self.mutation_log = mutation_log
 
-    def create(self, spec: AgentSpec) -> "BaseAgent":
+    def create(
+        self,
+        spec: AgentSpec,
+        services_override: dict[str, Any] | None = None,
+    ) -> "BaseAgent":
         if spec.kind == "builtin":
-            return self._create_builtin(spec)
-        return self._create_dynamic(spec)
+            return self._create_builtin(spec, services_override=services_override)
+        return self._create_dynamic(spec, services_override=services_override)
 
-    def _create_builtin(self, spec: AgentSpec) -> "BaseAgent":
+    def _create_builtin(
+        self,
+        spec: AgentSpec,
+        *,
+        services_override: dict[str, Any] | None = None,
+    ) -> "BaseAgent":
         if spec.name == "researcher":
             return Researcher.create(
-                self.llm_router, self.tool_registry, self.mutation_log
+                self.llm_router,
+                self.tool_registry,
+                self.mutation_log,
+                services=services_override,
             )
         if spec.name == "coder":
             return Coder.create(
-                self.llm_router, self.tool_registry, self.mutation_log
+                self.llm_router,
+                self.tool_registry,
+                self.mutation_log,
+                services=services_override,
             )
         raise ValueError(f"Unknown builtin agent name: {spec.name}")
 
-    def _create_dynamic(self, spec: AgentSpec) -> "BaseAgent":
+    def _create_dynamic(
+        self,
+        spec: AgentSpec,
+        *,
+        services_override: dict[str, Any] | None = None,
+    ) -> "BaseAgent":
         profile = self._resolve_profile(spec)
         # Side effect: create the workspace dir on disk so shell_default_cwd
         # is valid before BaseAgent runs any shell tool.
         workspace = os.path.join(DYNAMIC_AGENT_WORKSPACE_ROOT, spec.id)
         os.makedirs(workspace, exist_ok=True)
-        services: dict[str, Any] = {"shell_default_cwd": workspace}
+        services: dict[str, Any] = dict(services_override or {})
+        services["shell_default_cwd"] = workspace
         return DynamicAgent(
             spec=spec,
             profile=profile,
