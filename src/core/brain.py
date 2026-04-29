@@ -396,13 +396,12 @@ class LapwingBrain:
             profile_name = self._fallback_profile_for_message(user_message, constraints)
             if INTENT_ROUTER_ENABLED:
                 intent_router = getattr(self, "intent_router", None)
-                if intent_router is not None and profile_name not in {"task_execution", "local_execution"}:
+                if intent_router is not None and profile_name != "local_execution":
                     decision = await intent_router.route(chat_id, user_message)
                     profile_name = decision.profile_name
 
         # High-risk/operator profiles are opt-in only: never auto-route into them.
         operator_profiles = {
-            "task_execution",
             "local_execution",
             "agent_admin_operator",
             "identity_operator",
@@ -522,8 +521,8 @@ class LapwingBrain:
 
     @staticmethod
     def _fallback_profile_for_message(user_message: str, constraints) -> str:
-        # Phase 4: task_execution is deprecated as a fallback. 
-        # All coding/file/shell tasks should route through STANDARD_PROFILE -> delegate_to_coder.
+        # local_execution is operator-only. Default fallback stays on standard;
+        # coding/file/shell user requests should route via delegate_to_coder.
         return "standard"
 
     async def _render_messages(

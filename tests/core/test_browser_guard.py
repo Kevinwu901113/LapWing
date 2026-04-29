@@ -292,7 +292,7 @@ class TestTaskRuntimeBlocksWhenGuardMissing:
                 name="browser_open",
                 arguments={"url": "https://example.com/"},
             ),
-            profile="task_execution",
+            profile="local_execution",
         )
         assert result.success is False
         assert "BrowserGuard" in result.reason
@@ -322,7 +322,7 @@ class TestTaskRuntimeBlocksWhenGuardMissing:
                 name="browser_click",
                 arguments={"element": "[1]"},
             ),
-            profile="task_execution",
+            profile="local_execution",
         )
         assert result.success is False
         assert "BrowserGuard" in result.reason
@@ -356,7 +356,7 @@ class TestTaskRuntimeBlocksWhenGuardMissing:
                 name="browser_open",
                 arguments={"url": "https://example.com/"},
             ),
-            profile="task_execution",
+            profile="local_execution",
         )
         assert result.success is True
         assert ran == ["browser_open"]

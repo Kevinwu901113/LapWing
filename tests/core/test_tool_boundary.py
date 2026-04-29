@@ -25,7 +25,7 @@ from src.core.runtime_profiles import (
     CHAT_SHELL_PROFILE,
     COMPOSE_PROACTIVE_PROFILE,
     INNER_TICK_PROFILE,
-    TASK_EXECUTION_PROFILE,
+    LOCAL_EXECUTION_PROFILE,
     _PROFILES,
 )
 from src.tools.registry import ToolRegistry
@@ -197,7 +197,7 @@ class TestStableBoundaries:
     def test_send_message_not_in_user_chat_profiles(self):
         """send_message is proactive-only — never in user chat surface."""
         for profile in (ZERO_TOOLS_PROFILE, STANDARD_PROFILE,
-                        CHAT_SHELL_PROFILE, TASK_EXECUTION_PROFILE):
+                        CHAT_SHELL_PROFILE, LOCAL_EXECUTION_PROFILE):
             names = _resolved_tool_names(profile)
             assert "send_message" not in names, (
                 f"{profile.name} must not expose send_message"
@@ -276,7 +276,7 @@ class TestRetrievalToolsConfinedToResearcher:
             STANDARD_PROFILE,
             INNER_TICK_PROFILE,
             COMPOSE_PROACTIVE_PROFILE,
-            TASK_EXECUTION_PROFILE,
+            LOCAL_EXECUTION_PROFILE,
         ]
         for profile in lapwing_facing:
             names = _resolved_tool_names(profile)
@@ -310,16 +310,16 @@ class TestDelegateExclusivity:
             + "\n".join(violations)
         )
 
-    def test_task_execution_no_external_retrieval_tools(self):
-        """task_execution is a temporary legacy escape hatch (Step 1
-        only) — it still has shell/browser/file but must not expose
+    def test_local_execution_no_external_retrieval_tools(self):
+        """local_execution is a temporary legacy escape hatch
+        only) — it still has shell/file but must not expose
         raw retrieval tools, those go through Researcher.
 
-        Step 2 (post-blueprint) will migrate shell/file/browser to
+        Step 2 (post-blueprint) will migrate shell/file to
         Coder and the escape hatch goes away entirely.
         """
-        names = _resolved_tool_names(TASK_EXECUTION_PROFILE)
+        names = _resolved_tool_names(LOCAL_EXECUTION_PROFILE)
         for tool in EXTERNAL_RETRIEVAL_TOOLS:
             assert tool not in names, (
-                f"task_execution must not expose {tool} — goes via Researcher"
+                f"local_execution must not expose {tool} — goes via Researcher"
             )

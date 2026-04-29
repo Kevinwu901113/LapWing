@@ -297,9 +297,9 @@ class TestSendMessageIntegration:
         assert result.reason == "send_message_forbidden_in_direct_chat"
         assert sent == []
 
-    async def test_task_execution_hard_rejected(self):
+    async def test_local_execution_hard_rejected(self):
         result, sent = await self._execute(
-            runtime_profile="task_execution",
+            runtime_profile="local_execution",
         )
         assert result.success is False
         assert result.reason == "send_message_forbidden_in_direct_chat"

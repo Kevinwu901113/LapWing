@@ -5,7 +5,7 @@ The gate fires only on the two automated/lossy surfaces:
                  auth_level
 - inner_tick:    stable skills explicitly tagged auto_run or inner_tick
 
-Other profiles (CLI, OWNER tooling, task_execution) bypass the gate —
+Other profiles (CLI, OWNER tooling, local_execution) bypass the gate —
 they have their own access controls.
 """
 
@@ -61,14 +61,14 @@ class TestPureGateLogic:
     """_gate_run_skill — unit tests for the pure decision function."""
 
     def test_non_gated_profile_passes_anything(self):
-        # CLI / task_execution / coder_* surfaces are not gated.
+        # CLI / local_execution / coder_* surfaces are not gated.
         assert _gate_run_skill(
-            _draft_skill(), profile="task_execution", auth_level=2
+            _draft_skill(), profile="local_execution", auth_level=2
         ) is None
         assert _gate_run_skill(
             _broken_skill(), profile="cli", auth_level=2
         ) is None
-        assert _gate_run_skill(None, profile="task_execution", auth_level=2) is None
+        assert _gate_run_skill(None, profile="local_execution", auth_level=2) is None
 
     def test_chat_extended_requires_stable(self):
         for builder in (_draft_skill, _testing_skill, _broken_skill, _unmarked_skill):
@@ -261,13 +261,13 @@ class TestRunSkillExecutorIntegration:
         assert result.payload["denied"] is True
         assert executor.calls == []
 
-    async def test_task_execution_bypasses_gate(self):
+    async def test_local_execution_bypasses_gate(self):
         # Other profiles (operator-driven) are not gated — they may run any
         # skill in any state. This is intentional: the gate exists for the
         # automated chat / autonomous surfaces only.
         executor = _FakeExecutor()
         ctx = _ctx(
-            profile="task_execution",
+            profile="local_execution",
             skill=_draft_skill(),
             executor=executor,
         )

@@ -21,8 +21,8 @@ from src.core.runtime_profiles import (
     CODER_WORKSPACE_PROFILE,
     FILE_OPS_PROFILE,
     INNER_TICK_PROFILE,
+    LOCAL_EXECUTION_PROFILE,
     SKILL_OPERATOR_PROFILE,
-    TASK_EXECUTION_PROFILE,
     _PROFILES,
     get_runtime_profile,
 )
@@ -175,7 +175,7 @@ class TestProfileExclusivity:
     def test_local_execution_does_not_expose_dynamic_agent_admin_tools(self):
         """Phase 6B: local_execution must not expose agent_admin tools."""
         registry = _make_full_registry()
-        names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
+        names = _resolve_tool_names(registry, LOCAL_EXECUTION_PROFILE)
         for forbidden in ("delegate_to_agent", "create_agent",
                           "destroy_agent", "save_agent"):
             assert forbidden not in names, f"local_execution must not expose {forbidden}"
@@ -183,24 +183,23 @@ class TestProfileExclusivity:
         assert "research" not in names
         assert "browse" not in names
 
-    def test_task_execution_profile_is_frozen(self):
-        """TASK_EXECUTION_PROFILE is a temporary legacy escape hatch.
+    def test_local_execution_profile_is_frozen(self):
+        """LOCAL_EXECUTION_PROFILE is a temporary legacy escape hatch.
         It must only shrink, never grow.
         """
-        # It's an alias to local_execution now
-        assert TASK_EXECUTION_PROFILE.name == "local_execution"
-        assert TASK_EXECUTION_PROFILE.capabilities == frozenset({
+        assert LOCAL_EXECUTION_PROFILE.name == "local_execution"
+        assert LOCAL_EXECUTION_PROFILE.capabilities == frozenset({
             "shell", "file",
             "code", "verify",
         })
-        assert TASK_EXECUTION_PROFILE.tool_names == frozenset({"run_skill"})
-        assert TASK_EXECUTION_PROFILE.exclude_tool_names == frozenset({
+        assert LOCAL_EXECUTION_PROFILE.tool_names == frozenset({"run_skill"})
+        assert LOCAL_EXECUTION_PROFILE.exclude_tool_names == frozenset({
             "research", "browse", "get_sports_score", "send_message",
         })
-        assert "new_capability" not in TASK_EXECUTION_PROFILE.capabilities
+        assert "new_capability" not in LOCAL_EXECUTION_PROFILE.capabilities
         
         registry = _make_full_registry()
-        names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
+        names = _resolve_tool_names(registry, LOCAL_EXECUTION_PROFILE)
         
         expected_names = {
             "execute_shell",
@@ -284,7 +283,7 @@ class TestProfileExclusivity:
             STANDARD_PROFILE,
             CHAT_SHELL_PROFILE,
             INNER_TICK_PROFILE,
-            TASK_EXECUTION_PROFILE,  # local_execution alias
+            LOCAL_EXECUTION_PROFILE,
         )
         for profile in profiles:
             names = _resolve_tool_names(registry, profile)
@@ -300,7 +299,7 @@ class TestProfileExclusivity:
             CHAT_SHELL_PROFILE,
             INNER_TICK_PROFILE,
             COMPOSE_PROACTIVE_PROFILE,
-            TASK_EXECUTION_PROFILE,  # local_execution alias
+            LOCAL_EXECUTION_PROFILE,
         )
         for profile in profiles:
             names = _resolve_tool_names(registry, profile)
@@ -319,7 +318,7 @@ class TestProfileExclusivity:
             STANDARD_PROFILE,
             INNER_TICK_PROFILE,
             COMPOSE_PROACTIVE_PROFILE,
-            TASK_EXECUTION_PROFILE,  # local_execution alias
+            LOCAL_EXECUTION_PROFILE,
         )
         for profile in profiles:
             names = _resolve_tool_names(registry, profile)
@@ -343,7 +342,7 @@ class TestProfileExclusivity:
             CHAT_SHELL_PROFILE,
             INNER_TICK_PROFILE,
             COMPOSE_PROACTIVE_PROFILE,
-            TASK_EXECUTION_PROFILE,  # local_execution alias
+            LOCAL_EXECUTION_PROFILE,
         )
         for profile in profiles:
             names = _resolve_tool_names(registry, profile)
@@ -402,11 +401,11 @@ class TestChatProfileSendMessageExclusion:
             "必须经由 exclude_tool_names 排除"
         )
 
-    def test_task_execution_resolved_excludes_send_message(self):
+    def test_local_execution_resolved_excludes_send_message(self):
         registry = _make_full_registry()
-        names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
+        names = _resolve_tool_names(registry, LOCAL_EXECUTION_PROFILE)
         assert "send_message" not in names, (
-            "task_execution 通过 general capability 会拉入 send_message，"
+            "local_execution 通过 general capability 会拉入 send_message，"
             "必须经由 exclude_tool_names 排除"
         )
 

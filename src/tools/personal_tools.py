@@ -134,7 +134,7 @@ async def _send_message(
         )
 
     # Defense-in-depth: profiles already exclude send_message from chat /
-    # task_execution surfaces, but if anything slips through (custom profile,
+    # local_execution surfaces, but if anything slips through (custom profile,
     # registry mistake, future regression) the executor itself rejects calls
     # outside proactive context. Bare assistant text is the only legitimate
     # direct-reply path.

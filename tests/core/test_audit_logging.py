@@ -137,7 +137,7 @@ class TestTaskRuntimeRecordToolDenied:
             request=ToolExecutionRequest(
                 name="browser_open", arguments={"url": "https://x.com/"}
             ),
-            profile="task_execution",
+            profile="local_execution",
             services={"mutation_log": log},
             chat_id="c1",
         )
@@ -236,7 +236,7 @@ class TestTaskRuntimeRecordToolDenied:
             request=ToolExecutionRequest(
                 name="browser_open", arguments={"url": "http://localhost/admin"}
             ),
-            profile="task_execution",
+            profile="local_execution",
             services={"mutation_log": log},
             chat_id="c1",
         )

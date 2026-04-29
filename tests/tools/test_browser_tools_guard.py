@@ -55,7 +55,7 @@ def _ctx(services: dict) -> ToolExecutionContext:
         services=services,
         auth_level=2,
         chat_id="c1",
-        runtime_profile="task_execution",
+        runtime_profile="local_execution",
     )
 
 

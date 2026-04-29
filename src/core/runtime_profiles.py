@@ -10,7 +10,7 @@ class RuntimeProfile:
     name: str
     capabilities: frozenset[str]
     tool_names: frozenset[str] = frozenset()
-    # 当 capabilities 把太多工具拉进来时（例如 task_execution 同时持有 web +
+    # 当 capabilities 把太多工具拉进来时（例如某 profile 同时持有 web +
     # agent），用 exclude_tool_names 显式剔除——避免主脑在 raw 工具和
     # delegate_to_* 之间做无意义的二选一。
     exclude_tool_names: frozenset[str] = frozenset()
@@ -127,13 +127,9 @@ INNER_TICK_PROFILE = RuntimeProfile(
     shell_policy_enabled=False,
 )
 
-# TEMPORARY LEGACY ESCAPE HATCH (Step 1 only).
-# task_execution still aggregates shell/file capabilities so
-# specific power flows can run. This is *not* the target architecture
-# — Step 2 must migrate the execution tools to Coder, at which point
-# task_execution either becomes a thin alias for STANDARD or is
-# deleted. send_message stays excluded (proactive-only) and raw web
-# retrieval stays out (goes through delegate_to_researcher).
+# TEMPORARY LEGACY ESCAPE HATCH.
+# local_execution keeps the direct local execution surface while default
+# chat stays on standard -> delegate seams.
 LOCAL_EXECUTION_PROFILE = RuntimeProfile(
     name="local_execution",
     capabilities=frozenset({
@@ -148,10 +144,6 @@ LOCAL_EXECUTION_PROFILE = RuntimeProfile(
     include_internal=False,
     shell_policy_enabled=True,
 )
-
-# TASK_EXECUTION_PROFILE is deprecated. It remains as an alias to LOCAL_EXECUTION_PROFILE
-# for backward compatibility during the transition, but should not be used as a fallback.
-TASK_EXECUTION_PROFILE = LOCAL_EXECUTION_PROFILE
 
 # Operator-only dynamic-agent administration surface.
 # Not used by default chat routing; callers must opt in explicitly.
@@ -339,10 +331,9 @@ _PROFILES = {
         AGENT_CODER_PROFILE,
     )
 }
-_PROFILES["task_execution"] = LOCAL_EXECUTION_PROFILE  # Legacy alias
-
-
 def get_runtime_profile(name: str) -> RuntimeProfile:
+    if name == "task_execution":
+        raise ValueError("runtime profile 'task_execution' 已移除，请改用 'local_execution'")
     if name not in _PROFILES:
         raise ValueError(f"未知 runtime profile: {name}")
     return _PROFILES[name]
