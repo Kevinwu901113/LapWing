@@ -21,6 +21,7 @@ from src.core.runtime_profiles import (
     CODER_WORKSPACE_PROFILE,
     FILE_OPS_PROFILE,
     INNER_TICK_PROFILE,
+    SKILL_OPERATOR_PROFILE,
     TASK_EXECUTION_PROFILE,
     _PROFILES,
     get_runtime_profile,
@@ -83,8 +84,14 @@ def _make_full_registry() -> ToolRegistry:
         ("read_note", "memory"),
         ("list_notes", "memory"),
         ("search_notes", "memory"),
-        ("create_skill", "skill"),
         ("run_skill", "skill"),
+        ("create_skill", "skill"),
+        ("edit_skill", "skill"),
+        ("list_skills", "skill"),
+        ("promote_skill", "skill"),
+        ("delete_skill", "skill"),
+        ("search_skill", "skill"),
+        ("install_skill", "skill"),
         # browser_* — needed for INNER_TICK exclusion check
         ("browser_open", "browser"),
         ("browser_click", "browser"),
@@ -183,9 +190,10 @@ class TestProfileExclusivity:
         # It's an alias to local_execution now
         assert TASK_EXECUTION_PROFILE.name == "local_execution"
         assert TASK_EXECUTION_PROFILE.capabilities == frozenset({
-            "shell", "skill", "agent_delegate", "file",
+            "shell", "file",
             "code", "verify",
         })
+        assert TASK_EXECUTION_PROFILE.tool_names == frozenset({"run_skill"})
         assert TASK_EXECUTION_PROFILE.exclude_tool_names == frozenset({
             "research", "browse", "get_sports_score", "send_message",
         })
@@ -195,9 +203,6 @@ class TestProfileExclusivity:
         names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
         
         expected_names = {
-            "create_skill",
-            "delegate_to_coder",
-            "delegate_to_researcher",
             "execute_shell",
             "file_append",
             "file_list_directory",
@@ -216,6 +221,10 @@ class TestProfileExclusivity:
         assert "destroy_agent" not in names
         assert "save_agent" not in names
         assert "delegate_to_agent" not in names
+        assert "delegate_to_researcher" not in names
+        assert "delegate_to_coder" not in names
+        assert "create_skill" not in names
+        assert "edit_skill" not in names
         assert "read_soul" not in names
         assert "edit_soul" not in names
         assert "browser_open" not in names
@@ -252,6 +261,20 @@ class TestProfileExclusivity:
             "browser_wait",
             "browser_login",
         }
+
+    def test_skill_operator_profile_exposes_skill_admin_tools_only(self):
+        registry = _make_full_registry()
+        names = _resolve_tool_names(registry, SKILL_OPERATOR_PROFILE)
+        assert names == {
+            "create_skill",
+            "edit_skill",
+            "list_skills",
+            "promote_skill",
+            "delete_skill",
+            "search_skill",
+            "install_skill",
+        }
+        assert "run_skill" not in names
 
     def test_non_operator_profiles_never_expose_agent_admin_tools(self):
         registry = _make_full_registry()
@@ -302,6 +325,30 @@ class TestProfileExclusivity:
             names = _resolve_tool_names(registry, profile)
             leaks = names & forbidden
             assert not leaks, f"{profile.name} leaked browser tools: {sorted(leaks)}"
+
+    def test_non_operator_profiles_never_expose_skill_admin_tools(self):
+        registry = _make_full_registry()
+        forbidden = {
+            "create_skill",
+            "edit_skill",
+            "list_skills",
+            "promote_skill",
+            "delete_skill",
+            "search_skill",
+            "install_skill",
+        }
+        profiles = (
+            ZERO_TOOLS_PROFILE,
+            STANDARD_PROFILE,
+            CHAT_SHELL_PROFILE,
+            INNER_TICK_PROFILE,
+            COMPOSE_PROACTIVE_PROFILE,
+            TASK_EXECUTION_PROFILE,  # local_execution alias
+        )
+        for profile in profiles:
+            names = _resolve_tool_names(registry, profile)
+            leaks = names & forbidden
+            assert not leaks, f"{profile.name} leaked skill admin tools: {sorted(leaks)}"
 
     def test_chat_minimal_has_no_agent_tools(self):
         """chat_minimal (zero_tools alias) exposes nothing — pure-text

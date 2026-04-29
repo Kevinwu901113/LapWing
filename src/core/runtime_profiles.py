@@ -137,8 +137,10 @@ INNER_TICK_PROFILE = RuntimeProfile(
 LOCAL_EXECUTION_PROFILE = RuntimeProfile(
     name="local_execution",
     capabilities=frozenset({
-        "shell", "skill", "agent_delegate", "file",
-        "code", "verify",
+        "shell", "file", "code", "verify",
+    }),
+    tool_names=frozenset({
+        "run_skill",
     }),
     exclude_tool_names=frozenset({
         "research", "browse", "get_sports_score", "send_message",
@@ -193,6 +195,23 @@ BROWSER_OPERATOR_PROFILE = RuntimeProfile(
         "browser_close_tab",
         "browser_wait",
         "browser_login",
+    }),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
+# Operator-only skill authoring/administration surface.
+SKILL_OPERATOR_PROFILE = RuntimeProfile(
+    name="skill_operator",
+    capabilities=frozenset(),
+    tool_names=frozenset({
+        "create_skill",
+        "edit_skill",
+        "list_skills",
+        "promote_skill",
+        "delete_skill",
+        "search_skill",
+        "install_skill",
     }),
     include_internal=False,
     shell_policy_enabled=False,
@@ -312,6 +331,7 @@ _PROFILES = {
         AGENT_ADMIN_OPERATOR_PROFILE,
         IDENTITY_OPERATOR_PROFILE,
         BROWSER_OPERATOR_PROFILE,
+        SKILL_OPERATOR_PROFILE,
         CODER_SNIPPET_PROFILE,
         CODER_WORKSPACE_PROFILE,
         FILE_OPS_PROFILE,

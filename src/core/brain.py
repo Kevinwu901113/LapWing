@@ -407,6 +407,7 @@ class LapwingBrain:
             "agent_admin_operator",
             "identity_operator",
             "browser_operator",
+            "skill_operator",
         }
         if profile_name in operator_profiles:
             explicit_override = profile_override in operator_profiles
