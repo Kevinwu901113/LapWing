@@ -43,8 +43,9 @@ async def _record_browser_guard_denial(
     type/select budget) lands here. Best-effort — log failures are
     swallowed.
     """
-    services = ctx.services or {}
-    mutation_log = services.get("mutation_log")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    mutation_log = svc.require_mutation_log_optional()
     if mutation_log is None:
         return
     payload: dict[str, Any] = {

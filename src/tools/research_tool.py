@@ -29,7 +29,9 @@ async def research_executor(
             reason="missing question",
         )
 
-    engine = ctx.services.get("research_engine")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    engine = svc.research_engine
     if engine is None:
         return ToolExecutionResult(
             success=False,
