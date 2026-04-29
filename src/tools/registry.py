@@ -126,10 +126,15 @@ class ToolRegistry:
         Dynamic chat profiles list optional tools that are only registered when
         their subsystem is enabled, so missing names are skipped here instead
         of treated as configuration drift.
+
+        A profile with neither ``tool_names`` nor ``capabilities`` is an
+        explicit zero-tool surface (e.g. ZERO_TOOLS_PROFILE) — return [],
+        not the unfiltered registry.
         """
         if include_internal is None:
             include_internal = bool(getattr(profile, "include_internal", False))
         tool_names = getattr(profile, "tool_names", frozenset())
+        capabilities = set(getattr(profile, "capabilities", frozenset()))
         if tool_names:
             specs = [
                 self._tools[name]
@@ -137,11 +142,13 @@ class ToolRegistry:
                 if name in self._tools
                 and (include_internal or self._tools[name].is_model_facing)
             ]
-        else:
+        elif capabilities:
             specs = self.list_tools(
-                capabilities=set(getattr(profile, "capabilities", frozenset())),
+                capabilities=capabilities,
                 include_internal=bool(getattr(profile, "include_internal", False)),
             )
+        else:
+            specs = []
         exclude = set(getattr(profile, "exclude_tool_names", frozenset()))
         if exclude:
             specs = [tool for tool in specs if tool.name not in exclude]

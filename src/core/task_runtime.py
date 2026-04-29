@@ -290,11 +290,16 @@ class TaskRuntime:
                 profile,
                 include_internal=include_internal,
             )
-        else:
+        elif profile.capabilities:
             specs = self._tool_registry.list_tools(
                 capabilities=set(profile.capabilities),
                 include_internal=include_internal,
             )
+        else:
+            # Explicit zero-tool surface (e.g. ZERO_TOOLS_PROFILE) —
+            # empty tool_names + empty capabilities means "no tools",
+            # not "no filter".
+            specs = []
         names = {spec.name for spec in specs}
         exclude = set(getattr(profile, "exclude_tool_names", frozenset()))
         return names - exclude
