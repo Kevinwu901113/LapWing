@@ -696,6 +696,73 @@ registry.register(ToolSpec(
 
 ---
 
+## 开发环境
+
+### 前置要求
+
+- Python 3.12+
+- 推荐使用 venv 隔离依赖
+
+### 创建 venv
+
+```bash
+python3.12 -m venv venv
+source venv/bin/activate   # macOS / Linux
+```
+
+### 安装依赖
+
+```bash
+pip install -r requirements.txt
+```
+
+### 运行测试
+
+**快速安全套件（~1s，无外部依赖）：**
+
+```bash
+PYTHONPATH=. python -m pytest \
+  tests/core/test_runtime_profiles_exclusion.py \
+  tests/core/test_brain_zero_tools_path.py \
+  tests/core/test_tool_dispatcher.py \
+  tests/core/test_tool_boundary.py \
+  tests/core/test_intent_router.py \
+  tests/agents/test_agent_tool_dispatcher.py \
+  tests/agents/test_dynamic_agent.py \
+  tests/agents/test_registry.py \
+  tests/agents/test_factory.py \
+  tests/tools/test_agent_tools_v2.py \
+  -v
+```
+
+**排除需要外部依赖的测试（适合本地快速验证）：**
+
+```bash
+PYTHONPATH=. python -m pytest tests/ -x -q \
+  -m "not integration and not e2e and not requires_llm and not requires_browser and not requires_network"
+```
+
+**完整测试（需要 LLM key、ChromaDB、Playwright）：**
+
+```bash
+PYTHONPATH=. python -m pytest tests/ -x -q
+```
+
+### CI 当前覆盖范围
+
+GitHub Actions (`.github/workflows/tests.yml`) 在 push/PR to `master` 时自动运行快速安全套件。
+
+| 类别 | pytest marker | CI 状态 | 说明 |
+|------|-------------|---------|------|
+| 核心工具派发 + 意图路由 + agent | （无 marker） | ✅ 运行 | mock 驱动，无外部依赖 |
+| 集成测试 (ChromaDB / 多子系统) | `integration` | ❌ 不跑 | 需要 ChromaDB + SQLite |
+| 端到端 (全链路) | `e2e` | ❌ 不跑 | 需要多子系统 |
+| 需要 LLM API key | `requires_llm` | ❌ 不跑 | 需要真实 LLM key |
+| 需要浏览器 (Playwright) | `requires_browser` | ❌ 不跑 | 需要浏览器进程 |
+| 需要外部网络 | `requires_network` | ❌ 不跑 | 需要外部 HTTP 连接 |
+
+---
+
 ## 开发约定
 
 - **语言**：代码注释中文；commits、PR、维护者文档（CLAUDE.md / AGENTS.md / CODEX.md）英文。Conventional Commits（`feat(scope): …`、`fix(...): …`）。

@@ -12,6 +12,8 @@ in isolation without a visible effect here.
 """
 
 from __future__ import annotations
+import pytest
+pytestmark = pytest.mark.integration
 
 from datetime import datetime
 from zoneinfo import ZoneInfo

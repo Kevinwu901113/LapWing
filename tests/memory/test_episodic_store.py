@@ -9,6 +9,8 @@ Day-organised markdown + shared ChromaDB collection. Covers:
 """
 
 from __future__ import annotations
+import pytest
+pytestmark = pytest.mark.integration
 
 from datetime import datetime
 from pathlib import Path

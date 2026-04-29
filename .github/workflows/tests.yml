@@ -1,0 +1,39 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  fast-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run fast safety suite
+        run: |
+          PYTHONPATH=. python -m pytest \
+            tests/core/test_runtime_profiles_exclusion.py \
+            tests/core/test_brain_zero_tools_path.py \
+            tests/core/test_tool_dispatcher.py \
+            tests/core/test_tool_boundary.py \
+            tests/core/test_intent_router.py \
+            tests/agents/test_agent_tool_dispatcher.py \
+            tests/agents/test_dynamic_agent.py \
+            tests/agents/test_registry.py \
+            tests/agents/test_factory.py \
+            tests/tools/test_agent_tools_v2.py \
+            -v

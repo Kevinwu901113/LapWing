@@ -50,7 +50,7 @@ async def _get_time(
 # 2. send_message
 # ─────────────────────────────────────────────────────────────────────────────
 
-_PROACTIVE_PROFILES = frozenset({"inner_tick"})
+_PROACTIVE_PROFILES = frozenset({"inner_tick", "compose_proactive"})
 
 
 async def _record_proactive_decision(

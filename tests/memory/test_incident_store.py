@@ -1,3 +1,5 @@
+import pytest
+pytestmark = pytest.mark.integration
 """Tests for src.memory.incident_store."""
 
 import pytest

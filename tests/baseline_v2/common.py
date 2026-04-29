@@ -1,5 +1,7 @@
 """Baseline v2 harness — direct MiniMax M2.7 calls, no llm_router wrapper."""
 from __future__ import annotations
+import pytest
+pytestmark = pytest.mark.requires_llm
 
 import asyncio
 import json

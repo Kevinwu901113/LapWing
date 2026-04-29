@@ -20,6 +20,8 @@ stack against a real StateMutationLog. Only the bottom-most LLM API call
 """
 
 from __future__ import annotations
+import pytest
+pytestmark = pytest.mark.integration
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock

@@ -1,3 +1,5 @@
+import pytest
+pytestmark = pytest.mark.integration
 """MemoryVectorStore 单元测试。"""
 
 import pytest

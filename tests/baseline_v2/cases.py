@@ -1,5 +1,7 @@
 """Baseline v2 case definitions (A1–A4, B1–B2, C1–C2)."""
 from __future__ import annotations
+import pytest
+pytestmark = pytest.mark.requires_llm
 
 from typing import Any
 

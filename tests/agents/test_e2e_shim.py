@@ -1,3 +1,5 @@
+import pytest
+pytestmark = pytest.mark.e2e
 """T-02: legacy delegate_to_researcher / delegate_to_coder shims must produce
 the same ToolExecutionResult shape as delegate_to_agent_executor.
 

@@ -9,6 +9,8 @@ without spinning the whole AppContainer, then exercises:
 """
 
 from __future__ import annotations
+import pytest
+pytestmark = pytest.mark.e2e
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock

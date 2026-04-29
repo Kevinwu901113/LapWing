@@ -21,6 +21,8 @@ e. IntentRouter is NOT consulted for inner_tick profile selection
 """
 
 from __future__ import annotations
+import pytest
+pytestmark = pytest.mark.e2e
 
 from datetime import datetime
 from pathlib import Path

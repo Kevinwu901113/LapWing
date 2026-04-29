@@ -17,6 +17,8 @@ during the brain call.
 """
 
 from __future__ import annotations
+import pytest
+pytestmark = pytest.mark.integration
 
 import asyncio
 from unittest.mock import MagicMock, AsyncMock

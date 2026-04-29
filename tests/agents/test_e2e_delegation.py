@@ -1,3 +1,5 @@
+import pytest
+pytestmark = pytest.mark.e2e
 """端到端 delegation 测试：Lapwing → Agent → 结果。"""
 
 from unittest.mock import AsyncMock, MagicMock

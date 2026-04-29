@@ -30,7 +30,14 @@ CHAT_SHELL_PROFILE = RuntimeProfile(
     # chat replies are bare assistant text — exposing send_message here lets
     # the model emit "side-door" messages mid-turn, splitting one reply into
     # multiple official messages.
-    exclude_tool_names=frozenset({"send_message"}),
+    exclude_tool_names=frozenset({
+        "send_message",
+        # skill admin tools are operator-only — CHAT_SHELL_PROFILE only
+        # needs run_skill from the "skill" capability.
+        "create_skill", "edit_skill", "list_skills",
+        "promote_skill", "delete_skill", "search_skill",
+        "install_skill",
+    }),
     include_internal=False,
     shell_policy_enabled=True,
 )

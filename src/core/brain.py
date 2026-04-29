@@ -1285,8 +1285,8 @@ class LapwingBrain:
             # compose_proactive is an autonomous outbound path — every
             # send_message invocation must consult ProactiveMessageGate.
             # Flag the services dict so the executor knows the call is
-            # proactive even though the runtime profile is not
-            # "inner_tick" (compose_proactive may run on chat profiles).
+            # proactive. Also pin the profile so dispatch uses the same
+            # surface that chat_tools() draws from (COMPOSE_PROACTIVE_PROFILE).
             services = self._build_services()
             services["proactive_send_active"] = True
 
@@ -1297,6 +1297,7 @@ class LapwingBrain:
                 tools=tool_specs,
                 deps=deps,
                 services=services,
+                profile="compose_proactive",
                 adapter="",
                 user_id="",
                 focus_id=None,
