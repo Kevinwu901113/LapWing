@@ -79,8 +79,9 @@ async def commit_promise_executor(
     if reasoning is not None:
         reasoning = str(reasoning).strip() or None
 
-    services = context.services or {}
-    store = services.get("commitment_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(context.services or {})
+    store = svc.commitment_store
     if store is None:
         return ToolExecutionResult(
             success=False,
@@ -90,7 +91,7 @@ async def commit_promise_executor(
 
     chat_id = context.chat_id or "_unknown"
     deadline = time.time() + deadline_minutes * 60.0
-    source_id = int(services.get("last_tell_user_trajectory_id") or 0)
+    source_id = int(svc.raw.get("last_tell_user_trajectory_id") or 0)
 
     try:
         promise_id = await store.create(
@@ -166,8 +167,9 @@ async def fulfill_promise_executor(
             reason="fulfill_promise 缺少 result_summary",
         )
 
-    services = context.services or {}
-    store = services.get("commitment_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(context.services or {})
+    store = svc.commitment_store
     if store is None:
         return ToolExecutionResult(
             success=False,
@@ -253,8 +255,9 @@ async def abandon_promise_executor(
             reason="abandon_promise 缺少 reason",
         )
 
-    services = context.services or {}
-    store = services.get("commitment_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(context.services or {})
+    store = svc.commitment_store
     if store is None:
         return ToolExecutionResult(
             success=False,

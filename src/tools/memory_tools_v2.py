@@ -33,7 +33,9 @@ _TOTAL_BUDGET = 2000
 
 async def recall_executor(req: ToolExecutionRequest, ctx: ToolExecutionContext) -> ToolExecutionResult:
     """语义记忆检索。"""
-    vector_store = ctx.services.get("vector_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    vector_store = svc.vector_store
     if vector_store is None:
         return ToolExecutionResult(success=False, payload={"error": "向量记忆库不可用"}, reason="vector_store 未配置")
 
@@ -77,7 +79,9 @@ async def recall_executor(req: ToolExecutionRequest, ctx: ToolExecutionContext) 
 
 async def write_note_executor(req: ToolExecutionRequest, ctx: ToolExecutionContext) -> ToolExecutionResult:
     """写笔记到 NoteStore，并可选触发异步向量嵌入。"""
-    note_store = ctx.services.get("note_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    note_store = svc.note_store
     content: str = req.arguments.get("content", "")
 
     if not content.strip():
@@ -93,7 +97,7 @@ async def write_note_executor(req: ToolExecutionRequest, ctx: ToolExecutionConte
         return ToolExecutionResult(success=False, payload={"error": str(e)}, reason=str(e))
 
     # 异步触发向量嵌入（fire-and-forget）
-    vector_store = ctx.services.get("vector_store")
+    vector_store = svc.vector_store
     if vector_store is not None:
         asyncio.create_task(_embed_note(vector_store, info["note_id"], content, note_type))
 
@@ -122,7 +126,9 @@ async def _embed_note(vector_store, note_id: str, content: str, note_type: str) 
 
 async def edit_note_executor(req: ToolExecutionRequest, ctx: ToolExecutionContext) -> ToolExecutionResult:
     """编辑已有笔记。"""
-    note_store = ctx.services.get("note_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    note_store = svc.note_store
     note_id: str = req.arguments.get("note_id", "").strip()
     content: str = req.arguments.get("content", "")
 
@@ -146,7 +152,9 @@ async def edit_note_executor(req: ToolExecutionRequest, ctx: ToolExecutionContex
 
 async def read_note_executor(req: ToolExecutionRequest, ctx: ToolExecutionContext) -> ToolExecutionResult:
     """读取笔记完整内容。"""
-    note_store = ctx.services.get("note_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    note_store = svc.note_store
     note_id: str = req.arguments.get("note_id", "").strip()
 
     try:
@@ -176,7 +184,9 @@ async def read_note_executor(req: ToolExecutionRequest, ctx: ToolExecutionContex
 
 async def list_notes_executor(req: ToolExecutionRequest, ctx: ToolExecutionContext) -> ToolExecutionResult:
     """列出笔记目录结构。"""
-    note_store = ctx.services.get("note_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    note_store = svc.note_store
     path: str | None = req.arguments.get("path") or None
 
     try:
@@ -198,7 +208,9 @@ async def list_notes_executor(req: ToolExecutionRequest, ctx: ToolExecutionConte
 
 async def move_note_executor(req: ToolExecutionRequest, ctx: ToolExecutionContext) -> ToolExecutionResult:
     """移动笔记到新目录。"""
-    note_store = ctx.services.get("note_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    note_store = svc.note_store
     note_id: str = req.arguments.get("note_id", "").strip()
     new_path: str = req.arguments.get("new_path", "").strip()
 
@@ -225,7 +237,9 @@ async def move_note_executor(req: ToolExecutionRequest, ctx: ToolExecutionContex
 
 async def search_notes_executor(req: ToolExecutionRequest, ctx: ToolExecutionContext) -> ToolExecutionResult:
     """关键词搜索笔记。"""
-    note_store = ctx.services.get("note_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    note_store = svc.note_store
     keyword: str = req.arguments.get("keyword", "").strip()
 
     if not keyword:

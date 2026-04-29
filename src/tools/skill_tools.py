@@ -155,8 +155,9 @@ async def create_skill_executor(
     request: ToolExecutionRequest,
     context: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    services = context.services or {}
-    store = services.get("skill_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(context.services or {})
+    store = svc.skill_store
     if store is None:
         return ToolExecutionResult(
             success=False,
@@ -280,8 +281,9 @@ async def run_skill_executor(
     request: ToolExecutionRequest,
     context: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    services = context.services or {}
-    executor = services.get("skill_executor")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(context.services or {})
+    executor = svc.skill_executor
     if executor is None:
         return ToolExecutionResult(
             success=False,
@@ -299,7 +301,7 @@ async def run_skill_executor(
 
     profile = (context.runtime_profile or "").strip()
     if profile in _GATED_PROFILES:
-        store = services.get("skill_store")
+        store = svc.skill_store
         skill = store.read(skill_id) if store is not None else None
         deny_reason = _gate_run_skill(
             skill,
@@ -311,7 +313,7 @@ async def run_skill_executor(
                 "[run_skill] gate denied: profile=%s skill_id=%s reason=%s",
                 profile, skill_id, deny_reason,
             )
-            mutation_log = services.get("mutation_log")
+            mutation_log = svc.mutation_log
             if mutation_log is not None:
                 try:
                     from src.logging.state_mutation_log import (
@@ -372,8 +374,9 @@ async def edit_skill_executor(
     request: ToolExecutionRequest,
     context: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    services = context.services or {}
-    store = services.get("skill_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(context.services or {})
+    store = svc.skill_store
     if store is None:
         return ToolExecutionResult(
             success=False,
@@ -402,8 +405,9 @@ async def list_skills_executor(
     request: ToolExecutionRequest,
     context: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    services = context.services or {}
-    store = services.get("skill_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(context.services or {})
+    store = svc.skill_store
     if store is None:
         return ToolExecutionResult(
             success=False,
@@ -439,8 +443,9 @@ async def promote_skill_executor(
     request: ToolExecutionRequest,
     context: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    services = context.services or {}
-    store = services.get("skill_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(context.services or {})
+    store = svc.skill_store
     if store is None:
         return ToolExecutionResult(
             success=False,
@@ -477,9 +482,9 @@ async def promote_skill_executor(
     store.update_meta(skill_id, maturity="stable")
 
     # Hot-register as a ToolSpec if tool_registry is available
-    tool_registry = services.get("tool_registry")
+    tool_registry = svc.tool_registry
     if tool_registry is not None:
-        _register_skill_as_tool(tool_registry, store, services.get("skill_executor"), skill_id)
+        _register_skill_as_tool(tool_registry, store, svc.skill_executor, skill_id)
 
     return ToolExecutionResult(
         success=True,
@@ -495,8 +500,9 @@ async def delete_skill_executor(
     request: ToolExecutionRequest,
     context: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    services = context.services or {}
-    store = services.get("skill_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(context.services or {})
+    store = svc.skill_store
     if store is None:
         return ToolExecutionResult(
             success=False,
@@ -524,8 +530,9 @@ async def search_skill_executor(
     request: ToolExecutionRequest,
     context: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    services = context.services or {}
-    store = services.get("skill_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(context.services or {})
+    store = svc.skill_store
     if store is None:
         return ToolExecutionResult(
             success=False,
@@ -561,7 +568,7 @@ async def search_skill_executor(
 
     # 网络搜索（仅在本地无结果时触发）
     if source in ("web", "all") and not results:
-        research_engine = services.get("research_engine")
+        research_engine = svc.research_engine
         tavily = getattr(research_engine, "tavily", None) if research_engine else None
         if tavily is not None:
             try:
@@ -607,8 +614,9 @@ async def install_skill_executor(
     request: ToolExecutionRequest,
     context: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    services = context.services or {}
-    store = services.get("skill_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(context.services or {})
+    store = svc.skill_store
     if store is None:
         return ToolExecutionResult(
             success=False,
@@ -719,7 +727,9 @@ def _register_skill_as_tool(tool_registry, skill_store, skill_executor, skill_id
     meta = skill["meta"]
 
     async def _executor(req: ToolExecutionRequest, ctx: ToolExecutionContext) -> ToolExecutionResult:
-        executor = (ctx.services or {}).get("skill_executor")
+        from src.core.tool_dispatcher import ServiceContextView
+        svc = ServiceContextView(ctx.services or {})
+        executor = svc.skill_executor
         if executor is None:
             return ToolExecutionResult(success=False, payload={}, reason="SkillExecutor 未挂载")
         result = await executor.execute(skill_id, arguments=req.arguments or {})

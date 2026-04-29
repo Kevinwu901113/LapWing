@@ -17,7 +17,9 @@ async def add_correction_executor(
             reason="missing_rule_key",
         )
 
-    manager = ctx.services.get("correction_manager")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    manager = svc.correction_manager
     if manager is None:
         return ToolExecutionResult(
             success=False,

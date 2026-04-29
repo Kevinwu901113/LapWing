@@ -55,7 +55,9 @@ async def prepare_ambient_knowledge_executor(
         )
     ttl_hours = int(ttl_hours)
 
-    engine = ctx.services.get("research_engine")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    engine = svc.research_engine
     if engine is None:
         return ToolExecutionResult(
             success=False,
@@ -63,7 +65,7 @@ async def prepare_ambient_knowledge_executor(
             reason="research_engine_unavailable",
         )
 
-    ambient_store = ctx.services.get("ambient_store")
+    ambient_store = svc.ambient_store
     if ambient_store is None:
         return ToolExecutionResult(
             success=False,
@@ -171,7 +173,9 @@ async def check_ambient_knowledge_executor(
             reason="missing params",
         )
 
-    ambient_store = ctx.services.get("ambient_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    ambient_store = svc.ambient_store
     if ambient_store is None:
         return ToolExecutionResult(
             success=False,
@@ -250,7 +254,9 @@ async def manage_interest_profile_executor(
             reason="invalid action",
         )
 
-    profile = ctx.services.get("interest_profile")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    profile = svc.interest_profile
     if profile is None:
         return ToolExecutionResult(
             success=False,
