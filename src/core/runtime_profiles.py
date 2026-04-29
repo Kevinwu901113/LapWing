@@ -138,7 +138,7 @@ LOCAL_EXECUTION_PROFILE = RuntimeProfile(
     name="local_execution",
     capabilities=frozenset({
         "shell", "skill", "memory", "schedule",
-        "general", "browser", "commitment", "agent_delegate", "file",
+        "general", "commitment", "agent_delegate", "file",
         "code", "verify",
     }),
     exclude_tool_names=frozenset({
@@ -170,7 +170,31 @@ AGENT_ADMIN_OPERATOR_PROFILE = RuntimeProfile(
 # Operator-only identity administration surface.
 IDENTITY_OPERATOR_PROFILE = RuntimeProfile(
     name="identity_operator",
-    capabilities=frozenset({"identity"}),
+    capabilities=frozenset(),
+    tool_names=frozenset({"read_soul", "edit_soul"}),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
+# Operator-only browser automation surface.
+BROWSER_OPERATOR_PROFILE = RuntimeProfile(
+    name="browser_operator",
+    capabilities=frozenset(),
+    tool_names=frozenset({
+        "browser_open",
+        "browser_click",
+        "browser_type",
+        "browser_select",
+        "browser_scroll",
+        "browser_screenshot",
+        "browser_get_text",
+        "browser_back",
+        "browser_tabs",
+        "browser_switch_tab",
+        "browser_close_tab",
+        "browser_wait",
+        "browser_login",
+    }),
     include_internal=False,
     shell_policy_enabled=False,
 )
@@ -288,6 +312,7 @@ _PROFILES = {
         LOCAL_EXECUTION_PROFILE,
         AGENT_ADMIN_OPERATOR_PROFILE,
         IDENTITY_OPERATOR_PROFILE,
+        BROWSER_OPERATOR_PROFILE,
         CODER_SNIPPET_PROFILE,
         CODER_WORKSPACE_PROFILE,
         FILE_OPS_PROFILE,

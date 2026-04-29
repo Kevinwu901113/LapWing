@@ -11,6 +11,7 @@ from src.core.runtime_profiles import (
     AGENT_ADMIN_OPERATOR_PROFILE,
     AGENT_CODER_PROFILE,
     AGENT_RESEARCHER_PROFILE,
+    BROWSER_OPERATOR_PROFILE,
     COMPOSE_PROACTIVE_PROFILE,
     IDENTITY_OPERATOR_PROFILE,
     STANDARD_PROFILE,
@@ -87,6 +88,17 @@ def _make_full_registry() -> ToolRegistry:
         # browser_* — needed for INNER_TICK exclusion check
         ("browser_open", "browser"),
         ("browser_click", "browser"),
+        ("browser_type", "browser"),
+        ("browser_select", "browser"),
+        ("browser_scroll", "browser"),
+        ("browser_screenshot", "browser"),
+        ("browser_get_text", "browser"),
+        ("browser_back", "browser"),
+        ("browser_tabs", "browser"),
+        ("browser_switch_tab", "browser"),
+        ("browser_close_tab", "browser"),
+        ("browser_wait", "browser"),
+        ("browser_login", "browser"),
         # shell + arbitrary file writes — INNER_TICK must exclude these
         ("execute_shell", "shell"),
         ("read_file", "shell"),
@@ -172,7 +184,7 @@ class TestProfileExclusivity:
         assert TASK_EXECUTION_PROFILE.name == "local_execution"
         assert TASK_EXECUTION_PROFILE.capabilities == frozenset({
             "shell", "skill", "memory", "schedule",
-            "general", "browser", "commitment", "agent_delegate", "file",
+            "general", "commitment", "agent_delegate", "file",
             "code", "verify",
         })
         assert TASK_EXECUTION_PROFILE.exclude_tool_names == frozenset({
@@ -184,7 +196,7 @@ class TestProfileExclusivity:
         names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
         
         expected_names = {
-            'abandon_promise', 'add_correction', 'browser_click', 'browser_open', 'cancel_reminder', 'close_focus', 'commit_promise', 'create_skill', 'delegate_to_coder', 'delegate_to_researcher', 'execute_shell', 'file_append', 'file_list_directory', 'file_read_segment', 'file_write', 'fulfill_promise', 'get_current_datetime', 'list_notes', 'read_file', 'read_note', 'recall', 'recall_focus', 'run_skill', 'search_notes', 'set_reminder', 'view_reminders', 'write_file', 'write_note'
+            'abandon_promise', 'add_correction', 'cancel_reminder', 'close_focus', 'commit_promise', 'create_skill', 'delegate_to_coder', 'delegate_to_researcher', 'execute_shell', 'file_append', 'file_list_directory', 'file_read_segment', 'file_write', 'fulfill_promise', 'get_current_datetime', 'list_notes', 'read_file', 'read_note', 'recall', 'recall_focus', 'run_skill', 'search_notes', 'set_reminder', 'view_reminders', 'write_file', 'write_note'
         }
         assert names == expected_names
         
@@ -197,6 +209,9 @@ class TestProfileExclusivity:
         assert "delegate_to_agent" not in names
         assert "read_soul" not in names
         assert "edit_soul" not in names
+        assert "browser_open" not in names
+        assert "browser_click" not in names
+        assert "browser_type" not in names
 
     def test_agent_admin_operator_profile_exposes_agent_admin_tools_only(self):
         registry = _make_full_registry()
@@ -209,6 +224,25 @@ class TestProfileExclusivity:
         registry = _make_full_registry()
         names = _resolve_tool_names(registry, IDENTITY_OPERATOR_PROFILE)
         assert names == {"read_soul", "edit_soul"}
+
+    def test_browser_operator_profile_exposes_browser_tools_only(self):
+        registry = _make_full_registry()
+        names = _resolve_tool_names(registry, BROWSER_OPERATOR_PROFILE)
+        assert names == {
+            "browser_open",
+            "browser_click",
+            "browser_type",
+            "browser_select",
+            "browser_scroll",
+            "browser_screenshot",
+            "browser_get_text",
+            "browser_back",
+            "browser_tabs",
+            "browser_switch_tab",
+            "browser_close_tab",
+            "browser_wait",
+            "browser_login",
+        }
 
     def test_non_operator_profiles_never_expose_agent_admin_tools(self):
         registry = _make_full_registry()
@@ -240,6 +274,25 @@ class TestProfileExclusivity:
             names = _resolve_tool_names(registry, profile)
             leaks = names & forbidden
             assert not leaks, f"{profile.name} leaked identity tools: {sorted(leaks)}"
+
+    def test_non_operator_profiles_never_expose_browser_automation_tools(self):
+        registry = _make_full_registry()
+        forbidden = {
+            "browser_open", "browser_click", "browser_type", "browser_select",
+            "browser_scroll", "browser_screenshot", "browser_get_text",
+            "browser_back", "browser_tabs", "browser_switch_tab",
+            "browser_close_tab", "browser_wait", "browser_login",
+        }
+        profiles = (
+            STANDARD_PROFILE,
+            INNER_TICK_PROFILE,
+            COMPOSE_PROACTIVE_PROFILE,
+            TASK_EXECUTION_PROFILE,  # local_execution alias
+        )
+        for profile in profiles:
+            names = _resolve_tool_names(registry, profile)
+            leaks = names & forbidden
+            assert not leaks, f"{profile.name} leaked browser tools: {sorted(leaks)}"
 
     def test_chat_minimal_has_no_agent_tools(self):
         """chat_minimal (zero_tools alias) exposes nothing — pure-text

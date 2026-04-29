@@ -406,6 +406,7 @@ class LapwingBrain:
             "local_execution",
             "agent_admin_operator",
             "identity_operator",
+            "browser_operator",
         }
         if profile_name in operator_profiles:
             explicit_override = profile_override in operator_profiles

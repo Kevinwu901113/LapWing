@@ -198,7 +198,7 @@ async def test_local_execution_explicit_owner_override_emits_escalation_audit(br
     assert any(call.args and call.args[0] == MutationType.PROFILE_ESCALATED for call in calls)
 
 
-@pytest.mark.parametrize("profile_name", ["agent_admin_operator", "identity_operator"])
+@pytest.mark.parametrize("profile_name", ["agent_admin_operator", "identity_operator", "browser_operator"])
 async def test_operator_profiles_require_explicit_override_and_owner_or_agent(brain, profile_name):
     from src.core.brain import LapwingBrain
     from src.core.intent_router import RouteDecision
@@ -223,7 +223,7 @@ async def test_operator_profiles_require_explicit_override_and_owner_or_agent(br
     assert args[1]["reason"] == f"{profile_name}_requires_explicit_owner_or_agent"
 
 
-@pytest.mark.parametrize("profile_name", ["agent_admin_operator", "identity_operator"])
+@pytest.mark.parametrize("profile_name", ["agent_admin_operator", "identity_operator", "browser_operator"])
 async def test_operator_profiles_explicit_owner_override_emits_escalation_audit(brain, profile_name):
     from src.core.brain import LapwingBrain
 
