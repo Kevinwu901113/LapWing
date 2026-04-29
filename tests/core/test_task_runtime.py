@@ -112,15 +112,16 @@ async def test_chat_tools_from_registry():
     tools = runtime.chat_tools(shell_enabled=True)
     names = {item["function"]["name"] for item in tools}
 
-    # Shell + personal + reminder + web tools all exposed
+    # Shell + personal + reminder tools exposed; research goes through
+    # delegate_to_researcher (no web layering anymore).
     assert {"execute_shell", "read_file", "write_file"}.issubset(names)
     assert {"get_time", "send_message", "send_image", "view_image"}.issubset(names)
     assert {"set_reminder", "view_reminders", "cancel_reminder"}.issubset(names)
-    # research/browse layered on by chat_tools when web_enabled=True (default).
-    # Agents-as-tools refactor: chat surface uses delegate_to_researcher /
-    # delegate_to_coder, not the generic delegate_to_agent.
-    assert {"research", "browse"}.issubset(names)
     assert {"delegate_to_researcher", "delegate_to_coder"}.issubset(names)
+    # Agents-as-tools refactor: raw research/browse no longer reach the
+    # chat surface — every external info question goes via delegate.
+    assert "research" not in names
+    assert "browse" not in names
     assert "delegate_to_agent" not in names
     assert "list_agents" not in names
     # `get_weather` + `image_search` are gone from the whitelist (Step 1i)
@@ -129,17 +130,21 @@ async def test_chat_tools_from_registry():
 
 
 @pytest.mark.asyncio
-async def test_chat_tools_excludes_web_when_disabled():
+async def test_chat_tools_no_raw_web_at_chat_tier():
+    """research/browse used to layer in via web_enabled=True. After
+    the agents-as-tools refactor they're confined to the Researcher;
+    the chat surface always reaches them via delegate_to_researcher.
+    """
     runtime = TaskRuntime(router=MagicMock(), tool_registry=_chat_ready_registry())
 
-    tools = runtime.chat_tools(shell_enabled=True, web_enabled=False)
+    tools = runtime.chat_tools(shell_enabled=True)
     names = {item["function"]["name"] for item in tools}
 
     assert "research" not in names
     assert "browse" not in names
-    # Non-web tools still present
     assert "execute_shell" in names
     assert "send_message" in names
+    assert "delegate_to_researcher" in names
 
 
 @pytest.mark.asyncio
@@ -202,7 +207,7 @@ async def test_chat_tools_silently_skips_unregistered_profile_tools():
     from src.tools.registry import build_default_tool_registry
 
     runtime = TaskRuntime(router=MagicMock(), tool_registry=build_default_tool_registry())
-    tools = runtime.chat_tools(shell_enabled=False, web_enabled=False)
+    tools = runtime.chat_tools(shell_enabled=False)
     names = {item["function"]["name"] for item in tools}
     # Tools that ARE registered in build_default_tool_registry survive…
     assert {"commit_promise", "fulfill_promise", "abandon_promise"}.issubset(names)
@@ -615,7 +620,7 @@ async def test_complete_chat_supports_web_tool_call_and_tool_result_roundtrip():
         chat_id="chat_1",
         messages=[{"role": "user", "content": "查一下今天A股收盘"}],
         constraints=constraints,
-        tools=runtime.chat_tools(shell_enabled=False, web_enabled=True),
+        tools=runtime.chat_tools(shell_enabled=False),
         deps=RuntimeDeps(
             execute_shell=AsyncMock(),
             policy=_make_policy(AsyncMock()),

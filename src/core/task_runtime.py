@@ -319,16 +319,20 @@ class TaskRuntime:
         self,
         shell_enabled: bool,
         *,
-        web_enabled: bool = True,
         browser_enabled: bool = False,
     ) -> list[dict[str, Any]]:
         """Resolve the proactive-composition tool surface.
 
         Source of truth for the always-on tool list is
         ``COMPOSE_PROACTIVE_PROFILE`` (defined in runtime_profiles.py) —
-        this method layers shell / web / browser / ambient-knowledge
+        this method layers shell / browser / ambient-knowledge
         capabilities on top based on caller flags, but the base names
         are not duplicated here.
+
+        Web retrieval is *not* a layered capability anymore: every
+        external-info query goes through delegate_to_researcher, which
+        is part of the base profile. Pre-refactor callers passing
+        ``web_enabled=True`` are silently ignored.
 
         send_message is included so proactive paths (inner ticks,
         compose_proactive) can talk to the user; direct chat replies
@@ -343,8 +347,6 @@ class TaskRuntime:
 
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
-        if web_enabled:
-            tool_names.update({"research", "browse"})
         # Ambient knowledge tools — only when registered (subsystem optional).
         for ambient_tool in (
             "prepare_ambient_knowledge",

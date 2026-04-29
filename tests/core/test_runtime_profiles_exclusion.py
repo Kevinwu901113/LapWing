@@ -302,9 +302,11 @@ class TestInnerTickProfile:
         assert "get_current_datetime" in names
         # proactive messaging
         assert "send_message" in names
-        # research/browse (lightweight — not delegated)
-        assert "research" in names
-        assert "browse" in names
+        # outward seam — research/browse moved to Researcher; the
+        # autonomous tick reaches external info via delegate.
+        assert "delegate_to_researcher" in names
+        assert "research" not in names
+        assert "browse" not in names
         # reminders
         assert "set_reminder" in names
         assert "view_reminders" in names
@@ -324,7 +326,7 @@ class TestInnerTickProfile:
         assert "search_notes" in names
         # corrections
         assert "add_correction" in names
-        # run_skill (gated for autonomous execution in commit 3)
+        # run_skill (gated for autonomous execution by skill maturity)
         assert "run_skill" in names
 
     def test_excludes_create_skill(self):
@@ -350,11 +352,17 @@ class TestInnerTickProfile:
                 f"inner_tick must not expose {forbidden}"
             )
 
-    def test_excludes_agent_delegation(self):
+    def test_excludes_coder_delegation(self):
+        """inner_tick is a thinking/messaging surface — it should not
+        kick off code execution. delegate_to_researcher is allowed
+        (autonomous lookups), delegate_to_coder is not.
+        """
         registry = _make_full_registry()
         names = _resolve_tool_names(registry, INNER_TICK_PROFILE)
-        assert "delegate_to_researcher" not in names
         assert "delegate_to_coder" not in names
+        # delegate_to_agent (generic) and dynamic agent tools also out
+        assert "delegate_to_agent" not in names
+        assert "create_agent" not in names
 
     def test_excludes_identity_mutations(self):
         registry = _make_full_registry()

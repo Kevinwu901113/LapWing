@@ -113,11 +113,8 @@ INNER_TICK_PROFILE = RuntimeProfile(
     tool_names=frozenset({
         # time
         "get_current_datetime",
-        # proactive messaging (gated by ProactiveMessageGate in commit 5)
+        # proactive messaging (gated by ProactiveMessageGate)
         "send_message",
-        # lightweight research
-        "research",
-        "browse",
         # reminders
         "set_reminder",
         "view_reminders",
@@ -137,8 +134,12 @@ INNER_TICK_PROFILE = RuntimeProfile(
         "search_notes",
         # corrections
         "add_correction",
-        # skills (only auto-runnable stable ones — gated in commit 3)
+        # skills (only auto-runnable stable ones — gated by skill maturity)
         "run_skill",
+        # outward seam (post agents-as-tools refactor: even autonomous
+        # ticks reach external info through the Researcher rather than
+        # raw research/browse).
+        "delegate_to_researcher",
     }),
     include_internal=False,
     shell_policy_enabled=False,

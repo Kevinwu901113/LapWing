@@ -268,19 +268,11 @@ class TestRetrievalToolsConfinedToResearcher:
         names = _resolved_tool_names(AGENT_RESEARCHER_PROFILE)
         assert "get_sports_score" in names
 
-    @pytest.mark.xfail(
-        reason="research/browse leave INNER_TICK in Commit 6",
-        strict=False,
-    )
     def test_inner_tick_does_not_have_raw_research(self):
         names = _resolved_tool_names(INNER_TICK_PROFILE)
         assert "research" not in names
         assert "browse" not in names
 
-    @pytest.mark.xfail(
-        reason="STANDARD profile + retrieval routing finalised in Commit 6",
-        strict=False,
-    )
     def test_no_lapwing_profile_exposes_external_retrieval(self):
         """The set of profiles that face Lapwing as the orchestrator
         (i.e. not Researcher / Coder / internal coder profiles) must
@@ -306,10 +298,6 @@ class TestDelegateExclusivity:
     decision and makes the Agent Team pointless.
     """
 
-    @pytest.mark.xfail(
-        reason="Delegate/raw exclusivity finalised in Commit 6",
-        strict=False,
-    )
     def test_no_profile_has_raw_retrieval_and_delegate(self):
         violations: list[str] = []
         for pname, profile in _PROFILES.items():
@@ -330,10 +318,6 @@ class TestDelegateExclusivity:
             + "\n".join(violations)
         )
 
-    @pytest.mark.xfail(
-        reason="get_sports_score leaves task_execution in Commit 5",
-        strict=False,
-    )
     def test_task_execution_no_external_retrieval_tools(self):
         """task_execution is a temporary legacy escape hatch (Step 1
         only) — it still has shell/browser/file but must not expose

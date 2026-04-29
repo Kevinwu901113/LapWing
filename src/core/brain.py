@@ -1214,7 +1214,6 @@ class LapwingBrain:
             from src.core.shell_policy import extract_execution_constraints
             tool_specs = self.task_runtime.chat_tools(
                 shell_enabled=False,
-                web_enabled=True,
                 browser_enabled=BROWSER_ENABLED,
             )
             # 过滤为仅允许的工具名

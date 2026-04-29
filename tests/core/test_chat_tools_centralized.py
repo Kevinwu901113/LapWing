@@ -100,15 +100,17 @@ class TestProfileExists:
 class TestChatToolsResolvesViaProfile:
     @pytest.mark.asyncio
     async def test_chat_tools_returns_profile_names_when_no_flags(self):
-        """With shell+web disabled, chat_tools output is exactly the
-        profile names that are registered."""
+        """With shell disabled, chat_tools output is exactly the
+        profile names that are registered. Web retrieval is no longer
+        a layered capability — every external info question goes via
+        delegate_to_researcher in the base profile.
+        """
         from src.core.task_runtime import TaskRuntime
 
         registry = _registry_with_compose_proactive_tools()
         runtime = TaskRuntime(router=MagicMock(), tool_registry=registry)
-        tools = runtime.chat_tools(shell_enabled=False, web_enabled=False)
+        tools = runtime.chat_tools(shell_enabled=False)
         names = {item["function"]["name"] for item in tools}
-        # Subset of profile names that survived registration
         assert names == set(COMPOSE_PROACTIVE_PROFILE.tool_names)
 
     @pytest.mark.asyncio
@@ -117,25 +119,28 @@ class TestChatToolsResolvesViaProfile:
 
         registry = _registry_with_compose_proactive_tools()
         runtime = TaskRuntime(router=MagicMock(), tool_registry=registry)
-        tools = runtime.chat_tools(shell_enabled=True, web_enabled=False)
+        tools = runtime.chat_tools(shell_enabled=True)
         names = {item["function"]["name"] for item in tools}
-        # Profile names + execute_shell + read/write_file
         for n in ("execute_shell", "read_file", "write_file"):
             assert n in names
-        # And the profile names are still there
         assert "send_message" in names
         assert "delegate_to_researcher" in names
 
     @pytest.mark.asyncio
-    async def test_chat_tools_layers_web_on_top(self):
+    async def test_chat_tools_does_not_layer_raw_web(self):
+        """Post agents-as-tools refactor: research/browse stay confined
+        to the Researcher. chat_tools never adds them — every external
+        info question goes via delegate_to_researcher.
+        """
         from src.core.task_runtime import TaskRuntime
 
         registry = _registry_with_compose_proactive_tools()
         runtime = TaskRuntime(router=MagicMock(), tool_registry=registry)
-        tools = runtime.chat_tools(shell_enabled=False, web_enabled=True)
+        tools = runtime.chat_tools(shell_enabled=False)
         names = {item["function"]["name"] for item in tools}
-        assert "research" in names
-        assert "browse" in names
+        assert "research" not in names
+        assert "browse" not in names
+        assert "delegate_to_researcher" in names
 
     @pytest.mark.asyncio
     async def test_removing_a_name_from_profile_removes_it_from_chat_tools(
@@ -150,19 +155,16 @@ class TestChatToolsResolvesViaProfile:
         registry = _registry_with_compose_proactive_tools()
         runtime = TaskRuntime(router=MagicMock(), tool_registry=registry)
 
-        # Drop send_message from the profile and confirm it disappears.
         smaller = RuntimeProfile(
             name="compose_proactive",
             capabilities=frozenset(),
             tool_names=COMPOSE_PROACTIVE_PROFILE.tool_names - {"send_message"},
         )
         monkeypatch.setattr(runtime_profiles, "COMPOSE_PROACTIVE_PROFILE", smaller)
-        # task_runtime imports the symbol at module level, so patch there too.
         from src.core import task_runtime as tr
         monkeypatch.setattr(tr, "COMPOSE_PROACTIVE_PROFILE", smaller)
 
-        tools = runtime.chat_tools(shell_enabled=False, web_enabled=False)
+        tools = runtime.chat_tools(shell_enabled=False)
         names = {item["function"]["name"] for item in tools}
         assert "send_message" not in names
-        # Sibling tools are still present
         assert "set_reminder" in names
