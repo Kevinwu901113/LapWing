@@ -312,10 +312,12 @@ async def get_sports_score_executor(
 ) -> ToolExecutionResult:
     team = str(req.arguments.get("team", "")).strip()
     league = str(req.arguments.get("league", "")).strip() or None
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
     result = await get_sports_score(
         team,
         league=league,
-        llm_router=ctx.services.get("llm_router"),
+        llm_router=svc.llm_router,
     )
     if "error" in result:
         return ToolExecutionResult(success=False, payload=result, reason=result["error"])

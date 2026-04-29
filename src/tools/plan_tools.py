@@ -56,9 +56,11 @@ async def plan_task_executor(
 ) -> ToolExecutionResult:
     """创建新计划。拒绝重复创建；要求 >= 2 步。"""
     services = context.services or {}
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(services)
 
     # 已有计划则拒绝
-    if services.get("plan_state") is not None:
+    if svc.plan_state is not None:
         return ToolExecutionResult(
             success=False,
             payload={"created": False, "reason": "计划已存在，不能重复创建"},
@@ -130,8 +132,9 @@ async def update_plan_executor(
     context: ToolExecutionContext,
 ) -> ToolExecutionResult:
     """推进计划步骤状态。"""
-    services = context.services or {}
-    plan: PlanState | None = services.get("plan_state")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(context.services or {})
+    plan: PlanState | None = svc.plan_state
     if plan is None:
         return ToolExecutionResult(
             success=False,
