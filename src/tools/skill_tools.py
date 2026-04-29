@@ -221,7 +221,7 @@ async def create_skill_executor(
 # Any other profile (CLI / OWNER tooling) bypasses the gate — those
 # surfaces have their own access controls.
 
-_GATED_PROFILES = frozenset({"chat_extended", "inner_tick"})
+_GATED_PROFILES = frozenset({"chat_extended", "standard", "inner_tick"})
 _AUTONOMOUS_TAGS = frozenset({"auto_run", "inner_tick"})
 
 # auth_level integers — keep aligned with src.core.authority_gate.AuthLevel
@@ -257,7 +257,7 @@ def _gate_run_skill(
             f"run_skill 在 {profile} 下只能执行 maturity=stable 的技能，"
             f"当前技能状态为 {maturity or 'unmarked'}"
         )
-    if profile == "chat_extended":
+    if profile in ("chat_extended", "standard"):
         required = meta.get("trust_required", "guest")
         if not _trust_satisfied(required, auth_level):
             return (

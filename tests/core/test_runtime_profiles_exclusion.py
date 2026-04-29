@@ -124,36 +124,37 @@ def _resolve_tool_names(registry: ToolRegistry, profile) -> set[str]:
 
 
 class TestProfileExclusivity:
-    def test_chat_extended_has_delegate_to_agent_no_research(self):
-        """Per Blueprint §10: chat_extended now goes through delegate_to_agent
-        for research instead of exposing raw research/browse."""
+    def test_chat_extended_has_specific_delegates_no_research(self):
+        """Post agents-as-tools refactor: the chat surface (now the
+        STANDARD profile, surfaced via the chat_extended legacy alias)
+        uses delegate_to_researcher / delegate_to_coder, not the
+        generic delegate_to_agent."""
         registry = _make_full_registry()
         names = _resolve_tool_names(registry, CHAT_EXTENDED_PROFILE)
-        assert "delegate_to_agent" in names
-        assert "list_agents" in names
-        # Legacy raw research tools and create/destroy/save not exposed at chat tier
+        assert "delegate_to_researcher" in names
+        assert "delegate_to_coder" in names
+        # Raw research / dynamic-agent management not on the chat tier
         assert "research" not in names
         assert "browse" not in names
         for forbidden in ("create_agent", "destroy_agent", "save_agent",
-                          "delegate_to_researcher", "delegate_to_coder"):
+                          "delegate_to_agent", "list_agents"):
             assert forbidden not in names, f"chat_extended must not expose {forbidden}"
 
-    def test_task_execution_has_all_five_dynamic_agent_tools(self):
-        """T-12: TASK_EXECUTION exposes delegate_to_agent + list_agents +
-        create_agent + destroy_agent + save_agent."""
+    def test_task_execution_has_dynamic_agent_tools(self):
+        """task_execution still exposes the dynamic-agent management
+        tools for power flows (create/destroy/save_agent + the generic
+        delegate_to_agent + list_agents). Raw research stays gated."""
         registry = _make_full_registry()
         names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
         for required in ("delegate_to_agent", "list_agents", "create_agent",
                          "destroy_agent", "save_agent"):
             assert required in names, f"task_execution must expose {required}"
-        # Raw research stays gated; legacy delegate shims hidden.
         assert "research" not in names
         assert "browse" not in names
-        assert "delegate_to_researcher" not in names
-        assert "delegate_to_coder" not in names
 
     def test_chat_minimal_has_no_agent_tools(self):
-        """T-12: chat_minimal exposes none of the agent tools."""
+        """chat_minimal (zero_tools alias) exposes nothing — pure-text
+        replies don't need any tool access."""
         registry = _make_full_registry()
         names = _resolve_tool_names(registry, CHAT_MINIMAL_PROFILE)
         for n in _RESEARCH_NAMES | _DELEGATE_NAMES | {
@@ -162,9 +163,10 @@ class TestProfileExclusivity:
             assert n not in names, f"chat_minimal 不应暴露 {n}"
 
     def test_no_profile_exposes_research_and_delegate_simultaneously(self):
-        """Blueprint §10.2: research/browse mutually exclusive with delegate_to_agent.
-        Exception: AGENT_RESEARCHER_PROFILE keeps research/browse — that's the
-        agent's own surface, not the brain's.
+        """Blueprint §10.2: raw research/browse mutually exclusive with
+        delegate_to_*. Exception: AGENT_RESEARCHER_PROFILE keeps
+        research/browse — that's the agent's own surface, not the
+        brain's.
         """
         registry = _make_full_registry()
         violations: list[str] = []
