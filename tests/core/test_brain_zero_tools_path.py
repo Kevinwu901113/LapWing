@@ -196,3 +196,53 @@ async def test_local_execution_explicit_owner_override_emits_escalation_audit(br
     assert captured["profile"] == "local_execution"
     calls = brain._mutation_log_ref.record.await_args_list
     assert any(call.args and call.args[0] == MutationType.PROFILE_ESCALATED for call in calls)
+
+
+@pytest.mark.parametrize("profile_name", ["agent_admin_operator", "identity_operator"])
+async def test_operator_profiles_require_explicit_override_and_owner_or_agent(brain, profile_name):
+    from src.core.brain import LapwingBrain
+    from src.core.intent_router import RouteDecision
+
+    decision = RouteDecision(profile_name=profile_name)
+    captured = _wire_brain_with_router_decision(brain, decision)
+    brain._mutation_log_ref = AsyncMock()
+
+    with patch("src.core.brain.INTENT_ROUTER_ENABLED", True):
+        await LapwingBrain._complete_chat(
+            brain,
+            chat_id="kevin",
+            messages=[{"role": "user", "content": "危险操作"}],
+            user_message="危险操作",
+            adapter="qq",
+            user_id="guest-user",
+        )
+
+    assert captured["profile"] == "standard"
+    args = brain._mutation_log_ref.record.await_args.args
+    assert args[0] == MutationType.TOOL_DENIED
+    assert args[1]["reason"] == f"{profile_name}_requires_explicit_owner_or_agent"
+
+
+@pytest.mark.parametrize("profile_name", ["agent_admin_operator", "identity_operator"])
+async def test_operator_profiles_explicit_owner_override_emits_escalation_audit(brain, profile_name):
+    from src.core.brain import LapwingBrain
+
+    captured = _wire_brain_with_router_decision(brain, decision=None)
+    brain._mutation_log_ref = AsyncMock()
+
+    with patch("src.core.brain.INTENT_ROUTER_ENABLED", True):
+        await LapwingBrain._complete_chat(
+            brain,
+            chat_id="kevin",
+            messages=[{"role": "user", "content": "危险操作"}],
+            user_message="危险操作",
+            profile_override=profile_name,
+            adapter="agent",
+            user_id="agent:coder",
+        )
+
+    assert captured["profile"] == profile_name
+    calls = brain._mutation_log_ref.record.await_args_list
+    audit_payloads = [call.args[1] for call in calls if call.args and call.args[0] == MutationType.PROFILE_ESCALATED]
+    assert audit_payloads, "expected PROFILE_ESCALATED audit"
+    assert any(p.get("reason") == f"explicit_{profile_name}_override" for p in audit_payloads)

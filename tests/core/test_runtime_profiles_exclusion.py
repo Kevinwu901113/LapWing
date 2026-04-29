@@ -11,6 +11,8 @@ from src.core.runtime_profiles import (
     AGENT_ADMIN_OPERATOR_PROFILE,
     AGENT_CODER_PROFILE,
     AGENT_RESEARCHER_PROFILE,
+    COMPOSE_PROACTIVE_PROFILE,
+    IDENTITY_OPERATOR_PROFILE,
     STANDARD_PROFILE,
     ZERO_TOOLS_PROFILE,
     CHAT_SHELL_PROFILE,
@@ -171,7 +173,7 @@ class TestProfileExclusivity:
         assert TASK_EXECUTION_PROFILE.capabilities == frozenset({
             "shell", "skill", "memory", "schedule",
             "general", "browser", "commitment", "agent_delegate", "file",
-            "code", "verify", "identity",
+            "code", "verify",
         })
         assert TASK_EXECUTION_PROFILE.exclude_tool_names == frozenset({
             "research", "browse", "get_sports_score", "send_message",
@@ -182,7 +184,7 @@ class TestProfileExclusivity:
         names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
         
         expected_names = {
-            'abandon_promise', 'add_correction', 'browser_click', 'browser_open', 'cancel_reminder', 'close_focus', 'commit_promise', 'create_skill', 'delegate_to_coder', 'delegate_to_researcher', 'edit_soul', 'execute_shell', 'file_append', 'file_list_directory', 'file_read_segment', 'file_write', 'fulfill_promise', 'get_current_datetime', 'list_notes', 'read_file', 'read_note', 'read_soul', 'recall', 'recall_focus', 'run_skill', 'search_notes', 'set_reminder', 'view_reminders', 'write_file', 'write_note'
+            'abandon_promise', 'add_correction', 'browser_click', 'browser_open', 'cancel_reminder', 'close_focus', 'commit_promise', 'create_skill', 'delegate_to_coder', 'delegate_to_researcher', 'execute_shell', 'file_append', 'file_list_directory', 'file_read_segment', 'file_write', 'fulfill_promise', 'get_current_datetime', 'list_notes', 'read_file', 'read_note', 'recall', 'recall_focus', 'run_skill', 'search_notes', 'set_reminder', 'view_reminders', 'write_file', 'write_note'
         }
         assert names == expected_names
         
@@ -193,6 +195,8 @@ class TestProfileExclusivity:
         assert "destroy_agent" not in names
         assert "save_agent" not in names
         assert "delegate_to_agent" not in names
+        assert "read_soul" not in names
+        assert "edit_soul" not in names
 
     def test_agent_admin_operator_profile_exposes_agent_admin_tools_only(self):
         registry = _make_full_registry()
@@ -200,6 +204,11 @@ class TestProfileExclusivity:
         assert names == {
             "delegate_to_agent", "create_agent", "destroy_agent", "save_agent",
         }
+
+    def test_identity_operator_profile_exposes_identity_tools_only(self):
+        registry = _make_full_registry()
+        names = _resolve_tool_names(registry, IDENTITY_OPERATOR_PROFILE)
+        assert names == {"read_soul", "edit_soul"}
 
     def test_non_operator_profiles_never_expose_agent_admin_tools(self):
         registry = _make_full_registry()
@@ -215,6 +224,22 @@ class TestProfileExclusivity:
             names = _resolve_tool_names(registry, profile)
             leaks = names & forbidden
             assert not leaks, f"{profile.name} leaked agent_admin tools: {sorted(leaks)}"
+
+    def test_non_operator_profiles_never_expose_identity_mutation_tools(self):
+        registry = _make_full_registry()
+        forbidden = {"read_soul", "edit_soul"}
+        profiles = (
+            ZERO_TOOLS_PROFILE,
+            STANDARD_PROFILE,
+            CHAT_SHELL_PROFILE,
+            INNER_TICK_PROFILE,
+            COMPOSE_PROACTIVE_PROFILE,
+            TASK_EXECUTION_PROFILE,  # local_execution alias
+        )
+        for profile in profiles:
+            names = _resolve_tool_names(registry, profile)
+            leaks = names & forbidden
+            assert not leaks, f"{profile.name} leaked identity tools: {sorted(leaks)}"
 
     def test_chat_minimal_has_no_agent_tools(self):
         """chat_minimal (zero_tools alias) exposes nothing — pure-text

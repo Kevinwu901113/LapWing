@@ -139,7 +139,7 @@ LOCAL_EXECUTION_PROFILE = RuntimeProfile(
     capabilities=frozenset({
         "shell", "skill", "memory", "schedule",
         "general", "browser", "commitment", "agent_delegate", "file",
-        "code", "verify", "identity",
+        "code", "verify",
     }),
     exclude_tool_names=frozenset({
         "research", "browse", "get_sports_score", "send_message",
@@ -163,6 +163,14 @@ AGENT_ADMIN_OPERATOR_PROFILE = RuntimeProfile(
         "destroy_agent",
         "save_agent",
     }),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
+# Operator-only identity administration surface.
+IDENTITY_OPERATOR_PROFILE = RuntimeProfile(
+    name="identity_operator",
+    capabilities=frozenset({"identity"}),
     include_internal=False,
     shell_policy_enabled=False,
 )
@@ -279,6 +287,7 @@ _PROFILES = {
         COMPOSE_PROACTIVE_PROFILE,
         LOCAL_EXECUTION_PROFILE,
         AGENT_ADMIN_OPERATOR_PROFILE,
+        IDENTITY_OPERATOR_PROFILE,
         CODER_SNIPPET_PROFILE,
         CODER_WORKSPACE_PROFILE,
         FILE_OPS_PROFILE,

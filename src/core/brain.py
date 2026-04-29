@@ -400,9 +400,15 @@ class LapwingBrain:
                     decision = await intent_router.route(chat_id, user_message)
                     profile_name = decision.profile_name
 
-        # LOCAL_EXECUTION is operator-only: never auto-route into it.
-        if profile_name in {"task_execution", "local_execution"}:
-            explicit_override = profile_override in {"task_execution", "local_execution"}
+        # High-risk/operator profiles are opt-in only: never auto-route into them.
+        operator_profiles = {
+            "task_execution",
+            "local_execution",
+            "agent_admin_operator",
+            "identity_operator",
+        }
+        if profile_name in operator_profiles:
+            explicit_override = profile_override in operator_profiles
             owner_or_agent = self._local_execution_authorized(adapter=adapter, user_id=user_id)
             if not explicit_override or not owner_or_agent:
                 ml = services.get("mutation_log")
@@ -411,9 +417,9 @@ class LapwingBrain:
                         await ml.record(
                             MutationType.TOOL_DENIED,
                             {
-                                "tool": "profile:local_execution",
+                                "tool": f"profile:{profile_name}",
                                 "guard": "profile_escalation",
-                                "reason": "local_execution_requires_explicit_owner_or_agent",
+                                "reason": f"{profile_name}_requires_explicit_owner_or_agent",
                                 "auth_level": int(identify_auth(adapter, user_id) if adapter else AuthLevel.OWNER),
                                 "requested_profile": profile_name,
                                 "explicit_override": explicit_override,
@@ -506,7 +512,7 @@ class LapwingBrain:
                     "chat_id": chat_id,
                     "adapter": adapter,
                     "user_id": user_id,
-                    "reason": "explicit_local_execution_override",
+                    "reason": f"explicit_{profile_name}_override",
                 },
             )
         except Exception:
