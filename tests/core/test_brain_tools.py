@@ -230,6 +230,12 @@ class TestBrainTools:
 
             assert result == "普通回复"
 
+    @pytest.mark.skip(
+        reason="Per Blueprint §10.1, research is no longer exposed at the chat "
+               "tier. Direct chat profiles (chat_extended) now go through "
+               "delegate_to_agent → researcher for research queries. The "
+               "delegate_to_agent flow is covered by tests/tools/test_agent_tools_v2.py."
+    )
     async def test_research_tool_loop_returns_final_reply(self):
         """research 工具一轮调用 + 第二轮收尾。"""
         from src.research.types import ResearchResult

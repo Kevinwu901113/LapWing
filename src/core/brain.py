@@ -14,7 +14,6 @@ from src.core.reasoning_tags import strip_internal_thinking_tags
 from src.core.state_serializer import serialize as _serialize_state
 from src.core.state_view import TrajectoryTurn
 from src.core.state_view_builder import StateViewBuilder
-from src.core.intent_router import RouteDecision
 from src.core.task_runtime import RuntimeDeps, RuntimeOptions, TaskRuntime
 from src.core.trajectory_store import trajectory_entries_to_messages
 from src.core.shell_policy import (
@@ -43,6 +42,10 @@ if TYPE_CHECKING:
     from src.memory.vector_store import VectorStore
 
 logger = logging.getLogger("lapwing.core.brain")
+# Dedicated metrics logger — bypasses lapwing.core.brain's WARNING-level
+# noisy-module throttle in main.py:setup_logging. Keeps per-turn path /
+# latency / response_length INFO records visible in lapwing.log.
+_metrics_logger = logging.getLogger("lapwing.metrics.complete_chat")
 
 # 直接输出模式：模型裸文本 = 用户可见消息。工具调用是内部操作。
 # send_message 工具仅用于主动消息场景（意识 tick / 定时提醒等无对话上下文时）。
@@ -332,6 +335,22 @@ class LapwingBrain:
             services["correction_manager"] = correction_manager
         if getattr(self, "router", None) is not None:
             services["llm_router"] = self.router
+        # Per-turn BudgetLedger (Blueprint §5) — fresh ledger every call so
+        # Brain + delegated agents share the same caps across the turn but
+        # new turns start with full budget.
+        try:
+            from src.agents.budget import BudgetLedger
+            from src.config import get_settings
+            bcfg = get_settings().budget
+            services["budget_ledger"] = BudgetLedger(
+                max_llm_calls=bcfg.max_llm_calls,
+                max_tool_calls=bcfg.max_tool_calls,
+                max_total_tokens=bcfg.max_total_tokens,
+                max_wall_time_seconds=bcfg.max_wall_time_seconds,
+                max_delegation_depth=bcfg.max_delegation_depth,
+            )
+        except Exception:
+            logger.debug("BudgetLedger not initialised", exc_info=True)
         # ProactiveMessageGate — sent to send_message executor so proactive
         # paths (inner_tick, compose_proactive) can be rate-limited /
         # quiet-hours-gated. Direct chat replies use bare text and never
@@ -361,7 +380,6 @@ class LapwingBrain:
             user_message,
             approved_directory=approved_directory,
         )
-        route_decision: RouteDecision | None = None
         if profile_override is not None:
             # Caller pinned a profile (e.g. think_inner uses "inner_tick").
             # Skip IntentRouter — the caller already knows the surface it
@@ -373,23 +391,19 @@ class LapwingBrain:
             if INTENT_ROUTER_ENABLED:
                 intent_router = getattr(self, "intent_router", None)
                 if intent_router is not None and profile_name != "task_execution":
-                    route_decision = await intent_router.route(chat_id, user_message)
-                    profile_name = route_decision.profile_name
+                    decision = await intent_router.route(chat_id, user_message)
+                    profile_name = decision.profile_name
 
-        # If IntentRouter flagged a current-info domain, propagate the
-        # required-tool list into runtime_options so TaskRuntime's gate
-        # can check whether the model actually called one of them.
-        if route_decision is not None and route_decision.requires_current_info:
-            base_opts = runtime_options or RuntimeOptions()
-            runtime_options = RuntimeOptions(
-                max_tool_rounds=base_opts.max_tool_rounds,
-                no_action_budget=base_opts.no_action_budget,
-                error_burst_threshold=base_opts.error_burst_threshold,
-                required_tool_names=route_decision.required_tool_names,
-                current_info_domain=route_decision.current_info_domain,
-            )
-
-        tools = self.task_runtime.tools_for_profile(profile_name)
+        # Zero-tool fast path: pure-chat turns skip the OpenAI tool-call
+        # protocol entirely. We still route through TaskRuntime.complete_chat
+        # to keep ITERATION audit records aligned with the tool path —
+        # TaskRuntime's `if not tools` branch dispatches directly to
+        # router.complete(slot="main_conversation").
+        zero_tools_path = (
+            profile_override is None
+            and profile_name == "zero_tools"
+        )
+        tools = [] if zero_tools_path else self.task_runtime.tools_for_profile(profile_name)
         services = self._build_services()
 
         deps = RuntimeDeps(
@@ -399,7 +413,8 @@ class LapwingBrain:
             shell_allow_sudo=SHELL_ALLOW_SUDO,
         )
 
-        return await self.task_runtime.complete_chat(
+        t_start = time.monotonic()
+        reply = await self.task_runtime.complete_chat(
             chat_id=chat_id,
             messages=messages,
             constraints=constraints,
@@ -418,6 +433,15 @@ class LapwingBrain:
             focus_id=focus_id,
             runtime_options=runtime_options,
         )
+        elapsed_ms = (time.monotonic() - t_start) * 1000
+        _metrics_logger.info(
+            "[brain.complete_chat] path=%s profile=%s latency_ms=%.0f response_length=%d",
+            "zero_tools" if zero_tools_path else "tool_call",
+            profile_name,
+            elapsed_ms,
+            len(reply),
+        )
+        return reply
 
     @staticmethod
     def _fallback_profile_for_message(user_message: str, constraints) -> str:
@@ -428,7 +452,7 @@ class LapwingBrain:
         lowered = user_message.lower()
         if any(hint in lowered for hint in _TASK_PROFILE_HINTS):
             return "task_execution"
-        return "chat_extended"
+        return "standard"
 
     async def _render_messages(
         self,
@@ -1172,7 +1196,6 @@ class LapwingBrain:
             from src.core.shell_policy import extract_execution_constraints
             tool_specs = self.task_runtime.chat_tools(
                 shell_enabled=False,
-                web_enabled=True,
                 browser_enabled=BROWSER_ENABLED,
             )
             # 过滤为仅允许的工具名

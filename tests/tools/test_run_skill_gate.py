@@ -72,27 +72,27 @@ class TestPureGateLogic:
 
     def test_chat_extended_requires_stable(self):
         for builder in (_draft_skill, _testing_skill, _broken_skill, _unmarked_skill):
-            reason = _gate_run_skill(builder(), profile="chat_extended", auth_level=2)
+            reason = _gate_run_skill(builder(), profile="standard", auth_level=2)
             assert reason is not None
             assert "stable" in reason
 
     def test_chat_extended_stable_with_satisfied_trust_passes(self):
         # OWNER (auth_level=2) satisfies any trust_required.
         assert _gate_run_skill(
-            _stable_skill(trust="owner"), profile="chat_extended", auth_level=2
+            _stable_skill(trust="owner"), profile="standard", auth_level=2
         ) is None
         assert _gate_run_skill(
-            _stable_skill(trust="trusted"), profile="chat_extended", auth_level=2
+            _stable_skill(trust="trusted"), profile="standard", auth_level=2
         ) is None
         assert _gate_run_skill(
-            _stable_skill(trust="guest"), profile="chat_extended", auth_level=0
+            _stable_skill(trust="guest"), profile="standard", auth_level=0
         ) is None
 
     def test_chat_extended_blocks_when_trust_insufficient(self):
         # GUEST cannot run a skill that requires OWNER.
         reason = _gate_run_skill(
             _stable_skill(trust="owner"),
-            profile="chat_extended",
+            profile="standard",
             auth_level=0,
         )
         assert reason is not None
@@ -185,7 +185,7 @@ def _ctx(*, profile: str, auth_level: int = 2, skill: dict | None = None,
 class TestRunSkillExecutorIntegration:
     async def test_chat_extended_blocks_draft_skill(self):
         executor = _FakeExecutor()
-        ctx = _ctx(profile="chat_extended", skill=_draft_skill(), executor=executor)
+        ctx = _ctx(profile="standard", skill=_draft_skill(), executor=executor)
         req = ToolExecutionRequest(name="run_skill", arguments={"skill_id": "s1"})
         result = await run_skill_executor(req, ctx)
         assert result.success is False
@@ -195,7 +195,7 @@ class TestRunSkillExecutorIntegration:
 
     async def test_chat_extended_runs_stable_skill(self):
         executor = _FakeExecutor()
-        ctx = _ctx(profile="chat_extended", skill=_stable_skill(trust="guest"), executor=executor)
+        ctx = _ctx(profile="standard", skill=_stable_skill(trust="guest"), executor=executor)
         req = ToolExecutionRequest(name="run_skill", arguments={"skill_id": "s1"})
         result = await run_skill_executor(req, ctx)
         assert result.success is True
@@ -206,7 +206,7 @@ class TestRunSkillExecutorIntegration:
         executor = _FakeExecutor()
         # GUEST trying to run a skill that requires OWNER trust
         ctx = _ctx(
-            profile="chat_extended",
+            profile="standard",
             auth_level=0,
             skill=_stable_skill(trust="owner"),
             executor=executor,
@@ -319,7 +319,7 @@ class TestCreateSkillStaysDraft:
             shell_default_cwd="/tmp",
             services=services,
             auth_level=2,
-            runtime_profile="chat_extended",
+            runtime_profile="standard",
         )
         req = ToolExecutionRequest(name="run_skill", arguments={"skill_id": "abc"})
         result = await run_skill_executor(req, ctx)

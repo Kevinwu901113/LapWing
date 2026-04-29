@@ -647,6 +647,10 @@ class AppContainer:
             EPISODIC_EXTRACT_MIN_TURNS,
             EPISODIC_EXTRACT_WINDOW_SIZE,
             MEMORY_DIR,
+            MEMORY_WIKI_CONTEXT_BUDGET_RATIO,
+            MEMORY_WIKI_CONTEXT_ENABLED,
+            MEMORY_WIKI_DIR,
+            MEMORY_WIKI_ENABLED,
             MEMORY_WORKING_SET_TOP_K,
             SEMANTIC_DISTILL_DEDUP_THRESHOLD,
             SEMANTIC_DISTILL_ENABLED,
@@ -677,6 +681,9 @@ class AppContainer:
         self.brain._working_set = WorkingSet(
             episodic_store=episodic_store,
             semantic_store=semantic_store,
+            wiki_dir=MEMORY_WIKI_DIR,
+            wiki_enabled=(MEMORY_WIKI_ENABLED and MEMORY_WIKI_CONTEXT_ENABLED),
+            wiki_budget_ratio=MEMORY_WIKI_CONTEXT_BUDGET_RATIO,
         )
         self.brain.state_view_builder._working_set = self.brain._working_set
         self.brain.state_view_builder._memory_top_k = MEMORY_WORKING_SET_TOP_K
@@ -789,12 +796,17 @@ class AppContainer:
         self.brain._identity_retriever = self._identity_retriever
         self.brain._identity_vector_index = self._identity_vector_index
 
-        # ── Agent Team 系统（Phase 6） ──────────────────────────────────
+        # ── Agent Team 系统 (Phase 6 + Blueprint §6) ─────────────────
+        # v2 wiring: Catalog (SQLite) + Factory + Policy + Registry facade.
+        # Builtin researcher/coder specs are upserted into the catalog at
+        # init() time; their runtime instances are produced fresh by the
+        # Factory on every delegation, mirroring dynamic-agent semantics.
         from config.settings import AGENT_TEAM_ENABLED
         if AGENT_TEAM_ENABLED:
+            from src.agents.catalog import AgentCatalog
+            from src.agents.factory import AgentFactory
+            from src.agents.policy import AgentPolicy
             from src.agents.registry import AgentRegistry
-            from src.agents.researcher import Researcher
-            from src.agents.coder import Coder
             from src.tools.agent_tools import register_agent_tools
             from src.tools.workspace_tools import (
                 ws_file_read_executor,
@@ -802,30 +814,27 @@ class AppContainer:
                 ws_file_list_executor,
             )
 
-            agent_registry = AgentRegistry()
-
-            agent_services = {
-                "agent_registry": agent_registry,
-            }
-
-            agent_registry.register(
-                "researcher",
-                Researcher.create(
-                    self.brain.router,
-                    self.brain.tool_registry,
-                    self.mutation_log,
-                    services=agent_services,
-                ),
+            agent_catalog = AgentCatalog(self._data_dir / "lapwing.db")
+            await agent_catalog.init()
+            agent_factory = AgentFactory(
+                llm_router=self.brain.router,
+                tool_registry=self.brain.tool_registry,
+                mutation_log=self.mutation_log,
             )
-            agent_registry.register(
-                "coder",
-                Coder.create(
-                    self.brain.router,
-                    self.brain.tool_registry,
-                    self.mutation_log,
-                    services=agent_services,
-                ),
+            agent_policy = AgentPolicy(
+                catalog=agent_catalog,
+                llm_router=self.brain.router,
             )
+            agent_registry = AgentRegistry(
+                catalog=agent_catalog,
+                factory=agent_factory,
+                policy=agent_policy,
+            )
+            await agent_registry.init()
+
+            # Expose to Brain for service injection (build_services pulls these).
+            self.brain._agent_catalog = agent_catalog
+            self.brain._agent_policy = agent_policy
 
             # 注册 workspace 工具（供 Coder 使用，visibility=internal 不暴露给主聊天）
             from src.tools.types import ToolSpec as _TS
@@ -864,12 +873,40 @@ class AppContainer:
             register_agent_tools(self.brain.tool_registry, agent_registry)
 
             self.brain._agent_registry = agent_registry
+            # StateView agent summary (Blueprint §9): wire registry into builder.
+            self.brain.state_view_builder._agent_registry = agent_registry
 
             # 创建工作区目录
             Path("data/agent_workspace").mkdir(parents=True, exist_ok=True)
             Path("data/agent_workspace/patches").mkdir(parents=True, exist_ok=True)
 
-            logger.info("Agent Team 系统已就绪（%d agents）", len(agent_registry.list_names()))
+            # Periodic session cleanup (Blueprint §6 / §13).
+            try:
+                from src.config import get_settings
+                interval = get_settings().agent_team.dynamic.session_cleanup_interval_seconds
+                # Schedule via APScheduler if available; otherwise rely on
+                # ad-hoc cleanup at delegation time. Only fire if we have a
+                # scheduler registered already.
+                ap_sched = getattr(self, "scheduler", None) or getattr(self.brain, "scheduler", None)
+                if ap_sched is not None and hasattr(ap_sched, "add_job"):
+                    async def _cleanup_sessions():
+                        try:
+                            n = await agent_registry.cleanup_expired_sessions()
+                            if n:
+                                logger.info("Cleaned %d expired session agents", n)
+                        except Exception:
+                            logger.exception("session cleanup failed")
+                    ap_sched.add_job(
+                        _cleanup_sessions, "interval",
+                        seconds=interval, id="agent_session_cleanup",
+                        replace_existing=True,
+                    )
+            except Exception:
+                logger.debug("APScheduler hookup for session cleanup skipped",
+                             exc_info=True)
+
+            n_agents = len(await agent_registry.list_agents())
+            logger.info("Agent Team v2 系统已就绪（%d agents in catalog）", n_agents)
 
         # Phase 4: DurableScheduler（初始化但不启动循环——循环在 start() 中启动）
         self.durable_scheduler = DurableScheduler(

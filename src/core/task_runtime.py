@@ -290,11 +290,16 @@ class TaskRuntime:
                 profile,
                 include_internal=include_internal,
             )
-        else:
+        elif profile.capabilities:
             specs = self._tool_registry.list_tools(
                 capabilities=set(profile.capabilities),
                 include_internal=include_internal,
             )
+        else:
+            # Explicit zero-tool surface (e.g. ZERO_TOOLS_PROFILE) —
+            # empty tool_names + empty capabilities means "no tools",
+            # not "no filter".
+            specs = []
         names = {spec.name for spec in specs}
         exclude = set(getattr(profile, "exclude_tool_names", frozenset()))
         return names - exclude
@@ -314,16 +319,20 @@ class TaskRuntime:
         self,
         shell_enabled: bool,
         *,
-        web_enabled: bool = True,
         browser_enabled: bool = False,
     ) -> list[dict[str, Any]]:
         """Resolve the proactive-composition tool surface.
 
         Source of truth for the always-on tool list is
         ``COMPOSE_PROACTIVE_PROFILE`` (defined in runtime_profiles.py) —
-        this method layers shell / web / browser / ambient-knowledge
+        this method layers shell / browser / ambient-knowledge
         capabilities on top based on caller flags, but the base names
         are not duplicated here.
+
+        Web retrieval is *not* a layered capability anymore: every
+        external-info query goes through delegate_to_researcher, which
+        is part of the base profile. Pre-refactor callers passing
+        ``web_enabled=True`` are silently ignored.
 
         send_message is included so proactive paths (inner ticks,
         compose_proactive) can talk to the user; direct chat replies
@@ -338,8 +347,6 @@ class TaskRuntime:
 
         if shell_enabled:
             tool_names.update({"execute_shell", "read_file", "write_file"})
-        if web_enabled:
-            tool_names.update({"research", "browse"})
         # Ambient knowledge tools — only when registered (subsystem optional).
         for ambient_tool in (
             "prepare_ambient_knowledge",
@@ -526,25 +533,6 @@ class TaskRuntime:
             await self._emit_status(status_callback, chat_id, "stage:finalizing")
             return reply
 
-        # current-info gate: when this turn was flagged as needing real-time
-        # data, prepend a concrete instruction to the system prompt naming
-        # the tools the model should call. Pairs with the post-loop fallback
-        # so we get both a nudge upfront and a safety net if the nudge fails.
-        if opts.required_tool_names and messages and messages[0].get("role") == "system":
-            domain_hint = self._DOMAIN_HINT_MAP.get(
-                opts.current_info_domain or "", "实时信息"
-            )
-            tool_list = "/".join(opts.required_tool_names)
-            reminder = (
-                f"\n\n[系统提醒] 这个问题涉及{domain_hint}，属于实时信息。"
-                f"你必须先用工具（{tool_list}）查到数据再回答。"
-                f"不要凭记忆猜测。如果工具失败或查不到，明确告诉用户无法确认。"
-            )
-            messages = [
-                {**messages[0], "content": messages[0]["content"] + reminder},
-                *messages[1:],
-            ]
-
         profile_obj = self._resolve_profile(profile)
         state = ExecutionSessionState(constraints=constraints)
         task_id = f"task_{uuid.uuid4().hex[:12]}"
@@ -612,28 +600,9 @@ class TaskRuntime:
             loop_result.reason or "normal",
         )
         if ctx.final_reply is not None:
-            # current-info gate: if this turn was flagged as needing real-time
-            # info (sports/weather/news/price) and the model didn't actually
-            # call any of the required tools, replace its reply with an honest
-            # fallback rather than letting an unverified guess go out.
-            reply_to_send = ctx.final_reply
-            if opts.required_tool_names:
-                required = set(opts.required_tool_names)
-                if not (required & ctx.successful_tool_names):
-                    logger.warning(
-                        "[runtime] current-info gate: required=%s successful=%s "
-                        "domain=%s — forcing honest fallback",
-                        required,
-                        ctx.successful_tool_names,
-                        opts.current_info_domain,
-                    )
-                    reply_to_send = self._current_info_fallback(
-                        reply_to_send,
-                        domain=opts.current_info_domain,
-                    )
             # 清理最终回复中可能残留的内部标记
             from src.core.output_sanitizer import sanitize_outgoing
-            final_reply = sanitize_outgoing(reply_to_send)
+            final_reply = sanitize_outgoing(ctx.final_reply)
             return final_reply
 
         logger.warning("[runtime] tool call 循环超过上限，返回兜底说明")
@@ -704,26 +673,6 @@ class TaskRuntime:
             await status_callback(chat_id, text)
         except Exception:
             pass
-
-    # current-info gate fallback: replaces the model's reply when no
-    # required tool was successfully called. Always replaces — even an
-    # apparently-uncertain reply is unverified, and inspecting the prose
-    # for "honest" markers was just letting confidently hedged guesses
-    # ("我不确定，但 X 应该没比赛") sneak through.
-    _DOMAIN_HINT_MAP: dict[str, str] = {
-        "sports": "赛事信息",
-        "weather": "天气信息",
-        "news": "新闻",
-        "price": "价格信息",
-    }
-
-    @staticmethod
-    def _current_info_fallback(original_reply: str, *, domain: str | None = None) -> str:
-        domain_hint = TaskRuntime._DOMAIN_HINT_MAP.get(domain or "", "实时信息")
-        return (
-            f"我这边没拿到可靠的{domain_hint}，不能直接确认。"
-            f"你可以让我再查一次，或者直接告诉我你想知道的具体细节。"
-        )
 
     async def _run_step(self, ctx: ToolLoopContext, round_index: int) -> TaskLoopStep:
         """单轮工具循环步骤（从 complete_chat._step_runner 提取）。"""
@@ -1089,10 +1038,6 @@ class TaskRuntime:
             # ── Error Burst Guard ──
             if execution_success:
                 ctx.error_guard.record_success()
-                # current-info gate: track which tools actually succeeded
-                # this turn so the post-loop check can decide whether the
-                # required-tool requirement was met.
-                ctx.successful_tool_names.add(tool_call.name)
             else:
                 should_break = ctx.error_guard.record_error(
                     tool_result_text[:200] if tool_result_text else "unknown error"

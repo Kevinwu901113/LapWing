@@ -1,9 +1,10 @@
 """Unit tests for src.core.state_serializer — pure-function rendering.
 
 Blueprint A prompt-caching overhaul. Voice is always in the system prompt
-(no depth injection into messages). Persona anchor is always in system.
-Offline-gap threshold raised to 12 hours. Overdue promise rendering toned
-down (no ⚠️ prefix).
+(no depth injection into messages). Offline-gap threshold raised to 12
+hours. Overdue promise rendering toned down (no ⚠️ prefix). _PERSONA_ANCHOR
+removed: voice.md alone enforces speaking style; "记住你是 X" framing was
+priming a roleplay posture rather than natural identity.
 """
 
 from __future__ import annotations
@@ -14,7 +15,6 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from src.core.state_serializer import (
-    _PERSONA_ANCHOR,
     _period_name,
     serialize,
 )
@@ -98,18 +98,17 @@ class TestCoreShape:
         assert "当前状态" in out.system_prompt
 
     def test_stable_prefix_is_deterministic(self):
-        """The stable prefix (soul + constitution + voice + anchor) is
-        byte-identical across calls with the same identity docs — this
-        is what makes prompt caching work."""
+        """The stable prefix (soul + constitution + voice) is byte-identical
+        across calls with the same identity docs — this is what makes
+        prompt caching work."""
         sv1 = _make_state(offline_hours=None)
         sv2 = _make_state(offline_hours=15.0)  # different dynamic state
         out1 = serialize(sv1)
         out2 = serialize(sv2)
-        # Extract the stable prefix (everything before the first dynamic section)
-        # The persona anchor is the last stable section
-        anchor_end_1 = out1.system_prompt.index(_PERSONA_ANCHOR) + len(_PERSONA_ANCHOR)
-        anchor_end_2 = out2.system_prompt.index(_PERSONA_ANCHOR) + len(_PERSONA_ANCHOR)
-        assert out1.system_prompt[:anchor_end_1] == out2.system_prompt[:anchor_end_2]
+        # voice ("VOICE" from _make_state default) is the last stable section.
+        voice_end_1 = out1.system_prompt.index("VOICE") + len("VOICE")
+        voice_end_2 = out2.system_prompt.index("VOICE") + len("VOICE")
+        assert out1.system_prompt[:voice_end_1] == out2.system_prompt[:voice_end_2]
 
 
 # ── Layer 1 & 2: identity docs ───────────────────────────────────────
@@ -146,11 +145,6 @@ class TestVoiceInSystem:
         state_pos = out.system_prompt.index("当前状态")
         assert voice_pos < state_pos
 
-    def test_persona_anchor_always_in_system(self):
-        """_PERSONA_ANCHOR is always in system prompt."""
-        out = serialize(_make_state())
-        assert _PERSONA_ANCHOR in out.system_prompt
-
     def test_no_depth_injection_in_messages(self):
         """No [System Note] injected into messages regardless of
         conversation length — voice lives in the system prompt only."""
@@ -167,8 +161,10 @@ class TestVoiceInSystem:
         assert "VOICE_LONG" in out.system_prompt
 
     def test_empty_voice_no_crash(self):
+        # Voice empty must not break rendering. Without _PERSONA_ANCHOR,
+        # the only assertion is "doesn't crash and produces a string".
         out = serialize(_make_state(voice=""))
-        assert _PERSONA_ANCHOR in out.system_prompt
+        assert isinstance(out.system_prompt, str)
 
 
 # ── Layer 6: runtime state ───────────────────────────────────────────
@@ -543,10 +539,6 @@ class TestLayeringOrder:
     def test_voice_before_runtime_state(self):
         out = serialize(_make_state(voice="[VOICE]"))
         assert out.system_prompt.index("[VOICE]") < out.system_prompt.index("当前状态")
-
-    def test_persona_anchor_before_runtime_state(self):
-        out = serialize(_make_state())
-        assert out.system_prompt.index(_PERSONA_ANCHOR) < out.system_prompt.index("当前状态")
 
     def test_constitution_before_voice(self):
         out = serialize(_make_state(constitution="[CON]", voice="[VOICE]"))

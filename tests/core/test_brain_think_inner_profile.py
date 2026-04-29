@@ -66,7 +66,7 @@ async def test_complete_chat_profile_override_skips_intent_router(brain):
     class _RouterSpy:
         async def route(self, chat_id, message):
             routed_calls.append((chat_id, message))
-            return RouteDecision(profile_name="chat_extended")
+            return RouteDecision(profile_name="standard")
 
     brain.intent_router = _RouterSpy()
     brain.task_runtime = AsyncMock()
@@ -117,7 +117,7 @@ async def test_complete_chat_without_override_still_uses_router(brain):
     class _RouterSpy:
         async def route(self, chat_id, message):
             routed_calls.append((chat_id, message))
-            return RouteDecision(profile_name="chat_extended")
+            return RouteDecision(profile_name="standard")
 
     brain.intent_router = _RouterSpy()
     brain.task_runtime = AsyncMock()
@@ -145,64 +145,17 @@ async def test_complete_chat_without_override_still_uses_router(brain):
     )
 
 
-async def test_complete_chat_propagates_current_info_into_runtime_options(brain):
-    """When IntentRouter returns requires_current_info=True, brain must
-    forward required_tool_names + current_info_domain into the
-    RuntimeOptions passed to TaskRuntime.complete_chat — that's what wires
-    the gate into the tool loop."""
+async def test_complete_chat_no_runtime_options_when_no_override(brain):
+    """Default chat path passes runtime_options=None — TaskRuntime uses
+    its instance-level budget defaults. The current-info gate that used
+    to populate this field was removed in the agents-as-tools refactor.
+    """
     from src.core.brain import LapwingBrain
     from src.core.intent_router import RouteDecision
 
     class _RouterSpy:
         async def route(self, chat_id, message):
-            return RouteDecision(
-                profile_name="chat_extended",
-                requires_current_info=True,
-                current_info_domain="sports",
-                required_tool_names=("get_sports_score", "research"),
-            )
-
-    brain.intent_router = _RouterSpy()
-    brain.task_runtime = AsyncMock()
-    brain.task_runtime.tools_for_profile = lambda name: [{"profile": name}]
-    brain.task_runtime.record_pending_confirmation = lambda *a, **k: ""
-    brain.event_bus = None
-    brain.router = AsyncMock()
-
-    captured: dict = {}
-
-    async def spy_complete_chat(**kwargs):
-        captured["runtime_options"] = kwargs.get("runtime_options")
-        captured["profile"] = kwargs.get("profile")
-        return "done"
-
-    brain.task_runtime.complete_chat = spy_complete_chat
-
-    with patch("src.core.brain.INTENT_ROUTER_ENABLED", True):
-        await LapwingBrain._complete_chat(
-            brain,
-            chat_id="kevin-real",
-            messages=[{"role": "user", "content": "道奇今天比赛怎么样"}],
-            user_message="道奇今天比赛怎么样",
-        )
-
-    opts = captured["runtime_options"]
-    assert opts is not None, "brain must construct RuntimeOptions when current_info is required"
-    assert opts.required_tool_names == ("get_sports_score", "research")
-    assert opts.current_info_domain == "sports"
-    assert captured["profile"] == "chat_extended"
-
-
-async def test_complete_chat_no_current_info_leaves_runtime_options_alone(brain):
-    """When IntentRouter does NOT flag current_info, brain must not invent
-    a RuntimeOptions instance — passing None preserves TaskRuntime's
-    instance defaults for budget."""
-    from src.core.brain import LapwingBrain
-    from src.core.intent_router import RouteDecision
-
-    class _RouterSpy:
-        async def route(self, chat_id, message):
-            return RouteDecision(profile_name="chat_extended")
+            return RouteDecision(profile_name="standard")
 
     brain.intent_router = _RouterSpy()
     brain.task_runtime = AsyncMock()

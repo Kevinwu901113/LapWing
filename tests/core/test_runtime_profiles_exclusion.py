@@ -10,8 +10,8 @@ from __future__ import annotations
 from src.core.runtime_profiles import (
     AGENT_CODER_PROFILE,
     AGENT_RESEARCHER_PROFILE,
-    CHAT_EXTENDED_PROFILE,
-    CHAT_MINIMAL_PROFILE,
+    STANDARD_PROFILE,
+    ZERO_TOOLS_PROFILE,
     CHAT_SHELL_PROFILE,
     CODER_SNIPPET_PROFILE,
     CODER_WORKSPACE_PROFILE,
@@ -26,7 +26,7 @@ from src.tools.types import ToolExecutionRequest, ToolExecutionResult, ToolSpec
 
 
 _RESEARCH_NAMES = {"research", "browse"}
-_DELEGATE_NAMES = {"delegate_to_researcher", "delegate_to_coder"}
+_DELEGATE_NAMES = {"delegate_to_researcher", "delegate_to_coder", "delegate_to_agent"}
 
 
 async def _noop_executor(req: ToolExecutionRequest, ctx) -> ToolExecutionResult:
@@ -53,9 +53,13 @@ def _make_full_registry() -> ToolRegistry:
     # research 系
     registry.register(_spec("research", "web"))
     registry.register(_spec("browse", "browser"))
-    # delegate 系
+    # delegate 系 (legacy shims + new dynamic agent tools — Blueprint §7)
     registry.register(_spec("delegate_to_researcher", "agent"))
     registry.register(_spec("delegate_to_coder", "agent"))
+    registry.register(_spec("delegate_to_agent", "agent"))
+    registry.register(_spec("create_agent", "agent"))
+    registry.register(_spec("destroy_agent", "agent"))
+    registry.register(_spec("save_agent", "agent"))
     # 其他被 profile 直接引用的工具
     extras = [
         ("get_current_datetime", "general"),
@@ -119,36 +123,57 @@ def _resolve_tool_names(registry: ToolRegistry, profile) -> set[str]:
 
 
 class TestProfileExclusivity:
-    def test_chat_extended_has_research_no_delegate(self):
+    def test_chat_extended_has_specific_delegates_no_research(self):
+        """Post agents-as-tools refactor: the chat surface (now the
+        STANDARD profile, surfaced via the chat_extended legacy alias)
+        uses delegate_to_researcher / delegate_to_coder, not the
+        generic delegate_to_agent."""
         registry = _make_full_registry()
-        names = _resolve_tool_names(registry, CHAT_EXTENDED_PROFILE)
-        assert "research" in names
-        assert "browse" in names
-        assert "delegate_to_researcher" not in names
-        assert "delegate_to_coder" not in names
-
-    def test_task_execution_has_delegate_no_research(self):
-        registry = _make_full_registry()
-        names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
+        names = _resolve_tool_names(registry, STANDARD_PROFILE)
         assert "delegate_to_researcher" in names
         assert "delegate_to_coder" in names
-        assert "research" not in names, (
-            "task_execution 应通过 delegate_to_researcher 走 Agent Team，"
-            "不应让主脑直接调 research"
-        )
+        # Raw research / dynamic-agent management not on the chat tier
+        assert "research" not in names
+        assert "browse" not in names
+        for forbidden in ("create_agent", "destroy_agent", "save_agent",
+                          "delegate_to_agent"):
+            assert forbidden not in names, f"chat_extended must not expose {forbidden}"
+
+    def test_task_execution_has_dynamic_agent_tools(self):
+        """task_execution still exposes the dynamic-agent management
+        tools for power flows (create/destroy/save_agent + the generic
+        delegate_to_agent). Raw research stays gated. list_agents was
+        removed in the cleanup commit."""
+        registry = _make_full_registry()
+        names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
+        for required in ("delegate_to_agent", "create_agent",
+                         "destroy_agent", "save_agent"):
+            assert required in names, f"task_execution must expose {required}"
+        assert "list_agents" not in names
+        assert "research" not in names
         assert "browse" not in names
 
-    def test_chat_minimal_has_neither(self):
+    def test_chat_minimal_has_no_agent_tools(self):
+        """chat_minimal (zero_tools alias) exposes nothing — pure-text
+        replies don't need any tool access."""
         registry = _make_full_registry()
-        names = _resolve_tool_names(registry, CHAT_MINIMAL_PROFILE)
-        for n in _RESEARCH_NAMES | _DELEGATE_NAMES:
+        names = _resolve_tool_names(registry, ZERO_TOOLS_PROFILE)
+        for n in _RESEARCH_NAMES | _DELEGATE_NAMES | {
+            "create_agent", "destroy_agent", "save_agent",
+        }:
             assert n not in names, f"chat_minimal 不应暴露 {n}"
 
     def test_no_profile_exposes_research_and_delegate_simultaneously(self):
-        """全部 profile 扫一遍，断言不变量：不能同时持有两类工具。"""
+        """Blueprint §10.2: raw research/browse mutually exclusive with
+        delegate_to_*. Exception: AGENT_RESEARCHER_PROFILE keeps
+        research/browse — that's the agent's own surface, not the
+        brain's.
+        """
         registry = _make_full_registry()
         violations: list[str] = []
         for pname, profile in _PROFILES.items():
+            if pname == "agent_researcher":
+                continue  # exempt — agent's own profile
             names = _resolve_tool_names(registry, profile)
             has_raw = bool(names & _RESEARCH_NAMES)
             has_delegate = bool(names & _DELEGATE_NAMES)
@@ -167,10 +192,10 @@ class TestChatProfileSendMessageExclusion:
     """
 
     def test_chat_minimal_does_not_expose_send_message(self):
-        assert "send_message" not in CHAT_MINIMAL_PROFILE.tool_names
+        assert "send_message" not in ZERO_TOOLS_PROFILE.tool_names
 
     def test_chat_extended_does_not_expose_send_message(self):
-        assert "send_message" not in CHAT_EXTENDED_PROFILE.tool_names
+        assert "send_message" not in STANDARD_PROFILE.tool_names
 
     def test_chat_shell_resolved_excludes_send_message(self):
         registry = _make_full_registry()
@@ -236,7 +261,7 @@ class TestCreateSkillExclusion:
 
     def test_chat_extended_excludes_create_skill(self):
         registry = _make_full_registry()
-        names = _resolve_tool_names(registry, CHAT_EXTENDED_PROFILE)
+        names = _resolve_tool_names(registry, STANDARD_PROFILE)
         assert "create_skill" not in names, (
             "chat_extended must not expose create_skill — skill authoring "
             "is a deliberate, reviewed action"
@@ -252,7 +277,7 @@ class TestCreateSkillExclusion:
 
     def test_no_chat_or_inner_profile_exposes_create_skill(self):
         registry = _make_full_registry()
-        for profile in (CHAT_MINIMAL_PROFILE, CHAT_EXTENDED_PROFILE, INNER_TICK_PROFILE):
+        for profile in (ZERO_TOOLS_PROFILE, STANDARD_PROFILE, INNER_TICK_PROFILE):
             names = _resolve_tool_names(registry, profile)
             assert "create_skill" not in names, (
                 f"{profile.name} must not expose create_skill"
@@ -278,9 +303,11 @@ class TestInnerTickProfile:
         assert "get_current_datetime" in names
         # proactive messaging
         assert "send_message" in names
-        # research/browse (lightweight — not delegated)
-        assert "research" in names
-        assert "browse" in names
+        # outward seam — research/browse moved to Researcher; the
+        # autonomous tick reaches external info via delegate.
+        assert "delegate_to_researcher" in names
+        assert "research" not in names
+        assert "browse" not in names
         # reminders
         assert "set_reminder" in names
         assert "view_reminders" in names
@@ -300,7 +327,7 @@ class TestInnerTickProfile:
         assert "search_notes" in names
         # corrections
         assert "add_correction" in names
-        # run_skill (gated for autonomous execution in commit 3)
+        # run_skill (gated for autonomous execution by skill maturity)
         assert "run_skill" in names
 
     def test_excludes_create_skill(self):
@@ -326,11 +353,17 @@ class TestInnerTickProfile:
                 f"inner_tick must not expose {forbidden}"
             )
 
-    def test_excludes_agent_delegation(self):
+    def test_excludes_coder_delegation(self):
+        """inner_tick is a thinking/messaging surface — it should not
+        kick off code execution. delegate_to_researcher is allowed
+        (autonomous lookups), delegate_to_coder is not.
+        """
         registry = _make_full_registry()
         names = _resolve_tool_names(registry, INNER_TICK_PROFILE)
-        assert "delegate_to_researcher" not in names
         assert "delegate_to_coder" not in names
+        # delegate_to_agent (generic) and dynamic agent tools also out
+        assert "delegate_to_agent" not in names
+        assert "create_agent" not in names
 
     def test_excludes_identity_mutations(self):
         registry = _make_full_registry()

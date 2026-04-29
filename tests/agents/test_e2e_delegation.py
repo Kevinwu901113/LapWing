@@ -141,6 +141,19 @@ class TestE2ERealDelegation:
             risk_level="low",
         ))
 
+        # AGENT_RESEARCHER_PROFILE references get_sports_score post-Commit 5.
+        async def _noop_sports(req, ctx):
+            return ToolExecutionResult(success=True, payload={})
+
+        real_registry.register(ToolSpec(
+            name="get_sports_score",
+            description="sports noop",
+            json_schema={"type": "object", "properties": {}},
+            executor=_noop_sports,
+            capability="web",
+            risk_level="low",
+        ))
+
         agent_registry = AgentRegistry()
         agent_services = {"agent_registry": agent_registry}
 

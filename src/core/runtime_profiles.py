@@ -35,47 +35,52 @@ CHAT_SHELL_PROFILE = RuntimeProfile(
     shell_policy_enabled=True,
 )
 
-CHAT_MINIMAL_PROFILE = RuntimeProfile(
-    name="chat_minimal",
-    capabilities=frozenset({"general"}),
+# ── agents-as-tools refactor (2026-04-29): zero_tools / standard ────
+# ZERO_TOOLS is the pure-text reply path — IntentRouter routes pure
+# chitchat here so the model skips the OpenAI tool-call protocol
+# entirely. STANDARD is Lapwing's full self-capability surface; every
+# external seam goes through delegate_to_researcher / delegate_to_coder.
+
+ZERO_TOOLS_PROFILE = RuntimeProfile(
+    name="zero_tools",
+    capabilities=frozenset(),
+    tool_names=frozenset(),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
+STANDARD_PROFILE = RuntimeProfile(
+    name="standard",
+    capabilities=frozenset(),
     tool_names=frozenset({
-        "get_current_datetime",
+        # ── memory ──
+        "recall", "write_note", "read_note", "list_notes", "search_notes",
+        # ── time ──
+        "get_current_datetime", "convert_timezone",
+        # ── reminders ──
+        "set_reminder", "view_reminders", "cancel_reminder",
+        # ── promises ──
+        "commit_promise", "fulfill_promise", "abandon_promise",
+        # ── self-correction ──
         "add_correction",
+        # ── conversation focus ──
+        "close_focus", "recall_focus",
+        # ── outward seams (the only edges out to the world) ──
+        "delegate_to_researcher", "delegate_to_coder",
+        # ── skills ──
+        "run_skill",
+        # ── planning ──
+        "plan_task", "update_plan",
+        # send_message intentionally excluded — proactive-only, see
+        # COMPOSE_PROACTIVE_PROFILE / INNER_TICK_PROFILE.
     }),
     include_internal=False,
     shell_policy_enabled=False,
 )
 
-CHAT_EXTENDED_PROFILE = RuntimeProfile(
-    name="chat_extended",
-    capabilities=frozenset({"general", "memory", "web", "schedule", "skill", "commitment"}),
-    tool_names=frozenset({
-        "get_current_datetime",
-        "add_correction",
-        "research",
-        "get_sports_score",
-        "browse",
-        "set_reminder",
-        "view_reminders",
-        "cancel_reminder",
-        "commit_promise",
-        "fulfill_promise",
-        "abandon_promise",
-        "close_focus",
-        "recall_focus",
-        "recall",
-        "write_note",
-        "read_note",
-        "list_notes",
-        "search_notes",
-        # create_skill removed: skill authoring is a deliberate, reviewed
-        # action, not something the chat surface should do mid-conversation.
-        # run_skill stays, gated by an approval check (see commit 3).
-        "run_skill",
-    }),
-    include_internal=False,
-    shell_policy_enabled=False,
-)
+
+# Legacy aliases removed in the agents-as-tools cleanup commit.
+# Use ZERO_TOOLS_PROFILE / STANDARD_PROFILE directly.
 
 # Inner-tick profile: autonomous self-initiated thinking pulses.
 # Companion-aligned surface — preserves memory continuity, notes, reminders,
@@ -90,11 +95,8 @@ INNER_TICK_PROFILE = RuntimeProfile(
     tool_names=frozenset({
         # time
         "get_current_datetime",
-        # proactive messaging (gated by ProactiveMessageGate in commit 5)
+        # proactive messaging (gated by ProactiveMessageGate)
         "send_message",
-        # lightweight research
-        "research",
-        "browse",
         # reminders
         "set_reminder",
         "view_reminders",
@@ -114,25 +116,34 @@ INNER_TICK_PROFILE = RuntimeProfile(
         "search_notes",
         # corrections
         "add_correction",
-        # skills (only auto-runnable stable ones — gated in commit 3)
+        # skills (only auto-runnable stable ones — gated by skill maturity)
         "run_skill",
+        # outward seam (post agents-as-tools refactor: even autonomous
+        # ticks reach external info through the Researcher rather than
+        # raw research/browse).
+        "delegate_to_researcher",
     }),
     include_internal=False,
     shell_policy_enabled=False,
 )
 
+# TEMPORARY LEGACY ESCAPE HATCH (Step 1 only).
+# task_execution still aggregates shell/browser/file capabilities so
+# specific power flows can run. This is *not* the target architecture
+# — Step 2 must migrate the execution tools to Coder, at which point
+# task_execution either becomes a thin alias for STANDARD or is
+# deleted. send_message stays excluded (proactive-only) and raw web
+# retrieval stays out (goes through delegate_to_researcher).
 TASK_EXECUTION_PROFILE = RuntimeProfile(
     name="task_execution",
     capabilities=frozenset({
-        "shell", "web", "skill", "memory", "schedule",
+        "shell", "skill", "memory", "schedule",
         "general", "browser", "commitment", "agent", "file",
         "code", "verify", "identity",
     }),
-    # task_execution 必须走 Agent Team 的 delegate_to_* 来做调研，
-    # 避免主脑直接调 research/browse 而绕过 Researcher 的多步推理。
-    # send_message 是 proactive-only 出口（见 _send_message hard reject），
-    # task_execution 的 turn 内回复仍然是 bare assistant text。
-    exclude_tool_names=frozenset({"research", "browse", "send_message"}),
+    exclude_tool_names=frozenset({
+        "research", "browse", "get_sports_score", "send_message",
+    }),
     include_internal=False,
     shell_policy_enabled=True,
 )
@@ -178,7 +189,14 @@ FILE_OPS_PROFILE = RuntimeProfile(
 AGENT_RESEARCHER_PROFILE = RuntimeProfile(
     name="agent_researcher",
     capabilities=frozenset(),
-    tool_names=frozenset({"research", "browse"}),
+    tool_names=frozenset({
+        "research",
+        "browse",
+        # Specialized retrieval API — Researcher chooses between this and
+        # the generic search/browse based on the question. Lapwing never
+        # sees it directly; sports questions go via delegate_to_researcher.
+        "get_sports_score",
+    }),
     include_internal=False,
     shell_policy_enabled=False,
 )
@@ -213,7 +231,7 @@ COMPOSE_PROACTIVE_PROFILE = RuntimeProfile(
         "set_reminder",
         "view_reminders",
         "cancel_reminder",
-        # heavy lifting via delegation
+        # outward seams (the only edges out to the world)
         "delegate_to_researcher",
         "delegate_to_coder",
         # commitments
@@ -236,8 +254,8 @@ _PROFILES = {
     profile.name: profile
     for profile in (
         CHAT_SHELL_PROFILE,
-        CHAT_MINIMAL_PROFILE,
-        CHAT_EXTENDED_PROFILE,
+        ZERO_TOOLS_PROFILE,
+        STANDARD_PROFILE,
         INNER_TICK_PROFILE,
         COMPOSE_PROACTIVE_PROFILE,
         TASK_EXECUTION_PROFILE,

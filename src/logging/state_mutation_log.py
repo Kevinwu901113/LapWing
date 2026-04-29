@@ -132,6 +132,22 @@ class MutationType(str, Enum):
     AGENT_FAILED = "agent.task_failed"
     AGENT_TOOL_CALL = "agent.tool_called"
 
+    # --- Dynamic Agent 生命周期（Blueprint §11.1） ---
+    AGENT_CREATED = "agent.created"
+    AGENT_SAVED = "agent.saved"
+    AGENT_DESTROYED = "agent.destroyed"
+    AGENT_SPEC_UPDATED = "agent.spec_updated"
+    AGENT_BUDGET_EXHAUSTED = "agent.budget_exhausted"
+
+    # --- Researcher fast-path telemetry (post-MVP planning) ---
+    # Fired at the start of every Researcher.execute(); payload includes
+    # the task text, freshness_hint, and a flag for whether this looks
+    # like a closed-form retrieval pattern (weather/score/price/etc.) so
+    # we can decide later whether to add a code-level fast path.
+    #   {"task": str (truncated), "freshness_hint": str|None,
+    #    "fast_path_candidate": bool}
+    RESEARCHER_TASK_RECEIVED = "researcher.task_received"
+
     # --- Reduction-pass audit (commit 9) ---
     # TOOL_DENIED fires whenever a guard refuses a tool call before it
     # reaches the executor: AuthorityGate, VitalGuard, ShellPolicy,
@@ -146,6 +162,20 @@ class MutationType(str, Enum):
     #    "category": str|None, "urgent": bool, "bypassed": bool,
     #    "target": str}
     PROACTIVE_MESSAGE_DECISION = "proactive_message.decision"
+
+    # --- Memory wiki layer (Phase 2+) ---
+    # All wiki write paths funnel through wiki_store.apply_patch();
+    # these events let us audit every page change without re-reading
+    # the markdown files. Payloads are documented next to the emitter
+    # in wiki_store.py.
+    MEMORY_WIKI_PATCH_CREATED = "memory.wiki_patch_created"
+    MEMORY_WIKI_PATCH_APPLIED = "memory.wiki_patch_applied"
+    MEMORY_WIKI_PATCH_REJECTED = "memory.wiki_patch_rejected"
+    MEMORY_WIKI_PAGE_CREATED = "memory.wiki_page_created"
+    MEMORY_WIKI_PAGE_UPDATED = "memory.wiki_page_updated"
+    MEMORY_WIKI_LINT_RESULT = "memory.wiki_lint_result"
+    MEMORY_ENTITY_ALIAS_UPDATED = "memory.entity_alias_updated"
+    MEMORY_WIKI_GUARD_BLOCKED = "memory.wiki_guard_blocked"
 
 
 @dataclass

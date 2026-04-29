@@ -92,6 +92,7 @@ class StateViewBuilder:
         inner_history_turns: int = 50,
         memory_top_k: int = 10,
         memory_query_chat_turns: int = 3,
+        agent_registry=None,  # Blueprint §9.1: optional, for compact agent list
     ) -> None:
         self._soul_path = Path(soul_path)
         self._constitution_path = Path(constitution_path)
@@ -114,6 +115,7 @@ class StateViewBuilder:
         self._skill_store = None  # set by container when skill system is enabled
         self._ambient: AmbientKnowledgeStore | None = None
         self._time_provider = TimeContextProvider()
+        self._agent_registry = agent_registry  # Blueprint §9: AgentRegistry facade
 
     # ── Entry points ─────────────────────────────────────────────────
 
@@ -148,7 +150,9 @@ class StateViewBuilder:
         else:
             trajectory_window = await self._build_trajectory_for_chat(chat_id)
         commitments_active = await self._build_commitments_active(chat_id=chat_id)
-        memory_snippets = await self._build_memory_snippets(trajectory_window)
+        memory_snippets = await self._build_memory_snippets(
+            trajectory_window, auth_level=auth_level, is_inner_loop=False,
+        )
         corrections_text = await self._build_corrections_text()
         skill_summary = self._build_skill_summary()
         time_context = self._time_provider.get_context(attention_context.now)
@@ -166,6 +170,7 @@ class StateViewBuilder:
             time_context=time_context,
             ambient_entries=ambient_entries,
             focus_context=focus_context,
+            agent_summary=self._build_agent_summary(),
         )
 
     async def build_for_inner(
@@ -193,7 +198,9 @@ class StateViewBuilder:
         else:
             trajectory_window = await self._build_trajectory_for_inner()
         commitments_active = await self._build_commitments_active(chat_id=None)
-        memory_snippets = await self._build_memory_snippets(trajectory_window)
+        memory_snippets = await self._build_memory_snippets(
+            trajectory_window, auth_level=3, is_inner_loop=True,
+        )
         corrections_text = await self._build_corrections_text()
         skill_summary = self._build_skill_summary()
         time_context = self._time_provider.get_context(attention_context.now)
@@ -211,7 +218,24 @@ class StateViewBuilder:
             time_context=time_context,
             ambient_entries=ambient_entries,
             focus_context=focus_context,
+            agent_summary=self._build_agent_summary(),
         )
+
+    # ── Agents ───────────────────────────────────────────────────────
+
+    def _build_agent_summary(self) -> str | None:
+        """Compact agent list for StateView injection (Blueprint §9).
+
+        Sync method — AgentRegistry.render_agent_summary_for_stateview()
+        only reads in-memory state (builtins + active session/ephemeral
+        specs), never the catalog DB.
+        """
+        if self._agent_registry is None:
+            return None
+        try:
+            return self._agent_registry.render_agent_summary_for_stateview()
+        except Exception:
+            return None
 
     # ── Identity ─────────────────────────────────────────────────────
 
@@ -348,7 +372,11 @@ class StateViewBuilder:
     # ── Memory snippets (Step 7) ─────────────────────────────────────
 
     async def _build_memory_snippets(
-        self, trajectory_window: TrajectoryWindow,
+        self,
+        trajectory_window: TrajectoryWindow,
+        *,
+        auth_level: int = 3,
+        is_inner_loop: bool = False,
     ) -> MemorySnippets:
         """Retrieve relevant memory via WorkingSet.
 
@@ -357,17 +385,26 @@ class StateViewBuilder:
         short enough that the embedding stays focused. If no WorkingSet
         is wired (phase-0 / unit tests without memory) or the trajectory
         is empty, returns empty snippets — serializer skips the layer.
+
+        Wiki injection (Phase 1): owner-facing renders pull both Kevin
+        and Lapwing pages; inner-loop renders pull just Lapwing. Other
+        auth levels skip wiki injection entirely.
         """
         if self._working_set is None:
             return MemorySnippets(snippets=())
         query_text = _trajectory_query_text(
             trajectory_window, self._memory_query_chat_turns,
         )
-        if not query_text:
+        wiki_entities = _wiki_entities_for_render(
+            auth_level=auth_level, is_inner_loop=is_inner_loop,
+        )
+        if not query_text and not wiki_entities:
             return MemorySnippets(snippets=())
         try:
             return await self._working_set.retrieve(
-                query_text, top_k=self._memory_top_k,
+                query_text,
+                top_k=self._memory_top_k,
+                wiki_entities=wiki_entities,
             )
         except Exception:
             logger.debug("WorkingSet.retrieve failed", exc_info=True)
@@ -565,6 +602,24 @@ def _entries_to_turns(
             continue
         out.append(TrajectoryTurn(role=role, content=text))
     return out
+
+
+def _wiki_entities_for_render(
+    *, auth_level: int, is_inner_loop: bool,
+) -> list[str]:
+    """Phase 1 entity selector for wiki injection.
+
+    - Inner loop → just Lapwing (no human counterpart in scope).
+    - Owner-facing render → Kevin + Lapwing.
+    - Trusted/guest → no wiki injection (avoid leaking personal pages).
+    """
+    from src.core.authority_gate import AuthLevel  # local: avoid cycle at import time
+
+    if is_inner_loop:
+        return ["entity.lapwing"]
+    if auth_level >= int(AuthLevel.OWNER):
+        return ["entity.kevin", "entity.lapwing"]
+    return []
 
 
 def _trajectory_query_text(

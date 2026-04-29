@@ -227,6 +227,21 @@ def _make_browse_tool():
     )
 
 
+def _make_sports_tool():
+    """Stub for get_sports_score — Researcher profile references it now,
+    so the ToolRegistry must have the name registered."""
+    async def _noop(req, ctx):
+        return ToolExecutionResult(success=True, payload={})
+    return ToolSpec(
+        name="get_sports_score",
+        description="sports noop",
+        json_schema={"type": "object", "properties": {}},
+        executor=_noop,
+        capability="web",
+        risk_level="low",
+    )
+
+
 # ---------------------------------------------------------------------------
 # 测试本体
 # ---------------------------------------------------------------------------
@@ -242,6 +257,7 @@ class TestE2EChainTrace:
         research_spec, research_calls = _make_research_tool(tracer)
         tool_registry.register(research_spec)
         tool_registry.register(_make_browse_tool())
+        tool_registry.register(_make_sports_tool())
 
         agent_registry = AgentRegistry()
         register_agent_tools(tool_registry)

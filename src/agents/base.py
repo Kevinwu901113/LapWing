@@ -14,6 +14,7 @@ import time
 import traceback
 from typing import TYPE_CHECKING, Any
 
+from src.agents.budget import BudgetExhausted
 from src.logging.state_mutation_log import MutationType
 from src.utils.loop_detection import (
     LoopDetector,
@@ -62,6 +63,10 @@ class BaseAgent:
         # 防止跨次调用污染——每次 execute 重置即时收集器。
         self._collected_evidence = []
 
+        # Turn-shared budget ledger (Task 9 / blueprint §3 + §5).
+        # If absent (older callers / tests), budget enforcement is skipped.
+        ledger = self._services.get("budget_ledger") if self._services else None
+
         loop_detector = LoopDetector(LoopDetectorConfig(
             warning_threshold=max(3, self.spec.max_rounds // 3),
             global_circuit_breaker_threshold=max(5, self.spec.max_rounds // 2),
@@ -90,6 +95,14 @@ class BaseAgent:
         available_tools = self._get_tools()
 
         for round_num in range(self.spec.max_rounds):
+            if ledger is not None:
+                try:
+                    ledger.charge_llm_call()
+                except BudgetExhausted as exc:
+                    return await self._finalize_budget_exhausted(
+                        message, exc, start_ts, tool_calls_made,
+                        execution_trace, partial_text="",
+                    )
             try:
                 response = await asyncio.wait_for(
                     self.llm_router.complete_with_tools(
@@ -155,6 +168,16 @@ class BaseAgent:
                         check.generic_repeat_count, check.ping_pong_count,
                     )
 
+                if ledger is not None:
+                    try:
+                        ledger.charge_tool_call()
+                    except BudgetExhausted as exc:
+                        return await self._finalize_budget_exhausted(
+                            message, exc, start_ts, tool_calls_made,
+                            execution_trace,
+                            partial_text=getattr(response, "text", "") or "",
+                        )
+
                 output = await self._execute_tool(tc, message)
                 tool_results.append((tc, output))
                 tool_calls_made += 1
@@ -217,13 +240,26 @@ class BaseAgent:
                 "tool_calls_made": tool_calls_made,
             },
         )
+        result_text, structured = self._postprocess_result(text, evidence)
         return AgentResult(
             task_id=message.task_id,
             status="done",
-            result=text,
+            result=result_text,
             evidence=evidence,
             execution_trace=execution_trace or [],
+            structured_result=structured,
         )
+
+    def _postprocess_result(
+        self, text: str, evidence: list[dict],
+    ) -> tuple[str, dict | None]:
+        """Hook for subclasses to wrap final text + evidence.
+
+        Default: pass-through. Subclasses (e.g. Researcher) override to
+        return a structured payload — ``result`` becomes the JSON form
+        and ``structured_result`` holds the parsed dict.
+        """
+        return text, None
 
     async def _finalize_failed(
         self,
@@ -256,6 +292,40 @@ class BaseAgent:
             reason=reason,
             error_detail=error_detail,
             execution_trace=execution_trace or [],
+        )
+
+    async def _finalize_budget_exhausted(
+        self,
+        message: AgentMessage,
+        exc: BudgetExhausted,
+        start_ts: float,
+        tool_calls_made: int,
+        execution_trace: list[str],
+        *,
+        partial_text: str = "",
+    ) -> AgentResult:
+        duration = time.perf_counter() - start_ts
+        await self._emit(
+            MutationType.AGENT_BUDGET_EXHAUSTED,
+            payload={
+                "agent_id": getattr(self.spec, "name", ""),
+                "agent_name": self.spec.name,
+                "task_id": message.task_id,
+                "dimension": exc.dimension,
+                "used": exc.used,
+                "limit": exc.limit,
+                "partial_result": partial_text[:500],
+                "duration_seconds": round(duration, 3),
+                "tool_calls_made": tool_calls_made,
+            },
+        )
+        execution_trace.append(f"budget_exhausted: {exc.dimension}")
+        return AgentResult(
+            task_id=message.task_id,
+            status="done",
+            result=partial_text or f"Budget exhausted before completion: {exc.dimension}",
+            execution_trace=execution_trace,
+            budget_status="budget_exhausted",
         )
 
     async def _emit(self, event_type: MutationType, payload: dict[str, Any]) -> None:

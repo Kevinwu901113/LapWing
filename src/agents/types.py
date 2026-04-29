@@ -11,8 +11,8 @@ if TYPE_CHECKING:
 
 
 @dataclass
-class AgentSpec:
-    """Agent 的配置描述。
+class LegacyAgentSpec:
+    """Agent 的配置描述（legacy）。
 
     Step 6 起工具限制首选 ``runtime_profile``（对齐 TaskRuntime 主循环使用的
     ``RuntimeProfile``）；``tools`` 白名单仅作为遗留字段供 test fixtures
@@ -29,6 +29,11 @@ class AgentSpec:
     timeout_seconds: int = 180
 
 
+# Backward-compat alias: existing modules (Researcher/Coder/registry/base_agent)
+# continue importing ``AgentSpec`` from this module during the transition.
+AgentSpec = LegacyAgentSpec
+
+
 @dataclass
 class AgentMessage:
     """Agent 之间的一条消息。"""
@@ -40,6 +45,12 @@ class AgentMessage:
     context_digest: str = ""
     parent_task_id: str | None = None
     timestamp: datetime = field(default_factory=datetime.now)
+    # Hint about how fresh the answer needs to be — "realtime" (live
+    # facts: weather/score/price), "recent" (recent facts: news), or
+    # "anytime" (stable facts: concepts/history). None = unspecified,
+    # let the agent decide. Carried from delegate_to_researcher's
+    # tool args; reserved for future fast-path routing.
+    freshness_hint: str | None = None
 
 
 @dataclass
@@ -54,3 +65,39 @@ class AgentResult:
     attempted_actions: list[str] = field(default_factory=list)
     error_detail: str | None = None
     execution_trace: list[str] = field(default_factory=list)
+    budget_status: str = ""
+    # Optional structured payload — Researcher populates this with
+    # ``{"summary": str, "sources": [...]}`` so consumers can read the
+    # parsed shape directly without re-parsing ``result``. ``result``
+    # still holds the same data as a JSON string for backward
+    # compatibility with code that treats AgentResult.result as text.
+    structured_result: dict | None = None
+
+
+@dataclass(frozen=True)
+class SourceRef:
+    """Researcher 返回的来源引用。"""
+    ref: str                          # url / tool_ref / internal id
+    title: str | None = None
+    retrieved_at: datetime | None = None
+
+
+@dataclass
+class ResearchResult:
+    """Researcher 的标准返回结构。
+
+    ``summary`` is the LLM-written narrative; ``sources`` is collected
+    by the runtime from tool traces (not by the LLM), so the LLM
+    cannot fabricate citations.
+    """
+    summary: str
+    sources: list[SourceRef] = field(default_factory=list)
+
+    def to_dict(self) -> dict:
+        return {
+            "summary": self.summary,
+            "sources": [
+                {"ref": s.ref, "title": s.title}
+                for s in self.sources
+            ],
+        }
