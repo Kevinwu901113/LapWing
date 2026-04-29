@@ -64,8 +64,9 @@ async def _record_proactive_decision(
     """Emit a PROACTIVE_MESSAGE_DECISION mutation log entry. Best-effort —
     errors are logged at warning and swallowed; the user-visible decision
     path is unaffected."""
-    services = ctx.services or {}
-    mutation_log = services.get("mutation_log")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    mutation_log = svc.require_mutation_log_optional()
     if mutation_log is None:
         return
     try:
@@ -186,7 +187,9 @@ async def _send_message(
                 reason=f"proactive_gate:{gate_decision.decision}:{gate_decision.reason}",
             )
 
-    channel_manager = ctx.services.get("channel_manager")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    channel_manager = svc.channel_manager
     if channel_manager is None:
         return ToolExecutionResult(
             success=False,
@@ -309,7 +312,9 @@ async def _send_image(
             reason="missing image source",
         )
 
-    channel_manager = ctx.services.get("channel_manager")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    channel_manager = svc.channel_manager
     if channel_manager is None:
         return ToolExecutionResult(
             success=False,
@@ -362,7 +367,9 @@ async def _view_image(
             reason="missing image",
         )
 
-    vlm = ctx.services.get("vlm")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    vlm = svc.vlm
     if vlm is None:
         return ToolExecutionResult(
             success=False,
@@ -448,7 +455,9 @@ async def _browse(
             reason="url_blocked",
         )
 
-    browser_manager = ctx.services.get("browser_manager")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    browser_manager = svc.browser_manager
     if browser_manager is None:
         return ToolExecutionResult(
             success=False,
@@ -456,7 +465,7 @@ async def _browse(
             reason="browser_unavailable",
         )
 
-    vlm = ctx.services.get("vlm")
+    vlm = svc.vlm
     tab_id: str | None = None
 
     try:
