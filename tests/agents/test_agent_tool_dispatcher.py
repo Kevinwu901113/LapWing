@@ -99,12 +99,13 @@ async def test_base_agent_missing_dispatcher_fails_closed():
     registry = MagicMock()
     registry.execute = AsyncMock()
 
+    mutation_log = AsyncMock()
     agent = BaseAgent(
         spec=spec,
         tool_registry=registry,
         llm_router=MagicMock(),
         mutation_log=MagicMock(),
-        services={},  # no dispatcher
+        services={"mutation_log": mutation_log},  # no dispatcher
     )
 
     tool_call = MagicMock()
@@ -117,6 +118,9 @@ async def test_base_agent_missing_dispatcher_fails_closed():
 
     assert "missing_dispatcher" in output
     registry.execute.assert_not_called()
+    mutation_log.record.assert_awaited_once()
+    payload = mutation_log.record.await_args.args[1]
+    assert payload["guard"] == "dispatcher_missing"
 
 
 @pytest.mark.asyncio

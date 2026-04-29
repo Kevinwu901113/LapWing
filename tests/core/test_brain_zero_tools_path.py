@@ -18,6 +18,7 @@ from __future__ import annotations
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from src.logging.state_mutation_log import MutationType
 
 
 @pytest.fixture
@@ -129,3 +130,69 @@ async def test_profile_override_bypasses_zero_tools_path(brain):
         "fast path is only for IntentRouter-decided turns. "
         f"Got {captured['tools']!r}"
     )
+
+
+async def test_intent_router_return_local_execution_is_downgraded_to_standard(brain):
+    from src.core.brain import LapwingBrain
+    from src.core.intent_router import RouteDecision
+
+    decision = RouteDecision(profile_name="local_execution")
+    captured = _wire_brain_with_router_decision(brain, decision)
+    brain._mutation_log_ref = AsyncMock()
+
+    with patch("src.core.brain.INTENT_ROUTER_ENABLED", True):
+        await LapwingBrain._complete_chat(
+            brain,
+            chat_id="kevin",
+            messages=[{"role": "user", "content": "请执行本机命令"}],
+            user_message="请执行本机命令",
+            adapter="qq",
+            user_id="guest-user",
+        )
+
+    assert captured["profile"] == "standard"
+
+
+async def test_local_execution_requires_explicit_override_and_owner_or_agent(brain):
+    from src.core.brain import LapwingBrain
+
+    captured = _wire_brain_with_router_decision(brain, decision=None)
+    brain._mutation_log_ref = AsyncMock()
+
+    with patch("src.core.brain.INTENT_ROUTER_ENABLED", True):
+        await LapwingBrain._complete_chat(
+            brain,
+            chat_id="kevin",
+            messages=[{"role": "user", "content": "危险操作"}],
+            user_message="危险操作",
+            profile_override="local_execution",
+            adapter="qq",
+            user_id="guest-user",
+        )
+
+    assert captured["profile"] == "standard"
+    brain._mutation_log_ref.record.assert_awaited()
+    args = brain._mutation_log_ref.record.await_args.args
+    assert args[0] == MutationType.TOOL_DENIED
+
+
+async def test_local_execution_explicit_owner_override_emits_escalation_audit(brain):
+    from src.core.brain import LapwingBrain
+
+    captured = _wire_brain_with_router_decision(brain, decision=None)
+    brain._mutation_log_ref = AsyncMock()
+
+    with patch("src.core.brain.INTENT_ROUTER_ENABLED", True):
+        await LapwingBrain._complete_chat(
+            brain,
+            chat_id="kevin",
+            messages=[{"role": "user", "content": "危险操作"}],
+            user_message="危险操作",
+            profile_override="local_execution",
+            adapter="agent",
+            user_id="agent:coder",
+        )
+
+    assert captured["profile"] == "local_execution"
+    calls = brain._mutation_log_ref.record.await_args_list
+    assert any(call.args and call.args[0] == MutationType.PROFILE_ESCALATED for call in calls)

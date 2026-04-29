@@ -23,6 +23,8 @@ from src.core.shell_policy import (
 )
 from src.core.verifier import verify_shell_constraints_status as verify_constraints
 from src.core.trajectory_store import TrajectoryEntryType
+from src.core.authority_gate import AuthLevel, identify as identify_auth
+from src.logging.state_mutation_log import MutationType
 from src.tools.registry import build_default_tool_registry
 from src.tools.shell_executor import execute as execute_shell
 from src.tools.types import ToolExecutionRequest
@@ -383,6 +385,7 @@ class LapwingBrain:
             user_message,
             approved_directory=approved_directory,
         )
+        services = self._build_services()
         if profile_override is not None:
             # Caller pinned a profile (e.g. think_inner uses "inner_tick").
             # Skip IntentRouter — the caller already knows the surface it
@@ -393,9 +396,40 @@ class LapwingBrain:
             profile_name = self._fallback_profile_for_message(user_message, constraints)
             if INTENT_ROUTER_ENABLED:
                 intent_router = getattr(self, "intent_router", None)
-                if intent_router is not None and profile_name != "task_execution":
+                if intent_router is not None and profile_name not in {"task_execution", "local_execution"}:
                     decision = await intent_router.route(chat_id, user_message)
                     profile_name = decision.profile_name
+
+        # LOCAL_EXECUTION is operator-only: never auto-route into it.
+        if profile_name in {"task_execution", "local_execution"}:
+            explicit_override = profile_override in {"task_execution", "local_execution"}
+            owner_or_agent = self._local_execution_authorized(adapter=adapter, user_id=user_id)
+            if not explicit_override or not owner_or_agent:
+                ml = services.get("mutation_log")
+                if ml is not None:
+                    try:
+                        await ml.record(
+                            MutationType.TOOL_DENIED,
+                            {
+                                "tool": "profile:local_execution",
+                                "guard": "profile_escalation",
+                                "reason": "local_execution_requires_explicit_owner_or_agent",
+                                "auth_level": int(identify_auth(adapter, user_id) if adapter else AuthLevel.OWNER),
+                                "requested_profile": profile_name,
+                                "explicit_override": explicit_override,
+                            },
+                        )
+                    except Exception:
+                        logger.debug("profile escalation deny audit failed", exc_info=True)
+                profile_name = "standard"
+            else:
+                await self._record_profile_escalation(
+                    services=services,
+                    chat_id=chat_id,
+                    adapter=adapter,
+                    user_id=user_id,
+                    profile_name=profile_name,
+                )
 
         # Zero-tool fast path: pure-chat turns skip the OpenAI tool-call
         # protocol entirely. We still route through TaskRuntime.complete_chat
@@ -407,7 +441,6 @@ class LapwingBrain:
             and profile_name == "zero_tools"
         )
         tools = [] if zero_tools_path else self.task_runtime.tools_for_profile(profile_name)
-        services = self._build_services()
 
         deps = RuntimeDeps(
             execute_shell=execute_shell,
@@ -445,6 +478,39 @@ class LapwingBrain:
             len(reply),
         )
         return reply
+
+    @staticmethod
+    def _local_execution_authorized(*, adapter: str, user_id: str) -> bool:
+        if adapter == "agent":
+            return True
+        level = identify_auth(adapter, user_id) if adapter else AuthLevel.OWNER
+        return level >= AuthLevel.OWNER
+
+    async def _record_profile_escalation(
+        self,
+        *,
+        services: dict[str, Any],
+        chat_id: str,
+        adapter: str,
+        user_id: str,
+        profile_name: str,
+    ) -> None:
+        mutation_log = services.get("mutation_log")
+        if mutation_log is None:
+            return
+        try:
+            await mutation_log.record(
+                MutationType.PROFILE_ESCALATED,
+                {
+                    "profile": profile_name,
+                    "chat_id": chat_id,
+                    "adapter": adapter,
+                    "user_id": user_id,
+                    "reason": "explicit_local_execution_override",
+                },
+            )
+        except Exception:
+            logger.debug("profile escalation audit failed", exc_info=True)
 
     @staticmethod
     def _fallback_profile_for_message(user_message: str, constraints) -> str:

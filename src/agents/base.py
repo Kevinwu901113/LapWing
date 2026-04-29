@@ -395,6 +395,22 @@ class BaseAgent:
         try:
             dispatcher = services.get("dispatcher")
             if dispatcher is None or not hasattr(dispatcher, "dispatch"):
+                mutation_log = services.get("mutation_log")
+                if mutation_log is not None:
+                    from src.logging.state_mutation_log import MutationType
+                    try:
+                        await mutation_log.record(
+                            MutationType.TOOL_DENIED,
+                            {
+                                "tool": tool_call.name,
+                                "guard": "dispatcher_missing",
+                                "reason": "missing_dispatcher",
+                                "auth_level": 3,
+                                "agent_name": self.spec.name,
+                            },
+                        )
+                    except Exception:
+                        logger.debug("dispatcher missing deny audit failed", exc_info=True)
                 # Fail closed: no direct registry fallback, dispatcher is the only gate.
                 return json.dumps(
                     {

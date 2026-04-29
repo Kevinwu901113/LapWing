@@ -155,6 +155,7 @@ class MutationType(str, Enum):
     #   {"tool": str, "guard": str, "reason": str, "auth_level": int}
     # plus guard-specific extras.
     TOOL_DENIED = "tool.denied"
+    PROFILE_ESCALATED = "profile.escalated"
 
     # PROACTIVE_MESSAGE_DECISION fires for every ProactiveMessageGate
     # outcome so allow/defer/deny ratios can be audited. Payload:
