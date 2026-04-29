@@ -138,7 +138,7 @@ LOCAL_EXECUTION_PROFILE = RuntimeProfile(
     name="local_execution",
     capabilities=frozenset({
         "shell", "skill", "memory", "schedule",
-        "general", "browser", "commitment", "agent_delegate", "agent_admin", "file",
+        "general", "browser", "commitment", "agent_delegate", "file",
         "code", "verify", "identity",
     }),
     exclude_tool_names=frozenset({
@@ -151,6 +151,21 @@ LOCAL_EXECUTION_PROFILE = RuntimeProfile(
 # TASK_EXECUTION_PROFILE is deprecated. It remains as an alias to LOCAL_EXECUTION_PROFILE
 # for backward compatibility during the transition, but should not be used as a fallback.
 TASK_EXECUTION_PROFILE = LOCAL_EXECUTION_PROFILE
+
+# Operator-only dynamic-agent administration surface.
+# Not used by default chat routing; callers must opt in explicitly.
+AGENT_ADMIN_OPERATOR_PROFILE = RuntimeProfile(
+    name="agent_admin_operator",
+    capabilities=frozenset(),
+    tool_names=frozenset({
+        "delegate_to_agent",
+        "create_agent",
+        "destroy_agent",
+        "save_agent",
+    }),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
 
 CODER_SNIPPET_PROFILE = RuntimeProfile(
     name="coder_snippet",
@@ -263,6 +278,7 @@ _PROFILES = {
         INNER_TICK_PROFILE,
         COMPOSE_PROACTIVE_PROFILE,
         LOCAL_EXECUTION_PROFILE,
+        AGENT_ADMIN_OPERATOR_PROFILE,
         CODER_SNIPPET_PROFILE,
         CODER_WORKSPACE_PROFILE,
         FILE_OPS_PROFILE,

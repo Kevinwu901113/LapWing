@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 from src.core.runtime_profiles import (
+    AGENT_ADMIN_OPERATOR_PROFILE,
     AGENT_CODER_PROFILE,
     AGENT_RESEARCHER_PROFILE,
     STANDARD_PROFILE,
@@ -150,16 +151,13 @@ class TestProfileExclusivity:
         assert "delegate_to_researcher" in names
         assert "delegate_to_coder" in names
 
-    def test_task_execution_has_dynamic_agent_tools(self):
-        """task_execution still exposes the dynamic-agent management
-        tools for power flows (create/destroy/save_agent + the generic
-        delegate_to_agent). Raw research stays gated. list_agents was
-        removed in the cleanup commit."""
+    def test_local_execution_does_not_expose_dynamic_agent_admin_tools(self):
+        """Phase 6B: local_execution must not expose agent_admin tools."""
         registry = _make_full_registry()
         names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
-        for required in ("delegate_to_agent", "create_agent",
-                         "destroy_agent", "save_agent"):
-            assert required in names, f"task_execution must expose {required}"
+        for forbidden in ("delegate_to_agent", "create_agent",
+                          "destroy_agent", "save_agent"):
+            assert forbidden not in names, f"local_execution must not expose {forbidden}"
         assert "list_agents" not in names
         assert "research" not in names
         assert "browse" not in names
@@ -172,7 +170,7 @@ class TestProfileExclusivity:
         assert TASK_EXECUTION_PROFILE.name == "local_execution"
         assert TASK_EXECUTION_PROFILE.capabilities == frozenset({
             "shell", "skill", "memory", "schedule",
-            "general", "browser", "commitment", "agent_delegate", "agent_admin", "file",
+            "general", "browser", "commitment", "agent_delegate", "file",
             "code", "verify", "identity",
         })
         assert TASK_EXECUTION_PROFILE.exclude_tool_names == frozenset({
@@ -184,13 +182,39 @@ class TestProfileExclusivity:
         names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
         
         expected_names = {
-            'abandon_promise', 'add_correction', 'browser_click', 'browser_open', 'cancel_reminder', 'close_focus', 'commit_promise', 'create_agent', 'create_skill', 'delegate_to_agent', 'delegate_to_coder', 'delegate_to_researcher', 'destroy_agent', 'edit_soul', 'execute_shell', 'file_append', 'file_list_directory', 'file_read_segment', 'file_write', 'fulfill_promise', 'get_current_datetime', 'list_notes', 'read_file', 'read_note', 'read_soul', 'recall', 'recall_focus', 'run_skill', 'save_agent', 'search_notes', 'set_reminder', 'view_reminders', 'write_file', 'write_note'
+            'abandon_promise', 'add_correction', 'browser_click', 'browser_open', 'cancel_reminder', 'close_focus', 'commit_promise', 'create_skill', 'delegate_to_coder', 'delegate_to_researcher', 'edit_soul', 'execute_shell', 'file_append', 'file_list_directory', 'file_read_segment', 'file_write', 'fulfill_promise', 'get_current_datetime', 'list_notes', 'read_file', 'read_note', 'read_soul', 'recall', 'recall_focus', 'run_skill', 'search_notes', 'set_reminder', 'view_reminders', 'write_file', 'write_note'
         }
         assert names == expected_names
         
         assert "research" not in names
         assert "browse" not in names
         assert "send_message" not in names
+        assert "create_agent" not in names
+        assert "destroy_agent" not in names
+        assert "save_agent" not in names
+        assert "delegate_to_agent" not in names
+
+    def test_agent_admin_operator_profile_exposes_agent_admin_tools_only(self):
+        registry = _make_full_registry()
+        names = _resolve_tool_names(registry, AGENT_ADMIN_OPERATOR_PROFILE)
+        assert names == {
+            "delegate_to_agent", "create_agent", "destroy_agent", "save_agent",
+        }
+
+    def test_non_operator_profiles_never_expose_agent_admin_tools(self):
+        registry = _make_full_registry()
+        forbidden = {"delegate_to_agent", "create_agent", "destroy_agent", "save_agent"}
+        profiles = (
+            ZERO_TOOLS_PROFILE,
+            STANDARD_PROFILE,
+            CHAT_SHELL_PROFILE,
+            INNER_TICK_PROFILE,
+            TASK_EXECUTION_PROFILE,  # local_execution alias
+        )
+        for profile in profiles:
+            names = _resolve_tool_names(registry, profile)
+            leaks = names & forbidden
+            assert not leaks, f"{profile.name} leaked agent_admin tools: {sorted(leaks)}"
 
     def test_chat_minimal_has_no_agent_tools(self):
         """chat_minimal (zero_tools alias) exposes nothing — pure-text
