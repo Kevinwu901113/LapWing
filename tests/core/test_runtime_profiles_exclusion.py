@@ -183,8 +183,7 @@ class TestProfileExclusivity:
         # It's an alias to local_execution now
         assert TASK_EXECUTION_PROFILE.name == "local_execution"
         assert TASK_EXECUTION_PROFILE.capabilities == frozenset({
-            "shell", "skill", "memory", "schedule",
-            "general", "commitment", "agent_delegate", "file",
+            "shell", "skill", "agent_delegate", "file",
             "code", "verify",
         })
         assert TASK_EXECUTION_PROFILE.exclude_tool_names == frozenset({
@@ -196,7 +195,17 @@ class TestProfileExclusivity:
         names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
         
         expected_names = {
-            'abandon_promise', 'add_correction', 'cancel_reminder', 'close_focus', 'commit_promise', 'create_skill', 'delegate_to_coder', 'delegate_to_researcher', 'execute_shell', 'file_append', 'file_list_directory', 'file_read_segment', 'file_write', 'fulfill_promise', 'get_current_datetime', 'list_notes', 'read_file', 'read_note', 'recall', 'recall_focus', 'run_skill', 'search_notes', 'set_reminder', 'view_reminders', 'write_file', 'write_note'
+            "create_skill",
+            "delegate_to_coder",
+            "delegate_to_researcher",
+            "execute_shell",
+            "file_append",
+            "file_list_directory",
+            "file_read_segment",
+            "file_write",
+            "read_file",
+            "run_skill",
+            "write_file",
         }
         assert names == expected_names
         

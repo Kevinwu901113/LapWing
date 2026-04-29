@@ -128,7 +128,7 @@ INNER_TICK_PROFILE = RuntimeProfile(
 )
 
 # TEMPORARY LEGACY ESCAPE HATCH (Step 1 only).
-# task_execution still aggregates shell/browser/file capabilities so
+# task_execution still aggregates shell/file capabilities so
 # specific power flows can run. This is *not* the target architecture
 # — Step 2 must migrate the execution tools to Coder, at which point
 # task_execution either becomes a thin alias for STANDARD or is
@@ -137,8 +137,7 @@ INNER_TICK_PROFILE = RuntimeProfile(
 LOCAL_EXECUTION_PROFILE = RuntimeProfile(
     name="local_execution",
     capabilities=frozenset({
-        "shell", "skill", "memory", "schedule",
-        "general", "commitment", "agent_delegate", "file",
+        "shell", "skill", "agent_delegate", "file",
         "code", "verify",
     }),
     exclude_tool_names=frozenset({
