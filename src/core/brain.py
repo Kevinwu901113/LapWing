@@ -448,13 +448,8 @@ class LapwingBrain:
 
     @staticmethod
     def _fallback_profile_for_message(user_message: str, constraints) -> str:
-        if getattr(constraints, "is_write_request", False) or getattr(
-            constraints, "has_hard_path_constraints", False
-        ):
-            return "task_execution"
-        lowered = user_message.lower()
-        if any(hint in lowered for hint in _TASK_PROFILE_HINTS):
-            return "task_execution"
+        # Phase 4: task_execution is deprecated as a fallback. 
+        # All coding/file/shell tasks should route through STANDARD_PROFILE -> delegate_to_coder.
         return "standard"
 
     async def _render_messages(

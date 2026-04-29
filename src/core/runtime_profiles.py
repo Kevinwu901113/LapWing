@@ -134,8 +134,8 @@ INNER_TICK_PROFILE = RuntimeProfile(
 # task_execution either becomes a thin alias for STANDARD or is
 # deleted. send_message stays excluded (proactive-only) and raw web
 # retrieval stays out (goes through delegate_to_researcher).
-TASK_EXECUTION_PROFILE = RuntimeProfile(
-    name="task_execution",
+LOCAL_EXECUTION_PROFILE = RuntimeProfile(
+    name="local_execution",
     capabilities=frozenset({
         "shell", "skill", "memory", "schedule",
         "general", "browser", "commitment", "agent_delegate", "agent_admin", "file",
@@ -147,6 +147,10 @@ TASK_EXECUTION_PROFILE = RuntimeProfile(
     include_internal=False,
     shell_policy_enabled=True,
 )
+
+# TASK_EXECUTION_PROFILE is deprecated. It remains as an alias to LOCAL_EXECUTION_PROFILE
+# for backward compatibility during the transition, but should not be used as a fallback.
+TASK_EXECUTION_PROFILE = LOCAL_EXECUTION_PROFILE
 
 CODER_SNIPPET_PROFILE = RuntimeProfile(
     name="coder_snippet",
@@ -258,7 +262,7 @@ _PROFILES = {
         STANDARD_PROFILE,
         INNER_TICK_PROFILE,
         COMPOSE_PROACTIVE_PROFILE,
-        TASK_EXECUTION_PROFILE,
+        LOCAL_EXECUTION_PROFILE,
         CODER_SNIPPET_PROFILE,
         CODER_WORKSPACE_PROFILE,
         FILE_OPS_PROFILE,
@@ -266,6 +270,7 @@ _PROFILES = {
         AGENT_CODER_PROFILE,
     )
 }
+_PROFILES["task_execution"] = LOCAL_EXECUTION_PROFILE  # Legacy alias
 
 
 def get_runtime_profile(name: str) -> RuntimeProfile:

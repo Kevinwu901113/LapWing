@@ -168,7 +168,8 @@ class TestProfileExclusivity:
         """TASK_EXECUTION_PROFILE is a temporary legacy escape hatch.
         It must only shrink, never grow.
         """
-        assert TASK_EXECUTION_PROFILE.name == "task_execution"
+        # It's an alias to local_execution now
+        assert TASK_EXECUTION_PROFILE.name == "local_execution"
         assert TASK_EXECUTION_PROFILE.capabilities == frozenset({
             "shell", "skill", "memory", "schedule",
             "general", "browser", "commitment", "agent_delegate", "agent_admin", "file",
