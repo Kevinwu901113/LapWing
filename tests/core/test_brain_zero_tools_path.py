@@ -132,11 +132,12 @@ async def test_profile_override_bypasses_zero_tools_path(brain):
     )
 
 
-async def test_intent_router_return_local_execution_is_downgraded_to_standard(brain):
+@pytest.mark.parametrize("profile_name", ["local_execution", "task_execution"])
+async def test_intent_router_return_operator_execution_profiles_are_downgraded_to_standard(brain, profile_name):
     from src.core.brain import LapwingBrain
     from src.core.intent_router import RouteDecision
 
-    decision = RouteDecision(profile_name="local_execution")
+    decision = RouteDecision(profile_name=profile_name)
     captured = _wire_brain_with_router_decision(brain, decision)
     brain._mutation_log_ref = AsyncMock()
 
@@ -153,7 +154,8 @@ async def test_intent_router_return_local_execution_is_downgraded_to_standard(br
     assert captured["profile"] == "standard"
 
 
-async def test_local_execution_requires_explicit_override_and_owner_or_agent(brain):
+@pytest.mark.parametrize("profile_name", ["local_execution", "task_execution"])
+async def test_operator_execution_profiles_require_explicit_override_and_owner_or_agent(brain, profile_name):
     from src.core.brain import LapwingBrain
 
     captured = _wire_brain_with_router_decision(brain, decision=None)
@@ -165,7 +167,7 @@ async def test_local_execution_requires_explicit_override_and_owner_or_agent(bra
             chat_id="kevin",
             messages=[{"role": "user", "content": "危险操作"}],
             user_message="危险操作",
-            profile_override="local_execution",
+            profile_override=profile_name,
             adapter="qq",
             user_id="guest-user",
         )
@@ -176,7 +178,8 @@ async def test_local_execution_requires_explicit_override_and_owner_or_agent(bra
     assert args[0] == MutationType.TOOL_DENIED
 
 
-async def test_local_execution_explicit_owner_override_emits_escalation_audit(brain):
+@pytest.mark.parametrize("profile_name", ["local_execution", "task_execution"])
+async def test_operator_execution_profiles_explicit_owner_override_emits_escalation_audit(brain, profile_name):
     from src.core.brain import LapwingBrain
 
     captured = _wire_brain_with_router_decision(brain, decision=None)
@@ -188,12 +191,12 @@ async def test_local_execution_explicit_owner_override_emits_escalation_audit(br
             chat_id="kevin",
             messages=[{"role": "user", "content": "危险操作"}],
             user_message="危险操作",
-            profile_override="local_execution",
+            profile_override=profile_name,
             adapter="agent",
             user_id="agent:coder",
         )
 
-    assert captured["profile"] == "local_execution"
+    assert captured["profile"] == profile_name
     calls = brain._mutation_log_ref.record.await_args_list
     assert any(call.args and call.args[0] == MutationType.PROFILE_ESCALATED for call in calls)
 

@@ -396,12 +396,13 @@ class LapwingBrain:
             profile_name = self._fallback_profile_for_message(user_message, constraints)
             if INTENT_ROUTER_ENABLED:
                 intent_router = getattr(self, "intent_router", None)
-                if intent_router is not None and profile_name != "local_execution":
+                if intent_router is not None and profile_name not in {"task_execution", "local_execution"}:
                     decision = await intent_router.route(chat_id, user_message)
                     profile_name = decision.profile_name
 
         # High-risk/operator profiles are opt-in only: never auto-route into them.
         operator_profiles = {
+            "task_execution",
             "local_execution",
             "agent_admin_operator",
             "identity_operator",

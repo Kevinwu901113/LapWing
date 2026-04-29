@@ -132,18 +132,23 @@ INNER_TICK_PROFILE = RuntimeProfile(
 # chat stays on standard -> delegate seams.
 LOCAL_EXECUTION_PROFILE = RuntimeProfile(
     name="local_execution",
-    capabilities=frozenset({
-        "shell", "file", "code", "verify",
-    }),
+    capabilities=frozenset(),
     tool_names=frozenset({
+        "execute_shell",
+        "read_file",
+        "write_file",
+        "file_read_segment",
+        "file_write",
+        "file_append",
+        "file_list_directory",
         "run_skill",
-    }),
-    exclude_tool_names=frozenset({
-        "research", "browse", "get_sports_score", "send_message",
     }),
     include_internal=False,
     shell_policy_enabled=True,
 )
+
+# Legacy alias kept for conservative compatibility during migration.
+TASK_EXECUTION_PROFILE = LOCAL_EXECUTION_PROFILE
 
 # Operator-only dynamic-agent administration surface.
 # Not used by default chat routing; callers must opt in explicitly.
@@ -331,9 +336,9 @@ _PROFILES = {
         AGENT_CODER_PROFILE,
     )
 }
+_PROFILES["task_execution"] = LOCAL_EXECUTION_PROFILE  # Legacy alias
+
 def get_runtime_profile(name: str) -> RuntimeProfile:
-    if name == "task_execution":
-        raise ValueError("runtime profile 'task_execution' 已移除，请改用 'local_execution'")
     if name not in _PROFILES:
         raise ValueError(f"未知 runtime profile: {name}")
     return _PROFILES[name]

@@ -23,6 +23,7 @@ from src.core.runtime_profiles import (
     INNER_TICK_PROFILE,
     LOCAL_EXECUTION_PROFILE,
     SKILL_OPERATOR_PROFILE,
+    TASK_EXECUTION_PROFILE,
     _PROFILES,
     get_runtime_profile,
 )
@@ -188,13 +189,16 @@ class TestProfileExclusivity:
         It must only shrink, never grow.
         """
         assert LOCAL_EXECUTION_PROFILE.name == "local_execution"
-        assert LOCAL_EXECUTION_PROFILE.capabilities == frozenset({
-            "shell", "file",
-            "code", "verify",
-        })
-        assert LOCAL_EXECUTION_PROFILE.tool_names == frozenset({"run_skill"})
-        assert LOCAL_EXECUTION_PROFILE.exclude_tool_names == frozenset({
-            "research", "browse", "get_sports_score", "send_message",
+        assert LOCAL_EXECUTION_PROFILE.capabilities == frozenset()
+        assert LOCAL_EXECUTION_PROFILE.tool_names == frozenset({
+            "execute_shell",
+            "read_file",
+            "write_file",
+            "file_read_segment",
+            "file_write",
+            "file_append",
+            "file_list_directory",
+            "run_skill",
         })
         assert "new_capability" not in LOCAL_EXECUTION_PROFILE.capabilities
         
@@ -229,6 +233,10 @@ class TestProfileExclusivity:
         assert "browser_open" not in names
         assert "browser_click" not in names
         assert "browser_type" not in names
+
+    def test_task_execution_alias_matches_local_execution(self):
+        assert TASK_EXECUTION_PROFILE is LOCAL_EXECUTION_PROFILE
+        assert get_runtime_profile("task_execution") is LOCAL_EXECUTION_PROFILE
 
     def test_agent_admin_operator_profile_exposes_agent_admin_tools_only(self):
         registry = _make_full_registry()
