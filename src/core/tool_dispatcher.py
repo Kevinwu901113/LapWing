@@ -284,7 +284,7 @@ class ToolDispatcher:
         extras: dict[str, Any] | None = None,
     ) -> None:
         ctx = ServiceContextView(services or {})
-        mutation_log = ctx.mutation_log
+        mutation_log = ctx.require_mutation_log_optional()
         if mutation_log is None:
             return
         payload: dict[str, Any] = {
@@ -327,8 +327,9 @@ class ToolDispatcher:
         
         # ── Agent Policy Check ────────────────────────────────────────────────
         if agent_spec is not None and getattr(agent_spec, "kind", None) == "dynamic":
-            agent_policy = ctx.agent_policy
-            if agent_policy is None:
+            try:
+                agent_policy = ctx.require_agent_policy()
+            except MissingServiceError:
                 reason = "missing_agent_policy"
                 if state is not None:
                     state.record_failure(reason, "blocked")
@@ -347,7 +348,7 @@ class ToolDispatcher:
                     extras={"agent_name": getattr(agent_spec, "name", "unknown")},
                 )
                 return ToolExecutionResult(success=False, payload=payload, reason=reason)
-            
+
             if not agent_policy.validate_tool_access(agent_spec, request.name):
                 reason = "policy_denied_tool"
                 if state is not None:
