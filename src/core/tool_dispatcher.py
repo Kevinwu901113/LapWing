@@ -26,34 +26,216 @@ _FILE_WRITE_TOOLS = frozenset(
     {"write_file", "apply_workspace_patch", "file_write", "file_append"}
 )
 
+class MissingServiceError(Exception):
+    """Raised by ServiceContextView.require_* when a critical service is absent."""
+    pass
+
+
 class ServiceContextView:
-    """Thin wrapper around the legacy services dict to provide typed accessors."""
+    """Typed accessor wrapper around the legacy services dict.
+
+    Every key assembled in LapwingBrain._build_services() plus runtime-only
+    keys gets a ``@property`` that returns ``self.raw.get("<key>")``.
+
+    For critical services use ``require_<name>()`` which raises
+    ``MissingServiceError`` on absence (fail-closed).  For best-effort
+    services use ``require_<name>_optional()`` which returns ``None``
+    gracefully.
+    """
+
     def __init__(self, raw: dict[str, Any]):
         self.raw = raw
+
+    # ── Core routing ────────────────────────────────────────────────────
+
+    @property
+    def router(self):
+        return self.raw.get("router")
+
+    @property
+    def llm_router(self):
+        return self.raw.get("llm_router")
+
+    # ── Tool execution ───────────────────────────────────────────────────
+
+    @property
+    def tool_registry(self):
+        return self.raw.get("tool_registry")
+
+    @property
+    def dispatcher(self):
+        return self.raw.get("dispatcher")
+
+    # ── Auditing & logging ──────────────────────────────────────────────
+
+    @property
+    def mutation_log(self):
+        return self.raw.get("mutation_log")
+
+    # ── Agents ───────────────────────────────────────────────────────────
 
     @property
     def agent_registry(self):
         return self.raw.get("agent_registry")
 
     @property
-    def mutation_log(self):
-        return self.raw.get("mutation_log")
-        
-    @property
     def agent_policy(self):
         return self.raw.get("agent_policy")
-        
+
+    # ── Budget ──────────────────────────────────────────────────────────
+
     @property
     def budget_ledger(self):
         return self.raw.get("budget_ledger")
-        
+
+    # ── Proactive / outbound ─────────────────────────────────────────────
+
     @property
     def proactive_message_gate(self):
         return self.raw.get("proactive_message_gate")
 
     @property
+    def proactive_send_active(self):
+        return self.raw.get("proactive_send_active")
+
+    # ── Channels ────────────────────────────────────────────────────────
+
+    @property
+    def channel_manager(self):
+        return self.raw.get("channel_manager")
+
+    @property
+    def owner_qq_id(self):
+        return self.raw.get("owner_qq_id")
+
+    # ── Browser ──────────────────────────────────────────────────────────
+
+    @property
+    def browser_manager(self):
+        return self.raw.get("browser_manager")
+
+    @property
+    def vlm(self):
+        return self.raw.get("vlm")
+
+    # ── Skills ───────────────────────────────────────────────────────────
+
+    @property
+    def skill_store(self):
+        return self.raw.get("skill_store")
+
+    @property
+    def skill_executor(self):
+        return self.raw.get("skill_executor")
+
+    # ── Memory / notes / vectors ────────────────────────────────────────
+
+    @property
+    def note_store(self):
+        return self.raw.get("note_store")
+
+    @property
+    def vector_store(self):
+        return self.raw.get("vector_store")
+
+    # ── Scheduling ──────────────────────────────────────────────────────
+
+    @property
+    def durable_scheduler(self):
+        return self.raw.get("durable_scheduler")
+
+    @property
+    def reminder_scheduler(self):
+        return self.raw.get("reminder_scheduler")
+
+    # ── Commitments / focus / trajectory ─────────────────────────────────
+
+    @property
+    def commitment_store(self):
+        return self.raw.get("commitment_store")
+
+    @property
+    def focus_manager(self):
+        return self.raw.get("focus_manager")
+
+    @property
+    def trajectory_store(self):
+        return self.raw.get("trajectory_store")
+
+    # ── Corrections ─────────────────────────────────────────────────────
+
+    @property
+    def correction_manager(self):
+        return self.raw.get("correction_manager")
+
+    # ── Safety ──────────────────────────────────────────────────────────
+
+    @property
+    def circuit_breaker(self):
+        return self.raw.get("circuit_breaker")
+
+    # ── Ambient / interest / research ───────────────────────────────────
+
+    @property
     def ambient_store(self):
         return self.raw.get("ambient_store")
+
+    @property
+    def interest_profile(self):
+        return self.raw.get("interest_profile")
+
+    @property
+    def research_engine(self):
+        return self.raw.get("research_engine")
+
+    # ── Plan state (runtime-only — set by plan_tool executor) ────────────
+
+    @property
+    def plan_state(self):
+        return self.raw.get("plan_state")
+
+    # ── Agent-factory (set by AgentFactory, not _build_services) ───────
+
+    @property
+    def shell_default_cwd(self):
+        return self.raw.get("shell_default_cwd")
+
+    # ── require_* helpers ───────────────────────────────────────────────
+
+    def require_dispatcher(self):
+        """Fail-closed: BaseAgent._execute_tool depends on dispatcher."""
+        obj = self.raw.get("dispatcher")
+        if obj is None:
+            raise MissingServiceError("dispatcher")
+        return obj
+
+    def require_agent_policy(self):
+        """Fail-closed: dynamic agents must have agent_policy."""
+        obj = self.raw.get("agent_policy")
+        if obj is None:
+            raise MissingServiceError("agent_policy")
+        return obj
+
+    def require_tool_registry(self):
+        """Fail-closed: dispatch() must have tool_registry."""
+        obj = self.raw.get("tool_registry")
+        if obj is None:
+            raise MissingServiceError("tool_registry")
+        return obj
+
+    def require_mutation_log_optional(self):
+        """Graceful degrade: TOOL_DENIED audit is best-effort."""
+        obj = self.raw.get("mutation_log")
+        if obj is None:
+            logger.debug("mutation_log not available — TOOL_DENIED audit skipped")
+        return obj
+
+    def require_budget_ledger_optional(self):
+        """Graceful degrade: budget tracking is best-effort."""
+        obj = self.raw.get("budget_ledger")
+        if obj is None:
+            logger.debug("budget_ledger not available — budget tracking skipped")
+        return obj
 
 
 class ToolDispatcher:
@@ -61,6 +243,10 @@ class ToolDispatcher:
     Central dispatcher for tool execution.
     Responsible for executing profile, auth, policy, browser, budget, and audit checks
     before delegating to the underlying ToolRegistry.
+
+    Services are accessed through ``ServiceContextView`` — the canonical typed
+    interface inside the dispatcher.  New guard code must use ``ctx.<property>``,
+    never ``services.get(...)`` or ``services[...]`` directly.
     """
     def __init__(self, runtime: "TaskRuntime"):
         self._runtime = runtime
