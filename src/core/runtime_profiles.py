@@ -206,7 +206,14 @@ FILE_OPS_PROFILE = RuntimeProfile(
 AGENT_RESEARCHER_PROFILE = RuntimeProfile(
     name="agent_researcher",
     capabilities=frozenset(),
-    tool_names=frozenset({"research", "browse"}),
+    tool_names=frozenset({
+        "research",
+        "browse",
+        # Specialized retrieval API — Researcher chooses between this and
+        # the generic search/browse based on the question. Lapwing never
+        # sees it directly; sports questions go via delegate_to_researcher.
+        "get_sports_score",
+    }),
     include_internal=False,
     shell_policy_enabled=False,
 )

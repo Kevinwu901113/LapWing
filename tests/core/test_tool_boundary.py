@@ -264,10 +264,6 @@ class TestRetrievalToolsConfinedToResearcher:
     Researcher. Lapwing-facing profiles never see them.
     """
 
-    @pytest.mark.xfail(
-        reason="get_sports_score migrates to Researcher in Commit 5",
-        strict=False,
-    )
     def test_get_sports_score_in_researcher_profile(self):
         names = _resolved_tool_names(AGENT_RESEARCHER_PROFILE)
         assert "get_sports_score" in names
