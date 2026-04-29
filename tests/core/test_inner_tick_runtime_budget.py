@@ -259,33 +259,8 @@ class TestRuntimeOptionsAppliedInTaskRuntime:
         )
 
 
-class TestRuntimeOptionsCurrentInfo:
-    """Phase 2 added required_tool_names + current_info_domain so the
-    IntentRouter can hand the gate everything it needs without modifying
-    profile resolution. Locked in here so future budget refactors don't
-    accidentally drop them."""
-
-    def test_runtime_options_current_info_defaults(self):
-        from src.core.task_types import RuntimeOptions
-        opts = RuntimeOptions()
-        assert opts.required_tool_names == ()
-        assert opts.current_info_domain is None
-
-    def test_runtime_options_current_info_set(self):
-        from src.core.task_types import RuntimeOptions
-        opts = RuntimeOptions(
-            required_tool_names=("get_sports_score", "research"),
-            current_info_domain="sports",
-        )
-        assert opts.required_tool_names == ("get_sports_score", "research")
-        assert opts.current_info_domain == "sports"
-
-
-class TestToolLoopContextSuccessfulTools:
-    def test_successful_tool_names_field_present(self):
-        import dataclasses
-        from src.core.task_types import ToolLoopContext
-
-        fields = {f.name: f for f in dataclasses.fields(ToolLoopContext)}
-        assert "successful_tool_names" in fields
-        assert fields["successful_tool_names"].default_factory is set
+# Note: TestRuntimeOptionsCurrentInfo and TestToolLoopContextSuccessfulTools
+# were removed in the agents-as-tools refactor. The current-info gate that
+# required these fields is gone; external info now flows through
+# delegate_to_researcher and the Researcher decides which retrieval API to
+# call.

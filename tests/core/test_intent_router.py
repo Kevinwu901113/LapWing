@@ -18,13 +18,9 @@ from src.core.intent_router import IntentRouter, RouteDecision
 # ── RouteDecision dataclass ───────────────────────────────────────────
 
 
-def test_route_decision_dataclass_defaults():
+def test_route_decision_dataclass():
     d = RouteDecision(profile_name="standard")
     assert d.profile_name == "standard"
-    # Deprecated current-info fields default to neutral values.
-    assert d.requires_current_info is False
-    assert d.current_info_domain is None
-    assert d.required_tool_names == ()
 
 
 # ── Two-class routing ────────────────────────────────────────────────
@@ -38,7 +34,6 @@ async def test_route_pure_chat_returns_zero_tools():
     intent = IntentRouter(router)
     d = await intent.route("chat_1", "今天累死了")
     assert d.profile_name == "zero_tools"
-    assert d.requires_current_info is False
 
 
 @pytest.mark.asyncio

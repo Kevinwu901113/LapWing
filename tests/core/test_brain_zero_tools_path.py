@@ -1,8 +1,7 @@
-"""Regression: chat_minimal turns without a current-info requirement must
-travel a zero-tool fast path (skip the OpenAI tool-call protocol entirely).
+"""Regression: zero-tool fast path for pure-chat turns.
 
-When IntentRouter returns ``profile_name="chat_minimal"`` with
-``requires_current_info=False``, ``_complete_chat`` must hand
+When IntentRouter returns ``profile_name="zero_tools"`` (or the
+legacy alias ``"chat_minimal"``), ``_complete_chat`` must hand
 ``tools=[]`` to ``TaskRuntime.complete_chat``. TaskRuntime's existing
 ``if not tools`` branch then dispatches directly to
 ``router.complete(slot="main_conversation")``, which means no tool
@@ -10,9 +9,9 @@ schemas occupy the model's attention and no tool-call decision step
 runs.
 
 Other branches must remain on the tool-call path:
-- chat_minimal that was upgraded to current-info → tools populated
-- chat_extended (any decision) → tools populated
-- profile_override (e.g. inner_tick) → tools populated
+- standard / chat_extended → tools populated
+- profile_override (e.g. inner_tick) → tools populated regardless of
+  the override name
 """
 
 from __future__ import annotations
@@ -61,15 +60,12 @@ def _wire_brain_with_router_decision(brain, decision):
     return captured
 
 
-async def test_chat_minimal_without_current_info_uses_zero_tools(brain):
-    """chat_minimal + requires_current_info=False → tools=[] (fast path)."""
+async def test_zero_tools_decision_uses_zero_tools(brain):
+    """zero_tools → tools=[] (fast path)."""
     from src.core.brain import LapwingBrain
     from src.core.intent_router import RouteDecision
 
-    decision = RouteDecision(
-        profile_name="chat_minimal",
-        requires_current_info=False,
-    )
+    decision = RouteDecision(profile_name="zero_tools")
     captured = _wire_brain_with_router_decision(brain, decision)
 
     with patch("src.core.brain.INTENT_ROUTER_ENABLED", True):
@@ -81,56 +77,38 @@ async def test_chat_minimal_without_current_info_uses_zero_tools(brain):
         )
 
     assert reply == "ok"
-    assert captured["profile"] == "chat_minimal"
+    assert captured["profile"] == "zero_tools"
     assert captured["tools"] == [], (
-        "chat_minimal without current-info must hit the zero-tool fast path "
-        f"(tools should be []), got {captured['tools']!r}"
+        "zero_tools must hit the zero-tool fast path (tools should be []), "
+        f"got {captured['tools']!r}"
     )
 
 
-async def test_chat_minimal_with_current_info_keeps_tools(brain):
-    """If IntentRouter sets requires_current_info=True, the fast path must
-    NOT engage even when category=chat_minimal — the model needs the tools
-    to satisfy the required-tool gate."""
+async def test_chat_minimal_alias_uses_zero_tools(brain):
+    """Legacy ``chat_minimal`` alias still triggers the fast path."""
     from src.core.brain import LapwingBrain
     from src.core.intent_router import RouteDecision
 
-    # Mirror the upgrade IntentRouter actually performs (chat_minimal +
-    # current-info domain → it overrides profile to chat_extended).
-    # We test the contract one level up: even if the profile somehow
-    # remained chat_minimal AND requires_current_info=True, tools must
-    # not be cleared.
-    decision = RouteDecision(
-        profile_name="chat_minimal",
-        requires_current_info=True,
-        current_info_domain="sports",
-        required_tool_names=("get_sports_score",),
-    )
+    decision = RouteDecision(profile_name="chat_minimal")
     captured = _wire_brain_with_router_decision(brain, decision)
 
     with patch("src.core.brain.INTENT_ROUTER_ENABLED", True):
         await LapwingBrain._complete_chat(
             brain,
             chat_id="kevin",
-            messages=[{"role": "user", "content": "道奇今天比分"}],
-            user_message="道奇今天比分",
+            messages=[{"role": "user", "content": "在干嘛"}],
+            user_message="在干嘛",
         )
 
-    assert captured["tools"] != [], (
-        "current-info turns must keep tools populated even on chat_minimal — "
-        f"got {captured['tools']!r}"
-    )
+    assert captured["tools"] == []
 
 
-async def test_chat_extended_keeps_tools(brain):
-    """chat_extended must always travel the tool-call path."""
+async def test_standard_keeps_tools(brain):
+    """standard must always travel the tool-call path."""
     from src.core.brain import LapwingBrain
     from src.core.intent_router import RouteDecision
 
-    decision = RouteDecision(
-        profile_name="chat_extended",
-        requires_current_info=False,
-    )
+    decision = RouteDecision(profile_name="standard")
     captured = _wire_brain_with_router_decision(brain, decision)
 
     with patch("src.core.brain.INTENT_ROUTER_ENABLED", True):
@@ -142,7 +120,7 @@ async def test_chat_extended_keeps_tools(brain):
         )
 
     assert captured["tools"] != [], (
-        f"chat_extended must keep tools populated, got {captured['tools']!r}"
+        f"standard must keep tools populated, got {captured['tools']!r}"
     )
 
 
@@ -163,11 +141,11 @@ async def test_profile_override_bypasses_zero_tools_path(brain):
             chat_id="_inner_tick",
             messages=[{"role": "user", "content": "[Heartbeat]"}],
             user_message="[Heartbeat]",
-            profile_override="chat_minimal",  # contrived: override to chat_minimal
+            profile_override="zero_tools",  # contrived: override to zero_tools
         )
 
     assert captured["tools"] != [], (
         "profile_override must always carry the profile's tool surface — "
-        "fast path is only for IntentRouter-decided chat_minimal turns. "
+        "fast path is only for IntentRouter-decided turns. "
         f"Got {captured['tools']!r}"
     )

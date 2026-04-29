@@ -28,19 +28,15 @@ logger = logging.getLogger("lapwing.core.intent_router")
 
 @dataclass(frozen=True)
 class RouteDecision:
-    """Structured result of IntentRouter classification.
+    """Result of IntentRouter classification.
 
-    profile_name picks the runtime profile (``zero_tools`` /
-    ``standard`` / ``task_execution``). The ``requires_current_info``
-    fields are deprecated — kept on the dataclass so older consumers
-    don't crash, but always default values now. They're removed
-    entirely in the gate-cleanup commit.
+    Just a profile name. The two values that ever come back are
+    ``zero_tools`` (pure chitchat) and ``standard`` (full self-
+    capability surface). Task-execution surfaces are picked by the
+    fallback heuristic upstream and don't go through this router.
     """
 
     profile_name: str
-    requires_current_info: bool = False
-    current_info_domain: str | None = None
-    required_tool_names: tuple[str, ...] = ()
 
 
 class IntentRouter:
