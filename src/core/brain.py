@@ -286,6 +286,9 @@ class LapwingBrain:
         agent_registry = getattr(self, "_agent_registry", None)
         if agent_registry is not None:
             services["agent_registry"] = agent_registry
+        agent_policy = getattr(self, "_agent_policy", None)
+        if agent_policy is not None:
+            services["agent_policy"] = agent_policy
         dispatcher = getattr(self, "_dispatcher_ref", None)
         if dispatcher is not None:
             services["dispatcher"] = dispatcher

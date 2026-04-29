@@ -54,12 +54,12 @@ def _make_full_registry() -> ToolRegistry:
     registry.register(_spec("research", "web"))
     registry.register(_spec("browse", "browser"))
     # delegate 系 (legacy shims + new dynamic agent tools — Blueprint §7)
-    registry.register(_spec("delegate_to_researcher", "agent"))
-    registry.register(_spec("delegate_to_coder", "agent"))
-    registry.register(_spec("delegate_to_agent", "agent"))
-    registry.register(_spec("create_agent", "agent"))
-    registry.register(_spec("destroy_agent", "agent"))
-    registry.register(_spec("save_agent", "agent"))
+    registry.register(_spec("delegate_to_researcher", "agent_delegate"))
+    registry.register(_spec("delegate_to_coder", "agent_delegate"))
+    registry.register(_spec("delegate_to_agent", "agent_admin"))
+    registry.register(_spec("create_agent", "agent_admin"))
+    registry.register(_spec("destroy_agent", "agent_admin"))
+    registry.register(_spec("save_agent", "agent_admin"))
     # 其他被 profile 直接引用的工具
     extras = [
         ("get_current_datetime", "general"),
@@ -139,6 +139,17 @@ class TestProfileExclusivity:
                           "delegate_to_agent"):
             assert forbidden not in names, f"chat_extended must not expose {forbidden}"
 
+    def test_standard_profile_outward_seams_are_only_two_delegates(self):
+        """Standard profile 外向 seam 只有 researcher/coder"""
+        registry = _make_full_registry()
+        names = _resolve_tool_names(registry, STANDARD_PROFILE)
+        assert "research" not in names
+        assert "browse" not in names
+        assert "browser_open" not in names
+        assert "execute_shell" not in names
+        assert "delegate_to_researcher" in names
+        assert "delegate_to_coder" in names
+
     def test_task_execution_has_dynamic_agent_tools(self):
         """task_execution still exposes the dynamic-agent management
         tools for power flows (create/destroy/save_agent + the generic
@@ -152,6 +163,33 @@ class TestProfileExclusivity:
         assert "list_agents" not in names
         assert "research" not in names
         assert "browse" not in names
+
+    def test_task_execution_profile_is_frozen(self):
+        """TASK_EXECUTION_PROFILE is a temporary legacy escape hatch.
+        It must only shrink, never grow.
+        """
+        assert TASK_EXECUTION_PROFILE.name == "task_execution"
+        assert TASK_EXECUTION_PROFILE.capabilities == frozenset({
+            "shell", "skill", "memory", "schedule",
+            "general", "browser", "commitment", "agent_delegate", "agent_admin", "file",
+            "code", "verify", "identity",
+        })
+        assert TASK_EXECUTION_PROFILE.exclude_tool_names == frozenset({
+            "research", "browse", "get_sports_score", "send_message",
+        })
+        assert "new_capability" not in TASK_EXECUTION_PROFILE.capabilities
+        
+        registry = _make_full_registry()
+        names = _resolve_tool_names(registry, TASK_EXECUTION_PROFILE)
+        
+        expected_names = {
+            'abandon_promise', 'add_correction', 'browser_click', 'browser_open', 'cancel_reminder', 'close_focus', 'commit_promise', 'create_agent', 'create_skill', 'delegate_to_agent', 'delegate_to_coder', 'delegate_to_researcher', 'destroy_agent', 'edit_soul', 'execute_shell', 'file_append', 'file_list_directory', 'file_read_segment', 'file_write', 'fulfill_promise', 'get_current_datetime', 'list_notes', 'read_file', 'read_note', 'read_soul', 'recall', 'recall_focus', 'run_skill', 'save_agent', 'search_notes', 'set_reminder', 'view_reminders', 'write_file', 'write_note'
+        }
+        assert names == expected_names
+        
+        assert "research" not in names
+        assert "browse" not in names
+        assert "send_message" not in names
 
     def test_chat_minimal_has_no_agent_tools(self):
         """chat_minimal (zero_tools alias) exposes nothing — pure-text
@@ -223,7 +261,7 @@ class TestExcludeMechanism:
         registry = _make_full_registry()
         profile = RuntimeProfile(
             name="test_exclude_via_caps",
-            capabilities=frozenset({"web", "agent"}),
+            capabilities=frozenset({"web", "agent_delegate"}),
             exclude_tool_names=frozenset({"research"}),
         )
         names = _resolve_tool_names(registry, profile)

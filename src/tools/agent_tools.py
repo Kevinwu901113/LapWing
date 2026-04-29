@@ -542,7 +542,7 @@ def register_agent_tools(registry, agent_registry=None) -> None:
         ),
         json_schema=DELEGATE_RESEARCHER_SCHEMA,
         executor=delegate_to_researcher_executor,
-        capability="agent",
+        capability="agent_delegate",
         risk_level="low",
         max_result_tokens=3000,
     ))
@@ -555,7 +555,7 @@ def register_agent_tools(registry, agent_registry=None) -> None:
         ),
         json_schema=DELEGATE_CODER_SCHEMA,
         executor=delegate_to_coder_executor,
-        capability="agent",
+        capability="agent_delegate",
         risk_level="low",
         max_result_tokens=3000,
     ))
@@ -608,7 +608,7 @@ def register_agent_tools(registry, agent_registry=None) -> None:
         description="委派任务给指定 agent。提供 agent_name、task，可选 context 和 expected_output。",
         json_schema=DELEGATE_TO_AGENT_SCHEMA,
         executor=delegate_to_agent_executor,
-        capability="agent",
+        capability="agent_admin",
         risk_level="low",
         max_result_tokens=3000,
     ))
@@ -617,7 +617,7 @@ def register_agent_tools(registry, agent_registry=None) -> None:
         description="创建新的动态 agent 用于特定任务。",
         json_schema=CREATE_AGENT_SCHEMA,
         executor=create_agent_executor,
-        capability="agent",
+        capability="agent_admin",
         risk_level="medium",
     ))
     registry.register(ToolSpec(
@@ -625,7 +625,7 @@ def register_agent_tools(registry, agent_registry=None) -> None:
         description="销毁动态 agent（不能销毁 builtin agent）。",
         json_schema=DESTROY_AGENT_SCHEMA,
         executor=destroy_agent_executor,
-        capability="agent",
+        capability="agent_admin",
         risk_level="medium",
     ))
     registry.register(ToolSpec(
@@ -633,7 +633,7 @@ def register_agent_tools(registry, agent_registry=None) -> None:
         description="持久化动态 agent 的 spec 以便复用。",
         json_schema=SAVE_AGENT_SCHEMA,
         executor=save_agent_executor,
-        capability="agent",
+        capability="agent_admin",
         risk_level="medium",
     ))
 

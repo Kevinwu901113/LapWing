@@ -99,13 +99,55 @@ def _build_dynamic_agent(tool_name_to_attempt: str, *, spec_tool_denylist=None):
     router = _make_llm_router_returning_tool_call(tool_name_to_attempt)
     registry = _RecordingToolRegistry()
     log = _FakeMutationLog()
+    
+    mock_policy = MagicMock()
+    mock_policy.validate_tool_access.return_value = True
+    
     agent = DynamicAgent(
         spec=spec, profile=profile,
         llm_router=router, tool_registry=registry,
         mutation_log=log,
-        services={"shell_default_cwd": "/tmp/lapwing/agents/probe"},
+        services={
+            "shell_default_cwd": "/tmp/lapwing/agents/probe",
+            "agent_policy": mock_policy
+        },
     )
     return agent, registry, log
+
+# ── New Test: Agent runtime 二次 policy 校验 ──
+
+@pytest.mark.asyncio
+async def test_dynamic_agent_tool_dispatch_denies_policy_rejected_tool():
+    """
+    Test that if policy.validate_tool_access returns False, the tool is denied.
+    This ensures that the runtime dispatch actually uses the policy as a hard gate.
+    """
+    agent, registry, log = _build_dynamic_agent("some_random_tool")
+    
+    # Mock AgentPolicy to always return False
+    mock_policy = MagicMock()
+    mock_policy.validate_tool_access.return_value = False
+    
+    # Inject policy into agent services
+    agent._services = agent._services or {}
+    agent._services["agent_policy"] = mock_policy
+    
+    msg = AgentMessage(from_agent="lapwing", to_agent="probe",
+                       task_id="t1", content="do x", message_type="request")
+    await agent.execute(msg)
+    
+    # Assert policy was called
+    mock_policy.validate_tool_access.assert_called_once_with(agent.dynamic_spec, "some_random_tool")
+    
+    # Assert tool executor was not called
+    assert "some_random_tool" not in registry.executed
+    
+    # Assert TOOL_DENIED event was recorded
+    denied = [e for e in log.events
+              if e.event_type == MutationType.TOOL_DENIED
+              and e.payload.get("tool") == "some_random_tool"]
+    assert denied, "expected TOOL_DENIED event for policy rejected tool"
+    assert denied[0].payload.get("reason") == "blocked by AgentPolicy"
 
 
 # ── T-05: dynamic agent cannot call DYNAMIC_AGENT_DENYLIST tools ──

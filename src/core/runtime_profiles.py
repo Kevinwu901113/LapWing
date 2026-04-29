@@ -138,7 +138,7 @@ TASK_EXECUTION_PROFILE = RuntimeProfile(
     name="task_execution",
     capabilities=frozenset({
         "shell", "skill", "memory", "schedule",
-        "general", "browser", "commitment", "agent", "file",
+        "general", "browser", "commitment", "agent_delegate", "agent_admin", "file",
         "code", "verify", "identity",
     }),
     exclude_tool_names=frozenset({

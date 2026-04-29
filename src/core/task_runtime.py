@@ -180,6 +180,9 @@ class TaskRuntime:
         self._memory_index: Any | None = None
         # 断路器触发时的回调，签名：(tool_name, repeat_count) → None
         self.on_circuit_breaker_open: Callable[[str, int], None] | None = on_circuit_breaker_open
+        
+        from src.core.tool_dispatcher import ToolDispatcher
+        self.tool_dispatcher = ToolDispatcher(self)
 
     def set_browser_guard(self, browser_guard: Any | None) -> None:
         self._browser_guard = browser_guard
@@ -1311,52 +1314,6 @@ class TaskRuntime:
             return f"命令执行失败，退出码 {result.return_code}。"
         return "命令执行失败了。"
 
-    async def _record_tool_denied(
-        self,
-        *,
-        tool_name: str,
-        guard: str,
-        reason: str,
-        auth_level: int,
-        services: dict[str, Any] | None,
-        chat_id: str | None,
-        extras: dict[str, Any] | None = None,
-    ) -> None:
-        """Emit a structured TOOL_DENIED audit record.
-
-        Fires whenever a guard refuses a tool call before it reaches the
-        executor — AuthorityGate, VitalGuard, ShellPolicy, BrowserGuard,
-        run_skill approval gate, or the missing-BrowserGuard refusal.
-        Schema:
-            {tool, guard, reason, auth_level, **extras}
-        Best-effort: failures to write the mutation log are logged at
-        warning level and swallowed; denial path itself is unaffected.
-
-        Reads ``current_iteration_id()`` / ``current_chat_id()`` from the
-        async context so the row joins cleanly with the surrounding
-        ITERATION_STARTED / TOOL_CALLED / TOOL_RESULT entries.
-        """
-        mutation_log = (services or {}).get("mutation_log")
-        if mutation_log is None:
-            return
-        payload: dict[str, Any] = {
-            "tool": tool_name,
-            "guard": guard,
-            "reason": reason,
-            "auth_level": int(auth_level),
-        }
-        if extras:
-            payload.update(extras)
-        try:
-            await mutation_log.record(
-                MutationType.TOOL_DENIED,
-                payload,
-                iteration_id=current_iteration_id(),
-                chat_id=current_chat_id() or chat_id,
-            )
-        except Exception:
-            logger.warning("[mutation_log] TOOL_DENIED record failed", exc_info=True)
-
     async def execute_tool(
         self,
         *,
@@ -1374,325 +1331,21 @@ class TaskRuntime:
         send_fn: Callable[[str], "Awaitable[Any]"] | None = None,
         focus_id: str | None = None,
     ) -> ToolExecutionResult:
-        profile_obj = self._resolve_profile(profile)
-        tool = self._tool_registry.get(request.name)
-        if tool is None:
-            reason = f"未知工具：{request.name}"
-            if state is not None:
-                state.record_failure(reason, "blocked")
-            payload = self._blocked_payload(
-                reason=reason,
-                cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
-                command="",
-            )
-            await self._record_tool_denied(
-                tool_name=request.name,
-                guard="unknown_tool",
-                reason=reason,
-                auth_level=AuthLevel.OWNER,
-                services=services,
-                chat_id=chat_id,
-                extras={"profile": profile_obj.name},
-            )
-            return ToolExecutionResult(success=False, payload=payload, reason=reason)
-
-        allowed_names = self._tool_names_for_profile(
-            profile_obj,
-            include_internal=profile_obj.include_internal,
-        )
-        if request.name not in allowed_names:
-            reason = f"当前 profile `{profile_obj.name}` 不允许工具 `{request.name}`。"
-            if state is not None:
-                state.record_failure(reason, "blocked")
-            payload = self._blocked_payload(
-                reason=reason,
-                cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
-                command=str(request.arguments.get("command", "")).strip(),
-            )
-            await self._record_tool_denied(
-                tool_name=request.name,
-                guard="profile_not_allowed",
-                reason=reason,
-                auth_level=AuthLevel.OWNER,
-                services=services,
-                chat_id=chat_id,
-                extras={"profile": profile_obj.name},
-            )
-            return ToolExecutionResult(success=False, payload=payload, reason=reason)
-
-        # ── AuthorityGate：权限检查 ─────────────────────────────────────────────
-        # adapter 为空 = 内部调用（heartbeat/agents），默认 OWNER 不受限
-        auth_level = identify_auth(adapter, user_id) if adapter else AuthLevel.OWNER
-        allowed, deny_reason = authorize(request.name, auth_level)
-        if not allowed:
-            if state is not None:
-                state.record_failure(deny_reason, "blocked")
-            payload = self._blocked_payload(
-                reason=deny_reason,
-                cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
-                command=str(request.arguments.get("command", "")).strip(),
-            )
-            await self._record_tool_denied(
-                tool_name=request.name,
-                guard="authority_gate",
-                reason=deny_reason,
-                auth_level=auth_level,
-                services=services,
-                chat_id=chat_id,
-                extras={"adapter": adapter, "user_id": user_id},
-            )
-            return ToolExecutionResult(success=False, payload=payload, reason=deny_reason)
-
-        shell_executor = deps.execute_shell if deps is not None else default_execute_shell
-        shell_default_cwd = deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD
-
-        # ── CheckpointManager：文件修改前自动快照 ──────────────────────────────
-        if request.name in (_SHELL_TOOLS | _FILE_WRITE_TOOLS):
-            checkpoint_mgr = getattr(self, "_checkpoint_manager", None)
-            if checkpoint_mgr is not None:
-                try:
-                    checkpoint_mgr.snapshot(workspace_root or str(ROOT_DIR))
-                except Exception as cp_exc:
-                    logger.debug("Checkpoint 快照跳过: %s", cp_exc)
-
-        # ── VitalGuard：存活保护检查 ────────────────────────────────────────────
-        vg_command = str(request.arguments.get("command", "")).strip()
-
-        if request.name in _SHELL_TOOLS and vg_command:
-            from config.settings import SHELL_BACKEND
-            guard = check_compound(vg_command, relaxed=(SHELL_BACKEND == "docker"))
-            if guard.verdict == Verdict.BLOCK:
-                reason = f"[VitalGuard] {guard.reason}"
-                if state is not None:
-                    state.record_failure(reason, "blocked")
-                payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command=vg_command)
-                await self._record_tool_denied(
-                    tool_name=request.name,
-                    guard="vital_guard",
-                    reason=reason,
-                    auth_level=auth_level,
-                    services=services,
-                    chat_id=chat_id,
-                    extras={"command_head": vg_command[:120]},
-                )
-                return ToolExecutionResult(success=False, payload=payload, reason=reason)
-            if guard.verdict == Verdict.VERIFY_FIRST:
-                vital_targets = extract_vital_shell_targets(vg_command)
-                if vital_targets:
-                    await auto_backup(vital_targets)
-
-        elif request.name in _FILE_WRITE_TOOLS:
-            path_str = str(request.arguments.get("path", "")).strip()
-            if path_str:
-                target = Path(path_str).expanduser().resolve()
-                file_guard = check_file_target(target)
-                if file_guard.verdict == Verdict.BLOCK:
-                    reason = f"[VitalGuard] {file_guard.reason}"
-                    if state is not None:
-                        state.record_failure(reason, "blocked")
-                    payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command="")
-                    await self._record_tool_denied(
-                        tool_name=request.name,
-                        guard="vital_guard",
-                        reason=reason,
-                        auth_level=auth_level,
-                        services=services,
-                        chat_id=chat_id,
-                        extras={"path": str(target)},
-                    )
-                    return ToolExecutionResult(success=False, payload=payload, reason=reason)
-                if file_guard.verdict == Verdict.VERIFY_FIRST:
-                    await auto_backup([target])
-
-        # ── BrowserGuard: 浏览器自动化的 URL/动作/JS 安全检查 ──────────────
-        # 当 guard 未挂载时，统一拒绝执行——浏览器工具不可在裸状态下运行。
-        elif tool.capability == "browser":
-            bg = getattr(self, "_browser_guard", None)
-            if bg is None:
-                reason = (
-                    f"[BrowserGuard] 未挂载，浏览器工具 '{request.name}' 被拒绝。"
-                    "browser 子系统启用时必须装载 BrowserGuard；详见 "
-                    "src/core/browser_guard.py。"
-                )
-                if state is not None:
-                    state.record_failure(reason, "blocked")
-                payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command="")
-                await self._record_tool_denied(
-                    tool_name=request.name,
-                    guard="browser_guard_missing",
-                    reason=reason,
-                    auth_level=auth_level,
-                    services=services,
-                    chat_id=chat_id,
-                )
-                return ToolExecutionResult(success=False, payload=payload, reason=reason)
-            if request.name == "browser_open":
-                url = str(request.arguments.get("url", "")).strip()
-                if url:
-                    bg_result = bg.check_url(url)
-                    if bg_result.action == "block":
-                        reason = f"[BrowserGuard] {bg_result.reason}"
-                        if state is not None:
-                            state.record_failure(reason, "blocked")
-                        payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command="")
-                        await self._record_tool_denied(
-                            tool_name=request.name,
-                            guard="browser_guard",
-                            reason=reason,
-                            auth_level=auth_level,
-                            services=services,
-                            chat_id=chat_id,
-                            extras={"url": url[:200]},
-                        )
-                        return ToolExecutionResult(success=False, payload=payload, reason=reason)
-
-        context = ToolExecutionContext(
-            execute_shell=shell_executor,
-            shell_default_cwd=shell_default_cwd,
-            workspace_root=workspace_root or str(ROOT_DIR),
-            services=services or {},
+        return await self.tool_dispatcher.dispatch(
+            request=request,
+            profile=profile,
+            state=state,
+            deps=deps,
+            task_id=task_id,
+            chat_id=chat_id,
+            event_bus=event_bus,
+            workspace_root=workspace_root,
+            services=services,
             adapter=adapter,
             user_id=user_id,
-            auth_level=auth_level,
-            chat_id=chat_id or "",
-            focus_id=focus_id,
-            memory=None,
-            memory_index=self._memory_index,
             send_fn=send_fn,
-            runtime_profile=profile_obj.name,
+            focus_id=focus_id,
         )
-
-        policy_hook = str(tool.metadata.get("policy_hook", "")).strip()
-        use_shell_policy = (
-            profile_obj.shell_policy_enabled
-            and policy_hook == "shell_command"
-            and state is not None
-            and deps is not None
-        )
-        command = str(request.arguments.get("command", "")).strip()
-        intent = None
-
-        if use_shell_policy:
-            if not command:
-                reason = "工具参数缺少 command。"
-                state.record_failure(reason, "blocked")
-                payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command="")
-                return ToolExecutionResult(success=False, payload=payload, reason=reason)
-
-            intent = deps.policy.analyze_command(command)
-            state.record_intent(intent)
-            pre_decision = deps.policy.before_execute(
-                constraints=state.constraints,
-                intent=intent,
-                state=state,
-            )
-            if pre_decision.action == "require_consent":
-                if pre_decision.alternative is not None:
-                    state.require_consent(pre_decision.alternative)
-                reason = pre_decision.reason or "需要用户确认。"
-                if not state.failure_reason:
-                    state.record_failure(reason, pre_decision.failure_type)
-                payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command=command)
-                await self._record_tool_denied(
-                    tool_name=request.name,
-                    guard="shell_policy",
-                    reason=reason,
-                    auth_level=auth_level,
-                    services=services,
-                    chat_id=chat_id,
-                    extras={
-                        "decision": "require_consent",
-                        "command_head": command[:120],
-                    },
-                )
-                return ToolExecutionResult(success=False, payload=payload, reason=reason)
-            if pre_decision.action == "block":
-                reason = pre_decision.reason or "命令被策略拦截。"
-                state.record_failure(reason, pre_decision.failure_type)
-                payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command=command)
-                await self._record_tool_denied(
-                    tool_name=request.name,
-                    guard="shell_policy",
-                    reason=reason,
-                    auth_level=auth_level,
-                    services=services,
-                    chat_id=chat_id,
-                    extras={
-                        "decision": "block",
-                        "command_head": command[:120],
-                    },
-                )
-                return ToolExecutionResult(success=False, payload=payload, reason=reason)
-
-        # ── AmbientKnowledge 缓存拦截（仅限 research 工具）──────────────
-        if request.name == "research":
-            _ambient = (services or {}).get("ambient_store")
-            if _ambient is not None:
-                _cache_hit = await self._try_ambient_cache(request, _ambient)
-                if _cache_hit is not None:
-                    return _cache_hit
-
-        execution = await self._tool_registry.execute(request, context=context)
-
-        # ── research 成功后写回 ambient cache ──────────────────────────
-        if request.name == "research" and execution.success:
-            _ambient_wb = (services or {}).get("ambient_store")
-            if _ambient_wb is not None:
-                try:
-                    await self._writeback_to_ambient(request, execution, _ambient_wb)
-                except Exception:
-                    logger.debug("ambient writeback failed", exc_info=True)
-
-        if not use_shell_policy:
-            return execution
-
-        assert state is not None
-        assert deps is not None
-        shell_result = execution.shell_result
-        if shell_result is None or intent is None:
-            reason = execution.reason or "工具执行失败。"
-            state.record_failure(reason, "blocked")
-            if "blocked" not in execution.payload:
-                payload = self._blocked_payload(
-                    reason=reason,
-                    cwd=shell_default_cwd,
-                    command=command,
-                )
-                return ToolExecutionResult(success=False, payload=payload, reason=reason)
-            return execution
-
-        post_decision = deps.policy.after_execute(
-            constraints=state.constraints,
-            intent=intent,
-            state=state,
-            result=shell_result,
-            shell_allow_sudo=deps.shell_allow_sudo,
-        )
-        if post_decision.action == "block":
-            reason = post_decision.reason or self._shell_failure_reason(shell_result)
-            state.record_failure(reason, post_decision.failure_type)
-            if post_decision.alternative is not None:
-                state.require_consent(post_decision.alternative)
-            return execution
-
-        if post_decision.should_verify:
-            if event_bus is not None and task_id is not None and chat_id is not None:
-                await self._publish_task_event(
-                    event_bus,
-                    "task.verifying",
-                    task_id=task_id,
-                    chat_id=chat_id,
-                    phase="verifying",
-                    text="正在验证任务结果。",
-                    command=command,
-                    tool_name=request.name,
-                )
-            verification = deps.policy.verify(state.constraints)
-            if verification.completed:
-                state.mark_completed(verification)
-            else:
-                state.record_failure(verification.reason, "verification_failed")
-        return execution
 
     def _reactive_compact(self, messages: list[dict[str, Any]]) -> None:
         """紧急压缩：context 快满时，清理旧的 tool results。"""
@@ -2223,26 +1876,6 @@ class TaskRuntime:
             confidence=confidence,
         )
         await ambient_store.put(key, entry)
-
-    def _blocked_payload(
-        self,
-        *,
-        reason: str,
-        cwd: str,
-        command: str,
-    ) -> dict[str, Any]:
-        return {
-            "command": command,
-            "stdout": "",
-            "stderr": "",
-            "return_code": -1,
-            "timed_out": False,
-            "blocked": True,
-            "reason": reason,
-            "cwd": cwd,
-            "stdout_truncated": False,
-            "stderr_truncated": False,
-        }
 
     def tool_fallback_reply(self, payload: dict[str, Any] | None) -> str:
         if not payload:
