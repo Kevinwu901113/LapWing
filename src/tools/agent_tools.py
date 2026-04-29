@@ -44,7 +44,9 @@ def _extract_context_digest(ctx: ToolExecutionContext) -> str:
     """从当前上下文中提取摘要供子 agent 参考。"""
     parts: list[str] = []
 
-    trajectory_store = ctx.services.get("trajectory_store")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    trajectory_store = svc.trajectory_store
     if trajectory_store is not None:
         try:
             recent = trajectory_store.recent(ctx.chat_id, limit=6)
@@ -137,14 +139,16 @@ async def _run_agent(
     freshness_hint: str | None = None,
 ) -> ToolExecutionResult:
     """直接调度指定 agent 执行任务。Budget-aware via ctx.services['budget_ledger']。"""
-    agent_registry = ctx.services.get("agent_registry")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    agent_registry = svc.agent_registry
     if not agent_registry:
         return ToolExecutionResult(success=False, payload={}, reason="Agent Team 未就绪")
 
     agent = await _resolve_agent(
         agent_registry,
         agent_name,
-        services_override=ctx.services,
+        services_override=svc.raw,
     )
     if not agent:
         return ToolExecutionResult(
@@ -153,7 +157,7 @@ async def _run_agent(
         )
 
     # Budget: enter delegation depth (raises BudgetExhausted on overflow).
-    ledger = ctx.services.get("budget_ledger")
+    ledger = svc.budget_ledger
     if ledger is not None:
         try:
             ledger.enter_delegation()
@@ -222,7 +226,7 @@ async def _run_agent(
                 except Exception:
                     logger.exception("[agent_tools] auto-destroy failed: %s", agent_name)
                 _ephemeral_run_counts.pop(agent_name, None)
-                ml = ctx.services.get("mutation_log")
+                ml = svc.mutation_log
                 if ml is not None:
                     try:
                         await ml.record(
@@ -334,7 +338,9 @@ async def delegate_to_agent_executor(
 async def create_agent_executor(
     req: ToolExecutionRequest, ctx: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    registry = ctx.services.get("agent_registry")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    registry = svc.agent_registry
     if not registry:
         return ToolExecutionResult(success=False, payload={}, reason="Agent Team 未就绪")
 
@@ -364,7 +370,7 @@ async def create_agent_executor(
             reason=f"policy_violation: {exc.reason}",
         )
 
-    ml = ctx.services.get("mutation_log")
+    ml = svc.mutation_log
     if ml is not None:
         try:
             await ml.record(
@@ -399,7 +405,9 @@ async def create_agent_executor(
 async def destroy_agent_executor(
     req: ToolExecutionRequest, ctx: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    registry = ctx.services.get("agent_registry")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    registry = svc.agent_registry
     if not registry:
         return ToolExecutionResult(success=False, payload={}, reason="Agent Team 未就绪")
     name = (req.arguments.get("agent_name") or "").strip()
@@ -416,7 +424,7 @@ async def destroy_agent_executor(
     # Cleanup our side-tables.
     _ephemeral_run_counts.pop(name, None)
     _completed_delegations.pop(name, None)
-    ml = ctx.services.get("mutation_log")
+    ml = svc.mutation_log
     if ml is not None:
         try:
             await ml.record(
@@ -436,7 +444,9 @@ async def destroy_agent_executor(
 async def save_agent_executor(
     req: ToolExecutionRequest, ctx: ToolExecutionContext,
 ) -> ToolExecutionResult:
-    registry = ctx.services.get("agent_registry")
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    registry = svc.agent_registry
     if not registry:
         return ToolExecutionResult(success=False, payload={}, reason="Agent Team 未就绪")
     name = (req.arguments.get("agent_name") or "").strip()
@@ -470,7 +480,7 @@ async def save_agent_executor(
         except Exception:
             pass
 
-    ml = ctx.services.get("mutation_log")
+    ml = svc.mutation_log
     if ml is not None:
         try:
             await ml.record(

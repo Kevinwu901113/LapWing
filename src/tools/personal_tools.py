@@ -105,8 +105,9 @@ def _is_proactive_context(ctx: ToolExecutionContext) -> bool:
     """
     if (ctx.runtime_profile or "") in _PROACTIVE_PROFILES:
         return True
-    services = ctx.services or {}
-    if services.get("proactive_send_active"):
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    if svc.proactive_send_active:
         return True
     return False
 
@@ -156,9 +157,12 @@ async def _send_message(
             reason="send_message_forbidden_in_direct_chat",
         )
 
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+
     # Proactive gate — fires only on background/autonomous flows. Direct
     # assistant replies use bare model text and never reach this code.
-    gate = (ctx.services or {}).get("proactive_message_gate")
+    gate = svc.proactive_message_gate
     if gate is not None and _is_proactive_context(ctx):
         gate_decision = gate.evaluate(category=category, urgent=urgent)
         # Audit every decision (allow / defer / deny) into the mutation log
@@ -187,8 +191,6 @@ async def _send_message(
                 reason=f"proactive_gate:{gate_decision.decision}:{gate_decision.reason}",
             )
 
-    from src.core.tool_dispatcher import ServiceContextView
-    svc = ServiceContextView(ctx.services or {})
     channel_manager = svc.channel_manager
     if channel_manager is None:
         return ToolExecutionResult(
@@ -216,7 +218,7 @@ async def _send_message(
 
         elif target == "kevin_qq":
             # 通过 qq adapter 发私信
-            owner_qq_id = ctx.services.get("owner_qq_id")
+            owner_qq_id = svc.owner_qq_id
             if not owner_qq_id:
                 return ToolExecutionResult(
                     success=False,
