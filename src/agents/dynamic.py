@@ -76,48 +76,7 @@ class DynamicAgent(BaseAgent):
         self.dynamic_spec = spec
 
     async def _execute_tool(self, tool_call, message: "AgentMessage") -> str:
-        """Override: enforce DYNAMIC_AGENT_DENYLIST + spec.tool_denylist
-        before delegating to BaseAgent._execute_tool."""
-
-        denied_reason = self._is_denied(tool_call.name)
-        if denied_reason is not None:
-            guard_name = "agent_policy" if "AgentPolicy" in denied_reason else "dynamic_agent_denylist"
-            await self._emit(
-                MutationType.TOOL_DENIED,
-                payload={
-                    "tool": tool_call.name,
-                    "guard": guard_name,
-                    "reason": denied_reason,
-                    "auth_level": 1,
-                    "agent_name": self.spec.name,
-                },
-            )
-            logger.info(
-                "[dynamic_agent] denied tool=%s agent=%s reason=%s",
-                tool_call.name, self.spec.name, denied_reason,
-            )
-            return json.dumps(
-                {
-                    "error": "tool_forbidden",
-                    "tool": tool_call.name,
-                    "reason": denied_reason,
-                },
-                ensure_ascii=False,
-            )
-
+        # Phase 5: DynamicAgent delegates all policy validation to ToolDispatcher.
+        # It no longer implements parallel policy checks. It simply relies on the 
+        # parent's dispatch which passes self.spec (dynamic_spec) to the dispatcher.
         return await super()._execute_tool(tool_call, message)
-
-    def _is_denied(self, tool_name: str) -> str | None:
-        """Return a human-readable reason if the tool is denied, else None."""
-        policy = (self._services or {}).get("agent_policy")
-        if not policy:
-            return "missing AgentPolicy in services (fail-closed)"
-
-        if not policy.validate_tool_access(self.dynamic_spec, tool_name):
-            return "blocked by AgentPolicy"
-
-        if tool_name in DYNAMIC_AGENT_DENYLIST:
-            return "blocked by DYNAMIC_AGENT_DENYLIST"
-        if tool_name in self.dynamic_spec.tool_denylist:
-            return "blocked by spec.tool_denylist"
-        return None

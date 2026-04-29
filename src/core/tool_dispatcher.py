@@ -228,8 +228,14 @@ class ToolDispatcher:
             return ToolExecutionResult(success=False, payload=payload, reason=reason)
 
         # ── AuthorityGate：权限检查 ─────────────────────────────────────────────
-        # adapter 为空 = 内部调用（heartbeat/agents），默认 OWNER 不受限
-        auth_level = identify_auth(adapter, user_id) if adapter else AuthLevel.OWNER
+        auth_level = getattr(AuthLevel, "OWNER", 3)
+        if adapter:
+            if adapter == "agent":
+                # Child agents run with AGENT level explicitly, inherited from Context.
+                auth_level = AuthLevel.AGENT
+            else:
+                auth_level = identify_auth(adapter, user_id)
+        
         allowed, deny_reason = authorize(request.name, auth_level)
         if not allowed:
             if state is not None:

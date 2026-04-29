@@ -19,6 +19,7 @@ class AuthLevel(IntEnum):
     GUEST = 1
     TRUSTED = 2
     OWNER = 3
+    AGENT = 4  # Internal child agent calls
 
 
 def identify(adapter: str, user_id: str) -> AuthLevel:

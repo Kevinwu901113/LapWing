@@ -388,6 +388,7 @@ class BaseAgent:
 
     async def _execute_tool(self, tool_call, message: AgentMessage) -> str:
         """执行工具并返回 JSON 字符串结果。"""
+        from src.core.authority_gate import AuthLevel
         from src.tools.types import ToolExecutionContext, ToolExecutionRequest
         from src.tools.shell_executor import ShellResult
 
@@ -401,14 +402,28 @@ class BaseAgent:
             shell_default_cwd=".",
             adapter="agent",
             user_id=f"agent:{self.spec.name}",
-            auth_level=1,  # TRUSTED
+            auth_level=AuthLevel.AGENT,
             chat_id=f"agent-{message.task_id}",
             services=services,
         )
 
         req = ToolExecutionRequest(name=tool_call.name, arguments=tool_call.arguments)
         try:
-            result = await self.tool_registry.execute(req, context=ctx)
+            # Phase 5: Route through ToolDispatcher
+            if "dispatcher" in services and hasattr(services["dispatcher"], "dispatch"):
+                result = await services["dispatcher"].dispatch(
+                    request=req,
+                    profile=self.spec.runtime_profile or "standard",
+                    services=services,
+                    adapter=ctx.adapter,
+                    user_id=ctx.user_id,
+                    chat_id=ctx.chat_id,
+                    agent_spec=self.spec,
+                )
+            else:
+                # Fallback only if dispatcher is completely unavailable (e.g. some mock tests)
+                result = await self.tool_registry.execute(req, context=ctx)
+            
             if result.success and isinstance(result.payload, dict):
                 entries = self._extract_evidence_from_payload(
                     tool_name=tool_call.name,
