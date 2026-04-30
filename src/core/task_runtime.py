@@ -84,6 +84,7 @@ from src.core.vital_guard import (
 from src.tools.registry import ToolRegistry, build_default_tool_registry
 from src.tools.shell_executor import ShellResult, execute as default_execute_shell
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult
+from src.core.tool_dispatcher import ServiceContextView
 
 logger = logging.getLogger("lapwing.core.task_runtime")
 
@@ -418,7 +419,8 @@ class TaskRuntime:
         focus_id: str | None = None,
         runtime_options: RuntimeOptions | None = None,
     ) -> str:
-        mutation_log: StateMutationLog | None = (services or {}).get("mutation_log")
+        svc = ServiceContextView(services or {})
+        mutation_log: StateMutationLog | None = svc.mutation_log
         iteration_id = new_iteration_id()
         iter_start_mono = time.monotonic()
         end_reason = "completed"
@@ -1283,9 +1285,10 @@ class TaskRuntime:
         messages: list[dict[str, Any]],
         services: dict[str, Any] | None,
     ) -> list[dict[str, Any]]:
-        if not services or "plan_state" not in services:
+        svc = ServiceContextView(services or {})
+        plan = svc.plan_state
+        if plan is None:
             return messages
-        plan = services["plan_state"]
         rendered = plan.render()
         if not rendered:
             return messages
@@ -1439,11 +1442,12 @@ class TaskRuntime:
         send_fn: Callable[[str], "Awaitable[Any]"] | None = None,
         focus_id: str | None = None,
     ) -> tuple[str, dict[str, Any], bool]:
-        dispatcher = (services or {}).get("dispatcher")
-        mutation_log: StateMutationLog | None = (services or {}).get("mutation_log")
-        circuit_breaker = (services or {}).get("circuit_breaker")
-        trajectory_store = (services or {}).get("trajectory_store")
-        focus_manager = (services or {}).get("focus_manager")
+        svc = ServiceContextView(services or {})
+        dispatcher = svc.dispatcher
+        mutation_log: StateMutationLog | None = svc.mutation_log
+        circuit_breaker = svc.circuit_breaker
+        trajectory_store = svc.trajectory_store
+        focus_manager = svc.focus_manager
         iteration_id = current_iteration_id()
 
         cb_key = ""

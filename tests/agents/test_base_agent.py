@@ -33,8 +33,30 @@ def _make_message(content="do something", task_id="t1"):
     )
 
 
+class _FakeDispatcher:
+    """Delegates to registry.execute() so agent tool-loop tests don't
+    need a full ToolDispatcher + ToolRuntime stack."""
+
+    def __init__(self, registry):
+        self._reg = registry
+
+    async def dispatch(self, *, request, profile, services,
+                       adapter, user_id, chat_id, agent_spec=None, **kwargs):
+        from src.tools.types import ToolExecutionContext
+        ctx = ToolExecutionContext(
+            execute_shell=AsyncMock(),
+            shell_default_cwd=".",
+            services=services,
+            adapter=adapter,
+            user_id=user_id,
+            auth_level=3,
+            chat_id=chat_id,
+        )
+        return await self._reg.execute(request, context=ctx)
+
+
 def _make_deps(tool_turn_result=None, tool_exec_result=None):
-    """Create mock llm_router, tool_registry, mutation_log."""
+    """Create mock llm_router, tool_registry, mutation_log, services."""
     from src.core.llm_types import ToolTurnResult
 
     router = MagicMock()
@@ -70,7 +92,8 @@ def _make_deps(tool_turn_result=None, tool_exec_result=None):
     mutation_log = AsyncMock()
     mutation_log.record = AsyncMock(return_value=1)
 
-    return router, registry, mutation_log
+    services = {"dispatcher": _FakeDispatcher(registry)}
+    return router, registry, mutation_log, services
 
 
 def _event_types_called(mutation_log):
@@ -84,16 +107,16 @@ def _event_types_called(mutation_log):
 class TestBaseAgentNoCalls:
     async def test_returns_done(self):
         spec = _make_spec()
-        router, registry, mutation_log = _make_deps()
-        agent = BaseAgent(spec, router, registry, mutation_log)
+        router, registry, mutation_log, services = _make_deps()
+        agent = BaseAgent(spec, router, registry, mutation_log, services)
         result = await agent.execute(_make_message())
         assert result.status == "done"
         assert result.result == "Done."
 
     async def test_emits_started_and_completed_mutations(self):
         spec = _make_spec()
-        router, registry, mutation_log = _make_deps()
-        agent = BaseAgent(spec, router, registry, mutation_log)
+        router, registry, mutation_log, services = _make_deps()
+        agent = BaseAgent(spec, router, registry, mutation_log, services)
         await agent.execute(_make_message())
         types = _event_types_called(mutation_log)
         assert MutationType.AGENT_STARTED in types
@@ -114,10 +137,10 @@ class TestBaseAgentWithToolCalls:
             text="Found results.", tool_calls=[], continuation_message=None,
         )
 
-        router, registry, mutation_log = _make_deps()
+        router, registry, mutation_log, services = _make_deps()
         router.complete_with_tools = AsyncMock(side_effect=[round1, round2])
 
-        agent = BaseAgent(_make_spec(), router, registry, mutation_log)
+        agent = BaseAgent(_make_spec(), router, registry, mutation_log, services)
         result = await agent.execute(_make_message())
         assert result.status == "done"
         assert result.result == "Found results."
@@ -133,10 +156,10 @@ class TestBaseAgentWithToolCalls:
         )
         round2 = ToolTurnResult(text="ok", tool_calls=[], continuation_message=None)
 
-        router, registry, mutation_log = _make_deps()
+        router, registry, mutation_log, services = _make_deps()
         router.complete_with_tools = AsyncMock(side_effect=[round1, round2])
 
-        agent = BaseAgent(_make_spec(), router, registry, mutation_log)
+        agent = BaseAgent(_make_spec(), router, registry, mutation_log, services)
         await agent.execute(_make_message())
 
         types = _event_types_called(mutation_log)
@@ -153,10 +176,10 @@ class TestBaseAgentWithToolCalls:
         )
         round2 = ToolTurnResult(text="done", tool_calls=[], continuation_message=None)
 
-        router, registry, mutation_log = _make_deps()
+        router, registry, mutation_log, services = _make_deps()
         router.complete_with_tools = AsyncMock(side_effect=[round1, round2])
 
-        agent = BaseAgent(_make_spec(), router, registry, mutation_log)
+        agent = BaseAgent(_make_spec(), router, registry, mutation_log, services)
         await agent.execute(_make_message())
 
         completed_calls = [
@@ -180,11 +203,11 @@ class TestBaseAgentMaxRounds:
             continuation_message={"role": "assistant", "content": ""},
         )
 
-        router, registry, mutation_log = _make_deps()
+        router, registry, mutation_log, services = _make_deps()
         router.complete_with_tools = AsyncMock(return_value=always_calls)
 
         spec = _make_spec(max_rounds=3)
-        agent = BaseAgent(spec, router, registry, mutation_log)
+        agent = BaseAgent(spec, router, registry, mutation_log, services)
         result = await agent.execute(_make_message())
         assert result.status == "failed"
         assert "3" in result.reason
@@ -194,11 +217,11 @@ class TestBaseAgentMaxRounds:
 
 class TestBaseAgentTimeout:
     async def test_timeout_returns_failed(self):
-        router, registry, mutation_log = _make_deps()
+        router, registry, mutation_log, services = _make_deps()
         router.complete_with_tools = AsyncMock(side_effect=asyncio.TimeoutError)
 
         spec = _make_spec(timeout_seconds=1)
-        agent = BaseAgent(spec, router, registry, mutation_log)
+        agent = BaseAgent(spec, router, registry, mutation_log, services)
         result = await agent.execute(_make_message())
         assert result.status == "failed"
         assert "超时" in result.reason or "timeout" in result.reason.lower()
@@ -223,7 +246,7 @@ class TestEvidenceCollection:
         round2 = ToolTurnResult(text="done", tool_calls=[],
                                 continuation_message=None)
 
-        router, registry, mutation_log = _make_deps()
+        router, registry, mutation_log, services = _make_deps()
         router.complete_with_tools = AsyncMock(side_effect=[round1, round2])
         registry.execute = AsyncMock(return_value=ToolExecutionResult(
             success=True,
@@ -234,7 +257,7 @@ class TestEvidenceCollection:
             },
         ))
 
-        agent = BaseAgent(_make_spec(), router, registry, mutation_log)
+        agent = BaseAgent(_make_spec(), router, registry, mutation_log, services)
         result = await agent.execute(_make_message())
 
         assert result.status == "done"
@@ -257,7 +280,7 @@ class TestEvidenceCollection:
         round2 = ToolTurnResult(text="ok", tool_calls=[],
                                 continuation_message=None)
 
-        router, registry, mutation_log = _make_deps()
+        router, registry, mutation_log, services = _make_deps()
         router.complete_with_tools = AsyncMock(side_effect=[round1, round2])
         registry.execute = AsyncMock(return_value=ToolExecutionResult(
             success=True,
@@ -270,7 +293,7 @@ class TestEvidenceCollection:
             },
         ))
 
-        agent = BaseAgent(_make_spec(), router, registry, mutation_log)
+        agent = BaseAgent(_make_spec(), router, registry, mutation_log, services)
         result = await agent.execute(_make_message())
 
         urls = {e.get("source_url") for e in result.evidence
@@ -292,14 +315,14 @@ class TestEvidenceCollection:
         round2 = ToolTurnResult(text="ok", tool_calls=[],
                                 continuation_message=None)
 
-        router, registry, mutation_log = _make_deps()
+        router, registry, mutation_log, services = _make_deps()
         router.complete_with_tools = AsyncMock(side_effect=[round1, round2])
         registry.execute = AsyncMock(return_value=ToolExecutionResult(
             success=True,
             payload={"stdout": "2\n", "exit_code": 0},
         ))
 
-        agent = BaseAgent(_make_spec(), router, registry, mutation_log)
+        agent = BaseAgent(_make_spec(), router, registry, mutation_log, services)
         result = await agent.execute(_make_message())
 
         assert result.status == "done"
@@ -321,7 +344,7 @@ class TestEvidenceCollection:
                                 continuation_message=None)
             return r1, r2
 
-        router, registry, mutation_log = _make_deps()
+        router, registry, mutation_log, services = _make_deps()
         first_pair = _make_round_pair("first")
         second_pair = _make_round_pair("second")
         router.complete_with_tools = AsyncMock(side_effect=[
@@ -336,7 +359,7 @@ class TestEvidenceCollection:
                                 payload={"stdout": "no source"}),
         ])
 
-        agent = BaseAgent(_make_spec(), router, registry, mutation_log)
+        agent = BaseAgent(_make_spec(), router, registry, mutation_log, services)
         r1 = await agent.execute(_make_message(task_id="t1"))
         r2 = await agent.execute(_make_message(task_id="t2"))
 
@@ -355,9 +378,9 @@ class TestBaseAgentRuntimeProfile:
             tools=[],
             runtime_profile=AGENT_RESEARCHER_PROFILE,
         )
-        router, registry, mutation_log = _make_deps()
+        router, registry, mutation_log, services = _make_deps()
 
-        agent = BaseAgent(spec, router, registry, mutation_log)
+        agent = BaseAgent(spec, router, registry, mutation_log, services)
         await agent.execute(_make_message())
 
         # 走 profile 路径：function_tools(capabilities=None, tool_names={
@@ -373,9 +396,9 @@ class TestBaseAgentRuntimeProfile:
     async def test_legacy_tools_fallback(self):
         """没有 profile 时走 tools 列表——仅为过渡期 fixtures 服务。"""
         spec = _make_spec(tools=["web_search"], runtime_profile=None)
-        router, registry, mutation_log = _make_deps()
+        router, registry, mutation_log, services = _make_deps()
 
-        agent = BaseAgent(spec, router, registry, mutation_log)
+        agent = BaseAgent(spec, router, registry, mutation_log, services)
         await agent.execute(_make_message())
 
         # 走 legacy 路径：registry.get(tool_name) 按名取 spec
