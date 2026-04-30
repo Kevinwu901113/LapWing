@@ -178,6 +178,12 @@ class MutationType(str, Enum):
     MEMORY_ENTITY_ALIAS_UPDATED = "memory.entity_alias_updated"
     MEMORY_WIKI_GUARD_BLOCKED = "memory.wiki_guard_blocked"
 
+    # --- Capability lifecycle (Phase 2A) ---
+    CAPABILITY_DRAFT_CREATED = "capability.draft_created"
+    CAPABILITY_DISABLED = "capability.disabled"
+    CAPABILITY_ARCHIVED = "capability.archived"
+    CAPABILITY_VERSION_CREATED = "capability.version_created"
+
 
 @dataclass
 class Mutation:

@@ -292,3 +292,14 @@ retriever_enabled = true
 injector_enabled = false
 gate_enabled = false
 identity_system_killswitch = false
+
+[capabilities]
+# Phase 0/1: All flags disabled. No runtime behavior is wired yet.
+# Phase 2+ will gate capability retrieval, curation, and auto-drafting
+# behind these flags.
+enabled = false
+retrieval_enabled = false
+curator_enabled = false
+auto_draft_enabled = false
+data_dir = "data/capabilities"
+index_db_path = "data/capabilities/capability_index.sqlite"

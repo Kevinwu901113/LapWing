@@ -136,6 +136,14 @@ IDENTITY_INJECTOR_ENABLED: bool = _s.identity.injector_enabled
 IDENTITY_GATE_ENABLED: bool = _s.identity.gate_enabled
 IDENTITY_SYSTEM_KILLSWITCH: bool = _s.identity.identity_system_killswitch
 
+# ── Capability Evolution System (Phase 0+) ──
+CAPABILITIES_ENABLED: bool = _s.capabilities.enabled
+CAPABILITIES_RETRIEVAL_ENABLED: bool = _s.capabilities.retrieval_enabled
+CAPABILITIES_CURATOR_ENABLED: bool = _s.capabilities.curator_enabled
+CAPABILITIES_AUTO_DRAFT_ENABLED: bool = _s.capabilities.auto_draft_enabled
+CAPABILITIES_DATA_DIR: str = _s.capabilities.data_dir
+CAPABILITIES_INDEX_DB_PATH: str = _s.capabilities.index_db_path
+
 # ── Sandbox (unified) ───────────────────────
 SANDBOX_DOCKER_IMAGE: str = _s.sandbox.docker_image
 SANDBOX_NETWORK: str = _s.sandbox.network

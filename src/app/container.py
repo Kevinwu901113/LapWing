@@ -995,6 +995,31 @@ class AppContainer:
                 len(skill_store.get_stable_skills()),
             )
 
+        # Phase 2B: Capability read tools (feature-gated behind capabilities.enabled)
+        from config.settings import CAPABILITIES_ENABLED
+        if CAPABILITIES_ENABLED:
+            from config.settings import CAPABILITIES_DATA_DIR, CAPABILITIES_INDEX_DB_PATH
+            from src.capabilities.index import CapabilityIndex
+            from src.capabilities.store import CapabilityStore
+            from src.tools.capability_tools import register_capability_tools
+
+            capability_index = CapabilityIndex(CAPABILITIES_INDEX_DB_PATH)
+            capability_index.init()
+            capability_store = CapabilityStore(
+                data_dir=CAPABILITIES_DATA_DIR,
+                mutation_log=self.mutation_log,
+                index=capability_index,
+            )
+            self.brain._capability_store = capability_store
+            self.brain._capability_index = capability_index
+
+            register_capability_tools(
+                self.brain.tool_registry,
+                capability_store,
+                capability_index,
+            )
+            logger.info("Phase 2B capability read tools registered (list/search/view)")
+
         # Phase 4: 注册 DurableScheduler 提醒工具
         from src.core.durable_scheduler import DURABLE_SCHEDULER_EXECUTORS
         from src.tools.types import ToolSpec

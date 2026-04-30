@@ -281,6 +281,13 @@ _ENV_MAP: dict[str, list[str]] = {
     # ── top-level ──
     "CREDENTIAL_VAULT_PATH": ["credential_vault_path"],
     "PHASE0_MODE": ["phase0_mode"],
+    # ── capabilities ──
+    "CAPABILITIES_ENABLED": ["capabilities", "enabled"],
+    "CAPABILITIES_RETRIEVAL_ENABLED": ["capabilities", "retrieval_enabled"],
+    "CAPABILITIES_CURATOR_ENABLED": ["capabilities", "curator_enabled"],
+    "CAPABILITIES_AUTO_DRAFT_ENABLED": ["capabilities", "auto_draft_enabled"],
+    "CAPABILITIES_DATA_DIR": ["capabilities", "data_dir"],
+    "CAPABILITIES_INDEX_DB_PATH": ["capabilities", "index_db_path"],
 }
 
 
@@ -627,6 +634,21 @@ class IdentityConfig(BaseModel):
     identity_system_killswitch: bool = False
 
 
+class CapabilitiesConfig(BaseModel):
+    """Feature flags for the Capability Evolution System (Phase 0+).
+
+    All flags default to False. No runtime code reads these in Phase 0/1;
+    they exist so Phase 2+ can gate capability retrieval, curation, and
+    auto-drafting behind them.
+    """
+    enabled: bool = False
+    retrieval_enabled: bool = False
+    curator_enabled: bool = False
+    auto_draft_enabled: bool = False
+    data_dir: str = "data/capabilities"
+    index_db_path: str = "data/capabilities/capability_index.sqlite"
+
+
 # ── root settings ────────────────────────────
 
 def _inject_env(data: dict[str, Any]) -> dict[str, Any]:
@@ -693,6 +715,7 @@ class LapwingSettings(BaseSettings):
     proactive_messages: ProactiveMessagesConfig = Field(default_factory=ProactiveMessagesConfig)
     inner_tick: InnerTickConfig = Field(default_factory=InnerTickConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
+    capabilities: CapabilitiesConfig = Field(default_factory=CapabilitiesConfig)
     credential_vault_path: str = ""
     phase0_mode: str = ""
 
