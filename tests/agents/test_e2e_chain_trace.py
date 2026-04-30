@@ -40,6 +40,27 @@ from src.tools.types import (
 )
 
 
+class _FakeDispatcher:
+    """Delegates to tool_registry.execute() so agent tests don't
+    need a full ToolDispatcher + ToolRuntime stack."""
+
+    def __init__(self, tool_registry):
+        self._reg = tool_registry
+
+    async def dispatch(self, *, request, profile, services,
+                       adapter, user_id, chat_id, agent_spec=None, **kwargs):
+        ctx = ToolExecutionContext(
+            execute_shell=AsyncMock(),
+            shell_default_cwd=".",
+            services=services,
+            adapter=adapter,
+            user_id=user_id,
+            auth_level=3,
+            chat_id=chat_id,
+        )
+        return await self._reg.execute(request, context=ctx)
+
+
 # ---------------------------------------------------------------------------
 # 链路追踪基础设施
 # ---------------------------------------------------------------------------
@@ -315,7 +336,9 @@ class TestE2EChainTrace:
         mutation_log.record = AsyncMock(return_value=1)
 
         # ------ 3. 注册 Researcher / Coder 到 AgentRegistry ------
-        services = {"agent_registry": agent_registry}
+        # Agent _execute_tool now requires a dispatcher in services.
+        fake_dispatcher = _FakeDispatcher(tool_registry)
+        services = {"agent_registry": agent_registry, "dispatcher": fake_dispatcher}
         agent_registry.register(
             "researcher",
             Researcher.create(router, tool_registry, mutation_log,

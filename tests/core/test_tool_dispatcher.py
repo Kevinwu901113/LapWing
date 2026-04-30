@@ -4,6 +4,8 @@ from src.core.tool_dispatcher import ToolDispatcher, ServiceContextView, Missing
 from src.core.task_runtime import TaskRuntime
 from src.tools.types import ToolExecutionRequest, ToolExecutionResult
 from src.logging.state_mutation_log import MutationType
+from src.agents.spec import AgentSpec as AgentSpecV2
+from src.agents.types import LegacyAgentSpec
 
 @pytest.fixture
 def mock_runtime():
@@ -26,14 +28,14 @@ def dispatcher(mock_runtime):
 async def test_tool_dispatcher_unknown_tool(dispatcher, mock_runtime):
     mock_runtime._tool_registry.get.return_value = None
     req = ToolExecutionRequest(name="unknown_tool", arguments={})
-    
+
     services = {"mutation_log": AsyncMock()}
     result = await dispatcher.dispatch(
         request=req,
         profile="test_profile",
         services=services,
     )
-    
+
     assert not result.success
     assert result.reason == "未知工具：unknown_tool"
     services["mutation_log"].record.assert_called_once()
@@ -45,14 +47,14 @@ async def test_tool_dispatcher_unknown_tool(dispatcher, mock_runtime):
 async def test_tool_dispatcher_profile_not_allowed(dispatcher, mock_runtime):
     mock_runtime._tool_registry.get.return_value = MagicMock()
     req = ToolExecutionRequest(name="disallowed_tool", arguments={})
-    
+
     services = {"mutation_log": AsyncMock()}
     result = await dispatcher.dispatch(
         request=req,
         profile="test_profile",
         services=services,
     )
-    
+
     assert not result.success
     assert "不允许工具" in result.reason
     services["mutation_log"].record.assert_called_once()
@@ -65,7 +67,7 @@ async def test_tool_dispatcher_authority_gate(dispatcher, mock_runtime):
     mock_runtime._tool_registry.get.return_value = MagicMock()
     mock_runtime._tool_names_for_profile.return_value = {"execute_shell"}
     req = ToolExecutionRequest(name="execute_shell", arguments={})
-    
+
     services = {"mutation_log": AsyncMock()}
     result = await dispatcher.dispatch(
         request=req,
@@ -74,7 +76,7 @@ async def test_tool_dispatcher_authority_gate(dispatcher, mock_runtime):
         adapter="qq",  # guest path should be denied for execute_shell
         user_id="untrusted_user",
     )
-    
+
     assert not result.success
     services["mutation_log"].record.assert_called_once()
     args, kwargs = services["mutation_log"].record.call_args
@@ -86,17 +88,23 @@ async def test_tool_dispatcher_agent_policy_missing_fail_closed(dispatcher, mock
     mock_runtime._tool_registry.get.return_value = MagicMock()
     mock_runtime._tool_names_for_profile.return_value = {"allowed_tool"}
     req = ToolExecutionRequest(name="allowed_tool", arguments={})
-    
-    agent_spec = MagicMock(kind="dynamic", name="dyn_agent")
-    
+
+    agent_spec = AgentSpecV2(
+        name="dyn_agent",
+        kind="dynamic",
+        runtime_profile="agent_researcher",
+        model_slot="agent_researcher",
+    )
+
     services = {"mutation_log": AsyncMock()}
     result = await dispatcher.dispatch(
         request=req,
         profile="test_profile",
         services=services,
         agent_spec=agent_spec,
+        adapter="agent",
     )
-    
+
     assert not result.success
     assert result.reason == "missing_agent_policy"
     services["mutation_log"].record.assert_called_once()
@@ -104,27 +112,34 @@ async def test_tool_dispatcher_agent_policy_missing_fail_closed(dispatcher, mock
     assert args[0] == MutationType.TOOL_DENIED
     assert args[1]["guard"] == "agent_policy"
 
+
 @pytest.mark.asyncio
 async def test_tool_dispatcher_agent_policy_denied(dispatcher, mock_runtime):
     mock_runtime._tool_registry.get.return_value = MagicMock()
     mock_runtime._tool_names_for_profile.return_value = {"allowed_tool"}
     req = ToolExecutionRequest(name="allowed_tool", arguments={})
-    
-    agent_spec = MagicMock(kind="dynamic", name="dyn_agent")
+
+    agent_spec = AgentSpecV2(
+        name="dyn_agent",
+        kind="dynamic",
+        runtime_profile="agent_researcher",
+        model_slot="agent_researcher",
+    )
     mock_policy = MagicMock()
     mock_policy.validate_tool_access.return_value = False
-    
+
     services = {
         "mutation_log": AsyncMock(),
-        "agent_policy": mock_policy
+        "agent_policy": mock_policy,
     }
     result = await dispatcher.dispatch(
         request=req,
         profile="test_profile",
         services=services,
         agent_spec=agent_spec,
+        adapter="agent",
     )
-    
+
     assert not result.success
     assert result.reason == "policy_denied_tool"
     services["mutation_log"].record.assert_called_once()
@@ -132,22 +147,178 @@ async def test_tool_dispatcher_agent_policy_denied(dispatcher, mock_runtime):
     assert args[0] == MutationType.TOOL_DENIED
     assert args[1]["guard"] == "agent_policy"
 
+
+# ── Agent spec kind tamper detection ──────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_agent_spec_kind_builtin_tampered_fail_closed(dispatcher, mock_runtime):
+    """v2 AgentSpec with kind='builtin' -> fail-closed (tamper detected)."""
+    mock_runtime._tool_registry.get.return_value = MagicMock()
+    mock_runtime._tool_names_for_profile.return_value = {"allowed_tool"}
+    req = ToolExecutionRequest(name="allowed_tool", arguments={})
+
+    agent_spec = AgentSpecV2(
+        name="dyn_agent",
+        kind="builtin",  # tampered -- should be "dynamic"
+        runtime_profile="agent_researcher",
+        model_slot="agent_researcher",
+    )
+
+    services = {"mutation_log": AsyncMock()}
+    result = await dispatcher.dispatch(
+        request=req,
+        profile="test_profile",
+        services=services,
+        agent_spec=agent_spec,
+        adapter="agent",
+    )
+
+    assert not result.success
+    assert result.reason == "agent_spec_kind_mismatch"
+    services["mutation_log"].record.assert_called_once()
+    args, kwargs = services["mutation_log"].record.call_args
+    assert args[0] == MutationType.TOOL_DENIED
+    assert args[1]["guard"] == "agent_policy"
+    assert args[1]["agent_kind"] == "builtin"
+
+
+@pytest.mark.asyncio
+async def test_agent_spec_kind_empty_tampered_fail_closed(dispatcher, mock_runtime):
+    """v2 AgentSpec with kind='' -> fail-closed (tamper detected)."""
+    mock_runtime._tool_registry.get.return_value = MagicMock()
+    mock_runtime._tool_names_for_profile.return_value = {"allowed_tool"}
+    req = ToolExecutionRequest(name="allowed_tool", arguments={})
+
+    agent_spec = AgentSpecV2(
+        name="dyn_agent",
+        kind="",  # type: ignore[arg-type]  # tampered
+        runtime_profile="agent_researcher",
+        model_slot="agent_researcher",
+    )
+
+    services = {"mutation_log": AsyncMock()}
+    result = await dispatcher.dispatch(
+        request=req,
+        profile="test_profile",
+        services=services,
+        agent_spec=agent_spec,
+        adapter="agent",
+    )
+
+    assert not result.success
+    assert result.reason == "agent_spec_kind_mismatch"
+
+
+# ── LegacyAgentSpec passthrough for builtins ─────────────────────────────
+
+@pytest.mark.asyncio
+async def test_legacy_agent_spec_passthrough_for_builtin(dispatcher, mock_runtime):
+    """LegacyAgentSpec with adapter='agent' passes through without dynamic denylist.
+
+    This is the builtin Researcher/Coder path -- they use LegacyAgentSpec and
+    rely on profile-based tool restrictions, not the dynamic agent denylist.
+    """
+    mock_runtime._tool_registry.get.return_value = MagicMock()
+    mock_runtime._tool_registry.execute = AsyncMock(return_value=ToolExecutionResult(
+        success=True, payload={"result": "ok"}, reason="",
+    ))
+    mock_runtime._tool_names_for_profile.return_value = {"research"}
+    req = ToolExecutionRequest(name="research", arguments={})
+
+    legacy_spec = LegacyAgentSpec(
+        name="researcher",
+        description="Builtin researcher",
+        system_prompt="You are a researcher.",
+        model_slot="agent_researcher",
+    )
+
+    services = {"mutation_log": AsyncMock()}
+    result = await dispatcher.dispatch(
+        request=req,
+        profile="test_profile",
+        services=services,
+        agent_spec=legacy_spec,
+        adapter="agent",
+    )
+
+    # Should NOT be blocked by agent policy -- passes through to tool execution.
+    assert result.success
+    assert result.reason != "agent_spec_kind_mismatch"
+    assert result.reason != "unknown_agent_spec_type"
+    assert result.reason != "missing_agent_policy"
+    assert result.reason != "policy_denied_tool"
+
+
+# ── Unknown spec type fail-closed ────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_unknown_agent_spec_type_fail_closed(dispatcher, mock_runtime):
+    """A non-v2, non-legacy spec on an agent adapter -> fail-closed."""
+    mock_runtime._tool_registry.get.return_value = MagicMock()
+    mock_runtime._tool_names_for_profile.return_value = {"allowed_tool"}
+    req = ToolExecutionRequest(name="allowed_tool", arguments={})
+
+    bogus_spec = MagicMock(kind="dynamic", name="bogus")
+
+    services = {"mutation_log": AsyncMock()}
+    result = await dispatcher.dispatch(
+        request=req,
+        profile="test_profile",
+        services=services,
+        agent_spec=bogus_spec,
+        adapter="agent",
+    )
+
+    assert not result.success
+    assert result.reason == "unknown_agent_spec_type"
+    services["mutation_log"].record.assert_called_once()
+    args, kwargs = services["mutation_log"].record.call_args
+    assert args[0] == MutationType.TOOL_DENIED
+    assert args[1]["guard"] == "agent_policy"
+
+
+@pytest.mark.asyncio
+async def test_agent_spec_none_skips_policy_check(dispatcher, mock_runtime):
+    """agent_spec=None (normal user path) skips agent policy entirely."""
+    mock_runtime._tool_registry.get.return_value = MagicMock()
+    mock_runtime._tool_registry.execute = AsyncMock(return_value=ToolExecutionResult(
+        success=True, payload={"result": "ok"}, reason="",
+    ))
+    mock_runtime._tool_names_for_profile.return_value = {"allowed_tool"}
+    req = ToolExecutionRequest(name="allowed_tool", arguments={})
+
+    services = {"mutation_log": AsyncMock()}
+    result = await dispatcher.dispatch(
+        request=req,
+        profile="test_profile",
+        services=services,
+        agent_spec=None,
+    )
+
+    # Should not be blocked by agent policy -- proceeds to tool execution.
+    assert result.success
+    assert result.reason != "agent_spec_kind_mismatch"
+    assert result.reason != "unknown_agent_spec_type"
+    assert result.reason != "missing_agent_policy"
+    assert result.reason != "policy_denied_tool"
+
+
 @pytest.mark.asyncio
 async def test_tool_dispatcher_browser_guard_missing(dispatcher, mock_runtime):
     tool_mock = MagicMock(capability="browser")
     mock_runtime._tool_registry.get.return_value = tool_mock
     mock_runtime._tool_names_for_profile.return_value = {"browser_open"}
     req = ToolExecutionRequest(name="browser_open", arguments={})
-    
+
     mock_runtime._browser_guard = None
-    
+
     services = {"mutation_log": AsyncMock()}
     result = await dispatcher.dispatch(
         request=req,
         profile="test_profile",
         services=services,
     )
-    
+
     assert not result.success
     assert "未挂载" in result.reason
     services["mutation_log"].record.assert_called_once()

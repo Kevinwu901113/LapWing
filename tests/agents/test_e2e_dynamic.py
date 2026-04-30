@@ -62,7 +62,7 @@ async def _make_pipeline(tmp_path, monkeypatch):
     factory = MagicMock()
 
     # Each factory.create returns a fresh fake agent that succeeds.
-    def _create(spec):
+    def _create(spec, services_override=None):
         a = MagicMock()
         a.spec = MagicMock()
         a.spec.name = spec.name

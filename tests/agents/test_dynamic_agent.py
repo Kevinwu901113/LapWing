@@ -162,3 +162,121 @@ async def test_dynamic_agent_policy_denied_never_executes_registry():
     payload = json.loads(output)
     assert payload.get("reason") == "policy_denied_tool"
     runtime._tool_registry.execute.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_dynamic_agent_denylist_tool_delegate_to_agent_blocked():
+    """Dynamic agent calling 'delegate_to_agent' → denied by ToolDispatcher."""
+    runtime = MagicMock(spec=TaskRuntime)
+    runtime._resolve_profile.return_value = MagicMock(
+        name="agent_researcher",
+        include_internal=False,
+        shell_policy_enabled=False,
+    )
+    runtime._tool_registry = MagicMock()
+    runtime._tool_registry.get.return_value = MagicMock(capability="general")
+    runtime._tool_names_for_profile.return_value = {"delegate_to_agent"}
+    runtime._memory_index = None
+    dispatcher = ToolDispatcher(runtime)
+
+    policy = MagicMock()
+    policy.validate_tool_access.return_value = False
+    spec = _build_dynamic_spec()
+    agent = _build_dynamic_agent_with_dispatcher(dispatcher, policy=policy)
+
+    output = await agent._execute_tool(
+        _FakeToolCall(name="delegate_to_agent"),
+        AgentMessage(
+            from_agent="lapwing",
+            to_agent="probe",
+            task_id="t1",
+            content="do x",
+            message_type="request",
+        ),
+    )
+    payload = json.loads(output)
+    assert payload.get("reason") == "policy_denied_tool"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_agent_denylist_tool_send_message_blocked():
+    """Dynamic agent calling 'send_message' → denied by ToolDispatcher."""
+    runtime = MagicMock(spec=TaskRuntime)
+    runtime._resolve_profile.return_value = MagicMock(
+        name="agent_researcher",
+        include_internal=False,
+        shell_policy_enabled=False,
+    )
+    runtime._tool_registry = MagicMock()
+    runtime._tool_registry.get.return_value = MagicMock(capability="general")
+    runtime._tool_names_for_profile.return_value = {"send_message"}
+    runtime._memory_index = None
+    dispatcher = ToolDispatcher(runtime)
+
+    policy = MagicMock()
+    policy.validate_tool_access.return_value = False
+    spec = _build_dynamic_spec()
+    agent = _build_dynamic_agent_with_dispatcher(dispatcher, policy=policy)
+
+    output = await agent._execute_tool(
+        _FakeToolCall(name="send_message"),
+        AgentMessage(
+            from_agent="lapwing",
+            to_agent="probe",
+            task_id="t2",
+            content="do x",
+            message_type="request",
+        ),
+    )
+    payload = json.loads(output)
+    assert payload.get("reason") == "policy_denied_tool"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_agent_kind_tampered_fail_closed_via_dispatcher():
+    """DynamicAgent with kind tampered to 'builtin' → dispatcher fail-closed."""
+    runtime = MagicMock(spec=TaskRuntime)
+    runtime._resolve_profile.return_value = MagicMock(
+        name="agent_researcher",
+        include_internal=False,
+        shell_policy_enabled=False,
+    )
+    runtime._tool_registry = MagicMock()
+    runtime._tool_registry.get.return_value = MagicMock(capability="general")
+    runtime._tool_names_for_profile.return_value = {"research"}
+    runtime._memory_index = None
+    dispatcher = ToolDispatcher(runtime)
+
+    # Build a dynamic spec but tamper the kind after construction.
+    spec = _build_dynamic_spec()
+    spec.kind = "builtin"  # tampered
+
+    profile = MagicMock()
+    profile.name = "agent_researcher"
+    profile.tool_names = frozenset({"research"})
+    profile.capabilities = frozenset()
+    profile.include_internal = False
+    profile.shell_policy_enabled = False
+
+    services = {"dispatcher": dispatcher}
+    agent = DynamicAgent(
+        spec=spec,
+        profile=profile,
+        llm_router=MagicMock(),
+        tool_registry=MagicMock(),
+        mutation_log=MagicMock(),
+        services=services,
+    )
+
+    output = await agent._execute_tool(
+        _FakeToolCall(name="research"),
+        AgentMessage(
+            from_agent="lapwing",
+            to_agent="probe",
+            task_id="t3",
+            content="do x",
+            message_type="request",
+        ),
+    )
+    payload = json.loads(output)
+    assert payload.get("reason") == "agent_spec_kind_mismatch"

@@ -15,6 +15,8 @@ from config.settings import SHELL_DEFAULT_CWD, ROOT_DIR
 from src.core.vital_guard import check_compound, Verdict, check_file_target, auto_backup, extract_vital_shell_targets
 from pathlib import Path
 from src.core.shell_policy import VerificationStatus
+from src.agents.spec import AgentSpec as _AgentSpecV2
+from src.agents.types import LegacyAgentSpec as _LegacyAgentSpec
 
 if TYPE_CHECKING:
     from src.core.task_runtime import TaskRuntime
@@ -326,7 +328,35 @@ class ToolDispatcher:
         profile_obj = self._runtime._resolve_profile(profile)
         
         # ── Agent Policy Check ────────────────────────────────────────────────
-        if agent_spec is not None and getattr(agent_spec, "kind", None) == "dynamic":
+        # Use isinstance against the v2 AgentSpec class rather than checking
+        # the mutable 'kind' attribute. Only DynamicAgent passes v2 AgentSpec
+        # instances; builtin Researcher/Coder pass LegacyAgentSpec.
+        if agent_spec is not None and isinstance(agent_spec, _AgentSpecV2):
+            # v2 AgentSpec → dynamic policy enforcement is mandatory.
+            # If kind is not 'dynamic', the spec may have been tampered with.
+            if agent_spec.kind != "dynamic":
+                reason = "agent_spec_kind_mismatch"
+                if state is not None:
+                    state.record_failure(reason, "blocked")
+                payload = self._blocked_payload(
+                    reason=reason,
+                    cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
+                    command=str(request.arguments.get("command", "")).strip(),
+                )
+                await self._record_tool_denied(
+                    tool_name=request.name,
+                    guard="agent_policy",
+                    reason=reason,
+                    auth_level=AuthLevel.OWNER,
+                    services=services,
+                    chat_id=chat_id,
+                    extras={
+                        "agent_name": getattr(agent_spec, "name", "unknown"),
+                        "agent_kind": agent_spec.kind,
+                    },
+                )
+                return ToolExecutionResult(success=False, payload=payload, reason=reason)
+
             try:
                 agent_policy = ctx.require_agent_policy()
             except MissingServiceError:
@@ -368,6 +398,33 @@ class ToolDispatcher:
                     extras={"agent_name": getattr(agent_spec, "name", "unknown")},
                 )
                 return ToolExecutionResult(success=False, payload=payload, reason=reason)
+
+        elif agent_spec is not None and isinstance(agent_spec, _LegacyAgentSpec) and adapter == "agent":
+            # LegacyAgentSpec from builtin Researcher/Coder — allow without
+            # dynamic denylist. These agents have their own profile constraints
+            # enforced below.
+            pass
+
+        elif agent_spec is not None:
+            # Unknown / unexpected spec type on an agent path — fail-closed.
+            reason = "unknown_agent_spec_type"
+            if state is not None:
+                state.record_failure(reason, "blocked")
+            payload = self._blocked_payload(
+                reason=reason,
+                cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
+                command=str(request.arguments.get("command", "")).strip(),
+            )
+            await self._record_tool_denied(
+                tool_name=request.name,
+                guard="agent_policy",
+                reason=reason,
+                auth_level=AuthLevel.OWNER,
+                services=services,
+                chat_id=chat_id,
+                extras={"agent_spec_type": type(agent_spec).__name__},
+            )
+            return ToolExecutionResult(success=False, payload=payload, reason=reason)
 
         tool = self._runtime._tool_registry.get(request.name)
         if tool is None:
