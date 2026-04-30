@@ -244,6 +244,39 @@ async def _run_agent(
     return _serialize_agent_result(result, task_id)
 
 
+async def _execute_delegation(
+    agent_name: str,
+    task: str,
+    ctx: ToolExecutionContext,
+    *,
+    context: str = "",
+    expected_output: str = "",
+    freshness_hint: str | None = None,
+    parent_task_id: str | None = None,
+) -> ToolExecutionResult:
+    """Shared delegation entry-point. All three delegate executors funnel
+    through here so parameter normalisation and pre-flight validation
+    happen in exactly one place.
+
+    ``_run_agent`` remains the low-level execute-one-message function;
+    this helper is the single "normalise args → validate → call _run_agent"
+    layer that the shims and ``delegate_to_agent_executor`` share.
+    """
+    if not task.strip():
+        return ToolExecutionResult(
+            success=False, payload={}, reason="task 不能为空",
+        )
+    return await _run_agent(
+        agent_name=agent_name,
+        request=task,
+        context_digest=context,
+        ctx=ctx,
+        parent_task_id=parent_task_id,
+        expected_output=expected_output,
+        freshness_hint=freshness_hint,
+    )
+
+
 def _resolve_delegate_task(args: dict, tool_name: str) -> str:
     """Pick task text from args. Prefers ``task`` (the new param name);
     falls back to ``request`` for backward compatibility with persisted
@@ -268,24 +301,19 @@ async def delegate_to_researcher_executor(
 ) -> ToolExecutionResult:
     """Lapwing's primary outward seam for external information.
 
-    Used for any question whose answer is not already in Lapwing's own
-    state — weather, scores, news, prices, free-form web queries. The
-    Researcher does the actual searching in its own tool loop and
-    returns a ``{summary, sources}`` payload.
+    Compatibility shim — forwards to the shared ``_execute_delegation``
+    path so researcher delegation uses the same code as
+    ``delegate_to_agent(agent_name="researcher", ...)``.
     """
     args = req.arguments
     task = _resolve_delegate_task(args, "delegate_to_researcher")
-    if not task:
-        return ToolExecutionResult(
-            success=False, payload={},
-            reason="task 不能为空",
-        )
     freshness_hint = (args.get("freshness_hint") or "").strip() or None
-    return await _run_agent(
+    context = args.get("context_digest", "") or args.get("context", "")
+    return await _execute_delegation(
         agent_name="researcher",
-        request=task,
-        context_digest=args.get("context_digest", "") or args.get("context", ""),
+        task=task,
         ctx=ctx,
+        context=context,
         freshness_hint=freshness_hint,
     )
 
@@ -295,20 +323,18 @@ async def delegate_to_coder_executor(
 ) -> ToolExecutionResult:
     """Lapwing's outward seam for code, scripts, and file work.
 
-    The Coder runs in a sandboxed agent loop and returns the result.
+    Compatibility shim — forwards to the shared ``_execute_delegation``
+    path so coder delegation uses the same code as
+    ``delegate_to_agent(agent_name="coder", ...)``.
     """
     args = req.arguments
     task = _resolve_delegate_task(args, "delegate_to_coder")
-    if not task:
-        return ToolExecutionResult(
-            success=False, payload={},
-            reason="task 不能为空",
-        )
-    return await _run_agent(
+    context = args.get("context_digest", "") or args.get("context", "")
+    return await _execute_delegation(
         agent_name="coder",
-        request=task,
-        context_digest=args.get("context_digest", "") or args.get("context", ""),
+        task=task,
         ctx=ctx,
+        context=context,
     )
 
 
@@ -321,17 +347,19 @@ async def delegate_to_agent_executor(
     args = req.arguments
     agent_name = (args.get("agent_name") or "").strip()
     task = (args.get("task") or "").strip()
-    if not agent_name or not task:
+    if not agent_name:
         return ToolExecutionResult(
             success=False, payload={},
             reason="agent_name 和 task 不能为空",
         )
-    return await _run_agent(
-        agent_name,
-        task,
-        context_digest=args.get("context", ""),
+    freshness_hint = (args.get("freshness_hint") or "").strip() or None
+    return await _execute_delegation(
+        agent_name=agent_name,
+        task=task,
         ctx=ctx,
+        context=args.get("context", ""),
         expected_output=args.get("expected_output", ""),
+        freshness_hint=freshness_hint,
     )
 
 
@@ -587,6 +615,16 @@ def register_agent_tools(registry, agent_registry=None) -> None:
             "task": {"type": "string", "description": "交给 agent 的具体任务描述"},
             "context": {"type": "string", "description": "可选的额外上下文信息", "default": ""},
             "expected_output": {"type": "string", "description": "可选的期望输出格式描述", "default": ""},
+            "freshness_hint": {
+                "type": "string",
+                "enum": ["realtime", "recent", "anytime"],
+                "description": (
+                    "时效要求（可选，仅对 researcher 类 agent 有意义）。"
+                    "realtime = 当前事实(天气/比分/股价/汇率)；"
+                    "recent = 近期事实(新闻/版本变化)；"
+                    "anytime = 稳定事实(概念/历史)。"
+                ),
+            },
         },
         "required": ["agent_name", "task"],
     }
