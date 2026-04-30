@@ -246,6 +246,48 @@ async def test_render_agent_summary_includes_builtins(tmp_path, monkeypatch):
     assert "可用 Agent" in summary or "Available Agents" in summary
 
 
+@pytest.mark.asyncio
+async def test_render_agent_summary_includes_dynamic_session_agent(tmp_path, monkeypatch):
+    """Dynamic session agents appear in the summary with name/kind/profile/lifecycle."""
+    reg, cat, _, _ = await _make_registry(tmp_path, monkeypatch)
+    await reg.init()
+    spec = await reg.create_agent(
+        CreateAgentInput(name_hint="my-dyn-agent", purpose="does custom research",
+                         instructions="你是一个 helper", profile="agent_researcher",
+                         model_slot="agent_researcher", lifecycle="session"),
+        ctx=MagicMock(),
+    )
+    summary = reg.render_agent_summary_for_stateview()
+    assert spec.name in summary
+    assert "dynamic" in summary
+    assert "agent_researcher" in summary
+    assert "session" in summary
+
+
+@pytest.mark.asyncio
+async def test_render_agent_summary_never_includes_system_prompt(tmp_path, monkeypatch):
+    """The summary for StateView must never leak full system_prompt text."""
+    reg, cat, _, _ = await _make_registry(tmp_path, monkeypatch)
+    await reg.init()
+    spec = await reg.create_agent(
+        CreateAgentInput(name_hint="secret-agent", purpose="x",
+                         instructions="秘密指令 ABC 机密操作 XYZ",
+                         profile="agent_researcher", model_slot="agent_researcher",
+                         lifecycle="session"),
+        ctx=MagicMock(),
+    )
+    summary = reg.render_agent_summary_for_stateview()
+    # Must contain the agent name (metadata OK)
+    assert spec.name in summary
+    # Must NOT contain the system_prompt/instructions
+    assert "秘密指令" not in summary
+    assert "ABC" not in summary
+    assert "机密操作" not in summary
+    assert "XYZ" not in summary
+    # Builtin system prompts also must not leak
+    assert "# " not in summary or summary.count("# ") < 2  # at most header-like text
+
+
 # ── cleanup_expired_sessions ──
 
 @pytest.mark.asyncio
