@@ -123,7 +123,7 @@ async def test_chat_tools_from_registry():
     assert "research" not in names
     assert "browse" not in names
     assert "delegate_to_agent" not in names
-    assert "list_agents" not in names
+    assert "list_agents" in names
     # `get_weather` + `image_search` are gone from the whitelist (Step 1i)
     assert "get_weather" not in names
     assert "image_search" not in names
