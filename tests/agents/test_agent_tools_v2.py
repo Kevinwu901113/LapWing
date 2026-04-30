@@ -19,6 +19,7 @@ from src.tools.agent_tools import (
     delegate_to_agent_executor,
     delegate_to_coder_executor,
     delegate_to_researcher_executor,
+    list_agents_executor,
 )
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult
 
@@ -321,3 +322,193 @@ def test_delegate_to_agent_schema_does_not_require_freshness_hint():
     register_agent_tools(registry)
     spec = registry.get("delegate_to_agent")
     assert spec.json_schema["required"] == ["agent_name", "task"]
+
+
+# ── list_agents tool tests ─────────────────────────────────────────────────
+
+
+def _make_list_agents_ctx(*, registry=None):
+    """Build a ToolExecutionContext with an optional agent_registry."""
+    return ToolExecutionContext(
+        execute_shell=AsyncMock(),
+        shell_default_cwd=".",
+        adapter="test",
+        user_id="test",
+        auth_level=10,
+        chat_id="c1",
+        services={"agent_registry": registry} if registry else {},
+    )
+
+
+@pytest.mark.asyncio
+async def test_list_agents_registry_missing():
+    """A. list_agents returns failure when agent_registry is not in services."""
+    ctx = _make_list_agents_ctx(registry=None)
+    result = await list_agents_executor(
+        ToolExecutionRequest(name="list_agents", arguments={}), ctx,
+    )
+    assert not result.success
+    assert "unavailable" in result.reason
+
+
+@pytest.mark.asyncio
+async def test_list_agents_compact_returns_summaries():
+    """B. compact listing returns name/kind/lifecycle/status/profile/model_slot."""
+    registry = MagicMock()
+    registry.list_agents = AsyncMock(return_value=[
+        {"name": "researcher", "kind": "builtin", "status": "active",
+         "description": "searches the web", "runtime_profile": "agent_researcher",
+         "lifecycle_mode": "persistent", "model_slot": "agent_researcher"},
+        {"name": "coder", "kind": "builtin", "status": "active",
+         "description": "writes code", "runtime_profile": "agent_coder",
+         "lifecycle_mode": "persistent", "model_slot": "agent_coder"},
+    ])
+    ctx = _make_list_agents_ctx(registry=registry)
+    result = await list_agents_executor(
+        ToolExecutionRequest(name="list_agents", arguments={}), ctx,
+    )
+    assert result.success
+    assert result.payload["count"] == 2
+    for agent in result.payload["agents"]:
+        for key in ("name", "kind", "lifecycle_mode", "status", "description",
+                    "runtime_profile", "model_slot"):
+            assert key in agent, f"missing key '{key}'"
+        assert "system_prompt" not in agent
+
+
+@pytest.mark.asyncio
+async def test_list_agents_full_returns_extra_metadata():
+    """C. full=True returns resource_limits and lifecycle detail."""
+    registry = MagicMock()
+    registry.list_agents = AsyncMock(return_value=[
+        {"name": "researcher", "kind": "builtin", "status": "active",
+         "description": "searches", "runtime_profile": "agent_researcher",
+         "lifecycle_mode": "persistent", "model_slot": "agent_researcher",
+         "lifecycle": {"mode": "persistent", "ttl_seconds": None, "max_runs": None},
+         "resource_limits": {"max_tool_calls": 20, "max_llm_calls": 10,
+                             "max_tokens": 10000, "max_wall_time_seconds": 300},
+         "created_reason": ""},
+    ])
+    ctx = _make_list_agents_ctx(registry=registry)
+    result = await list_agents_executor(
+        ToolExecutionRequest(name="list_agents", arguments={"full": True}), ctx,
+    )
+    assert result.success
+    agent = result.payload["agents"][0]
+    assert "resource_limits" in agent
+    assert "lifecycle" in agent
+    # system_prompt_preview is fine in full mode (truncated), but never raw system_prompt
+    assert "system_prompt" not in agent
+
+
+@pytest.mark.asyncio
+async def test_list_agents_include_inactive():
+    """D. include_inactive=True forwards to registry; default is False."""
+    registry = MagicMock()
+    registry.list_agents = AsyncMock(return_value=[])
+
+    # Default: include_inactive=False
+    ctx = _make_list_agents_ctx(registry=registry)
+    await list_agents_executor(
+        ToolExecutionRequest(name="list_agents", arguments={}), ctx,
+    )
+    registry.list_agents.assert_called_with(include_inactive=False, full=False)
+
+    registry.list_agents.reset_mock()
+
+    # include_inactive=True
+    await list_agents_executor(
+        ToolExecutionRequest(
+            name="list_agents",
+            arguments={"include_inactive": True, "full": True},
+        ), ctx,
+    )
+    registry.list_agents.assert_called_with(include_inactive=True, full=True)
+
+
+@pytest.mark.asyncio
+async def test_list_agents_registry_exception_fails_closed():
+    """When registry.list_agents raises, return failure (not unhandled)."""
+    registry = MagicMock()
+    registry.list_agents = AsyncMock(side_effect=RuntimeError("db down"))
+    ctx = _make_list_agents_ctx(registry=registry)
+    result = await list_agents_executor(
+        ToolExecutionRequest(name="list_agents", arguments={}), ctx,
+    )
+    assert not result.success
+    assert "list_agents failed" in result.reason
+
+
+# ── Profile exposure tests ──────────────────────────────────────────────────
+
+
+def test_list_agents_in_standard_profile():
+    """E1. list_agents is available in STANDARD_PROFILE (main chat)."""
+    from src.core.runtime_profiles import STANDARD_PROFILE
+    assert "list_agents" in STANDARD_PROFILE.tool_names
+
+
+def test_list_agents_in_task_execution_profile():
+    """E2. list_agents is available in TASK_EXECUTION_PROFILE."""
+    from src.core.runtime_profiles import TASK_EXECUTION_PROFILE
+    assert "list_agents" in TASK_EXECUTION_PROFILE.tool_names
+
+
+def test_list_agents_not_in_agent_researcher_profile():
+    """E3. Dynamic agent (researcher profile) must NOT have list_agents."""
+    from src.core.runtime_profiles import AGENT_RESEARCHER_PROFILE
+    assert "list_agents" not in AGENT_RESEARCHER_PROFILE.tool_names
+
+
+def test_list_agents_not_in_agent_coder_profile():
+    """E4. Dynamic agent (coder profile) must NOT have list_agents."""
+    from src.core.runtime_profiles import AGENT_CODER_PROFILE
+    assert "list_agents" not in AGENT_CODER_PROFILE.tool_names
+
+
+def test_list_agents_in_dynamic_denylist():
+    """E5. list_agents is in DYNAMIC_AGENT_DENYLIST (policy gate)."""
+    from src.agents.spec import DYNAMIC_AGENT_DENYLIST
+    assert "list_agents" in DYNAMIC_AGENT_DENYLIST
+
+
+# ── Regression: delegate_to_agent still works ───────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_delegate_to_agent_unaffected_by_list_agents():
+    """F. delegate_to_agent shim path is unaffected by list_agents registration."""
+    ctx = _make_ctx(agent_name="researcher")
+    fake_agent = ctx.services["agent_registry"].get_or_create_instance.return_value
+
+    result = await delegate_to_agent_executor(
+        ToolExecutionRequest(
+            name="delegate_to_agent",
+            arguments={"agent_name": "researcher", "task": "explain RAG"},
+        ),
+        ctx,
+    )
+    assert result.success
+    msg = fake_agent.execute.call_args.args[0]
+    assert isinstance(msg, AgentMessage)
+    assert msg.content == "explain RAG"
+
+
+# ── list_agents ToolSpec registration ───────────────────────────────────────
+
+
+def test_list_agents_tool_spec_registered():
+    """list_agents is registered with correct schema and executor."""
+    from src.tools.registry import ToolRegistry
+    from src.tools.agent_tools import register_agent_tools
+    registry = ToolRegistry()
+    register_agent_tools(registry)
+    spec = registry.get("list_agents")
+    assert spec is not None
+    assert spec.executor is list_agents_executor
+    schema = spec.json_schema
+    assert "include_inactive" in schema["properties"]
+    assert "full" in schema["properties"]
+    assert schema["properties"]["include_inactive"]["type"] == "boolean"
+    assert schema["properties"]["full"]["type"] == "boolean"
+    assert schema["required"] == []

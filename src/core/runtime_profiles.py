@@ -74,6 +74,8 @@ STANDARD_PROFILE = RuntimeProfile(
         "close_focus", "recall_focus",
         # ── outward seams (the only edges out to the world) ──
         "delegate_to_researcher", "delegate_to_coder",
+        # ── agent visibility ──
+        "list_agents",
         # ── skills ──
         "run_skill",
         # ── planning ──
@@ -149,6 +151,7 @@ LOCAL_EXECUTION_PROFILE = RuntimeProfile(
         "file_append",
         "file_list_directory",
         "run_skill",
+        "list_agents",
     }),
     include_internal=False,
     shell_policy_enabled=True,
@@ -167,6 +170,7 @@ AGENT_ADMIN_OPERATOR_PROFILE = RuntimeProfile(
         "create_agent",
         "destroy_agent",
         "save_agent",
+        "list_agents",
     }),
     include_internal=False,
     shell_policy_enabled=False,
@@ -307,6 +311,8 @@ COMPOSE_PROACTIVE_PROFILE = RuntimeProfile(
         # outward seams (the only edges out to the world)
         "delegate_to_researcher",
         "delegate_to_coder",
+        # agent visibility
+        "list_agents",
         # commitments
         "commit_promise",
         "fulfill_promise",

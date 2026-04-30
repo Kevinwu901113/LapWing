@@ -82,6 +82,7 @@ DYNAMIC_AGENT_DENYLIST: frozenset[str] = frozenset({
     "create_agent", "save_agent", "destroy_agent",
     "delegate_to_agent",
     "delegate_to_researcher", "delegate_to_coder",
+    "list_agents",
     "send_message", "send_image", "proactive_send",
     "memory_note", "edit_soul", "edit_voice", "add_correction",
     "commit_promise", "fulfill_promise", "abandon_promise",

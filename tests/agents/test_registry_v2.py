@@ -172,6 +172,10 @@ async def test_list_agents_compact(tmp_path, monkeypatch):
     # Compact mode does NOT include system_prompt
     for it in items:
         assert "system_prompt" not in it
+        # Compact fields must be present
+        for key in ("name", "kind", "lifecycle_mode", "status", "description",
+                    "runtime_profile", "model_slot"):
+            assert key in it, f"missing compact key '{key}' in {it['name']}"
 
 
 @pytest.mark.asyncio
@@ -183,6 +187,51 @@ async def test_list_agents_full_no_full_prompt(tmp_path, monkeypatch):
     for it in items:
         if "system_prompt_preview" in it:
             assert len(it["system_prompt_preview"]) <= 200
+
+
+@pytest.mark.asyncio
+async def test_list_agents_compact_includes_model_slot(tmp_path, monkeypatch):
+    """Compact output must include model_slot for every agent."""
+    reg, cat, _, _ = await _make_registry(tmp_path, monkeypatch)
+    await reg.init()
+    items = await reg.list_agents()
+    for it in items:
+        assert "model_slot" in it, f"missing model_slot in {it['name']}"
+        assert isinstance(it["model_slot"], str)
+
+
+@pytest.mark.asyncio
+async def test_list_agents_include_inactive(tmp_path, monkeypatch):
+    """include_inactive=True returns archived agents; default does not."""
+    reg, cat, _, _ = await _make_registry(tmp_path, monkeypatch)
+    await reg.init()
+
+    # Archive the coder builtin
+    coder = await cat.get_by_name("coder")
+    assert coder is not None
+    await cat.archive(coder.id)
+
+    # Default (include_inactive=False): only active agents
+    active_items = await reg.list_agents()
+    active_names = {it["name"] for it in active_items}
+    assert "researcher" in active_names
+    assert "coder" not in active_names
+
+    # include_inactive=True: archived agents appear too
+    all_items = await reg.list_agents(include_inactive=True)
+    all_names = {it["name"] for it in all_items}
+    assert "researcher" in all_names
+    assert "coder" in all_names
+
+
+@pytest.mark.asyncio
+async def test_list_agents_catalog_error_fails_closed(tmp_path, monkeypatch):
+    """When catalog.list_specs raises, the error propagates (fail-closed)."""
+    reg, cat, _, _ = await _make_registry(tmp_path, monkeypatch)
+    await reg.init()
+    cat.list_specs = AsyncMock(side_effect=RuntimeError("db corruption"))
+    with pytest.raises(RuntimeError, match="db corruption"):
+        await reg.list_agents()
 
 
 # ── render_agent_summary_for_stateview (sync) ──

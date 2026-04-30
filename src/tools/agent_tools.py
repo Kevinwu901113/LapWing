@@ -527,6 +527,35 @@ async def save_agent_executor(
     return ToolExecutionResult(success=True, payload={"name": name, "reason": reason})
 
 
+async def list_agents_executor(
+    req: ToolExecutionRequest, ctx: ToolExecutionContext,
+) -> ToolExecutionResult:
+    """返回当前可用 agent 的摘要列表，供主 agent 决定是否调用 delegate_to_agent。"""
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+    registry = svc.agent_registry
+    if not registry:
+        return ToolExecutionResult(
+            success=False, payload={}, reason="agent registry unavailable",
+        )
+
+    include_inactive = bool(req.arguments.get("include_inactive", False))
+    full = bool(req.arguments.get("full", False))
+
+    try:
+        items = await registry.list_agents(include_inactive=include_inactive, full=full)
+    except Exception as exc:
+        logger.exception("[agent_tools] list_agents failed")
+        return ToolExecutionResult(
+            success=False, payload={}, reason=f"list_agents failed: {exc}",
+        )
+
+    return ToolExecutionResult(
+        success=True,
+        payload={"agents": items, "count": len(items)},
+    )
+
+
 def register_agent_tools(registry, agent_registry=None) -> None:
     """Register the agent-team tool surface.
 
@@ -658,6 +687,22 @@ def register_agent_tools(registry, agent_registry=None) -> None:
         },
         "required": ["agent_name", "reason"],
     }
+    LIST_AGENTS_SCHEMA = {
+        "type": "object",
+        "properties": {
+            "include_inactive": {
+                "type": "boolean",
+                "description": "是否包含 inactive/archived agent，默认 false",
+                "default": False,
+            },
+            "full": {
+                "type": "boolean",
+                "description": "是否返回完整详情（含 resource_limits, tool_denylist, version 等），默认 false",
+                "default": False,
+            },
+        },
+        "required": [],
+    }
 
     registry.register(ToolSpec(
         name="delegate_to_agent",
@@ -692,5 +737,17 @@ def register_agent_tools(registry, agent_registry=None) -> None:
         capability="agent_admin",
         risk_level="medium",
     ))
+    registry.register(ToolSpec(
+        name="list_agents",
+        description=(
+            "查看当前可用的 agent 列表及其摘要信息（名称、类型、状态、"
+            "生命周期、runtime profile、model slot 等）。"
+            "用于在调用 delegate_to_agent 之前了解有哪些 agent 可用。"
+        ),
+        json_schema=LIST_AGENTS_SCHEMA,
+        executor=list_agents_executor,
+        capability="agent_admin",
+        risk_level="low",
+    ))
 
-    logger.info("[agent_tools] 已注册 7 个 agent 工具 (legacy delegate_* + 新 5 个)")
+    logger.info("[agent_tools] 已注册 8 个 agent 工具 (legacy delegate_* + 新 6 个)")

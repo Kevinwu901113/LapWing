@@ -190,14 +190,24 @@ class AgentRegistry:
         self._session_agents.pop(name, None)
         self._ephemeral_agents.pop(name, None)
 
-    async def list_agents(self, *, full: bool = False) -> list[dict]:
-        """List all available agents (builtin + persistent + session + ephemeral)."""
+    async def list_agents(self, *, full: bool = False, include_inactive: bool = False) -> list[dict]:
+        """List all available agents (builtin + persistent + session + ephemeral).
+
+        When include_inactive is False (default), only active agents are
+        returned from the catalog. When True, archived/disabled agents are
+        included too.
+        """
         items: list[dict] = []
         seen_names: set[str] = set()
 
         # Catalog (builtin + persistent)
         if self._catalog is not None:
-            specs = await self._catalog.list_specs(status="active")
+            status_filter = None if include_inactive else "active"
+            try:
+                specs = await self._catalog.list_specs(status=status_filter)
+            except Exception:
+                logger.exception("[AgentRegistry] catalog list_specs failed")
+                raise
             for s in specs:
                 items.append(self._spec_to_summary(s, full=full))
                 seen_names.add(s.name)
@@ -234,6 +244,7 @@ class AgentRegistry:
             "description": spec.description,
             "runtime_profile": spec.runtime_profile,
             "lifecycle_mode": spec.lifecycle.mode,
+            "model_slot": spec.model_slot,
         }
         if not full:
             return compact
