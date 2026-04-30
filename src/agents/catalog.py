@@ -20,6 +20,10 @@ from src.core.time_utils import now as local_now
 logger = logging.getLogger("lapwing.agents.catalog")
 
 
+class AgentCatalogIntegrityError(RuntimeError):
+    """Raised when spec_json fails integrity verification against spec_hash."""
+
+
 _CREATE_SQL = """
 CREATE TABLE IF NOT EXISTS agent_catalog (
     id           TEXT PRIMARY KEY,
@@ -177,18 +181,41 @@ class AgentCatalog:
         Authoritative columns (status, updated_at) override spec_json so
         mutations like archive() are reflected even though spec_json is not
         re-serialized on those updates.
+
+        Verifies spec_json integrity against stored spec_hash before returning.
         """
-        raw = json.loads(row["spec_json"])
-        lifecycle = AgentLifecyclePolicy(**raw.pop("lifecycle"))
-        limits = AgentResourceLimits(**raw.pop("resource_limits"))
-        created_at = datetime.fromisoformat(raw.pop("created_at"))
-        updated_at = datetime.fromisoformat(row["updated_at"])
-        raw.pop("updated_at", None)
-        raw["status"] = row["status"]
-        return AgentSpec(
-            **raw,
-            lifecycle=lifecycle,
-            resource_limits=limits,
-            created_at=created_at,
-            updated_at=updated_at,
-        )
+        spec_json_str = row["spec_json"]
+        stored_hash = row["spec_hash"]
+
+        try:
+            raw = json.loads(spec_json_str)
+            lifecycle = AgentLifecyclePolicy(**raw.pop("lifecycle"))
+            limits = AgentResourceLimits(**raw.pop("resource_limits"))
+            created_at = datetime.fromisoformat(raw.pop("created_at"))
+            updated_at = datetime.fromisoformat(row["updated_at"])
+            raw.pop("updated_at", None)
+            raw["status"] = row["status"]
+            spec = AgentSpec(
+                **raw,
+                lifecycle=lifecycle,
+                resource_limits=limits,
+                created_at=created_at,
+                updated_at=updated_at,
+            )
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError) as e:
+            raise AgentCatalogIntegrityError(
+                f"spec_json is corrupt for agent id={row['id']}: {type(e).__name__}: {e}"
+            ) from e
+
+        computed_hash = spec.spec_hash()
+        if not stored_hash:
+            raise AgentCatalogIntegrityError(
+                f"spec_hash is empty for agent id={row['id']}, name={spec.name}"
+            )
+        if computed_hash != stored_hash:
+            raise AgentCatalogIntegrityError(
+                f"spec_hash mismatch for agent id={row['id']}, name={spec.name}: "
+                f"stored={stored_hash!r}, computed={computed_hash!r}"
+            )
+
+        return spec
