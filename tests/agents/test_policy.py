@@ -190,6 +190,55 @@ def test_validate_tool_access_unknown_profile_logs_and_denies(caplog):
     ), "expected warning log when profile lookup fails"
 
 
+# ── MAX_SESSION_AGENTS enforcement ──
+
+@pytest.mark.asyncio
+async def test_validate_create_rejects_when_session_count_at_max(tmp_path):
+    """session_count >= MAX_SESSION_AGENTS + lifecycle=session → raises."""
+    cat = AgentCatalog(tmp_path / "x.db")
+    await cat.init()
+    pol = AgentPolicy(cat)
+    with pytest.raises(AgentPolicyViolation) as exc_info:
+        await pol.validate_create(
+            _make_create_input(lifecycle="session"),
+            creator_context=MagicMock(),
+            session_count=AgentPolicy.MAX_SESSION_AGENTS,
+        )
+    assert exc_info.value.reason == "max_session_agents_reached"
+    assert exc_info.value.details["count"] == 5
+    assert exc_info.value.details["limit"] == 5
+
+
+@pytest.mark.asyncio
+async def test_validate_create_allows_session_when_below_max(tmp_path):
+    """session_count < MAX_SESSION_AGENTS + lifecycle=session → passes."""
+    cat = AgentCatalog(tmp_path / "x.db")
+    await cat.init()
+    pol = AgentPolicy(cat)
+    pol._semantic_lint = AsyncMock(return_value=_safe_lint())
+    spec = await pol.validate_create(
+        _make_create_input(lifecycle="session"),
+        creator_context=MagicMock(),
+        session_count=AgentPolicy.MAX_SESSION_AGENTS - 1,
+    )
+    assert spec.lifecycle.mode == "session"
+
+
+@pytest.mark.asyncio
+async def test_validate_create_allows_ephemeral_when_session_at_max(tmp_path):
+    """lifecycle=ephemeral ignores MAX_SESSION_AGENTS limit."""
+    cat = AgentCatalog(tmp_path / "x.db")
+    await cat.init()
+    pol = AgentPolicy(cat)
+    pol._semantic_lint = AsyncMock(return_value=_safe_lint())
+    spec = await pol.validate_create(
+        _make_create_input(lifecycle="ephemeral"),
+        creator_context=MagicMock(),
+        session_count=AgentPolicy.MAX_SESSION_AGENTS,
+    )
+    assert spec.lifecycle.mode == "ephemeral"
+
+
 # ── T-11: save_agent stricter validation ──
 
 @pytest.mark.asyncio

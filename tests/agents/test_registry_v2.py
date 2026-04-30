@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 from src.agents.registry import AgentRegistry, _SessionEntry
 from src.agents.catalog import AgentCatalog
 from src.agents.factory import AgentFactory
-from src.agents.policy import AgentPolicy, CreateAgentInput, LintResult
+from src.agents.policy import AgentPolicy, AgentPolicyViolation, CreateAgentInput, LintResult
 from src.agents.spec import AgentSpec, AgentLifecyclePolicy
 
 
@@ -17,7 +17,7 @@ async def _make_registry(tmp_path, monkeypatch):
     cat = AgentCatalog(tmp_path / "x.db"); await cat.init()
     factory = MagicMock()
     # Factory returns a fresh MagicMock per call to verify "fresh runtime" behavior.
-    factory.create = MagicMock(side_effect=lambda spec: MagicMock(spec_obj=spec, dynamic_spec=spec))
+    factory.create = MagicMock(side_effect=lambda spec, services_override=None: MagicMock(spec_obj=spec, dynamic_spec=spec))
     policy = AgentPolicy(cat)
     policy._semantic_lint = AsyncMock(return_value=_safe_lint())
     reg = AgentRegistry(cat, factory, policy)
@@ -216,6 +216,88 @@ async def test_cleanup_removes_expired_sessions(tmp_path, monkeypatch):
     cleaned = await reg.cleanup_expired_sessions()
     assert cleaned == 1
     assert spec.name not in reg._session_agents
+
+
+# ── MAX_SESSION_AGENTS enforcement (registry layer) ──
+
+@pytest.mark.asyncio
+async def test_create_five_session_agents_succeed_sixth_fails(tmp_path, monkeypatch):
+    """Create 5 session agents ok, 6th → AgentPolicyViolation."""
+    import time
+    reg, cat, _, _ = await _make_registry(tmp_path, monkeypatch)
+    await reg.init()
+    for i in range(5):
+        await reg.create_agent(
+            CreateAgentInput(name_hint=f"sess_{i}", purpose="x", instructions="y",
+                             profile="agent_researcher", model_slot="agent_researcher",
+                             lifecycle="session", ttl_seconds=600),
+            ctx=MagicMock(),
+        )
+    assert len(reg._session_agents) == 5
+    with pytest.raises(AgentPolicyViolation) as exc_info:
+        await reg.create_agent(
+            CreateAgentInput(name_hint="overflow", purpose="x", instructions="y",
+                             profile="agent_researcher", model_slot="agent_researcher",
+                             lifecycle="session", ttl_seconds=600),
+            ctx=MagicMock(),
+        )
+    assert exc_info.value.reason == "max_session_agents_reached"
+
+
+@pytest.mark.asyncio
+async def test_create_ephemeral_not_affected_by_session_limit(tmp_path, monkeypatch):
+    """Ephemeral agent creation ignores MAX_SESSION_AGENTS."""
+    reg, cat, _, _ = await _make_registry(tmp_path, monkeypatch)
+    await reg.init()
+    # Fill session slots
+    for i in range(5):
+        await reg.create_agent(
+            CreateAgentInput(name_hint=f"sess_{i}", purpose="x", instructions="y",
+                             profile="agent_researcher", model_slot="agent_researcher",
+                             lifecycle="session", ttl_seconds=600),
+            ctx=MagicMock(),
+        )
+    # Ephemeral should still work
+    spec = await reg.create_agent(
+        CreateAgentInput(name_hint="eph", purpose="x", instructions="y",
+                         profile="agent_researcher", model_slot="agent_researcher",
+                         lifecycle="ephemeral", ttl_seconds=3600),
+        ctx=MagicMock(),
+    )
+    assert spec.lifecycle.mode == "ephemeral"
+    assert spec.name in reg._ephemeral_agents
+
+
+@pytest.mark.asyncio
+async def test_create_session_after_expired_cleanup_succeeds(tmp_path, monkeypatch):
+    """After an expired session is cleaned up, a new one can be created."""
+    import time
+    reg, cat, _, _ = await _make_registry(tmp_path, monkeypatch)
+    await reg.init()
+    for i in range(5):
+        await reg.create_agent(
+            CreateAgentInput(name_hint=f"sess_{i}", purpose="x", instructions="y",
+                             profile="agent_researcher", model_slot="agent_researcher",
+                             lifecycle="session", ttl_seconds=600),
+            ctx=MagicMock(),
+        )
+    # Expire the first session agent
+    name0 = "sess_0"
+    entry = reg._session_agents[name0]
+    entry.last_used_at = time.monotonic() - 1000  # well past ttl=600
+
+    # 6th create_agent triggers cleanup internally, then should succeed
+    spec = await reg.create_agent(
+        CreateAgentInput(name_hint="new_sess", purpose="x", instructions="y",
+                         profile="agent_researcher", model_slot="agent_researcher",
+                         lifecycle="session", ttl_seconds=600),
+        ctx=MagicMock(),
+    )
+    assert spec.lifecycle.mode == "session"
+    # The expired one is gone, the new one is present
+    assert name0 not in reg._session_agents
+    assert spec.name in reg._session_agents
+    assert len(reg._session_agents) == 5
 
 
 # ── Backwards-compat: legacy zero-arg constructor + register/get/list_names ──

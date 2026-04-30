@@ -97,6 +97,8 @@ class AgentPolicy:
         self,
         request: CreateAgentInput,
         creator_context,  # ToolExecutionContext, untyped to avoid import cycle
+        *,
+        session_count: int = 0,
     ) -> AgentSpec:
         """Validate a create_agent request and return a normalized AgentSpec.
 
@@ -130,6 +132,16 @@ class AgentPolicy:
                 {
                     "lifecycle": request.lifecycle,
                     "allowed": ["ephemeral", "session"],
+                },
+            )
+
+        # 3a. session agent count must not exceed MAX_SESSION_AGENTS
+        if request.lifecycle == "session" and session_count >= self.MAX_SESSION_AGENTS:
+            raise AgentPolicyViolation(
+                "max_session_agents_reached",
+                {
+                    "count": session_count,
+                    "limit": self.MAX_SESSION_AGENTS,
                 },
             )
 

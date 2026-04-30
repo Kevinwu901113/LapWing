@@ -84,7 +84,12 @@ class AgentRegistry:
         session/ephemeral dict (NOT catalog)."""
         if self._policy is None:
             raise RuntimeError("AgentRegistry not configured with policy")
-        spec = await self._policy.validate_create(request, ctx)
+        # Free slots occupied by expired sessions, then count active ones.
+        await self.cleanup_expired_sessions()
+        session_count = len(self._session_agents)
+        spec = await self._policy.validate_create(
+            request, ctx, session_count=session_count,
+        )
         if spec.lifecycle.mode == "ephemeral":
             self._ephemeral_agents[spec.name] = spec
         elif spec.lifecycle.mode == "session":
