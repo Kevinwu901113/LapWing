@@ -302,7 +302,8 @@ class AgentRegistry:
             truncated = True
         for spec in dynamic_specs:
             desc = (spec.description or "")[:30]
-            lines.append(f"- {spec.name}: {spec.lifecycle.mode}, {desc}")
+            profile = spec.runtime_profile or ""
+            lines.append(f"- {spec.name}: {spec.kind}, {profile}, {spec.lifecycle.mode}, {desc}")
         if truncated:
             lines.append("- ... 更多用 list_agents 查看")
 

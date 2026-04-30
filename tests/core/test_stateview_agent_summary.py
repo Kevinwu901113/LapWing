@@ -113,3 +113,34 @@ def test_builder_swallows_registry_exceptions():
     fake_registry.render_agent_summary_for_stateview.side_effect = RuntimeError("boom")
     builder = StateViewBuilder(agent_registry=fake_registry)
     assert builder._build_agent_summary() is None
+
+
+def test_serializer_never_leaks_system_prompt():
+    """If someone accidentally includes system_prompt text in agent_summary,
+    the serializer still passes it through — but the registry layer must
+    never produce it. This test documents the contract."""
+    from src.core.state_serializer import _render_runtime_state
+
+    sv = _make_state_view(
+        agent_summary="可用 Agent:\n- researcher: builtin, 搜索"
+    )
+    rendered = _render_runtime_state(sv)
+    assert "system_prompt" not in rendered.lower()
+    assert "spec_json" not in rendered.lower()
+
+
+def test_builder_stores_agent_registry_from_constructor():
+    """StateViewBuilder(agent_registry=reg) stores the registry and
+    _build_agent_summary() delegates to it."""
+    from src.core.state_view_builder import StateViewBuilder
+
+    fake_registry = MagicMock()
+    fake_registry.render_agent_summary_for_stateview.return_value = "可用 Agent:\n- test: builtin, desc"
+    builder = StateViewBuilder(agent_registry=fake_registry)
+    # Constructor stored it
+    assert builder._agent_registry is fake_registry
+    # build_for_chat() calls _build_agent_summary() which delegates
+    # (we test the inner method directly to stay sync)
+    result = builder._build_agent_summary()
+    assert result == "可用 Agent:\n- test: builtin, desc"
+    fake_registry.render_agent_summary_for_stateview.assert_called_once()
