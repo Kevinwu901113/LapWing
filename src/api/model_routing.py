@@ -32,6 +32,7 @@ class ProviderCreate(BaseModel):
     api_key: str
     api_type: str = "openai"
     auth_type: str = "api_key"
+    auth_style: str = "x_api_key"
     api_key_env: str | None = None
     protocol: str | None = None
     models: list[dict[str, Any]] = []
@@ -43,6 +44,7 @@ class ProviderUpdate(BaseModel):
     api_key: str | None = None
     api_type: str | None = None
     auth_type: str | None = None
+    auth_style: str | None = None
     api_key_env: str | None = None
     protocol: str | None = None
     models: list[dict[str, Any]] | None = None
@@ -74,6 +76,7 @@ async def add_provider(body: ProviderCreate):
             api_type=body.api_type,
             models=body.models,
             auth_type=body.auth_type,
+            auth_style=body.auth_style,
             api_key_env=body.api_key_env,
             protocol=body.protocol,
         )

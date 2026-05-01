@@ -92,6 +92,7 @@ class ProviderInfo:
     api_key: str
     models: list[ModelInfo] = field(default_factory=list)
     auth_type: str = "api_key"             # "api_key" | "oauth" | "none"
+    auth_style: str = "x_api_key"          # anthropic: "x_api_key" | "bearer"
     api_key_env: str | None = None
     protocol: str | None = None            # explicit wire protocol override for UI/metadata
     reasoning_effort: str | None = None   # codex: "low" | "medium" | "high" | "xhigh"
@@ -122,6 +123,7 @@ class ResolvedModelRoute:
     base_url: str
     api_key: str
     auth_type: str = "api_key"
+    auth_style: str = "x_api_key"
     api_key_env: str | None = None
     protocol: str | None = None
     capabilities: dict[str, Any] = field(default_factory=dict)
@@ -220,6 +222,7 @@ def _serialize(config: ModelRoutingConfig, *, include_api_key: bool = False) -> 
                 "api_key": _api_key_value(p),
                 "models": [_model_dict(m) for m in p.models],
                 **({"auth_type": p.auth_type} if p.auth_type != "api_key" else {}),
+                **({"auth_style": p.auth_style} if p.auth_style != "x_api_key" else {}),
                 **({"api_key_env": p.api_key_env} if p.api_key_env else {}),
                 **({"protocol": p.protocol} if p.protocol else {}),
                 **({"reasoning_effort": p.reasoning_effort} if p.reasoning_effort else {}),
@@ -253,6 +256,7 @@ def _deserialize(data: dict[str, Any]) -> ModelRoutingConfig:
             api_key=p.get("api_key", ""),
             models=models,
             auth_type=p.get("auth_type") or ("oauth" if p.get("api_type") == "codex_oauth" else "api_key"),
+            auth_style=p.get("auth_style") or "x_api_key",
             api_key_env=p.get("api_key_env"),
             protocol=p.get("protocol"),
             reasoning_effort=p.get("reasoning_effort"),
@@ -422,6 +426,7 @@ class ModelConfigManager:
         api_type: str = "openai",
         models: list[dict[str, Any]] | None = None,
         auth_type: str = "api_key",
+        auth_style: str = "x_api_key",
         api_key_env: str | None = None,
         protocol: str | None = None,
     ) -> dict[str, Any]:
@@ -447,6 +452,7 @@ class ModelConfigManager:
             api_key=api_key,
             models=model_list,
             auth_type=auth_type,
+            auth_style=auth_style or "x_api_key",
             api_key_env=api_key_env,
             protocol=protocol,
         )
@@ -474,6 +480,8 @@ class ModelConfigManager:
             provider.api_type = updates["api_type"]
         if "auth_type" in updates:
             provider.auth_type = updates["auth_type"] or "api_key"
+        if "auth_style" in updates:
+            provider.auth_style = updates["auth_style"] or "x_api_key"
         if "api_key_env" in updates:
             provider.api_key_env = updates["api_key_env"]
         if "protocol" in updates:
@@ -588,6 +596,7 @@ class ModelConfigManager:
             base_url=provider.base_url,
             api_key=provider.api_key,
             auth_type=provider.auth_type,
+            auth_style=provider.auth_style,
             api_key_env=provider.api_key_env,
             protocol=provider.protocol or provider.api_type,
             capabilities=dict(model.capabilities),

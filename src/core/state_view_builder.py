@@ -33,6 +33,7 @@ from typing import TYPE_CHECKING
 from src.core.prompt_loader import load_prompt
 from src.core.state_view import (
     AttentionContext,
+    CapabilitySummary,
     CommitmentView,
     IdentityDocs,
     MemorySnippet,
@@ -93,6 +94,7 @@ class StateViewBuilder:
         memory_top_k: int = 10,
         memory_query_chat_turns: int = 3,
         agent_registry=None,  # Blueprint §9.1: optional, for compact agent list
+        capability_retriever=None,  # Phase 4: optional, duck-typed (has retrieve method)
     ) -> None:
         self._soul_path = Path(soul_path)
         self._constitution_path = Path(constitution_path)
@@ -116,6 +118,7 @@ class StateViewBuilder:
         self._ambient: AmbientKnowledgeStore | None = None
         self._time_provider = TimeContextProvider()
         self._agent_registry = agent_registry  # Blueprint §9: AgentRegistry facade
+        self._capability_retriever = capability_retriever  # Phase 4: duck-typed
 
     # ── Entry points ─────────────────────────────────────────────────
 
@@ -158,6 +161,7 @@ class StateViewBuilder:
         time_context = self._time_provider.get_context(attention_context.now)
         ambient_entries = await self._build_ambient_entries()
         focus_context = await self._build_focus_context(chat_id)
+        capability_summaries = self._build_capability_summaries(trajectory_window)
 
         return StateView(
             identity_docs=identity_docs,
@@ -171,6 +175,7 @@ class StateViewBuilder:
             ambient_entries=ambient_entries,
             focus_context=focus_context,
             agent_summary=self._build_agent_summary(),
+            capability_summaries=capability_summaries,
         )
 
     async def build_for_inner(
@@ -206,6 +211,7 @@ class StateViewBuilder:
         time_context = self._time_provider.get_context(attention_context.now)
         ambient_entries = await self._build_ambient_entries()
         focus_context = await self._build_inner_focus_context()
+        capability_summaries = self._build_capability_summaries(trajectory_window)
 
         return StateView(
             identity_docs=identity_docs,
@@ -219,6 +225,7 @@ class StateViewBuilder:
             ambient_entries=ambient_entries,
             focus_context=focus_context,
             agent_summary=self._build_agent_summary(),
+            capability_summaries=capability_summaries,
         )
 
     # ── Agents ───────────────────────────────────────────────────────
@@ -236,6 +243,48 @@ class StateViewBuilder:
             return self._agent_registry.render_agent_summary_for_stateview()
         except Exception:
             return None
+
+    # ── Capabilities (Phase 4) ───────────────────────────────────────
+
+    def _build_capability_summaries(
+        self, trajectory_window: TrajectoryWindow
+    ) -> tuple[CapabilitySummary, ...]:
+        """Build compact capability summaries for progressive disclosure.
+
+        Only runs when a capability retriever is wired (behind
+        capabilities.enabled + capabilities.retrieval_enabled flags).
+        Returns an empty tuple on any failure — never breaks normal chat.
+        """
+        if self._capability_retriever is None:
+            return ()
+
+        query = _trajectory_query_text(trajectory_window, 3)
+        if not query:
+            return ()
+
+        try:
+            results = self._capability_retriever.retrieve(query)
+        except Exception:
+            logger.debug("Capability retrieval failed", exc_info=True)
+            return ()
+
+        summaries: list[CapabilitySummary] = []
+        for r in results:
+            summaries.append(
+                CapabilitySummary(
+                    id=r.id,
+                    name=r.name,
+                    description=r.description,
+                    type=r.type,
+                    scope=r.scope,
+                    maturity=r.maturity,
+                    risk_level=r.risk_level,
+                    triggers=r.triggers,
+                    required_tools=r.required_tools,
+                    match_reason=r.match_reason,
+                )
+            )
+        return tuple(summaries)
 
     # ── Identity ─────────────────────────────────────────────────────
 

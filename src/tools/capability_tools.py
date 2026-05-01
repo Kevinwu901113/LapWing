@@ -1,4 +1,6 @@
 """Read-only capability tools: list_capabilities, search_capability, view_capability.
+Phase 3C: lifecycle management tools: evaluate_capability, plan_capability_transition,
+transition_capability (feature-gated behind capabilities.lifecycle_tools_enabled).
 
 Phase 2B: Expose capability library inspection without execution, mutation, or
 automatic retrieval. All tools are feature-gated behind capabilities.enabled.
@@ -19,6 +21,7 @@ from src.tools.types import (
 
 if TYPE_CHECKING:
     from src.capabilities import CapabilityIndex, CapabilityStore
+    from src.capabilities.lifecycle import CapabilityLifecycleManager
 
 logger = logging.getLogger("lapwing.tools.capability_tools")
 
@@ -510,6 +513,346 @@ def _make_view_capability_executor(store: "CapabilityStore", index: "CapabilityI
     return executor
 
 
+# ── Phase 3C: Lifecycle management tool schemas ─────────────────────
+
+EVALUATE_CAPABILITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {
+            "type": "string",
+            "description": "Capability ID to evaluate",
+        },
+        "scope": {
+            "type": "string",
+            "enum": ["global", "user", "workspace", "session"],
+            "description": "Scope to look in (omitted = resolve by precedence)",
+        },
+        "write_record": {
+            "type": "boolean",
+            "description": "Persist the EvalRecord to evals/ (default true)",
+        },
+        "include_findings": {
+            "type": "boolean",
+            "description": "Include detailed findings in response (default true)",
+        },
+    },
+    "required": ["id"],
+}
+
+PLAN_CAPABILITY_TRANSITION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {
+            "type": "string",
+            "description": "Capability ID to plan a transition for",
+        },
+        "scope": {
+            "type": "string",
+            "enum": ["global", "user", "workspace", "session"],
+            "description": "Scope to look in (omitted = resolve by precedence)",
+        },
+        "target": {
+            "type": "string",
+            "enum": ["testing", "stable", "broken", "repairing", "disabled", "archived"],
+            "description": "Target maturity or status",
+        },
+        "approval": {
+            "type": "object",
+            "description": "Approval object for high-risk transitions",
+            "properties": {
+                "approved": {"type": "boolean"},
+                "approved_by": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+        },
+        "failure_evidence": {
+            "type": "object",
+            "description": "Evidence of failure (required for stable→broken)",
+        },
+        "reason": {
+            "type": "string",
+            "description": "Human-readable reason for the transition",
+        },
+    },
+    "required": ["id", "target"],
+}
+
+TRANSITION_CAPABILITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {
+            "type": "string",
+            "description": "Capability ID to transition",
+        },
+        "scope": {
+            "type": "string",
+            "enum": ["global", "user", "workspace", "session"],
+            "description": "Scope to look in (omitted = resolve by precedence)",
+        },
+        "target": {
+            "type": "string",
+            "enum": ["testing", "stable", "broken", "repairing", "disabled", "archived"],
+            "description": "Target maturity or status",
+        },
+        "approval": {
+            "type": "object",
+            "description": "Approval object for high-risk transitions",
+            "properties": {
+                "approved": {"type": "boolean"},
+                "approved_by": {"type": "string"},
+                "reason": {"type": "string"},
+            },
+        },
+        "failure_evidence": {
+            "type": "object",
+            "description": "Evidence of failure (required for stable→broken)",
+        },
+        "reason": {
+            "type": "string",
+            "description": "Human-readable reason for the transition",
+        },
+        "dry_run": {
+            "type": "boolean",
+            "description": "If true, preview the transition without applying it (default false)",
+        },
+    },
+    "required": ["id", "target"],
+}
+
+
+# ── Phase 3C: Lifecycle tool executors ──────────────────────────────
+
+def _make_evaluate_capability_executor(lifecycle: "CapabilityLifecycleManager"):
+    async def executor(
+        request: ToolExecutionRequest,
+        context: ToolExecutionContext,
+    ) -> ToolExecutionResult:
+        try:
+            args = request.arguments
+            cap_id = str(args.get("id", "")).strip()
+            if not cap_id:
+                return ToolExecutionResult(
+                    success=False,
+                    payload={"error": "id is required"},
+                    reason="evaluate_capability requires an id",
+                )
+
+            scope_str = _validate_enum(args.get("scope"), ALLOWED_SCOPES, "scope")
+            write_record = bool(args.get("write_record", True))
+            include_findings = bool(args.get("include_findings", True))
+
+            record = lifecycle.evaluate(
+                cap_id, scope=scope_str, write_record=write_record,
+            )
+
+            result: dict = {
+                "capability_id": cap_id,
+                "scope": scope_str or "",
+                "content_hash": record.content_hash,
+                "evaluator_version": record.evaluator_version,
+                "created_at": record.created_at,
+                "passed": record.passed,
+                "score": record.score,
+                "required_approval": record.required_approval,
+                "recommended_maturity": record.recommended_maturity,
+            }
+
+            if include_findings:
+                result["findings"] = [
+                    {
+                        "severity": f.severity.value,
+                        "code": f.code,
+                        "message": f.message,
+                        "location": f.location,
+                    }
+                    for f in record.findings
+                ]
+
+            if write_record:
+                result["eval_record_id"] = record.created_at
+
+            return ToolExecutionResult(success=True, payload=result)
+        except ValueError as e:
+            return ToolExecutionResult(success=False, payload={"error": str(e)}, reason=str(e))
+        except Exception as e:
+            logger.debug("evaluate_capability failed", exc_info=True)
+            return ToolExecutionResult(
+                success=False,
+                payload={"error": "capability_store_unavailable", "detail": str(e)},
+                reason=f"evaluate_capability failed: {e}",
+            )
+
+    return executor
+
+
+def _make_plan_capability_transition_executor(lifecycle: "CapabilityLifecycleManager"):
+    async def executor(
+        request: ToolExecutionRequest,
+        context: ToolExecutionContext,
+    ) -> ToolExecutionResult:
+        try:
+            args = request.arguments
+            cap_id = str(args.get("id", "")).strip()
+            if not cap_id:
+                return ToolExecutionResult(
+                    success=False,
+                    payload={"error": "id is required"},
+                    reason="plan_capability_transition requires an id",
+                )
+
+            target = str(args.get("target", "")).strip()
+            if target not in ("testing", "stable", "broken", "repairing", "disabled", "archived"):
+                return ToolExecutionResult(
+                    success=False,
+                    payload={"error": f"Invalid target '{target}'"},
+                    reason=f"Invalid target: {target}",
+                )
+
+            scope_str = _validate_enum(args.get("scope"), ALLOWED_SCOPES, "scope")
+            approval = args.get("approval")
+            failure_evidence = args.get("failure_evidence")
+            reason = args.get("reason")
+
+            plan = lifecycle.plan_transition(
+                cap_id,
+                target,
+                scope=scope_str,
+                approval=approval,
+                failure_evidence=failure_evidence,
+            )
+
+            return ToolExecutionResult(
+                success=True,
+                payload={
+                    "capability_id": cap_id,
+                    "scope": plan.scope,
+                    "from_maturity": plan.from_maturity,
+                    "target": target,
+                    "allowed": plan.allowed,
+                    "required_approval": plan.required_approval,
+                    "required_evidence": plan.required_evidence,
+                    "blocking_findings": plan.blocking_findings,
+                    "policy_decisions": plan.policy_decisions,
+                    "explanation": plan.explanation,
+                },
+            )
+        except ValueError as e:
+            return ToolExecutionResult(success=False, payload={"error": str(e)}, reason=str(e))
+        except Exception as e:
+            logger.debug("plan_capability_transition failed", exc_info=True)
+            return ToolExecutionResult(
+                success=False,
+                payload={"error": "capability_store_unavailable", "detail": str(e)},
+                reason=f"plan_capability_transition failed: {e}",
+            )
+
+    return executor
+
+
+def _make_transition_capability_executor(lifecycle: "CapabilityLifecycleManager"):
+    async def executor(
+        request: ToolExecutionRequest,
+        context: ToolExecutionContext,
+    ) -> ToolExecutionResult:
+        try:
+            args = request.arguments
+            cap_id = str(args.get("id", "")).strip()
+            if not cap_id:
+                return ToolExecutionResult(
+                    success=False,
+                    payload={"error": "id is required"},
+                    reason="transition_capability requires an id",
+                )
+
+            target = str(args.get("target", "")).strip()
+            if target not in ("testing", "stable", "broken", "repairing", "disabled", "archived"):
+                return ToolExecutionResult(
+                    success=False,
+                    payload={"error": f"Invalid target '{target}'"},
+                    reason=f"Invalid target: {target}",
+                )
+
+            scope_str = _validate_enum(args.get("scope"), ALLOWED_SCOPES, "scope")
+            approval = args.get("approval")
+            failure_evidence = args.get("failure_evidence")
+            reason = args.get("reason")
+            dry_run = bool(args.get("dry_run", False))
+
+            if dry_run:
+                plan = lifecycle.plan_transition(
+                    cap_id,
+                    target,
+                    scope=scope_str,
+                    approval=approval,
+                    failure_evidence=failure_evidence,
+                )
+                return ToolExecutionResult(
+                    success=True,
+                    payload={
+                        "capability_id": cap_id,
+                        "scope": plan.scope,
+                        "from_maturity": plan.from_maturity,
+                        "target": target,
+                        "applied": False,
+                        "dry_run": True,
+                        "allowed": plan.allowed,
+                        "required_approval": plan.required_approval,
+                        "required_evidence": plan.required_evidence,
+                        "blocking_findings": plan.blocking_findings,
+                        "policy_decisions": plan.policy_decisions,
+                        "explanation": plan.explanation,
+                    },
+                )
+
+            result = lifecycle.apply_transition(
+                cap_id,
+                target,
+                scope=scope_str,
+                approval=approval,
+                failure_evidence=failure_evidence,
+                reason=reason,
+            )
+
+            payload: dict = {
+                "capability_id": result.capability_id,
+                "scope": result.scope,
+                "from_maturity": result.from_maturity,
+                "to_maturity": result.to_maturity,
+                "from_status": result.from_status,
+                "to_status": result.to_status,
+                "applied": result.applied,
+                "message": result.message,
+                "content_hash_before": result.content_hash_before,
+                "content_hash_after": result.content_hash_after,
+            }
+
+            if result.eval_record_id:
+                payload["eval_record_id"] = result.eval_record_id
+            if result.version_snapshot_id:
+                payload["version_snapshot_id"] = result.version_snapshot_id
+            if result.policy_decisions:
+                payload["policy_decisions"] = result.policy_decisions
+            if result.blocking_findings:
+                payload["blocking_findings"] = result.blocking_findings
+
+            return ToolExecutionResult(
+                success=result.applied,
+                payload=payload,
+                reason="" if result.applied else result.message,
+            )
+        except ValueError as e:
+            return ToolExecutionResult(success=False, payload={"error": str(e)}, reason=str(e))
+        except Exception as e:
+            logger.debug("transition_capability failed", exc_info=True)
+            return ToolExecutionResult(
+                success=False,
+                payload={"error": "transition_failed", "detail": str(e)},
+                reason=f"transition_capability failed: {e}",
+            )
+
+    return executor
+
+
 # ── Registration ─────────────────────────────────────────────────────
 
 def register_capability_tools(
@@ -567,3 +910,63 @@ def register_capability_tools(
     ))
 
     logger.info("Phase 2B capability read tools registered (list/search/view)")
+
+
+def register_capability_lifecycle_tools(
+    tool_registry,
+    lifecycle: "CapabilityLifecycleManager",
+) -> None:
+    """Register Phase 3C lifecycle management tools.
+
+    Three tools: evaluate_capability, plan_capability_transition,
+    transition_capability. All use capability_lifecycle tag so they
+    require an explicit operator profile — not granted to standard/default.
+    """
+    if lifecycle is None:
+        logger.warning("register_capability_lifecycle_tools called with lifecycle=None, skipping")
+        return
+
+    tool_registry.register(ToolSpec(
+        name="evaluate_capability",
+        description=(
+            "对指定能力运行确定性评估器（CapabilityEvaluator），检查安全性、"
+            "质量、完整性。可选择性将 EvalRecord 持久化到 evals/ 目录。"
+            "此工具不会修改能力的 maturity 或 status。"
+            "不会执行脚本。"
+        ),
+        json_schema=EVALUATE_CAPABILITY_SCHEMA,
+        executor=_make_evaluate_capability_executor(lifecycle),
+        capability="capability_lifecycle",
+        risk_level="low",
+    ))
+
+    tool_registry.register(ToolSpec(
+        name="plan_capability_transition",
+        description=(
+            "预览一个生命周期转换是否会通过 policy/evaluator/planner 门控。"
+            "纯只读操作，不会产生任何文件变更、快照写入、索引刷新或变更日志。"
+            "返回 allowed 及所需的 approval/evidence/findings。"
+        ),
+        json_schema=PLAN_CAPABILITY_TRANSITION_SCHEMA,
+        executor=_make_plan_capability_transition_executor(lifecycle),
+        capability="capability_lifecycle",
+        risk_level="low",
+    ))
+
+    tool_registry.register(ToolSpec(
+        name="transition_capability",
+        description=(
+            "对指定能力执行受控生命周期转换。转换必须通过 planner → policy → "
+            "evaluator 门控。被阻止的转换不会产生任何文件/索引/变更日志修改。"
+            "成功的转换会在变更前写入版本快照、更新 manifest maturity/status、"
+            "重新计算 content_hash、刷新索引并可选记录 MutationLog。"
+            "设置 dry_run=true 可进行纯预览而不执行变更。"
+            "不会执行脚本、导入脚本或运行 shell。"
+        ),
+        json_schema=TRANSITION_CAPABILITY_SCHEMA,
+        executor=_make_transition_capability_executor(lifecycle),
+        capability="capability_lifecycle",
+        risk_level="medium",
+    ))
+
+    logger.info("Phase 3C capability lifecycle tools registered (evaluate/plan/transition)")

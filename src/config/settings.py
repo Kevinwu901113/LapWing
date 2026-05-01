@@ -286,6 +286,7 @@ _ENV_MAP: dict[str, list[str]] = {
     "CAPABILITIES_RETRIEVAL_ENABLED": ["capabilities", "retrieval_enabled"],
     "CAPABILITIES_CURATOR_ENABLED": ["capabilities", "curator_enabled"],
     "CAPABILITIES_AUTO_DRAFT_ENABLED": ["capabilities", "auto_draft_enabled"],
+    "CAPABILITIES_LIFECYCLE_TOOLS_ENABLED": ["capabilities", "lifecycle_tools_enabled"],
     "CAPABILITIES_DATA_DIR": ["capabilities", "data_dir"],
     "CAPABILITIES_INDEX_DB_PATH": ["capabilities", "index_db_path"],
 }
@@ -640,11 +641,15 @@ class CapabilitiesConfig(BaseModel):
     All flags default to False. No runtime code reads these in Phase 0/1;
     they exist so Phase 2+ can gate capability retrieval, curation, and
     auto-drafting behind them.
+
+    Phase 3C: lifecycle_tools_enabled gates evaluate/plan/transition tools
+    which require both capabilities.enabled=true AND this flag to be registered.
     """
     enabled: bool = False
     retrieval_enabled: bool = False
     curator_enabled: bool = False
     auto_draft_enabled: bool = False
+    lifecycle_tools_enabled: bool = False
     data_dir: str = "data/capabilities"
     index_db_path: str = "data/capabilities/capability_index.sqlite"
 

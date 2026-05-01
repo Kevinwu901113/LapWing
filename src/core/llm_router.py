@@ -2,8 +2,10 @@
 
 import json
 import logging
+import os
 import time
 from typing import Any, Awaitable, Callable
+from urllib.parse import urlparse
 
 from src.auth.service import AuthManager
 from src.core.reasoning_tags import strip_internal_thinking_tags
@@ -24,6 +26,7 @@ from src.core.llm_protocols import (  # noqa: F401
     _is_native_anthropic,
     _mark_last_user_message_cache,
     _normalize_anthropic_base_url,
+    _anthropic_messages_endpoint,
     _split_system_messages,
     _extract_anthropic_text,
     _has_anthropic_thinking,
@@ -451,6 +454,7 @@ class LLMRouter:
             base_url=base_url,
             api_key=api_key,
             auth_type=getattr(provider, "auth_type", "api_key"),
+            auth_style=getattr(provider, "auth_style", "x_api_key"),
             api_key_env=getattr(provider, "api_key_env", None),
             protocol=getattr(provider, "protocol", None) or api_type,
             capabilities={},
@@ -501,6 +505,7 @@ class LLMRouter:
             base_url=getattr(provider, "base_url", ""),
             api_key=getattr(provider, "api_key", ""),
             auth_type=getattr(provider, "auth_type", "api_key"),
+            auth_style=getattr(provider, "auth_style", "x_api_key"),
             api_key_env=getattr(provider, "api_key_env", None),
             protocol=getattr(provider, "protocol", None) or getattr(provider, "api_type", "openai"),
             capabilities=dict(getattr(model, "capabilities", {}) or {}),
@@ -730,6 +735,19 @@ class LLMRouter:
         }
 
     def _build_anthropic_client(self, *, api_key: str, base_url: str) -> Any:
+        return self._build_anthropic_client_for_route(
+            api_key=api_key,
+            base_url=base_url,
+            auth_style="x_api_key",
+        )
+
+    def _build_anthropic_client_for_route(
+        self,
+        *,
+        api_key: str,
+        base_url: str,
+        auth_style: str,
+    ) -> Any:
         try:
             from anthropic import AsyncAnthropic  # type: ignore[import-not-found]
         except ModuleNotFoundError as exc:
@@ -738,9 +756,15 @@ class LLMRouter:
                 "请安装：pip install anthropic"
             ) from exc
 
+        normalized_base = _normalize_anthropic_base_url(base_url)
+        if auth_style == "bearer":
+            return AsyncAnthropic(
+                auth_token=api_key,
+                base_url=normalized_base,
+            )
         return AsyncAnthropic(
             api_key=api_key,
-            base_url=_normalize_anthropic_base_url(base_url),
+            base_url=normalized_base,
         )
 
     def _build_openai_client(self, *, api_key: str, base_url: str) -> Any:
@@ -788,16 +812,116 @@ class LLMRouter:
             raise ValueError(f"[{routing_key}] 当前请求没有可用 credential。")
 
         if api_type == "anthropic":
+            auth_style = "x_api_key"
+            if route_override is not None:
+                auth_style = route_override.auth_style or "x_api_key"
+            else:
+                route = self._route_for_effective_key(routing_key)
+                if route is not None:
+                    auth_style = route.auth_style or "x_api_key"
             client = self._build_anthropic_client(
-                api_key=auth_value,
-                base_url=base_url,
+                api_key=auth_value,  # compatibility wrapper
+                base_url=base_url,   # compatibility wrapper
             )
+            if auth_style != "x_api_key":
+                client = self._build_anthropic_client_for_route(
+                    api_key=auth_value,
+                    base_url=base_url,
+                    auth_style=auth_style,
+                )
         else:
             client = self._build_openai_client(
                 api_key=auth_value,
                 base_url=base_url,
             )
         return client, model, api_type
+
+    @staticmethod
+    def _env_proxy_state(hostname: str) -> dict[str, Any]:
+        http_proxy = bool((os.getenv("HTTP_PROXY") or os.getenv("http_proxy") or "").strip())
+        https_proxy = bool((os.getenv("HTTPS_PROXY") or os.getenv("https_proxy") or "").strip())
+        raw_no_proxy = (os.getenv("NO_PROXY") or os.getenv("no_proxy") or "").strip()
+        entries = [item.strip().lower() for item in raw_no_proxy.split(",") if item.strip()]
+        host = hostname.lower()
+        covered = False
+        for entry in entries:
+            if entry == host:
+                covered = True
+                break
+            if entry.startswith(".") and host.endswith(entry):
+                covered = True
+                break
+        return {
+            "http_proxy_present": http_proxy,
+            "https_proxy_present": https_proxy,
+            "no_proxy_present": bool(raw_no_proxy),
+            "no_proxy_covers_host": covered,
+        }
+
+    def _debug_log_provider_diagnostics(
+        self,
+        *,
+        effective_key: str,
+        model: str,
+        route: ResolvedModelRoute | None,
+        client: Any,
+        protocol: str,
+        stream: bool,
+    ) -> None:
+        if not logger.isEnabledFor(logging.DEBUG) or route is None:
+            return
+        if route.provider_id != "xiaomimimo":
+            return
+
+        base_url = getattr(client, "base_url", None) or route.base_url
+        normalized_base = _normalize_anthropic_base_url(str(base_url or ""))
+        final_url = _anthropic_messages_endpoint(normalized_base) if protocol == "anthropic" else str(base_url or "")
+
+        auth_scheme = "unknown"
+        has_authorization = False
+        has_x_api_key = False
+        header_source = getattr(client, "default_headers", None)
+        if not isinstance(header_source, dict):
+            inner = getattr(client, "_client", None)
+            header_source = getattr(inner, "headers", None)
+        if hasattr(header_source, "items"):
+            headers = {str(k).lower(): str(v) for k, v in header_source.items()}
+            has_authorization = "authorization" in headers
+            has_x_api_key = "x-api-key" in headers
+            if has_authorization:
+                auth_scheme = "bearer"
+            elif has_x_api_key:
+                auth_scheme = "x_api_key"
+
+        hostname = urlparse(route.base_url).hostname or ""
+        proxy_state = self._env_proxy_state(hostname)
+        logger.debug(
+            "[mimo_diag] provider=%s protocol=%s sdk=anthropic_sdk base_url=%s final_url=%s model=%s auth_scheme=%s has_authorization=%s has_x_api_key=%s stream=%s http_proxy=%s https_proxy=%s no_proxy_present=%s no_proxy_covers_host=%s",
+            route.provider_id,
+            protocol,
+            normalized_base,
+            final_url,
+            model,
+            auth_scheme,
+            has_authorization,
+            has_x_api_key,
+            stream,
+            proxy_state["http_proxy_present"],
+            proxy_state["https_proxy_present"],
+            proxy_state["no_proxy_present"],
+            proxy_state["no_proxy_covers_host"],
+        )
+
+        if (
+            hostname == "token-plan-cn.xiaomimimo.com"
+            and (proxy_state["http_proxy_present"] or proxy_state["https_proxy_present"])
+            and not proxy_state["no_proxy_covers_host"]
+        ):
+            logger.warning(
+                "[mimo_diag] 检测到代理可能影响 MiMo 连接。建议设置 "
+                "NO_PROXY=token-plan-cn.xiaomimimo.com,.xiaomimimo.com "
+                "并设置 no_proxy=token-plan-cn.xiaomimimo.com,.xiaomimimo.com"
+            )
 
     def _debug_log_request(self, label: str, routing_key: str, request_kwargs: dict[str, Any]) -> None:
         if not logger.isEnabledFor(logging.DEBUG):
@@ -948,6 +1072,14 @@ class LLMRouter:
                     except Exception as exc:
                         failure_kind = _classify_provider_exception(exc)
                         last_exc = exc
+                        current_route = self._lookup_model_route(model) or self._route_for_effective_key(effective_key)
+                        mimo_class = _classify_mimo_failure(exc, current_route)
+                        if mimo_class is not None:
+                            logger.warning(
+                                "[mimo_diag] classification=%s message=%s",
+                                mimo_class["code"],
+                                mimo_class["message"],
+                            )
                         if failure_kind in ("rate_limit", "other"):
                             self._last_error_ts[effective_key] = time.monotonic()
                         if (
@@ -1183,6 +1315,15 @@ class LLMRouter:
                 return strip_internal_thinking_tags(text).strip()
 
             if api_type == "anthropic":
+                diag_route = self._lookup_model_route(model) or self._route_for_effective_key(effective_key)
+                self._debug_log_provider_diagnostics(
+                    effective_key=effective_key,
+                    model=model,
+                    route=diag_route,
+                    client=client,
+                    protocol="anthropic",
+                    stream=False,
+                )
                 system, anthropic_messages = _split_system_messages(messages)
                 request_kwargs: dict[str, Any] = {
                     "model": model,
@@ -1392,6 +1533,15 @@ class LLMRouter:
                 )
 
             if api_type == "anthropic":
+                diag_route = self._lookup_model_route(model) or self._route_for_effective_key(effective_key)
+                self._debug_log_provider_diagnostics(
+                    effective_key=effective_key,
+                    model=model,
+                    route=diag_route,
+                    client=client,
+                    protocol="anthropic",
+                    stream=False,
+                )
                 system, anthropic_messages = _split_system_messages(messages)
                 request_kwargs: dict[str, Any] = {
                     "model": model,
@@ -1608,6 +1758,15 @@ class LLMRouter:
             tool_name = tool_def["function"]["name"]
 
             if api_type == "anthropic":
+                diag_route = self._lookup_model_route(model) or self._route_for_effective_key(effective_key)
+                self._debug_log_provider_diagnostics(
+                    effective_key=effective_key,
+                    model=model,
+                    route=diag_route,
+                    client=client,
+                    protocol="anthropic",
+                    stream=False,
+                )
                 system, anthropic_messages = _split_system_messages(messages)
                 request_kwargs: dict[str, Any] = {
                     "model": model,
@@ -1807,3 +1966,41 @@ def _classify_provider_exception(exc: Exception) -> str:
     if "timeout" in class_name or "timed out" in message or "reason: error" in message:
         return "timeout"
     return "other"
+
+
+def _classify_mimo_failure(
+    exc: Exception,
+    route: ResolvedModelRoute | None,
+) -> dict[str, str] | None:
+    if route is None or route.provider_id != "xiaomimimo":
+        return None
+
+    class_name = exc.__class__.__name__.lower()
+    message = str(exc).lower()
+    status_code = getattr(exc, "status_code", None)
+    if status_code is None:
+        response = getattr(exc, "response", None)
+        status_code = getattr(response, "status_code", None)
+
+    proxy_present = bool((os.getenv("HTTP_PROXY") or os.getenv("http_proxy") or os.getenv("HTTPS_PROXY") or os.getenv("https_proxy")))
+    if "apiconnectionerror" in class_name and proxy_present:
+        return {
+            "code": "network/proxy_tls_failure",
+            "message": "likely proxy TLS handshake failure; try NO_PROXY for xiaomimimo.com",
+        }
+    if status_code == 401 and "invalid_key" in message:
+        return {
+            "code": "auth_failure",
+            "message": "authentication rejected; check bearer vs x-api-key, endpoint/key scope, key validity",
+        }
+    if status_code == 400 and "model" in message:
+        return {
+            "code": "model_mapping_failure",
+            "message": "check raw model name; preserve dots and strip provider prefix",
+        }
+    if status_code == 404:
+        return {
+            "code": "endpoint_path_failure",
+            "message": "check base_url/path; expected /anthropic/v1/messages for Anthropic messages",
+        }
+    return None

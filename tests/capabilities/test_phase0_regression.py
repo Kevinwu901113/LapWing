@@ -215,7 +215,8 @@ class TestRuntimeProfileBehaviorUnchanged:
             "chat_shell", "zero_tools", "standard", "inner_tick",
             "compose_proactive", "local_execution", "task_execution",
             "agent_admin_operator", "identity_operator", "browser_operator",
-            "skill_operator", "coder_snippet", "coder_workspace",
+            "skill_operator", "capability_lifecycle_operator",
+            "coder_snippet", "coder_workspace",
             "file_ops", "agent_researcher", "agent_coder",
         }
         assert names == expected

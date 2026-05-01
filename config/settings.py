@@ -141,6 +141,7 @@ CAPABILITIES_ENABLED: bool = _s.capabilities.enabled
 CAPABILITIES_RETRIEVAL_ENABLED: bool = _s.capabilities.retrieval_enabled
 CAPABILITIES_CURATOR_ENABLED: bool = _s.capabilities.curator_enabled
 CAPABILITIES_AUTO_DRAFT_ENABLED: bool = _s.capabilities.auto_draft_enabled
+CAPABILITIES_LIFECYCLE_TOOLS_ENABLED: bool = _s.capabilities.lifecycle_tools_enabled
 CAPABILITIES_DATA_DIR: str = _s.capabilities.data_dir
 CAPABILITIES_INDEX_DB_PATH: str = _s.capabilities.index_db_path
 

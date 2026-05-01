@@ -175,6 +175,29 @@ class SkillSummary:
     testing_details: tuple[str, ...]  # skill names
 
 
+# ── Capabilities ─────────────────────────────────────────────────────
+
+@dataclass(frozen=True, slots=True)
+class CapabilitySummary:
+    """Compact capability reference for StateView progressive disclosure.
+
+    Never contains full CAPABILITY.md body, procedure, script contents,
+    traces, evals, or version contents. This is a reference hint, not
+    an instruction.
+    """
+
+    id: str
+    name: str
+    description: str
+    type: str
+    scope: str
+    maturity: str
+    risk_level: str
+    triggers: tuple[str, ...] = ()
+    required_tools: tuple[str, ...] = ()
+    match_reason: str = ""
+
+
 # ── Top-level view ───────────────────────────────────────────────────
 
 @dataclass(frozen=True, slots=True)
@@ -206,6 +229,9 @@ class StateView:
     # Compact list of available agents (Blueprint §9 — sync builder fills via
     # AgentRegistry.render_agent_summary_for_stateview()).
     agent_summary: str | None = None
+    # Phase 4 capability progressive disclosure — compact summaries only.
+    # Never contains full CAPABILITY.md body, procedures, scripts, or evals.
+    capability_summaries: tuple[CapabilitySummary, ...] = ()
 
 
 # ── Serializer output ────────────────────────────────────────────────

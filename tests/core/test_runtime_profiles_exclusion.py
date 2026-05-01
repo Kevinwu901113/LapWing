@@ -66,6 +66,7 @@ def _make_full_registry() -> ToolRegistry:
     registry.register(_spec("create_agent", "agent_admin"))
     registry.register(_spec("destroy_agent", "agent_admin"))
     registry.register(_spec("save_agent", "agent_admin"))
+    registry.register(_spec("list_agents", "agent_admin"))
     # 其他被 profile 直接引用的工具
     extras = [
         ("get_current_datetime", "general"),
@@ -180,7 +181,6 @@ class TestProfileExclusivity:
         for forbidden in ("delegate_to_agent", "create_agent",
                           "destroy_agent", "save_agent"):
             assert forbidden not in names, f"local_execution must not expose {forbidden}"
-        assert "list_agents" not in names
         assert "research" not in names
         assert "browse" not in names
 
@@ -199,6 +199,7 @@ class TestProfileExclusivity:
             "file_append",
             "file_list_directory",
             "run_skill",
+            "list_agents",
         })
         assert "new_capability" not in LOCAL_EXECUTION_PROFILE.capabilities
         
@@ -214,6 +215,7 @@ class TestProfileExclusivity:
             "read_file",
             "run_skill",
             "write_file",
+            "list_agents",
         }
         assert names == expected_names
         
@@ -243,6 +245,7 @@ class TestProfileExclusivity:
         names = _resolve_tool_names(registry, AGENT_ADMIN_OPERATOR_PROFILE)
         assert names == {
             "delegate_to_agent", "create_agent", "destroy_agent", "save_agent",
+            "list_agents",
         }
 
     def test_identity_operator_profile_exposes_identity_tools_only(self):

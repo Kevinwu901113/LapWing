@@ -215,7 +215,118 @@ data/capabilities/
 - No vector search
 - No rollback/restore from version snapshots (snapshots are write-only for audit)
 
-## 8. Phase 2B: Read-Only Capability Tools
+## 8. Phase 3A: Policy + Evaluator + Eval Records + Promotion Planner
+
+### Status: Implemented (2026-04-30)
+### Files: `src/capabilities/policy.py`, `src/capabilities/evaluator.py`, `src/capabilities/eval_records.py`, `src/capabilities/promotion.py`
+
+### Key Design Decisions
+
+- **Deterministic only**: All policy/evaluator/promotion logic is pure computation. No LLM calls, no script execution, no tool registration, no store mutation.
+- **Dataclass-based models**: `PolicyDecision`, `EvalRecord`, `EvalFinding`, `PromotionPlan` are all `@dataclass` types — simple data carriers, no Pydantic overhead.
+- **No runtime wiring**: None of these modules are importable from Brain, TaskRuntime, StateViewBuilder, SkillExecutor, ToolDispatcher, or agent runtime paths.
+- **Policy handles dict-like and object-like inputs**: `validate_promote` accepts both dict and object forms for `eval_record` and `approval` via `_get_field` helper.
+- **PromotionPlanner computes but does not execute**: Returns `PromotionPlan` with `allowed`/`blocking_findings`/`required_approval`. Never calls `CapabilityStore.disable/archive/create`. Never mutates manifest maturity/status.
+
+### CapabilityPolicy (`src/capabilities/policy.py`)
+
+Deterministic policy layer returning `PolicyDecision` (allowed, severity, code, message, details).
+
+Methods:
+- `validate_create(manifest, context)` — validates scope, type, maturity, status, risk_level, required_tools
+- `validate_patch(old_manifest, new_manifest, context)` — id/scope immutability + revalidation
+- `validate_promote(manifest, eval_record, approval, context)` — risk-gated promotion eligibility
+- `validate_run(manifest, runtime_profile, context)` — status-gated run eligibility
+- `validate_install(manifest, source, context)` — external source quarantine
+- `validate_scope(manifest, context)` — scope enum validation
+- `validate_required_tools(manifest, available_tools, context)` — tool availability check
+- `validate_risk(manifest, context)` — risk/permission compatibility
+
+Policy rules:
+- high risk promotion requires explicit owner approval
+- medium risk promotion requires approval OR sufficient eval evidence
+- low risk promotion allowed if evaluator passes
+- quarantined/archived cannot be promoted or run
+- disabled cannot be run
+- external install source defaults to quarantined unless explicitly trusted
+- required_tools must be known when available_tools provided
+- policy never grants new permissions, never modifies RuntimeProfile
+
+### CapabilityEvaluator (`src/capabilities/evaluator.py`)
+
+Deterministic evaluation/linting. Returns `EvalRecord` with `EvalFinding` list, `passed`, `score` (0.0-1.0), `required_approval`, `recommended_maturity`.
+
+Checks:
+- Required CAPABILITY.md sections: When to use, Procedure, Verification, Failure handling
+- Description quality: non-empty, not vague (todo/tbd/wip), minimum length
+- Trigger coverage: skills/workflows should have triggers; overbroad triggers (*, .*, always) flagged
+- Format validation: required_tools and required_permissions must be list[str]
+- Risk/permission consistency: low risk + sensitive perms → warning
+- Dangerous shell patterns: rm -rf /, sudo rm, chmod 777, curl|bash, wget|sh, dd if=, mkfs, fork bomb, ~/.ssh, system file writes
+- Prompt injection detection: "ignore instructions", "you are now", "pretend you are", "override", "bypass"
+- Path references: scripts/tests/examples paths validated; absolute system paths flagged
+- Promotion eligibility: stable without eval evidence → info; high risk → info
+
+Scoring: start 1.0, -0.3 per error, -0.1 per warning, floor 0.0.
+
+### Eval Record Persistence (`src/capabilities/eval_records.py`)
+
+Stores JSON records in `<capability_dir>/evals/eval_<timestamp>.json`.
+
+Functions:
+- `write_eval_record(record, doc, *, mutation_log)` — writes JSON, optionally records MutationLog
+- `read_eval_record(doc, created_at)` — reads one record by timestamp
+- `list_eval_records(doc)` — all records sorted by created_at descending
+- `get_latest_eval_record(doc)` — most recent record or None
+
+Does NOT: mutate manifest, change maturity/status, trigger promotion.
+
+### PromotionPlanner (`src/capabilities/promotion.py`)
+
+Computes whether a maturity transition would be allowed. Returns `PromotionPlan` with `allowed`, `required_approval`, `required_evidence`, `blocking_findings`, `explanation`.
+
+Supported transitions:
+| From | To | Gate |
+|------|----|------|
+| draft | testing | evaluator pass or only warnings |
+| testing | stable | evaluator pass; medium/high risk needs approval |
+| stable | broken | requires failure evidence |
+| broken | repairing | always allowed |
+| repairing | testing | evaluator pass recommended |
+| repairing | draft | always allowed |
+| testing | draft | always allowed (downgrade) |
+| any | disabled/archived | can be planned |
+
+Rules:
+- high risk never auto-promotes (requires explicit owner approval)
+- quarantined cannot promote directly to stable
+- archived cannot transition (restore not implemented)
+- planner does NOT mutate store or manifest
+
+### Hard Constraints (still enforced)
+
+- **No runtime wiring**: Only `src/tools/capability_tools.py` and `src/app/container.py` import `src.capabilities`
+- **No Brain/TaskRuntime/StateView/SkillExecutor/ToolDispatcher wiring**
+- **No script execution**: No capability scripts are executed or imported
+- **No promotion execution**: PromotionPlanner computes, does not mutate
+- **No write tools**: No create/disable/archive/promote capability tools
+- **No run_capability tool**
+- **Feature flags remain default false**
+- **All Phase 0/1/2A/2B tests pass**
+
+### What Phase 3A Does NOT Do
+
+- No actual promotion wiring (promote_skill unchanged)
+- No run_capability implementation
+- No script execution
+- No automatic retrieval
+- No ExperienceCurator
+- No dynamic agent changes
+- No write tools
+- No actual stable promotion
+- No mutation of capability maturity/status through promotion.py
+
+## 9. Phase 2B: Read-Only Capability Tools
 
 ### Status: Implemented (2026-04-30)
 ### Files: `src/tools/capability_tools.py`, `tests/capabilities/test_phase2b_tools.py`
@@ -295,3 +406,252 @@ if CAPABILITIES_ENABLED:
 - No create/disable/archive tools
 - No script execution
 - No dynamic agent changes
+
+## 10. Phase 3B: Gated Lifecycle Transitions
+
+### Status: Implemented (2026-05-01)
+### Files: `src/capabilities/lifecycle.py`, `tests/capabilities/test_phase3b_lifecycle.py`, `tests/capabilities/test_phase3b_transition_atomicity.py`, `tests/capabilities/test_phase3b_regression.py`
+
+### Key Design Decisions
+
+- **CapabilityLifecycleManager** orchestrates Policy, Evaluator, Planner, Store, Versioning, and EvalRecords to apply controlled maturity/status transitions.
+- **TransitionResult** dataclass reports full transition state: applied/blocked, before/after maturity and status, eval record id, version snapshot id, policy decisions, blocking findings, content hashes.
+- **Planner-first gating**: Every transition is planned by PromotionPlanner, then validated by CapabilityPolicy. If either denies, no files are modified.
+- **Evaluator integration**: `draft->testing`, `testing->stable`, and `repairing->testing` always create a fresh eval record before planning.
+- **Version snapshots**: Every applied transition writes a version snapshot before mutation.
+- **Index refresh**: After every applied transition, the capability index is refreshed so search/list reflect new state.
+- **MutationLog integration**: Optional mutation_log records transition events. Log failure never corrupts the transition.
+- **Atomic enough for local filesystem**: Snapshot first, then manifest update, then re-parse, then index refresh. Blocked transitions leave zero file changes.
+
+### Supported Transitions
+
+| Transition | Type | Eval Required | Approval |
+|---|---|---|---|
+| `draft -> testing` | maturity | yes (fresh eval) | not required |
+| `testing -> stable` | maturity | yes (fresh eval) | high risk requires; medium risk with passing eval suffices |
+| `stable -> broken` | maturity | no | failure_evidence required |
+| `broken -> repairing` | maturity | no | not required |
+| `repairing -> testing` | maturity | yes (fresh eval) | not required |
+| `testing -> draft` | maturity (downgrade) | no | not required |
+| `repairing -> draft` | maturity (reset) | no | not required |
+| `active -> disabled` | status | no | policy check only |
+| `active/.../draft -> archived` | status | no | policy check only |
+
+### Blocking Rules
+
+- Disabled capabilities cannot be promoted (maturity transitions blocked).
+- Archived capabilities cannot transition at all (not found by store.get).
+- Quarantined capabilities cannot promote to stable.
+- High risk capabilities never auto-promote; explicit approval required.
+
+### Apply Transition Flow
+
+1. Resolve capability via `CapabilityStore.get()`.
+2. Record `content_hash_before`.
+3. For maturity transitions:
+   a. Run evaluator (if quality-relevant) and persist eval record.
+   b. Plan transition via PromotionPlanner.
+   c. Validate via CapabilityPolicy.
+   d. If blocked, return TransitionResult(applied=False) — no files changed.
+   e. Write version snapshot.
+   f. Update manifest maturity/updated_at.
+   g. Sync manifest.json, re-parse, refresh index.
+   h. Record mutation log event.
+   i. Return TransitionResult(applied=True).
+4. For status transitions (disable/archive):
+   a. Plan check, policy check.
+   b. Write version snapshot.
+   c. Delegate to CapabilityStore.disable() / archive().
+   d. Return TransitionResult(applied=True).
+
+### What Phase 3B Does NOT Do
+
+- No wire into legacy `promote_skill`.
+- No user-facing write tools (create/disable/archive/promote capability tools).
+- No `run_capability` implementation.
+- No script execution.
+- No automatic retrieval.
+- No ExperienceCurator.
+- No dynamic agent changes.
+- No Brain / TaskRuntime / StateViewBuilder / SkillExecutor / ToolDispatcher modifications.
+- No RuntimeProfile permission grants.
+- No restore / unarchive.
+
+## 11. Phase 3C: Lifecycle Management Tools
+
+**Status:** Implemented (2026-05-01)
+
+Phase 3C exposes explicit, feature-gated, operator-only lifecycle management
+tools over the Phase 3B `CapabilityLifecycleManager`.
+
+### Feature Flags
+
+| Flag | Default | Effect |
+|---|---|---|
+| `capabilities.enabled` | `false` | Gates all capability tools |
+| `capabilities.lifecycle_tools_enabled` | `false` | Gates lifecycle tools (requires `capabilities.enabled=true`) |
+
+Registration matrix:
+
+| `enabled` | `lifecycle_tools_enabled` | Tools registered |
+|---|---|---|
+| `false` | any | none |
+| `true` | `false` | `list_capabilities`, `search_capability`, `view_capability` |
+| `true` | `true` | read-only tools + `evaluate_capability`, `plan_capability_transition`, `transition_capability` |
+
+### Lifecycle Tools
+
+All three tools use `capability="capability_lifecycle"` — distinct from
+`capability_read`. They are only accessible to profiles with the
+`capability_lifecycle` capability, specifically the
+`CAPABILITY_LIFECYCLE_OPERATOR_PROFILE` (`capability_lifecycle_operator`).
+
+#### `evaluate_capability`
+
+- Runs `CapabilityEvaluator` on a capability.
+- Optionally persists an `EvalRecord` (`write_record`, default `true`).
+- Optionally includes detailed findings (`include_findings`, default `true`).
+- **Does not** change manifest maturity or status.
+- **Does not** write version snapshots.
+- **Does not** execute scripts.
+
+#### `plan_capability_transition`
+
+- Previews whether a transition would be allowed via `CapabilityLifecycleManager.plan_transition()`.
+- Read-only: no manifest changes, no snapshots, no index refresh, no MutationLog.
+- Returns `allowed`, `required_approval`, `required_evidence`, `blocking_findings`, `policy_decisions`, `explanation`.
+- Blocks disabled/archived capabilities from promotion in preview.
+
+#### `transition_capability`
+
+- Applies a lifecycle transition via `CapabilityLifecycleManager.apply_transition()`.
+- `dry_run=true` behaves like `plan_capability_transition` (no mutation).
+- All Phase 3B gating applies: planner → policy → evaluator → snapshot → mutate → re-parse → index → log.
+- Blocked transitions make **zero** file/index/mutation changes.
+- Successful transitions: snapshot, manifest update, content_hash recompute, index refresh, optional MutationLog.
+
+### Permission / Profile Rules
+
+- Lifecycle tools use `capability_lifecycle` tag (not `capability_read`).
+- Only `CAPABILITY_LIFECYCLE_OPERATOR_PROFILE` grants access.
+- Standard, chat_shell, inner_tick, compose_proactive, local_execution, and all
+  other profiles do **not** include `capability_lifecycle`.
+- No existing broad profile accidentally gains lifecycle permissions.
+
+### What Phase 3C Does NOT Do
+
+- No `run_capability` / `execute_capability`.
+- No `create_capability` / `install_capability` / `patch_capability`.
+- No `auto_promote_capability`.
+- No capability retrieval into StateView.
+- No ExperienceCurator.
+- No automatic task-end learning.
+- No dynamic agent capability binding.
+- No Brain / TaskRuntime / StateViewBuilder / SkillExecutor / ToolDispatcher modifications.
+- No script execution.
+
+## 12. Phase 4: CapabilityRetriever + Progressive Disclosure
+
+### Status: Implemented (2026-05-01)
+
+### Files
+- `src/capabilities/ranking.py` — deterministic scoring (no embeddings, no LLM, no network)
+- `src/capabilities/retriever.py` — CapabilityRetriever, CapabilitySummary, RetrievalContext
+- `src/core/state_view.py` — CapabilitySummary dataclass + capability_summaries field
+- `src/core/state_view_builder.py` — _build_capability_summaries (duck-typed retriever)
+- `src/app/container.py` — CapabilityRetriever wiring behind capabilities.retrieval_enabled
+- `tests/capabilities/test_phase4_retriever.py` — 63 tests
+- `tests/capabilities/test_phase4_state_view.py` — 14 tests
+
+### Key Design Decisions
+
+1. **Progressive disclosure, not instruction injection.**
+   StateView receives compact summaries (id, name, description, type, scope,
+   maturity, risk_level, triggers, required_tools, match_reason). Full
+   CAPABILITY.md body, procedures, scripts, traces, evals, and version
+   contents are never injected.
+
+2. **Deterministic ranking only.**
+   Scoring uses keyword matching, scope precedence, maturity boost, risk
+   penalty, usage stats, and recency. No embeddings, no LLM judge, no
+   network access.
+
+3. **Duck-typed wiring.**
+   StateViewBuilder receives the retriever as an optional object (no hard
+   import from src.capabilities). The builder calls `.retrieve()` only if
+   the retriever is present. Failures return empty — never break normal
+   chat.
+
+4. **Feature-gated behind capabilities.retrieval_enabled.**
+   Requires capabilities.enabled=true. Defaults false. All other capability
+   flags are independent.
+
+### Feature Flag Matrix
+
+| capabilities.enabled | capabilities.retrieval_enabled | Behavior |
+|---------------------|-------------------------------|----------|
+| false               | *                             | No capability section. Existing behavior unchanged. |
+| true                | false                         | Tools may exist; no automatic retrieval; no StateView section. |
+| true                | true                          | CapabilityRetriever wired. StateView may include compact summaries. |
+
+### Retrieval Flow
+
+1. StateViewBuilder._build_capability_summaries() called during
+   build_for_chat / build_for_inner.
+2. Query formed from last 3 user/assistant turns via existing
+   _trajectory_query_text helper.
+3. CapabilityRetriever.retrieve(query, context) called:
+   a. _fetch_candidates — index.search() per allowed scope
+   b. filter_candidates — apply status/maturity/risk/tools filters
+   c. rank_candidates — score and sort, attach match_reason
+   d. Return top-k (default 5)
+4. Builder converts to StateView CapabilitySummary dataclass.
+5. StateView.capability_summaries populated (empty tuple on any failure).
+
+### Filtering Rules
+
+- Exclude archived, disabled, quarantined by default
+- Exclude broken maturity always
+- Exclude draft by default (include_draft flag)
+- Exclude high risk by default (include_high_risk flag)
+- Exclude capabilities with unavailable required_tools
+- Deduplicate by id with scope precedence: session > workspace > user > global
+
+### Ranking (deterministic)
+
+| Signal | Weight |
+|--------|--------|
+| Keyword in name | +10 (exact) / +5 (partial) |
+| Keyword in triggers | +5 |
+| Keyword in tags | +4 |
+| Keyword in description | +3 |
+| Scope: session | +4 |
+| Scope: workspace | +3 |
+| Scope: user | +2 |
+| Scope: global | +1 |
+| Maturity: stable | +5 |
+| Maturity: testing | +3 |
+| Maturity: draft | 0 |
+| Maturity: broken | -10 |
+| Risk: low | 0 |
+| Risk: medium | -2 |
+| Risk: high | -10 |
+| Success/usage ratio | up to +3 |
+| Recent update | +0.5 |
+
+### What Phase 4 Does NOT Do
+
+- No capability execution.
+- No `run_capability` tool.
+- No full document injection.
+- No script execution.
+- No ExperienceCurator.
+- No task-end auto-draft.
+- No automatic promotion.
+- No modification to existing promote_skill.
+- No modification to dynamic agents.
+- No new write tools.
+- No embedding-based or LLM-based retrieval.
+- No network access.
+- retrieval_enabled does not grant lifecycle or read permissions.
+- Lifecycle tools remain separately gated behind lifecycle_tools_enabled.

@@ -998,10 +998,18 @@ class AppContainer:
         # Phase 2B: Capability read tools (feature-gated behind capabilities.enabled)
         from config.settings import CAPABILITIES_ENABLED
         if CAPABILITIES_ENABLED:
-            from config.settings import CAPABILITIES_DATA_DIR, CAPABILITIES_INDEX_DB_PATH
+            from config.settings import (
+                CAPABILITIES_DATA_DIR,
+                CAPABILITIES_INDEX_DB_PATH,
+                CAPABILITIES_LIFECYCLE_TOOLS_ENABLED,
+                CAPABILITIES_RETRIEVAL_ENABLED,
+            )
             from src.capabilities.index import CapabilityIndex
             from src.capabilities.store import CapabilityStore
-            from src.tools.capability_tools import register_capability_tools
+            from src.tools.capability_tools import (
+                register_capability_tools,
+                register_capability_lifecycle_tools,
+            )
 
             capability_index = CapabilityIndex(CAPABILITIES_INDEX_DB_PATH)
             capability_index.init()
@@ -1019,6 +1027,50 @@ class AppContainer:
                 capability_index,
             )
             logger.info("Phase 2B capability read tools registered (list/search/view)")
+
+            # Phase 3C: Lifecycle management tools (feature-gated behind
+            # capabilities.lifecycle_tools_enabled). Requires capabilities.enabled=true.
+            capability_policy = None  # may be set by lifecycle block below
+            if CAPABILITIES_LIFECYCLE_TOOLS_ENABLED:
+                from src.capabilities.evaluator import CapabilityEvaluator
+                from src.capabilities.policy import CapabilityPolicy
+                from src.capabilities.promotion import PromotionPlanner
+                from src.capabilities.lifecycle import CapabilityLifecycleManager
+
+                capability_evaluator = CapabilityEvaluator()
+                capability_policy = CapabilityPolicy()
+                capability_planner = PromotionPlanner()
+
+                capability_lifecycle = CapabilityLifecycleManager(
+                    store=capability_store,
+                    evaluator=capability_evaluator,
+                    policy=capability_policy,
+                    planner=capability_planner,
+                    mutation_log=self.mutation_log,
+                )
+                self.brain._capability_lifecycle = capability_lifecycle
+
+                register_capability_lifecycle_tools(
+                    self.brain.tool_registry,
+                    capability_lifecycle,
+                )
+                logger.info(
+                    "Phase 3C capability lifecycle tools registered "
+                    "(evaluate/plan/transition)"
+                )
+
+            # Phase 4: CapabilityRetriever — progressive disclosure (feature-gated
+            # behind capabilities.retrieval_enabled). Requires capabilities.enabled=true.
+            if CAPABILITIES_RETRIEVAL_ENABLED:
+                from src.capabilities.retriever import CapabilityRetriever
+
+                capability_retriever = CapabilityRetriever(
+                    store=capability_store,
+                    index=capability_index,
+                    policy=capability_policy,
+                )
+                self.brain.state_view_builder._capability_retriever = capability_retriever
+                logger.info("Phase 4 CapabilityRetriever wired for progressive disclosure")
 
         # Phase 4: 注册 DurableScheduler 提醒工具
         from src.core.durable_scheduler import DURABLE_SCHEDULER_EXECUTORS

@@ -297,9 +297,12 @@ identity_system_killswitch = false
 # Phase 0/1: All flags disabled. No runtime behavior is wired yet.
 # Phase 2+ will gate capability retrieval, curation, and auto-drafting
 # behind these flags.
+# Phase 3C: lifecycle_tools_enabled gates evaluate/plan/transition tools.
+# Requires capabilities.enabled=true. Defaults to false (operator-only).
 enabled = false
 retrieval_enabled = false
 curator_enabled = false
 auto_draft_enabled = false
+lifecycle_tools_enabled = false
 data_dir = "data/capabilities"
 index_db_path = "data/capabilities/capability_index.sqlite"

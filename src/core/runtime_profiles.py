@@ -176,6 +176,16 @@ AGENT_ADMIN_OPERATOR_PROFILE = RuntimeProfile(
     shell_policy_enabled=False,
 )
 
+# Operator-only capability lifecycle administration surface.
+# evaluate_capability, plan_capability_transition, transition_capability.
+# Not granted to standard/default/chat/inner_tick profiles.
+CAPABILITY_LIFECYCLE_OPERATOR_PROFILE = RuntimeProfile(
+    name="capability_lifecycle_operator",
+    capabilities=frozenset({"capability_lifecycle"}),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
 # Operator-only identity administration surface.
 IDENTITY_OPERATOR_PROFILE = RuntimeProfile(
     name="identity_operator",
@@ -339,6 +349,7 @@ _PROFILES = {
         COMPOSE_PROACTIVE_PROFILE,
         LOCAL_EXECUTION_PROFILE,
         AGENT_ADMIN_OPERATOR_PROFILE,
+        CAPABILITY_LIFECYCLE_OPERATOR_PROFILE,
         IDENTITY_OPERATOR_PROFILE,
         BROWSER_OPERATOR_PROFILE,
         SKILL_OPERATOR_PROFILE,
