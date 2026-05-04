@@ -297,7 +297,7 @@ class LapwingBrain:
         mutation_log = getattr(self, "_mutation_log_ref", None)
         if mutation_log is not None:
             services["mutation_log"] = mutation_log
-        services["router"] = self.router
+        services["llm_router"] = self.router
         note_store = getattr(self, "_note_store", None)
         if note_store is not None:
             services["note_store"] = note_store
@@ -338,8 +338,6 @@ class LapwingBrain:
         correction_manager = getattr(self, "_correction_manager", None)
         if correction_manager is not None:
             services["correction_manager"] = correction_manager
-        if getattr(self, "router", None) is not None:
-            services["llm_router"] = self.router
         # Per-turn BudgetLedger (Blueprint §5) — fresh ledger every call so
         # Brain + delegated agents share the same caps across the turn but
         # new turns start with full budget.

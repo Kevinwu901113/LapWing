@@ -338,7 +338,14 @@ class TestE2EChainTrace:
         # ------ 3. 注册 Researcher / Coder 到 AgentRegistry ------
         # Agent _execute_tool now requires a dispatcher in services.
         fake_dispatcher = _FakeDispatcher(tool_registry)
-        services = {"agent_registry": agent_registry, "dispatcher": fake_dispatcher}
+        services = {
+            "agent_registry": agent_registry,
+            "dispatcher": fake_dispatcher,
+            "tool_registry": tool_registry,
+            "llm_router": router,
+            "research_engine": MagicMock(),
+            "ambient_store": MagicMock(),
+        }
         agent_registry.register(
             "researcher",
             Researcher.create(router, tool_registry, mutation_log,
@@ -567,9 +574,6 @@ class TestE2EChainTrace:
                 risk_level="low",
             ))
 
-        agent_registry = AgentRegistry()
-        services = {"agent_registry": agent_registry}
-
         coder_round1 = ToolTurnResult(
             text="",
             tool_calls=[ToolCallRequest(
@@ -591,6 +595,17 @@ class TestE2EChainTrace:
         router.build_tool_result_message = MagicMock(
             return_value={"role": "user", "content": "ok"},
         )
+
+        agent_registry = AgentRegistry()
+        fake_dispatcher = _FakeDispatcher(tool_registry)
+        services = {
+            "agent_registry": agent_registry,
+            "dispatcher": fake_dispatcher,
+            "tool_registry": tool_registry,
+            "llm_router": router,
+            "research_engine": MagicMock(),
+            "ambient_store": MagicMock(),
+        }
 
         mutation_log = AsyncMock()
         mutation_log.record = AsyncMock(return_value=1)

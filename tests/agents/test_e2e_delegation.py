@@ -28,6 +28,35 @@ def _make_mutation_log():
     return ml
 
 
+class _FakeDispatcher:
+    def __init__(self, tool_registry):
+        self._tool_registry = tool_registry
+
+    async def dispatch(self, *, request, profile, services,
+                       adapter, user_id, chat_id, agent_spec=None, **kwargs):
+        ctx = ToolExecutionContext(
+            execute_shell=AsyncMock(),
+            shell_default_cwd=".",
+            services=services,
+            adapter=adapter,
+            user_id=user_id,
+            auth_level=3,
+            chat_id=chat_id,
+        )
+        return await self._tool_registry.execute(request, context=ctx)
+
+
+def _make_agent_services(agent_registry, tool_registry, router):
+    return {
+        "agent_registry": agent_registry,
+        "dispatcher": _FakeDispatcher(tool_registry),
+        "tool_registry": tool_registry,
+        "llm_router": router,
+        "research_engine": MagicMock(),
+        "ambient_store": MagicMock(),
+    }
+
+
 class TestE2EDelegateToResearcher:
     """Lapwing → delegate_to_researcher → Researcher → result."""
 
@@ -62,7 +91,7 @@ class TestE2EDelegateToResearcher:
         ))
 
         agent_registry = AgentRegistry()
-        agent_services = {"agent_registry": agent_registry}
+        agent_services = _make_agent_services(agent_registry, tool_registry, router)
         agent_registry.register(
             "researcher",
             Researcher.create(router, tool_registry, mutation_log, services=agent_services),
@@ -75,7 +104,7 @@ class TestE2EDelegateToResearcher:
         ctx = ToolExecutionContext(
             execute_shell=AsyncMock(),
             shell_default_cwd=".",
-            services={"agent_registry": agent_registry},
+            services=agent_services,
         )
         req = ToolExecutionRequest(
             name="delegate_to_researcher",
@@ -156,9 +185,6 @@ class TestE2ERealDelegation:
             risk_level="low",
         ))
 
-        agent_registry = AgentRegistry()
-        agent_services = {"agent_registry": agent_registry}
-
         router = MagicMock()
 
         researcher_round1 = ToolTurnResult(
@@ -182,6 +208,9 @@ class TestE2ERealDelegation:
             return_value={"role": "tool", "tool_call_id": "x", "name": "x", "content": "ok"},
         )
 
+        agent_registry = AgentRegistry()
+        agent_services = _make_agent_services(agent_registry, real_registry, router)
+
         agent_registry.register(
             "researcher",
             Researcher.create(router, real_registry, mutation_log, services=agent_services),
@@ -194,7 +223,7 @@ class TestE2ERealDelegation:
         ctx = ToolExecutionContext(
             execute_shell=AsyncMock(),
             shell_default_cwd=".",
-            services={"agent_registry": agent_registry},
+            services=agent_services,
         )
         req = ToolExecutionRequest(
             name="delegate_to_researcher",
@@ -244,7 +273,7 @@ class TestContextDigest:
         tool_registry.function_tools = MagicMock(return_value=[])
 
         agent_registry = AgentRegistry()
-        agent_services = {"agent_registry": agent_registry}
+        agent_services = _make_agent_services(agent_registry, tool_registry, router)
         agent_registry.register(
             "researcher",
             Researcher.create(router, tool_registry, mutation_log, services=agent_services),
@@ -253,7 +282,7 @@ class TestContextDigest:
         ctx = ToolExecutionContext(
             execute_shell=AsyncMock(),
             shell_default_cwd=".",
-            services={"agent_registry": agent_registry},
+            services=agent_services,
         )
         req = ToolExecutionRequest(
             name="delegate_to_researcher",
@@ -280,7 +309,7 @@ class TestContextDigest:
         tool_registry.function_tools = MagicMock(return_value=[])
 
         agent_registry = AgentRegistry()
-        agent_services = {"agent_registry": agent_registry}
+        agent_services = _make_agent_services(agent_registry, tool_registry, router)
         agent_registry.register(
             "researcher",
             Researcher.create(router, tool_registry, mutation_log, services=agent_services),
@@ -289,7 +318,7 @@ class TestContextDigest:
         ctx = ToolExecutionContext(
             execute_shell=AsyncMock(),
             shell_default_cwd=".",
-            services={"agent_registry": agent_registry},
+            services=agent_services,
         )
         req = ToolExecutionRequest(
             name="delegate_to_researcher",
@@ -335,7 +364,7 @@ class TestParentTaskId:
         tool_registry.function_tools = MagicMock(return_value=[])
 
         agent_registry = AgentRegistry()
-        agent_services = {"agent_registry": agent_registry}
+        agent_services = _make_agent_services(agent_registry, tool_registry, router)
         agent_registry.register(
             "researcher",
             Researcher.create(router, tool_registry, mutation_log, services=agent_services),
@@ -344,7 +373,7 @@ class TestParentTaskId:
         ctx = ToolExecutionContext(
             execute_shell=AsyncMock(),
             shell_default_cwd=".",
-            services={"agent_registry": agent_registry},
+            services=agent_services,
         )
         req = ToolExecutionRequest(
             name="delegate_to_researcher",

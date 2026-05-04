@@ -111,7 +111,10 @@ class AgentRegistry:
         """
         # Legacy path: directly registered instances win for backwards-compat
         if name in self._legacy_agents:
-            return self._legacy_agents[name]
+            agent = self._legacy_agents[name]
+            if services_override is not None:
+                setattr(agent, "_services", services_override)
+            return agent
 
         if self._factory is None:
             return None

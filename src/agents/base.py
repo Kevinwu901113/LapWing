@@ -53,6 +53,7 @@ class BaseAgent:
         # 比从 messages 回猜 role/格式更可靠（旧的 _extract_evidence 在
         # Anthropic 风格 tool_result block 下永远拿不到）。
         self._collected_evidence: list[dict] = []
+        self._collected_tool_errors: list[dict] = []
 
     async def execute(self, message: AgentMessage) -> AgentResult:
         """执行任务：独立 tool loop。"""
@@ -66,6 +67,7 @@ class BaseAgent:
         # Turn-shared budget ledger (Task 9 / blueprint §3 + §5).
         # If absent (older callers / tests), budget enforcement is skipped.
         ledger = self._services.get("budget_ledger") if self._services else None
+        self._collected_tool_errors = []
 
         loop_detector = LoopDetector(LoopDetectorConfig(
             warning_threshold=max(3, self.spec.max_rounds // 3),
@@ -247,6 +249,7 @@ class BaseAgent:
             result=result_text,
             evidence=evidence,
             execution_trace=execution_trace or [],
+            tool_errors=list(self._collected_tool_errors),
             structured_result=structured,
         )
 
@@ -292,6 +295,7 @@ class BaseAgent:
             reason=reason,
             error_detail=error_detail,
             execution_trace=execution_trace or [],
+            tool_errors=list(self._collected_tool_errors),
         )
 
     async def _finalize_budget_exhausted(
@@ -437,6 +441,12 @@ class BaseAgent:
                     payload=result.payload,
                 )
                 self._collected_evidence.extend(entries)
+            elif isinstance(result.payload, dict):
+                self._collected_tool_errors.append({
+                    "tool": tool_call.name,
+                    "reason": result.payload.get("error") or result.reason or "tool_failed",
+                    "payload": result.payload,
+                })
             return json.dumps(result.payload, ensure_ascii=False, default=str)
         except Exception as exc:
             logger.exception("Agent '%s' tool '%s' failed", self.spec.name, tool_call.name)
