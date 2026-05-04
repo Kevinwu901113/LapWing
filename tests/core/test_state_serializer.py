@@ -446,13 +446,23 @@ class TestAmbientAwareness:
             upcoming_events=("距劳动节还有9天。",),
         )
 
-    def _make_ambient_entry(self, key="weather:la", topic="洛杉矶天气", summary="晴 28°C"):
+    def _make_ambient_entry(
+        self,
+        key="weather:la",
+        topic="洛杉矶天气",
+        summary="晴 28°C",
+        category="weather",
+        confidence=1.0,
+        fetched_at="2026-04-22T13:00:00Z",
+        expires_at="2026-04-22T17:00:00Z",
+        source="test",
+    ):
         from src.ambient.models import AmbientEntry
         return AmbientEntry(
-            key=key, category="weather", topic=topic, data="{}",
-            summary=summary, fetched_at="2026-04-22T13:00:00Z",
-            expires_at="2026-04-22T17:00:00Z", source="test",
-            confidence=1.0,
+            key=key, category=category, topic=topic, data="{}",
+            summary=summary, fetched_at=fetched_at,
+            expires_at=expires_at, source=source,
+            confidence=confidence,
         )
 
     def test_time_context_renders_awareness_section(self):
@@ -508,6 +518,7 @@ class TestAmbientAwareness:
         assert "你已知的信息" in out.system_prompt
         assert "洛杉矶天气" in out.system_prompt
         assert "晴 28°C" in out.system_prompt
+        assert "(来源:test, 置信:1" in out.system_prompt
 
     def test_no_ambient_entries_shows_placeholder(self):
         tc = self._make_time_context()
@@ -524,6 +535,81 @@ class TestAmbientAwareness:
         out = serialize(sv_with)
         assert "暂无已缓存的环境知识" in out.system_prompt
         assert "你已知的信息" not in out.system_prompt
+
+    def test_conflict_suppression_keeps_top_category_entry(self):
+        now = datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc)
+        entries = (
+            self._make_ambient_entry(
+                key="a", category="snooker", topic="斯诺克A", summary="低置信",
+                confidence=0.6, fetched_at="2026-05-04T09:00:00+00:00",
+                expires_at="2026-05-04T15:00:00+00:00",
+            ),
+            self._make_ambient_entry(
+                key="b", category="snooker", topic="斯诺克B", summary="中置信",
+                confidence=0.8, fetched_at="2026-05-04T10:00:00+00:00",
+                expires_at="2026-05-04T15:00:00+00:00",
+            ),
+            self._make_ambient_entry(
+                key="c", category="snooker", topic="斯诺克C", summary="高置信",
+                confidence=0.9, fetched_at="2026-05-04T08:00:00+00:00",
+                expires_at="2026-05-04T15:00:00+00:00",
+            ),
+        )
+        sv = _make_state(now=now)
+        out = serialize(StateView(
+            identity_docs=sv.identity_docs,
+            attention_context=sv.attention_context,
+            trajectory_window=sv.trajectory_window,
+            memory_snippets=sv.memory_snippets,
+            commitments_active=sv.commitments_active,
+            time_context=self._make_time_context(),
+            ambient_entries=entries,
+        ))
+        assert "斯诺克C" in out.system_prompt
+        assert "斯诺克A" not in out.system_prompt
+        assert "斯诺克B" not in out.system_prompt
+
+    def test_low_confidence_ambient_entry_not_rendered(self):
+        now = datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc)
+        entry = self._make_ambient_entry(
+            confidence=0.65,
+            fetched_at="2026-05-04T11:00:00+00:00",
+            expires_at="2026-05-04T15:00:00+00:00",
+        )
+        sv = _make_state(now=now)
+        out = serialize(StateView(
+            identity_docs=sv.identity_docs,
+            attention_context=sv.attention_context,
+            trajectory_window=sv.trajectory_window,
+            memory_snippets=sv.memory_snippets,
+            commitments_active=sv.commitments_active,
+            time_context=self._make_time_context(),
+            ambient_entries=(entry,),
+        ))
+        assert "洛杉矶天气" not in out.system_prompt
+        assert "暂无已缓存的环境知识" in out.system_prompt
+
+    def test_ambient_render_includes_source_confidence_and_age(self):
+        now = datetime(2026, 5, 4, 12, 0, tzinfo=timezone.utc)
+        entry = self._make_ambient_entry(
+            source="research_writeback",
+            confidence=0.8,
+            fetched_at="2026-05-04T11:00:00+00:00",
+            expires_at="2026-05-04T15:00:00+00:00",
+        )
+        sv = _make_state(now=now)
+        out = serialize(StateView(
+            identity_docs=sv.identity_docs,
+            attention_context=sv.attention_context,
+            trajectory_window=sv.trajectory_window,
+            memory_snippets=sv.memory_snippets,
+            commitments_active=sv.commitments_active,
+            time_context=self._make_time_context(),
+            ambient_entries=(entry,),
+        ))
+        assert "(来源:" in out.system_prompt
+        assert "置信:" in out.system_prompt
+        assert "前)" in out.system_prompt
 
 
 # ── Prompt layering order ────────────────────────────────────────────

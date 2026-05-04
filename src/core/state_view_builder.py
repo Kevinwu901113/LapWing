@@ -589,10 +589,23 @@ class StateViewBuilder:
         if self._ambient is None:
             return ()
         try:
-            return await self._ambient.get_all_fresh()
+            entries = await self._ambient.get_all_fresh()
         except Exception:
             logger.debug("AmbientKnowledgeStore.get_all_fresh failed", exc_info=True)
             return ()
+        now = datetime.now(timezone.utc)
+        by_category = {}
+        for entry in entries:
+            if float(getattr(entry, "confidence", 0.0) or 0.0) < 0.7:
+                continue
+            expires_at = _parse_aware_datetime(getattr(entry, "expires_at", ""))
+            if expires_at is None or expires_at <= now:
+                continue
+            category = getattr(entry, "category", "")
+            current = by_category.get(category)
+            if current is None or _ambient_rank(entry) > _ambient_rank(current):
+                by_category[category] = entry
+        return tuple(sorted(by_category.values(), key=_ambient_rank, reverse=True))
 
 
 # ── Module-private helpers ──────────────────────────────────────────
@@ -607,6 +620,23 @@ def _read_text(path: Path) -> str:
         return path.read_text(encoding="utf-8").strip()
     except (FileNotFoundError, OSError):
         return ""
+
+
+def _parse_aware_datetime(value: str):
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _ambient_rank(entry) -> tuple[float, datetime]:
+    fetched_at = _parse_aware_datetime(getattr(entry, "fetched_at", ""))
+    if fetched_at is None:
+        fetched_at = datetime.min.replace(tzinfo=timezone.utc)
+    return (float(getattr(entry, "confidence", 0.0) or 0.0), fetched_at)
 
 
 def _load_prompt_or_empty(name: str) -> str:
