@@ -8,10 +8,11 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import time
+from urllib.parse import urlparse
 import uuid
 from typing import Any, Awaitable, Callable
 
@@ -99,6 +100,14 @@ TOOL_RESULT_DIR = os.path.join(str(ROOT_DIR), "data", "tool_results")
 BUDGET_EXEMPT_TOOLS = frozenset({
     "file_read", "read_file", "file_read_segment", "memory_read",
 })
+_AMBIENT_WRITEBACK_MIN_CONFIDENCE = 0.7
+_AMBIENT_CACHE_MIN_CONFIDENCE = 0.8
+_AMBIENT_CACHE_MAX_AGE_SECONDS = 60 * 60
+_VOLATILE_TOPIC_PATTERNS = (
+    "今天", "现在", "刚才", "最新", "实时", "当前",
+    "比分", "赛况", "进度", "领先",
+    "股价", "汇率", "天气",
+)
 
 # VitalGuard 对命令类型的分类（模块级常量，避免每次 execute_tool() 重建）
 _SHELL_TOOLS: frozenset[str] = frozenset({"execute_shell", "run_python_code"})
@@ -152,6 +161,38 @@ def _truncate_result(payload: Any, max_chars: int = 800) -> str:
     if len(text) > max_chars:
         return text[:max_chars] + "...（截断）"
     return text
+
+
+def _is_volatile_research_question(question: str) -> bool:
+    return any(pattern in question for pattern in _VOLATILE_TOPIC_PATTERNS)
+
+
+def _parse_aware_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _evidence_domains(evidence: Any) -> set[str]:
+    domains: set[str] = set()
+    if not isinstance(evidence, list):
+        return domains
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("source_url") or item.get("url") or item.get("link")
+        if not url:
+            continue
+        netloc = urlparse(str(url)).netloc.lower()
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        if netloc:
+            domains.add(netloc)
+    return domains
 
 
 class TaskRuntime:
@@ -1810,15 +1851,26 @@ class TaskRuntime:
         request: ToolExecutionRequest,
         ambient_store: Any,
     ) -> ToolExecutionResult | None:
-        """保守的 research 缓存拦截：question 包含已缓存条目的 topic 关键词时命中。"""
+        """保守的 research 缓存拦截：只短路高置信、短龄、非实时问题。"""
         question = str(request.arguments.get("question", "")).strip().lower()
         if not question or len(question) < 4:
+            return None
+        if _is_volatile_research_question(question):
             return None
         try:
             all_entries = await ambient_store.get_all_fresh()
         except Exception:
             return None
+        now_dt = datetime.now(timezone.utc)
         for entry in all_entries:
+            if float(getattr(entry, "confidence", 0.0) or 0.0) < _AMBIENT_CACHE_MIN_CONFIDENCE:
+                continue
+            fetched_dt = _parse_aware_datetime(entry.fetched_at)
+            if fetched_dt is None:
+                continue
+            age_seconds = (now_dt - fetched_dt.astimezone(timezone.utc)).total_seconds()
+            if age_seconds > _AMBIENT_CACHE_MAX_AGE_SECONDS:
+                continue
             topic_lower = entry.topic.lower()
             keywords = [w for w in topic_lower.split() if len(w) >= 2][:3]
             if not keywords:
@@ -1836,6 +1888,7 @@ class TaskRuntime:
                         "evidence": data.get("evidence", []),
                         "confidence": entry.confidence,
                         "source": f"ambient_cache:{entry.key}",
+                        "cache_hit": True,
                         "cached_at": entry.fetched_at,
                     },
                     reason=f"ambient_cache_hit:{entry.key}",
@@ -1855,11 +1908,21 @@ class TaskRuntime:
 
         payload = execution.payload
         confidence = float(payload.get("confidence", 0))
-        if confidence < 0.5:
+        if confidence < _AMBIENT_WRITEBACK_MIN_CONFIDENCE:
+            return
+
+        evidence = payload.get("evidence", [])
+        if not isinstance(evidence, list) or len(evidence) < 2:
+            return
+        if len(_evidence_domains(evidence)) < 2:
+            return
+        if payload.get("unclear"):
             return
 
         question = str(request.arguments.get("question", "")).strip()
         if not question:
+            return
+        if _is_volatile_research_question(question):
             return
 
         answer = str(payload.get("answer", ""))
