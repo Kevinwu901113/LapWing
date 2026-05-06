@@ -78,6 +78,7 @@ STANDARD_PROFILE = RuntimeProfile(
         "list_agents",
         # ── skills ──
         "run_skill",
+        "run_capability",
         # ── capability read-only progressive disclosure ──
         "list_capabilities", "search_capability", "view_capability", "load_capability",
         # ── planning ──
@@ -129,6 +130,7 @@ INNER_TICK_PROFILE = RuntimeProfile(
         "add_correction",
         # skills (only auto-runnable stable ones — gated by skill maturity)
         "run_skill",
+        "run_capability",
         # outward seam (post agents-as-tools refactor: even autonomous
         # ticks reach external info through the Researcher rather than
         # raw research/browse).

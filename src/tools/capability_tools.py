@@ -217,6 +217,29 @@ LOAD_CAPABILITY_SCHEMA = {
     "required": ["id"],
 }
 
+RUN_CAPABILITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string", "description": "Capability ID to run"},
+        "scope": {
+            "type": "string",
+            "enum": ["global", "user", "workspace", "session"],
+            "description": "Scope to look in (omitted = resolve by precedence)",
+        },
+        "arguments": {
+            "type": "object",
+            "description": "Arguments passed to the capability entrypoint",
+        },
+        "timeout": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 300,
+            "description": "Execution timeout in seconds",
+        },
+    },
+    "required": ["id"],
+}
+
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -233,6 +256,8 @@ def _compact_summary(doc) -> dict:
         "risk_level": m.risk_level.value,
         "tags": m.tags,
         "triggers": m.triggers,
+        "do_not_apply_when": m.do_not_apply_when,
+        "sensitive_contexts": [v.value if hasattr(v, "value") else str(v) for v in m.sensitive_contexts],
         "updated_at": m.updated_at.isoformat() if m.updated_at else "",
     }
 
@@ -252,6 +277,8 @@ def _search_result(doc) -> dict:
         "triggers": m.triggers,
         "tags": m.tags,
         "required_tools": m.required_tools,
+        "do_not_apply_when": m.do_not_apply_when,
+        "sensitive_contexts": [v.value if hasattr(v, "value") else str(v) for v in m.sensitive_contexts],
         "updated_at": m.updated_at.isoformat() if m.updated_at else "",
     }
 
@@ -276,6 +303,23 @@ def _scope_for_store(scope_str: str | None):
         return None
     from src.capabilities.schema import CapabilityScope
     return CapabilityScope(scope_str)
+
+
+def _capability_execution_metadata(manifest) -> tuple[str, dict]:
+    execution = manifest.extra.get("execution")
+    if not isinstance(execution, dict):
+        execution = {}
+    entry_type = (
+        execution.get("entry_type")
+        or manifest.extra.get("entry_type")
+        or manifest.extra.get("entrypoint_type")
+        or ""
+    )
+    if not entry_type and (execution.get("skill_id") or manifest.extra.get("skill_id")):
+        entry_type = "skill_bridge"
+    if not entry_type:
+        entry_type = "procedural"
+    return str(entry_type), execution
 
 
 # ── Executors ────────────────────────────────────────────────────────
@@ -580,6 +624,200 @@ def _make_load_capability_executor(store: "CapabilityStore", index: "CapabilityI
         payload["loaded_sections"] = list(sections)
         payload["read_only"] = True
         return ToolExecutionResult(success=True, payload=payload)
+
+    return executor
+
+
+def _make_run_capability_executor(store: "CapabilityStore"):
+    async def executor(
+        request: ToolExecutionRequest,
+        context: ToolExecutionContext,
+    ) -> ToolExecutionResult:
+        try:
+            from src.capabilities.eval_records import get_latest_valid_eval_record
+            from src.capabilities.reuse_preflight import (
+                CapabilityUseContext,
+                ReusePreflightInput,
+                run_reuse_preflight,
+            )
+            from src.core.runtime_profiles import get_runtime_profile
+            from src.core.tool_dispatcher import ServiceContextView
+            from src.eval.axes import AxisStatus, EvalAxis
+
+            args = request.arguments
+            cap_id = str(args.get("id", "")).strip()
+            if not cap_id:
+                return ToolExecutionResult(
+                    success=False,
+                    payload={"executed": False, "reason": "id is required"},
+                    reason="run_capability requires an id",
+                )
+
+            scope_str = _validate_enum(args.get("scope"), ALLOWED_SCOPES, "scope")
+            doc = store.get(cap_id, _scope_for_store(scope_str))
+            latest = get_latest_valid_eval_record(doc)
+            if latest is None:
+                return ToolExecutionResult(
+                    success=False,
+                    payload={
+                        "executed": False,
+                        "capability_id": doc.id,
+                        "reason": "stale_evaluation",
+                    },
+                    reason="stale_evaluation",
+                )
+
+            for axis in (EvalAxis.FUNCTIONAL.value, EvalAxis.SAFETY.value):
+                result = latest.axes.get(axis)
+                status = getattr(result, "status", AxisStatus.UNKNOWN)
+                status_value = status.value if hasattr(status, "value") else str(status)
+                if status_value != AxisStatus.PASS.value:
+                    return ToolExecutionResult(
+                        success=False,
+                        payload={
+                            "executed": False,
+                            "capability_id": doc.id,
+                            "reason": "axis_failed",
+                            "axis": axis,
+                            "status": status_value,
+                        },
+                        reason="axis_failed",
+                    )
+
+            entry_type, execution = _capability_execution_metadata(doc.manifest)
+            if entry_type == "procedural":
+                return ToolExecutionResult(
+                    success=False,
+                    payload={"executed": False, "capability_id": doc.id, "reason": "procedural_not_executable"},
+                    reason="procedural_not_executable",
+                )
+            if entry_type not in {"skill_bridge", "executable_script"}:
+                return ToolExecutionResult(
+                    success=False,
+                    payload={"executed": False, "capability_id": doc.id, "reason": "unknown_entry_type"},
+                    reason="unknown_entry_type",
+                )
+
+            svc = ServiceContextView(context.services or {})
+            skill_executor = svc.skill_executor
+            if skill_executor is None:
+                return ToolExecutionResult(
+                    success=False,
+                    payload={"executed": False, "capability_id": doc.id, "reason": "SkillExecutor 未挂载"},
+                    reason=f"run_capability requires skill_executor for {entry_type}",
+                )
+
+            runtime_profile = get_runtime_profile(context.runtime_profile or "standard")
+            tool_registry = svc.tool_registry
+            available_tools = set()
+            if tool_registry is not None:
+                available_tools = {tool.name for tool in tool_registry.get_tools_for_profile(runtime_profile)}
+
+            preflight = run_reuse_preflight(ReusePreflightInput(
+                capability=doc,
+                runtime_profile=runtime_profile,
+                auth_level=context.auth_level,
+                current_context=CapabilityUseContext(),
+                requested_arguments=args.get("arguments") or {},
+                execution_mode="run",
+                latest_eval_record=latest,
+                available_tools=available_tools,
+                available_permissions=set(),
+            ))
+            if not preflight.allowed:
+                return ToolExecutionResult(
+                    success=False,
+                    payload={
+                        "executed": False,
+                        "capability_id": doc.id,
+                        "reason": preflight.reason,
+                        "details": preflight.details,
+                    },
+                    reason=preflight.reason,
+                )
+
+            call_arguments = args.get("arguments") or {}
+            timeout = max(1, min(int(args.get("timeout", 30) or 30), 300))
+
+            if entry_type == "executable_script":
+                from src.skills.skill_executor import CapabilityExecutionContext
+
+                entry_script = str(
+                    execution.get("entry_script") or doc.manifest.extra.get("entry_script") or "",
+                ).strip()
+                if not entry_script:
+                    return ToolExecutionResult(
+                        success=False,
+                        payload={"executed": False, "capability_id": doc.id, "reason": "missing_entry_script"},
+                        reason="missing_entry_script",
+                    )
+                dependencies = execution.get("dependencies") or doc.manifest.extra.get("dependencies") or []
+                if not isinstance(dependencies, list):
+                    dependencies = [str(dependencies)]
+                result = await skill_executor.execute_directory(
+                    directory=doc.directory,
+                    entry_script=entry_script,
+                    arguments=call_arguments,
+                    timeout=timeout,
+                    capability_context=CapabilityExecutionContext(
+                        capability_id=doc.id,
+                        capability_version=doc.manifest.version,
+                        capability_content_hash=doc.content_hash,
+                        maturity=doc.manifest.maturity.value,
+                        dependencies=tuple(str(dep) for dep in dependencies),
+                    ),
+                )
+                return ToolExecutionResult(
+                    success=result.success,
+                    payload={
+                        "executed": True,
+                        "capability_id": doc.id,
+                        "capability_version": doc.manifest.version,
+                        "capability_content_hash": doc.content_hash,
+                        "entry_type": "executable_script",
+                        "entry_script": entry_script,
+                        "output": result.output,
+                        "error": result.error,
+                        "exit_code": result.exit_code,
+                        "timed_out": result.timed_out,
+                    },
+                    reason=result.error if not result.success else "",
+                )
+
+            skill_id = str(execution.get("skill_id") or doc.manifest.extra.get("skill_id") or "").strip()
+            if not skill_id:
+                return ToolExecutionResult(
+                    success=False,
+                    payload={"executed": False, "capability_id": doc.id, "reason": "skill_bridge_missing_skill_id"},
+                    reason="skill_bridge_missing_skill_id",
+                )
+
+            result = await skill_executor.execute(skill_id, arguments=call_arguments, timeout=timeout)
+            return ToolExecutionResult(
+                success=result.success,
+                payload={
+                    "executed": True,
+                    "capability_id": doc.id,
+                    "capability_version": doc.manifest.version,
+                    "capability_content_hash": doc.content_hash,
+                    "entry_type": "skill_bridge",
+                    "skill_id": skill_id,
+                    "output": result.output,
+                    "error": result.error,
+                    "exit_code": result.exit_code,
+                    "timed_out": result.timed_out,
+                },
+                reason=result.error if not result.success else "",
+            )
+        except ValueError as e:
+            return ToolExecutionResult(success=False, payload={"executed": False, "error": str(e)}, reason=str(e))
+        except Exception as e:
+            logger.debug("run_capability failed", exc_info=True)
+            return ToolExecutionResult(
+                success=False,
+                payload={"executed": False, "error": "run_capability_failed", "detail": str(e)},
+                reason=f"run_capability failed: {e}",
+            )
 
     return executor
 
@@ -1053,6 +1291,35 @@ def register_capability_lifecycle_tools(
     ))
 
     logger.info("Phase 3C capability lifecycle tools registered (evaluate/plan/transition)")
+
+
+def register_capability_runner_tools(
+    tool_registry,
+    store: "CapabilityStore",
+) -> None:
+    """Register the gated capability-native runner.
+
+    Supports explicit skill_bridge capabilities and executable_script
+    capabilities after latest-valid eval and reuse preflight.
+    """
+    if store is None:
+        logger.warning("register_capability_runner_tools called with store=None, skipping")
+        return
+
+    tool_registry.register(ToolSpec(
+        name="run_capability",
+        description=(
+            "Run a stable capability through the capability reuse preflight. "
+            "Supports explicit skill_bridge and executable_script entrypoints; "
+            "procedural capabilities are refused."
+        ),
+        json_schema=RUN_CAPABILITY_SCHEMA,
+        executor=_make_run_capability_executor(store),
+        capability="capability_runner",
+        risk_level="medium",
+    ))
+
+    logger.info("Capability runner tool registered (skill_bridge/executable_script)")
 
 
 # ── Phase 5A: Curator tool schemas ──────────────────────────────────────

@@ -15,7 +15,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any
 
-from src.capabilities.eval_records import get_latest_eval_record, write_eval_record
+from src.capabilities.eval_records import get_latest_valid_eval_record, write_eval_record
 from src.capabilities.versioning import create_version_snapshot
 
 if TYPE_CHECKING:
@@ -126,6 +126,23 @@ class CapabilityLifecycleManager:
             write_eval_record(record, doc, mutation_log=self._mutation_log)
         return record
 
+    def evaluate_all(self, *, write_records: bool = True) -> list["EvalRecord"]:
+        """Evaluate active capabilities that lack a current valid EvalRecord.
+
+        EvalRecords are append-only; existing records are never overwritten.
+        """
+        records: list["EvalRecord"] = []
+        for doc in self._store.list(include_disabled=False, include_archived=False, limit=10000):
+            if get_latest_valid_eval_record(doc) is not None:
+                continue
+            record = self._evaluator.evaluate(
+                doc, available_tools=self._available_tools or None
+            )
+            if write_records:
+                write_eval_record(record, doc, mutation_log=self._mutation_log)
+            records.append(record)
+        return records
+
     def plan_transition(
         self,
         capability_id: str,
@@ -173,7 +190,7 @@ class CapabilityLifecycleManager:
                 explanation="Archived capability cannot transition",
             )
 
-        eval_record = get_latest_eval_record(doc)
+        eval_record = get_latest_valid_eval_record(doc)
         return self._planner.plan_transition(
             doc.manifest,
             target,

@@ -112,6 +112,7 @@ OPERATION_AUTH: dict[str, AuthLevel] = {
     # 技能系统
     "create_skill": AuthLevel.OWNER,
     "run_skill": AuthLevel.OWNER,
+    "run_capability": AuthLevel.OWNER,
     "edit_skill": AuthLevel.OWNER,
     "list_skills": AuthLevel.OWNER,
     "promote_skill": AuthLevel.OWNER,

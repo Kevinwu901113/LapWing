@@ -56,6 +56,9 @@ def _setup_quarantine(store: CapabilityStore, cap_id: str, **kw):
         "maturity": "draft", "status": "quarantined", "risk_level": "low",
         "triggers": ["when test"], "tags": ["test"],
         "trust_required": "developer", "required_tools": [], "required_permissions": [],
+        "do_not_apply_when": ["not for unsafe activation contexts"],
+        "reuse_boundary": "Activation apply safety test only.",
+        "side_effects": ["none"],
     }
     fm.update(kw)
     fm_yaml = yaml.dump(fm, allow_unicode=True, sort_keys=False).strip()
@@ -76,6 +79,9 @@ def _setup_quarantine(store: CapabilityStore, cap_id: str, **kw):
         "files_summary": {"scripts": [], "tests": [], "examples": []},
         "name": f"Test {cap_id}", "type": "skill", "risk_level": fm["risk_level"],
     }, indent=2), encoding="utf-8")
+    evals_dir = qdir / "evals"
+    evals_dir.mkdir(exist_ok=True)
+    (evals_dir / "boundary_cases.jsonl").write_text('{"case":"boundary"}\n', encoding="utf-8")
 
     rev_dir = qdir / "quarantine_reviews"
     rev_dir.mkdir(exist_ok=True)
@@ -285,7 +291,7 @@ class TestApplyActivationSafety:
         # Add a script file to the quarantine
         scripts_dir = qdir / "scripts"
         scripts_dir.mkdir(exist_ok=True)
-        (scripts_dir / "install.sh").write_text("#!/bin/bash\necho 'should not run'\n")
+        (scripts_dir / "install.sh").write_text("# copied script fixture\n")
 
         import_calls = []
 

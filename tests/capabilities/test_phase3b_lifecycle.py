@@ -23,6 +23,7 @@ from src.capabilities.schema import (
     CapabilityScope,
     CapabilityStatus,
     CapabilityType,
+    SideEffect,
 )
 from src.capabilities.store import CapabilityStore
 
@@ -90,6 +91,17 @@ def _create_cap(
         risk_level=risk_level,
         **overrides,
     )
+    doc.manifest = doc.manifest.model_copy(update={
+        "do_not_apply_when": ["not for unsafe lifecycle tests"],
+        "reuse_boundary": "Lifecycle regression tests only.",
+        "side_effects": [SideEffect.NONE],
+    })
+    store._sync_manifest_json(doc.directory, doc)
+    evals_dir = doc.directory / "evals"
+    evals_dir.mkdir(exist_ok=True)
+    (evals_dir / "positive_cases.jsonl").write_text('{"case":"ok"}\n', encoding="utf-8")
+    (evals_dir / "boundary_cases.jsonl").write_text('{"case":"boundary"}\n', encoding="utf-8")
+    doc = store._parser.parse(doc.directory)
     # create_draft always sets maturity=draft, status=active.
     # Update the manifest if the caller wants a different starting state.
     needs_update = False

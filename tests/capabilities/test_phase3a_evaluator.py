@@ -46,6 +46,9 @@ def _write_capability(base: Path, dirname: str, body: str = "", **front_matter_o
         "risk_level": "low",
         "tags": ["test"],
         "triggers": ["on_test"],
+        "do_not_apply_when": ["when request is outside the test fixture scope"],
+        "reuse_boundary": "Only use for deterministic evaluator tests.",
+        "side_effects": ["none"],
         **front_matter_overrides,
     }
 
@@ -56,6 +59,10 @@ def _write_capability(base: Path, dirname: str, body: str = "", **front_matter_o
     # Create standard dirs
     for d in ("scripts", "tests", "examples", "evals"):
         (cap_dir / d).mkdir(exist_ok=True)
+    (cap_dir / "evals" / "boundary_cases.jsonl").write_text(
+        '{"case": "out_of_scope"}\n',
+        encoding="utf-8",
+    )
 
     return cap_dir
 

@@ -33,6 +33,8 @@ CREATE TABLE IF NOT EXISTS capability_index (
     required_permissions_json TEXT NOT NULL DEFAULT '[]',
     triggers_json TEXT NOT NULL DEFAULT '[]',
     tags_json TEXT NOT NULL DEFAULT '[]',
+    do_not_apply_when_json TEXT NOT NULL DEFAULT '[]',
+    sensitive_contexts_json TEXT NOT NULL DEFAULT '[]',
     path TEXT NOT NULL,
     content_hash TEXT NOT NULL,
     created_at TEXT NOT NULL,
@@ -77,6 +79,11 @@ def _manifest_to_row(doc: "CapabilityDocument") -> dict:
         "required_permissions_json": json.dumps(m.required_permissions, ensure_ascii=False),
         "triggers_json": json.dumps(m.triggers, ensure_ascii=False),
         "tags_json": json.dumps(m.tags, ensure_ascii=False),
+        "do_not_apply_when_json": json.dumps(m.do_not_apply_when, ensure_ascii=False),
+        "sensitive_contexts_json": json.dumps(
+            [v.value if hasattr(v, "value") else str(v) for v in m.sensitive_contexts],
+            ensure_ascii=False,
+        ),
         "path": str(doc.directory),
         "content_hash": doc.content_hash,
         "created_at": m.created_at.isoformat() if m.created_at else "",
@@ -86,7 +93,14 @@ def _manifest_to_row(doc: "CapabilityDocument") -> dict:
 
 def _row_to_dict(row: sqlite3.Row) -> dict:
     d = dict(row)
-    for json_col in ("required_tools_json", "required_permissions_json", "triggers_json", "tags_json"):
+    for json_col in (
+        "required_tools_json",
+        "required_permissions_json",
+        "triggers_json",
+        "tags_json",
+        "do_not_apply_when_json",
+        "sensitive_contexts_json",
+    ):
         try:
             d[json_col] = json.loads(d[json_col])
         except (json.JSONDecodeError, TypeError):
@@ -109,6 +123,7 @@ class CapabilityIndex:
         self._conn.row_factory = sqlite3.Row
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.executescript(_SQL_CREATE)
+        self._ensure_boundary_columns()
 
     def close(self) -> None:
         if self._conn is not None:
@@ -120,6 +135,18 @@ class CapabilityIndex:
         if self._conn is None:
             raise RuntimeError("CapabilityIndex not initialized — call init() first")
         return self._conn
+
+    def _ensure_boundary_columns(self) -> None:
+        existing = {
+            row["name"]
+            for row in self.conn.execute("PRAGMA table_info(capability_index)").fetchall()
+        }
+        for column in ("do_not_apply_when_json", "sensitive_contexts_json"):
+            if column not in existing:
+                self.conn.execute(
+                    f"ALTER TABLE capability_index ADD COLUMN {column} TEXT NOT NULL DEFAULT '[]'"
+                )
+        self.conn.commit()
 
     # ── indexing ───────────────────────────────────────────────
 

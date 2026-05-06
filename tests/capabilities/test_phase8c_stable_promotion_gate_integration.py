@@ -32,6 +32,7 @@ from src.capabilities.schema import (
     CapabilityScope,
     CapabilityStatus,
     CapabilityType,
+    SideEffect,
 )
 from src.capabilities.store import CapabilityStore
 
@@ -71,6 +72,17 @@ def _create_cap(store: CapabilityStore, *, cap_id: str, maturity: str = "draft",
         body=VALID_BODY,
         risk_level=risk_level,
     )
+    doc.manifest = doc.manifest.model_copy(update={
+        "do_not_apply_when": ["not for unsafe stable-promotion contexts"],
+        "reuse_boundary": "Stable promotion integration test only.",
+        "side_effects": [SideEffect.NONE],
+    })
+    store._sync_manifest_json(doc.directory, doc)
+    evals_dir = doc.directory / "evals"
+    evals_dir.mkdir(exist_ok=True)
+    (evals_dir / "positive_cases.jsonl").write_text('{"case":"ok"}\n', encoding="utf-8")
+    (evals_dir / "boundary_cases.jsonl").write_text('{"case":"boundary"}\n', encoding="utf-8")
+    doc = store._parser.parse(doc.directory)
     if maturity != "draft" or status != "active":
         updates: dict = {}
         if maturity != "draft":

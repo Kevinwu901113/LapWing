@@ -52,6 +52,8 @@ class RetrievalContext:
     include_disabled: bool = False
     include_archived: bool = False
     include_quarantined: bool = False
+    sensitive_contexts: set[str] = field(default_factory=set)
+    approved_sensitive_contexts: set[str] = field(default_factory=set)
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +76,8 @@ class CapabilitySummary:
     triggers: tuple[str, ...] = ()
     tags: tuple[str, ...] = ()
     required_tools: tuple[str, ...] = ()
+    do_not_apply_when: tuple[str, ...] = ()
+    sensitive_contexts: tuple[str, ...] = ()
     match_reason: str = ""
     score: float = 0.0
 
@@ -163,6 +167,8 @@ class CapabilityRetriever:
             triggers=tuple(m.triggers),
             tags=tuple(m.tags),
             required_tools=tuple(m.required_tools),
+            do_not_apply_when=tuple(m.do_not_apply_when),
+            sensitive_contexts=tuple(v.value if hasattr(v, "value") else str(v) for v in m.sensitive_contexts),
         )
 
     def filter_candidates(
@@ -211,6 +217,13 @@ class CapabilityRetriever:
                 if not set(required_tools).issubset(available_tools):
                     continue
 
+            sensitive_contexts = set(_parse_list(c.get("sensitive_contexts") or c.get("sensitive_contexts_json")))
+            active_sensitive = set(context.sensitive_contexts or set())
+            approved_sensitive = set(context.approved_sensitive_contexts or set())
+            intersection = active_sensitive & sensitive_contexts
+            if intersection and not intersection.issubset(approved_sensitive):
+                continue
+
             summary = self._dict_to_summary(c)
             summaries.append(summary)
 
@@ -258,6 +271,8 @@ class CapabilityRetriever:
                     triggers=summary.triggers,
                     tags=summary.tags,
                     required_tools=summary.required_tools,
+                    do_not_apply_when=summary.do_not_apply_when,
+                    sensitive_contexts=summary.sensitive_contexts,
                     match_reason=match_reason,
                     score=score,
                 )
@@ -298,6 +313,8 @@ class CapabilityRetriever:
             triggers=tuple(_parse_list(row.get("triggers") or row.get("triggers_json"))),
             tags=tuple(_parse_list(row.get("tags") or row.get("tags_json"))),
             required_tools=tuple(_parse_list(row.get("required_tools") or row.get("required_tools_json"))),
+            do_not_apply_when=tuple(_parse_list(row.get("do_not_apply_when") or row.get("do_not_apply_when_json"))),
+            sensitive_contexts=tuple(_parse_list(row.get("sensitive_contexts") or row.get("sensitive_contexts_json"))),
         )
 
 

@@ -50,6 +50,7 @@ async def test_wiki_injection_when_pages_exist(wiki_dir):
     contents = [s.content for s in snippets.snippets]
     assert any("[wiki / entity.kevin]" in c for c in contents)
     assert any("[wiki / entity.lapwing]" in c for c in contents)
+    assert all("[reference, not rule]" in c for c in contents)
 
 
 async def test_wiki_injection_skipped_when_disabled(wiki_dir):
@@ -75,6 +76,7 @@ async def test_wiki_injection_only_summary_and_facts(wiki_dir):
     assert len(snippets.snippets) == 1
     body = snippets.snippets[0].content
     # Phase 1 only injects "Current summary" + "Stable facts"
+    assert "[reference, not rule]" in body
     assert "Kevin is the owner" in body
     assert "blueprint-first" in body
     # Other sections (Open questions, Recent changes, Evidence...) not injected

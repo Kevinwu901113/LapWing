@@ -98,6 +98,17 @@ class CapabilityStore:
             "required_permissions": m.required_permissions,
             "triggers": m.triggers,
             "tags": m.tags,
+            "do_not_apply_when": m.do_not_apply_when,
+            "sensitive_contexts": [v.value if hasattr(v, "value") else str(v) for v in m.sensitive_contexts],
+            "reuse_boundary": m.reuse_boundary,
+            "required_preflight_checks": m.required_preflight_checks,
+            "side_effects": [v.value if hasattr(v, "value") else str(v) for v in m.side_effects],
+            "rollback_available": m.rollback_available,
+            "rollback_mechanism": (
+                m.rollback_mechanism.value
+                if m.rollback_mechanism is not None and hasattr(m.rollback_mechanism, "value")
+                else m.rollback_mechanism
+            ),
             "content_hash": doc.content_hash,
             "created_at": m.created_at.isoformat() if m.created_at else "",
             "updated_at": m.updated_at.isoformat() if m.updated_at else "",
@@ -176,6 +187,13 @@ class CapabilityStore:
             "required_permissions": front_matter.get("required_permissions", []),
             "triggers": front_matter.get("triggers", []),
             "tags": front_matter.get("tags", []),
+            "do_not_apply_when": front_matter.get("do_not_apply_when", []),
+            "sensitive_contexts": front_matter.get("sensitive_contexts", []),
+            "reuse_boundary": front_matter.get("reuse_boundary"),
+            "required_preflight_checks": front_matter.get("required_preflight_checks", []),
+            "side_effects": front_matter.get("side_effects", []),
+            "rollback_available": front_matter.get("rollback_available"),
+            "rollback_mechanism": front_matter.get("rollback_mechanism"),
         }
         self._write_manifest_json(cap_dir, manifest_json_data)
 

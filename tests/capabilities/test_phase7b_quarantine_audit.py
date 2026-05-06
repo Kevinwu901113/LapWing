@@ -45,6 +45,9 @@ def _make_quarantine_dir(store: CapabilityStore, cap_id: str, *, md_body: str | 
         "trust_required": "developer",
         "required_tools": [],
         "required_permissions": [],
+        "do_not_apply_when": ["not for unsafe audit contexts"],
+        "reuse_boundary": "Quarantine audit test only.",
+        "side_effects": ["none"],
     }
     fm.update(overrides)
 
@@ -65,6 +68,9 @@ def _make_quarantine_dir(store: CapabilityStore, cap_id: str, *, md_body: str | 
     (qdir / "manifest.json").write_text(json.dumps({
         k: v for k, v in fm.items() if k not in ("version",)
     }, indent=2), encoding="utf-8")
+    evals_dir = qdir / "evals"
+    evals_dir.mkdir(exist_ok=True)
+    (evals_dir / "boundary_cases.jsonl").write_text('{"case":"boundary"}\n', encoding="utf-8")
 
     import_report = {
         "capability_id": cap_id,

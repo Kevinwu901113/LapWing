@@ -16,7 +16,9 @@ from src.capabilities.schema import (
     CapabilityMaturity,
     CapabilityRiskLevel,
     CapabilityStatus,
+    SideEffect,
 )
+from src.eval.axes import AxisStatus, EvalAxis
 
 if TYPE_CHECKING:
     from src.capabilities.evaluator import EvalRecord
@@ -228,6 +230,12 @@ class PromotionPlanner:
             plan.explanation = "testing -> stable blocked: no eval record available"
             return plan
 
+        axis_blocks = _required_axis_blocks(manifest, eval_record)
+        if axis_blocks:
+            plan.blocking_findings = axis_blocks
+            plan.explanation = "testing -> stable blocked by required evaluation axes"
+            return plan
+
         if not eval_record.passed:
             plan.blocking_findings = [
                 {"code": f.code, "message": f.message}
@@ -304,3 +312,38 @@ class PromotionPlanner:
         ]
         plan.explanation = "repairing -> testing blocked by evaluation errors"
         return plan
+
+
+def _required_axis_blocks(manifest: "CapabilityManifest", eval_record: "EvalRecord") -> list[dict[str, Any]]:
+    required = [EvalAxis.FUNCTIONAL.value, EvalAxis.SAFETY.value]
+    sensitive = getattr(manifest, "sensitive_contexts", None) or []
+    if sensitive:
+        required.append(EvalAxis.PRIVACY.value)
+    side_effects = {
+        v.value if hasattr(v, "value") else str(v)
+        for v in (getattr(manifest, "side_effects", None) or [])
+    }
+    if side_effects & {
+        SideEffect.LOCAL_WRITE.value,
+        SideEffect.LOCAL_DELETE.value,
+        SideEffect.NETWORK_SEND.value,
+        SideEffect.PUBLIC_OUTPUT.value,
+        SideEffect.EXTERNAL_MUTATION.value,
+        SideEffect.SHELL_EXEC.value,
+    }:
+        required.append(EvalAxis.REVERSIBILITY.value)
+
+    blocks: list[dict[str, Any]] = []
+    axes = getattr(eval_record, "axes", {}) or {}
+    for axis in required:
+        result = axes.get(axis)
+        status = getattr(result, "status", AxisStatus.UNKNOWN)
+        status_value = status.value if hasattr(status, "value") else str(status)
+        if status_value != AxisStatus.PASS.value:
+            blocks.append({
+                "code": "axis_not_pass",
+                "axis": axis,
+                "status": status_value,
+                "message": f"Required axis {axis} is {status_value}, expected pass",
+            })
+    return blocks

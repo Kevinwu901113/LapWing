@@ -307,6 +307,7 @@ _ENV_MAP: dict[str, list[str]] = {
     "CAPABILITIES_TRUST_ROOT_TOOLS_ENABLED": ["capabilities", "trust_root_tools_enabled"],
     "CAPABILITIES_STABLE_PROMOTION_TRUST_GATE_ENABLED": ["capabilities", "stable_promotion_trust_gate_enabled"],
     "CAPABILITIES_REPAIR_QUEUE_TOOLS_ENABLED": ["capabilities", "repair_queue_tools_enabled"],
+    "CAPABILITIES_RUN_CAPABILITY_ENABLED": ["capabilities", "run_capability_enabled"],
     "CAPABILITIES_DATA_DIR": ["capabilities", "data_dir"],
     "CAPABILITIES_INDEX_DB_PATH": ["capabilities", "index_db_path"],
     # ── runtime interaction hardening ──
@@ -712,6 +713,8 @@ class CapabilitiesConfig(BaseModel):
     stable_promotion_trust_gate_enabled: bool = False
     # Maintenance C: repair queue operator tools (operator-only)
     repair_queue_tools_enabled: bool = False
+    # B1: capability-native execution entrypoint. Default-off.
+    run_capability_enabled: bool = False
     data_dir: str = "data/capabilities"
     index_db_path: str = "data/capabilities/capability_index.sqlite"
 

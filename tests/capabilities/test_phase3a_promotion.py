@@ -17,6 +17,7 @@ from src.capabilities.schema import (
     CapabilityStatus,
     CapabilityType,
 )
+from src.eval.axes import AxisResult, AxisStatus, EvalAxis
 
 
 def _make_manifest(**overrides) -> CapabilityManifest:
@@ -54,6 +55,18 @@ def _make_eval(*, passed: bool = True, errors: int = 0, warnings: int = 0) -> Ev
         passed=passed,
         score=max(0.0, 1.0 - errors * 0.3 - warnings * 0.1),
         findings=findings,
+        axes={
+            EvalAxis.FUNCTIONAL.value: AxisResult(
+                EvalAxis.FUNCTIONAL,
+                AxisStatus.PASS if passed and errors == 0 else AxisStatus.FAIL,
+            ),
+            EvalAxis.SAFETY.value: AxisResult(
+                EvalAxis.SAFETY,
+                AxisStatus.PASS if passed and errors == 0 else AxisStatus.FAIL,
+            ),
+            EvalAxis.PRIVACY.value: AxisResult(EvalAxis.PRIVACY, AxisStatus.UNKNOWN),
+            EvalAxis.REVERSIBILITY.value: AxisResult(EvalAxis.REVERSIBILITY, AxisStatus.PASS),
+        },
     )
 
 

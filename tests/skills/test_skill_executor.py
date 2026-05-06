@@ -1,6 +1,9 @@
 import pytest
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
-from src.skills.skill_executor import SkillExecutor, SkillResult
+from src.core.execution_sandbox import SandboxTier
+from src.skills.skill_executor import CapabilityExecutionContext, SkillExecutor, SkillResult
 from src.skills.skill_store import SkillStore
 
 
@@ -210,6 +213,81 @@ class TestScriptsDirectoryAccess:
         )
         skill = skill_store.read("skill_dir_exec")
         assert "skill_dir_exec/SKILL.md" in skill["file_path"]
+
+
+class TestExecuteDirectory:
+    async def test_execute_directory_uses_existing_sandbox_copy(self, executor, tmp_path):
+        cap_dir = tmp_path / "capability"
+        script = cap_dir / "scripts" / "main.py"
+        script.parent.mkdir(parents=True)
+        script.write_text('def run(x=1):\n    return {"result": x * 2}\n', encoding="utf-8")
+
+        captured = {}
+
+        async def fake_run(cmd, *, tier, timeout, workspace):
+            captured["cmd"] = cmd
+            captured["tier"] = tier
+            captured["timeout"] = timeout
+            copied_entry = Path(workspace) / "capability" / "scripts" / "main.py"
+            captured["copied_entry_exists"] = copied_entry.is_file()
+            return SimpleNamespace(
+                exit_code=0,
+                stdout='{"result": 10}\n',
+                stderr="",
+                timed_out=False,
+            )
+
+        with patch.object(executor._sandbox, "run", side_effect=fake_run):
+            result = await executor.execute_directory(
+                cap_dir,
+                "scripts/main.py",
+                arguments={"x": 5},
+                timeout=11,
+                capability_context=CapabilityExecutionContext(
+                    capability_id="cap_01",
+                    capability_version="0.1.0",
+                    capability_content_hash="abc",
+                    maturity="stable",
+                ),
+            )
+
+        assert result.success is True
+        assert captured["cmd"] == ["python3", "/workspace/runner.py"]
+        assert captured["tier"] == SandboxTier.STANDARD
+        assert captured["timeout"] == 11
+        assert captured["copied_entry_exists"] is True
+
+    async def test_execute_directory_rejects_path_traversal(self, executor, tmp_path):
+        cap_dir = tmp_path / "capability"
+        cap_dir.mkdir()
+        outside = tmp_path / "outside.py"
+        outside.write_text("def run():\n    return {}\n", encoding="utf-8")
+
+        result = await executor.execute_directory(cap_dir, "../outside.py")
+
+        assert result.success is False
+        assert "relative path inside" in result.error
+
+    async def test_execute_directory_rejects_dependencies_in_strict(self, executor, tmp_path):
+        cap_dir = tmp_path / "capability"
+        script = cap_dir / "scripts" / "main.py"
+        script.parent.mkdir(parents=True)
+        script.write_text("def run():\n    return {}\n", encoding="utf-8")
+
+        result = await executor.execute_directory(
+            cap_dir,
+            "scripts/main.py",
+            capability_context=CapabilityExecutionContext(
+                capability_id="cap_01",
+                capability_version="0.1.0",
+                capability_content_hash="abc",
+                maturity="testing",
+                dependencies=("requests",),
+            ),
+        )
+
+        assert result.success is False
+        assert "STRICT" in result.error
 
 
 class TestSandboxDockerFlags:

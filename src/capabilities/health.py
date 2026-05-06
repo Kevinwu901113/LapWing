@@ -14,7 +14,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
-from src.capabilities.eval_records import get_latest_eval_record
+from src.capabilities.eval_records import get_latest_eval_record, get_latest_valid_eval_record
 from src.capabilities.provenance import (
     INTEGRITY_MISMATCH,
     compute_capability_tree_hash,
@@ -470,14 +470,16 @@ def check_stale_eval_records(
         if doc.manifest.status in (CapabilityStatus.ARCHIVED, CapabilityStatus.DISABLED):
             continue
 
-        latest = get_latest_eval_record(doc)
+        latest = get_latest_valid_eval_record(doc)
         if latest is None:
+            any_latest = get_latest_eval_record(doc)
+            code = "needs_eval" if any_latest is None else "stale_eval"
             findings.append(CapabilityHealthFinding(
                 severity=_SEVERITY_WARNING,
-                code="eval_missing",
+                code=code,
                 message=(
-                    f"{maturity.value} capability {doc.id} has no evaluation record. "
-                    f"Eval records are expected for testing/stable capabilities."
+                    f"{maturity.value} capability {doc.id} has no current valid evaluation record. "
+                    f"Current content hash, evaluator_version, and schema_version must match."
                 ),
                 capability_id=doc.id,
                 scope=doc.manifest.scope.value,
@@ -502,7 +504,46 @@ def check_stale_eval_records(
                     "stale_days": stale_days,
                 },
             ))
+        unknown_axes = [
+            axis
+            for axis, result in (getattr(latest, "axes", {}) or {}).items()
+            if getattr(getattr(result, "status", None), "value", getattr(result, "status", "")) == "unknown"
+        ]
+        if unknown_axes:
+            findings.append(CapabilityHealthFinding(
+                severity=_SEVERITY_WARNING,
+                code="needs_eval",
+                message=f"Capability {doc.id} has UNKNOWN evaluation axes: {', '.join(sorted(unknown_axes))}",
+                capability_id=doc.id,
+                scope=doc.manifest.scope.value,
+                details={"unknown_axes": sorted(unknown_axes)},
+            ))
 
+    return findings
+
+
+def check_missing_boundary_declarations(store: "CapabilityStore") -> list[CapabilityHealthFinding]:
+    """Report active capabilities that have not declared reuse boundaries."""
+    findings: list[CapabilityHealthFinding] = []
+    for doc in _iter_all_capabilities(store):
+        if doc.manifest.status in (CapabilityStatus.ARCHIVED, CapabilityStatus.DISABLED):
+            continue
+        missing = []
+        if not doc.manifest.do_not_apply_when:
+            missing.append("do_not_apply_when")
+        if not doc.manifest.reuse_boundary:
+            missing.append("reuse_boundary")
+        if not doc.manifest.side_effects:
+            missing.append("side_effects")
+        if missing:
+            findings.append(CapabilityHealthFinding(
+                severity=_SEVERITY_WARNING,
+                code="missing_boundary",
+                message=f"Capability {doc.id} is missing boundary declarations: {', '.join(missing)}",
+                capability_id=doc.id,
+                scope=doc.manifest.scope.value,
+                details={"missing": missing},
+            ))
     return findings
 
 
@@ -1014,6 +1055,9 @@ def generate_capability_health_report(
     eval_findings = check_stale_eval_records(store, stale_days=stale_eval_days)
     report.stale_eval_count = len(eval_findings)
     all_findings.extend(eval_findings)
+
+    boundary_findings = check_missing_boundary_declarations(store)
+    all_findings.extend(boundary_findings)
 
     trust_findings = check_stale_trust_roots(
         trust_root_store,

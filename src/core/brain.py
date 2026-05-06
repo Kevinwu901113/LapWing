@@ -326,6 +326,12 @@ class LapwingBrain:
         skill_executor = getattr(self, "_skill_executor", None)
         if skill_executor is not None:
             services["skill_executor"] = skill_executor
+        capability_store = getattr(self, "_capability_store", None)
+        if capability_store is not None:
+            services["capability_store"] = capability_store
+        capability_index = getattr(self, "_capability_index", None)
+        if capability_index is not None:
+            services["capability_index"] = capability_index
         services["tool_registry"] = self.tool_registry
         ambient_store = getattr(self, "_ambient_store", None)
         if ambient_store is not None:

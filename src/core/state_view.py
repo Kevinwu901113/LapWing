@@ -195,6 +195,8 @@ class CapabilitySummary:
     risk_level: str
     triggers: tuple[str, ...] = ()
     required_tools: tuple[str, ...] = ()
+    do_not_apply_when: tuple[str, ...] = ()
+    sensitive_contexts: tuple[str, ...] = ()
     match_reason: str = ""
 
 

@@ -104,21 +104,19 @@ class TestSymlinkSafety:
 
 class TestNoScriptExecution:
     def test_scripts_never_executed(self, tmp_path, evaluator, policy):
-        """Script files in the package are copied but never executed."""
+        """Shell scripts are statically rejected and never executed."""
         store = _make_store(tmp_path, with_index=True)
         idx = store._index
         pkg = _write_package(tmp_path / "script_pkg")
         (pkg / "scripts").mkdir(exist_ok=True)
-        (pkg / "scripts" / "dangerous.sh").write_text("#!/bin/bash\necho 'should not run' > /tmp/pwned_7a_test")
+        marker = tmp_path / "pwned_7a_test"
+        (pkg / "scripts" / "dangerous.sh").write_text(f"#!/bin/bash\necho 'should not run' > {marker}")
         result = import_capability_package(
             path=pkg, store=store, evaluator=evaluator, policy=policy, index=idx,
         )
-        assert result.applied is True
-        # Script should be copied but not executed
-        copied_script = Path(result.quarantine_path) / "scripts" / "dangerous.sh"
-        assert copied_script.is_file()
-        # No pwned file should exist
-        assert not Path("/tmp/pwned_7a_test").exists()
+        assert result.applied is False
+        assert any("script_undeclared_side_effects" in err for err in result.errors)
+        assert not marker.exists()
 
     def test_no_python_module_import(self, tmp_path, evaluator, policy, monkeypatch):
         """Python files are not imported during import."""

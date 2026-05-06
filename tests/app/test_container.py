@@ -14,7 +14,7 @@ from src.core.proactive_message_gate import ProactiveMessageGate
 
 
 @pytest.mark.asyncio
-async def test_start_and_shutdown_calls_lifecycle_components():
+async def test_start_and_shutdown_calls_lifecycle_components(tmp_path):
     brain = MagicMock()
     brain.init_db = AsyncMock()
     api_server = SimpleNamespace(start=AsyncMock(), shutdown=AsyncMock(), _app=None)
@@ -22,8 +22,8 @@ async def test_start_and_shutdown_calls_lifecycle_components():
     task_view_store = TaskViewStore()
 
     container = AppContainer(
-        db_path=Path("test.db"),
-        data_dir=Path("data"),
+        db_path=tmp_path / "test.db",
+        data_dir=tmp_path / "data",
         brain=brain,
         event_bus=event_bus,
         task_view_store=task_view_store,

@@ -331,5 +331,7 @@ trust_root_tools_enabled = false
 repair_queue_tools_enabled = false
 # Phase 8C-1: stable promotion trust gate (testing -> stable provenance/trust/integrity checks)
 stable_promotion_trust_gate_enabled = false
+# B1: capability-native execution runner (default-off)
+run_capability_enabled = false
 data_dir = "data/capabilities"
 index_db_path = "data/capabilities/capability_index.sqlite"

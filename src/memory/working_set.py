@@ -49,6 +49,7 @@ _TOTAL_CHAR_BUDGET = 2000
 # the existing tuple sort and budgeting code stays simple.
 _WIKI_SCORE_FLOOR = 1_000.0
 _WIKI_SECTIONS = ("Current summary", "Stable facts")
+_MEMORY_REFERENCE_MARKER = "[reference, not rule]"
 
 
 class WorkingSet:
@@ -270,7 +271,7 @@ def _format_wiki_snippet(entity_id: str, summary: str, facts: str) -> str:
     facts_clean = _strip_placeholder(facts)
     if not summary_clean and not facts_clean:
         return ""
-    parts = [f"[wiki / {entity_id}]"]
+    parts = [f"[wiki / {entity_id}] {_MEMORY_REFERENCE_MARKER}"]
     if summary_clean:
         parts.append(summary_clean)
     if facts_clean:

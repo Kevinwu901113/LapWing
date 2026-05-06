@@ -42,6 +42,7 @@ from src.capabilities.store import CapabilityStore
 from src.capabilities.trace_summary import TraceSummary
 from src.capabilities.trust_roots import TrustRootStore
 from src.capabilities.signature import CapabilityTrustRoot
+from src.eval.axes import AxisResult, AxisStatus, EvalAxis
 
 
 # ── Helpers ──
@@ -81,6 +82,15 @@ def _make_doc(
         store._parser.parse(cap_dir)
 
     return doc.id
+
+
+def _passing_axes() -> dict[str, AxisResult]:
+    return {
+        EvalAxis.FUNCTIONAL.value: AxisResult(EvalAxis.FUNCTIONAL, AxisStatus.PASS),
+        EvalAxis.SAFETY.value: AxisResult(EvalAxis.SAFETY, AxisStatus.PASS),
+        EvalAxis.PRIVACY.value: AxisResult(EvalAxis.PRIVACY, AxisStatus.PASS),
+        EvalAxis.REVERSIBILITY.value: AxisResult(EvalAxis.REVERSIBILITY, AxisStatus.PASS),
+    }
 
 
 # ── Tests: empty system ──
@@ -259,7 +269,7 @@ def test_detects_missing_eval_for_testing(tmp_path: Path):
     findings = check_stale_eval_records(store, stale_days=30)
     ids = [f for f in findings if f.capability_id == cap_id]
     assert len(ids) == 1
-    assert ids[0].code == "eval_missing"
+    assert ids[0].code == "needs_eval"
     assert ids[0].severity == "warning"
 
 
@@ -270,7 +280,7 @@ def test_detects_missing_eval_for_stable(tmp_path: Path):
     findings = check_stale_eval_records(store, stale_days=30)
     ids = [f for f in findings if f.capability_id == cap_id]
     assert len(ids) == 1
-    assert ids[0].code == "eval_missing"
+    assert ids[0].code == "needs_eval"
 
 
 def test_no_stale_eval_for_draft(tmp_path: Path):
@@ -294,6 +304,7 @@ def test_stale_eval_detected_when_old(tmp_path: Path):
         created_at=old_time,
         passed=True,
         score=1.0,
+        axes=_passing_axes(),
     )
     write_eval_record(record, doc)
 
@@ -316,6 +327,7 @@ def test_recent_eval_not_stale(tmp_path: Path):
         created_at=recent_time,
         passed=True,
         score=1.0,
+        axes=_passing_axes(),
     )
     write_eval_record(record, doc)
 

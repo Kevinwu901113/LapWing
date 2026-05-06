@@ -506,8 +506,9 @@ class TestNoCapabilityRuntimeWiring:
                 # We skip this check if capabilities doesn't exist yet
 
     def test_brain_build_services_has_no_capability_references(self):
-        """Brain._build_services must not reference capabilities."""
+        """Brain._build_services may expose stores, but must not execute capabilities."""
         import inspect
         from src.core.brain import LapwingBrain
         source = inspect.getsource(LapwingBrain._build_services)
-        assert "capabilit" not in source.lower()
+        assert "run_capability" not in source
+        assert "capability_execution_manifest" not in source

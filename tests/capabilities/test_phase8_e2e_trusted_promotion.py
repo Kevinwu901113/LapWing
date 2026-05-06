@@ -52,6 +52,7 @@ from src.capabilities.schema import (
     CapabilityRiskLevel,
     CapabilityScope,
     CapabilityStatus,
+    SideEffect,
 )
 from src.capabilities.store import CapabilityStore
 
@@ -139,6 +140,9 @@ def _write_external_package(
         "trust_required": "developer",
         "required_tools": [],
         "required_permissions": [],
+        "do_not_apply_when": ["not for unsafe trusted-promotion contexts"],
+        "reuse_boundary": "Trusted promotion E2E test only.",
+        "side_effects": ["none"],
     }
     fm_yaml = yaml.dump(fm, allow_unicode=True, sort_keys=False).strip()
     md = (
@@ -157,6 +161,8 @@ def _write_external_package(
         subdir = dir_path / sub
         subdir.mkdir(exist_ok=True)
         (subdir / ".gitkeep").touch()
+    (dir_path / "evals" / "positive_cases.jsonl").write_text('{"case":"ok"}\n', encoding="utf-8")
+    (dir_path / "evals" / "boundary_cases.jsonl").write_text('{"case":"boundary"}\n', encoding="utf-8")
 
     if scripts:
         scripts_dir = dir_path / "scripts"
@@ -164,6 +170,22 @@ def _write_external_package(
             (scripts_dir / name).write_text(content)
 
     return dir_path
+
+
+def _set_testing_with_boundary(store: CapabilityStore, doc):
+    updated = doc.manifest.model_copy(update={
+        "maturity": CapabilityMaturity("testing"),
+        "do_not_apply_when": ["not for unsafe trusted-promotion contexts"],
+        "reuse_boundary": "Trusted promotion direct test only.",
+        "side_effects": [SideEffect.NONE],
+    })
+    doc.manifest = updated
+    store._sync_manifest_json(doc.directory, doc)
+    evals_dir = doc.directory / "evals"
+    evals_dir.mkdir(exist_ok=True)
+    (evals_dir / "positive_cases.jsonl").write_text('{"case":"ok"}\n', encoding="utf-8")
+    (evals_dir / "boundary_cases.jsonl").write_text('{"case":"boundary"}\n', encoding="utf-8")
+    return store._parser.parse(doc.directory)
 
 
 def _full_import_flow(store, evaluator, policy, index, pkg_dir, cap_id,
@@ -705,12 +727,7 @@ class TestFlowCHighRiskReviewedOnlyBlocks:
             body=VALID_BODY,
             risk_level="high",
         )
-        updated = doc.manifest.model_copy(update={
-            "maturity": CapabilityMaturity("testing"),
-        })
-        doc.manifest = updated
-        store._sync_manifest_json(doc.directory, doc)
-        doc = store._parser.parse(doc.directory)
+        doc = _set_testing_with_boundary(store, doc)
 
         target_dir = doc.directory
         write_provenance(
@@ -759,12 +776,7 @@ class TestFlowCHighRiskReviewedOnlyBlocks:
             body=VALID_BODY,
             risk_level="high",
         )
-        updated = doc.manifest.model_copy(update={
-            "maturity": CapabilityMaturity("testing"),
-        })
-        doc.manifest = updated
-        store._sync_manifest_json(doc.directory, doc)
-        doc = store._parser.parse(doc.directory)
+        doc = _set_testing_with_boundary(store, doc)
 
         target_dir = doc.directory
         write_provenance(
@@ -801,12 +813,7 @@ class TestFlowCHighRiskReviewedOnlyBlocks:
             body=VALID_BODY,
             risk_level="high",
         )
-        updated = doc.manifest.model_copy(update={
-            "maturity": CapabilityMaturity("testing"),
-        })
-        doc.manifest = updated
-        store._sync_manifest_json(doc.directory, doc)
-        doc = store._parser.parse(doc.directory)
+        doc = _set_testing_with_boundary(store, doc)
 
         target_dir = doc.directory
         write_provenance(
@@ -957,12 +964,7 @@ class TestFlowELegacyMissingProvenance:
         )
 
         # Set to testing maturity without provenance
-        updated = doc.manifest.model_copy(update={
-            "maturity": CapabilityMaturity("testing"),
-        })
-        doc.manifest = updated
-        store._sync_manifest_json(doc.directory, doc)
-        doc = store._parser.parse(doc.directory)
+        doc = _set_testing_with_boundary(store, doc)
 
         assert not (doc.directory / "provenance.json").exists()
 
@@ -998,12 +1000,7 @@ class TestFlowELegacyMissingProvenance:
             risk_level="low",
         )
 
-        updated = doc.manifest.model_copy(update={
-            "maturity": CapabilityMaturity("testing"),
-        })
-        doc.manifest = updated
-        store._sync_manifest_json(doc.directory, doc)
-        doc = store._parser.parse(doc.directory)
+        doc = _set_testing_with_boundary(store, doc)
 
         mgr = _make_lifecycle(
             store, trust_policy=CapabilityTrustPolicy(), trust_gate_enabled=True,
@@ -1029,12 +1026,7 @@ class TestFlowELegacyMissingProvenance:
             risk_level="medium",
         )
 
-        updated = doc.manifest.model_copy(update={
-            "maturity": CapabilityMaturity("testing"),
-        })
-        doc.manifest = updated
-        store._sync_manifest_json(doc.directory, doc)
-        doc = store._parser.parse(doc.directory)
+        doc = _set_testing_with_boundary(store, doc)
 
         manifest_bytes_before = (doc.directory / "manifest.json").read_bytes()
 
@@ -1062,12 +1054,7 @@ class TestFlowELegacyMissingProvenance:
             risk_level="high",
         )
 
-        updated = doc.manifest.model_copy(update={
-            "maturity": CapabilityMaturity("testing"),
-        })
-        doc.manifest = updated
-        store._sync_manifest_json(doc.directory, doc)
-        doc = store._parser.parse(doc.directory)
+        doc = _set_testing_with_boundary(store, doc)
 
         approval = type("Approval", (), {"approved": True, "approver": "test-operator"})()
         mgr = _make_lifecycle(
@@ -1168,12 +1155,7 @@ class TestCrossFlowInvariants:
             risk_level="low",
         )
 
-        updated = doc.manifest.model_copy(update={
-            "maturity": CapabilityMaturity("testing"),
-        })
-        doc.manifest = updated
-        store._sync_manifest_json(doc.directory, doc)
-        doc = store._parser.parse(doc.directory)
+        doc = _set_testing_with_boundary(store, doc)
 
         mgr = _make_lifecycle(store, trust_policy=None, trust_gate_enabled=True)
         result = mgr.apply_transition(cap_id, "stable", scope="workspace")

@@ -20,7 +20,7 @@ Public API:
   VersionSnapshot, create_version_snapshot, list_version_snapshots
   CapabilityPolicy, PolicyDecision, PolicySeverity
   CapabilityEvaluator, EvalRecord, EvalFinding, FindingSeverity
-  write_eval_record, read_eval_record, list_eval_records, get_latest_eval_record
+  write_eval_record, read_eval_record, list_eval_records, get_latest_eval_record, get_latest_valid_eval_record
   PromotionPlanner, PromotionPlan
   CapabilityLifecycleManager, TransitionResult
   CapabilityRetriever, CapabilitySummary, RetrievalContext
@@ -33,6 +33,7 @@ Public API:
 from src.capabilities.document import CapabilityDocument, CapabilityParser, parse_capability
 from src.capabilities.eval_records import (
     get_latest_eval_record,
+    get_latest_valid_eval_record,
     list_eval_records,
     read_eval_record,
     write_eval_record,
@@ -74,6 +75,9 @@ from src.capabilities.schema import (
     CapabilityScope,
     CapabilityStatus,
     CapabilityType,
+    RollbackMechanism,
+    SensitiveContext,
+    SideEffect,
 )
 from src.capabilities.search import (
     SCOPE_PRECEDENCE,
@@ -190,6 +194,9 @@ __all__ = [
     "CapabilityMaturity",
     "CapabilityStatus",
     "CapabilityRiskLevel",
+    "SensitiveContext",
+    "SideEffect",
+    "RollbackMechanism",
     "ALLOWED_TYPES",
     "ALLOWED_SCOPES",
     "ALLOWED_MATURITIES",
@@ -234,6 +241,7 @@ __all__ = [
     "read_eval_record",
     "list_eval_records",
     "get_latest_eval_record",
+    "get_latest_valid_eval_record",
     # Phase 3A — Promotion
     "PromotionPlanner",
     "PromotionPlan",

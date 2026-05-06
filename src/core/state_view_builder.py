@@ -293,6 +293,8 @@ class StateViewBuilder:
                     risk_level=r.risk_level,
                     triggers=r.triggers,
                     required_tools=r.required_tools,
+                    do_not_apply_when=getattr(r, "do_not_apply_when", ()) or (),
+                    sensitive_contexts=getattr(r, "sensitive_contexts", ()) or (),
                     match_reason=r.match_reason,
                 )
             )

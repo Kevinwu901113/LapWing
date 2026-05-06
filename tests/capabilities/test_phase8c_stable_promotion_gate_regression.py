@@ -11,7 +11,8 @@ from pathlib import Path
 import pytest
 
 from src.capabilities.document import CapabilityDocument
-from src.capabilities.evaluator import CapabilityEvaluator
+from src.capabilities.eval_records import write_eval_record
+from src.capabilities.evaluator import CapabilityEvaluator, EvalRecord
 from src.capabilities.lifecycle import CapabilityLifecycleManager
 from src.capabilities.policy import CapabilityPolicy
 from src.capabilities.promotion import PromotionPlanner
@@ -30,8 +31,10 @@ from src.capabilities.schema import (
     CapabilityScope,
     CapabilityStatus,
     CapabilityType,
+    SideEffect,
 )
 from src.capabilities.store import CapabilityStore
+from src.eval.axes import AxisResult, AxisStatus, EvalAxis
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -70,6 +73,17 @@ def _create_cap(store: CapabilityStore, *, cap_id: str, maturity: str = "draft",
         body=VALID_BODY,
         risk_level=risk_level,
     )
+    doc.manifest = doc.manifest.model_copy(update={
+        "do_not_apply_when": ["not for regression unsafe use"],
+        "reuse_boundary": "Regression test capability only.",
+        "side_effects": [SideEffect.NONE],
+    })
+    store._sync_manifest_json(doc.directory, doc)
+    evals_dir = doc.directory / "evals"
+    evals_dir.mkdir(exist_ok=True)
+    (evals_dir / "positive_cases.jsonl").write_text('{"case":"ok"}\n', encoding="utf-8")
+    (evals_dir / "boundary_cases.jsonl").write_text('{"case":"boundary"}\n', encoding="utf-8")
+    doc = store._parser.parse(doc.directory)
     if maturity != "draft" or status != "active":
         updates: dict = {}
         if maturity != "draft":
@@ -93,6 +107,24 @@ def _make_lifecycle(store: CapabilityStore, *, trust_gate_enabled: bool = False)
         planner=PromotionPlanner(),
         trust_policy=tp,
         trust_gate_enabled=trust_gate_enabled,
+    )
+
+
+def _write_axis_eval(doc: CapabilityDocument) -> None:
+    write_eval_record(
+        EvalRecord(
+            capability_id=doc.id,
+            scope=doc.manifest.scope.value,
+            content_hash=doc.content_hash,
+            passed=True,
+            axes={
+                EvalAxis.FUNCTIONAL.value: AxisResult(EvalAxis.FUNCTIONAL, AxisStatus.PASS),
+                EvalAxis.SAFETY.value: AxisResult(EvalAxis.SAFETY, AxisStatus.PASS),
+                EvalAxis.PRIVACY.value: AxisResult(EvalAxis.PRIVACY, AxisStatus.UNKNOWN),
+                EvalAxis.REVERSIBILITY.value: AxisResult(EvalAxis.REVERSIBILITY, AxisStatus.PASS),
+            },
+        ),
+        doc,
     )
 
 
@@ -325,6 +357,7 @@ class TestNoRunCapability:
             trust_level=TRUST_REVIEWED,
             integrity_status=INTEGRITY_VERIFIED,
         )
+        _write_axis_eval(doc)
 
         mgr = _make_lifecycle(store, trust_gate_enabled=True)
         result = mgr.apply_transition(cap_id, "stable", scope="workspace")
@@ -356,6 +389,7 @@ class TestFlagOnlyAffectsTestingToStable:
     def test_flag_off_testing_to_stable_works(self, tmp_path: Path):
         store = _make_store(tmp_path)
         doc = _create_cap(store, cap_id="reg-flag-off", maturity="testing", risk_level="low")
+        _write_axis_eval(doc)
 
         mgr = _make_lifecycle(store, trust_gate_enabled=False)
         result = mgr.apply_transition("reg-flag-off", "stable", scope="workspace")

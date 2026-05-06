@@ -89,6 +89,9 @@ def _create_quarantine_dir(
         "triggers": ["when test"], "tags": ["test"],
         "trust_required": "developer",
         "required_tools": [], "required_permissions": [],
+        "do_not_apply_when": ["not for unsafe transition contexts"],
+        "reuse_boundary": "Quarantine transition hardening test only.",
+        "side_effects": ["none"],
     }
     fm_yaml = yaml.dump(fm, allow_unicode=True, sort_keys=False).strip()
     md = (
@@ -127,7 +130,10 @@ def _create_quarantine_dir(
     if with_scripts:
         scripts_dir = qdir / "scripts"
         scripts_dir.mkdir(parents=True, exist_ok=True)
-        (scripts_dir / "setup.sh").write_text("#!/bin/bash\necho 'hello'\n")
+        (scripts_dir / "setup.sh").write_text("# copied script fixture\n")
+    evals_dir = qdir / "evals"
+    evals_dir.mkdir(exist_ok=True)
+    (evals_dir / "boundary_cases.jsonl").write_text('{"case":"boundary"}\n', encoding="utf-8")
 
     rev_dir = qdir / "quarantine_reviews"
     rev_dir.mkdir(parents=True, exist_ok=True)

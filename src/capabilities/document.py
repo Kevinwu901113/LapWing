@@ -33,8 +33,11 @@ from src.capabilities.errors import (
 from src.capabilities.hashing import compute_content_hash
 from src.capabilities.schema import (
     ALLOWED_MATURITIES,
+    ALLOWED_ROLLBACK_MECHANISMS,
     ALLOWED_RISK_LEVELS,
     ALLOWED_SCOPES,
+    ALLOWED_SENSITIVE_CONTEXTS,
+    ALLOWED_SIDE_EFFECTS,
     ALLOWED_STATUSES,
     ALLOWED_TYPES,
     REQUIRED_METADATA_FIELDS,
@@ -242,6 +245,10 @@ class CapabilityParser:
         _check_enum("maturity", data.get("maturity", ""), ALLOWED_MATURITIES, source)
         _check_enum("status", data.get("status", ""), ALLOWED_STATUSES, source)
         _check_enum("risk_level", data.get("risk_level", ""), ALLOWED_RISK_LEVELS, source)
+        _check_enum_list("sensitive_contexts", data.get("sensitive_contexts", []), ALLOWED_SENSITIVE_CONTEXTS, source)
+        _check_enum_list("side_effects", data.get("side_effects", []), ALLOWED_SIDE_EFFECTS, source)
+        if data.get("rollback_mechanism") is not None:
+            _check_enum("rollback_mechanism", data.get("rollback_mechanism", ""), ALLOWED_ROLLBACK_MECHANISMS, source)
 
     @staticmethod
     def _build_manifest(data: dict[str, Any]) -> CapabilityManifest:
@@ -262,6 +269,13 @@ class CapabilityParser:
             required_permissions=data.get("required_permissions", []),
             triggers=data.get("triggers", []),
             tags=data.get("tags", []),
+            do_not_apply_when=data.get("do_not_apply_when", []),
+            sensitive_contexts=data.get("sensitive_contexts", []),
+            reuse_boundary=data.get("reuse_boundary"),
+            required_preflight_checks=data.get("required_preflight_checks", []),
+            side_effects=data.get("side_effects", []),
+            rollback_available=data.get("rollback_available"),
+            rollback_mechanism=data.get("rollback_mechanism"),
             created_at=now,
             updated_at=now,
             extra=extra,
@@ -284,6 +298,9 @@ _KNOWN_FIELD_NAMES: frozenset[str] = frozenset({
     "id", "name", "description", "type", "scope", "version",
     "maturity", "status", "risk_level", "trust_required",
     "required_tools", "required_permissions", "triggers", "tags",
+    "do_not_apply_when", "sensitive_contexts", "reuse_boundary",
+    "required_preflight_checks", "side_effects", "rollback_available",
+    "rollback_mechanism",
     "created_at", "updated_at", "content_hash",
 })
 
@@ -291,6 +308,16 @@ _KNOWN_FIELD_NAMES: frozenset[str] = frozenset({
 def _check_enum(field: str, value: str, allowed: frozenset[str], source: str) -> None:
     if value not in allowed:
         raise InvalidEnumValueError(field, value, allowed, source)
+
+
+def _check_enum_list(field: str, values: Any, allowed: frozenset[str], source: str) -> None:
+    if values is None:
+        return
+    if not isinstance(values, list):
+        raise InvalidEnumValueError(field, str(values), allowed, source)
+    for value in values:
+        if value not in allowed:
+            raise InvalidEnumValueError(field, str(value), allowed, source)
 
 
 # ── Convenience ─────────────────────────────────────────────────────────

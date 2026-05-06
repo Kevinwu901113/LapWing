@@ -67,6 +67,9 @@ def _create_quarantine_capability(
         "trust_required": "developer",
         "required_tools": [],
         "required_permissions": [],
+        "do_not_apply_when": ["not for unsafe activation contexts"],
+        "reuse_boundary": "Activation apply test only.",
+        "side_effects": ["none"],
     }
     if overrides:
         fm.update(overrides)
@@ -107,6 +110,9 @@ def _create_quarantine_capability(
     (qdir / "import_report.json").write_text(
         json.dumps(import_report, indent=2), encoding="utf-8",
     )
+    evals_dir = qdir / "evals"
+    evals_dir.mkdir(exist_ok=True)
+    (evals_dir / "boundary_cases.jsonl").write_text('{"case":"boundary"}\n', encoding="utf-8")
 
     if write_review:
         rev_dir = qdir / "quarantine_reviews"

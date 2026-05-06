@@ -40,6 +40,11 @@ class ToolExecutionContext:
     # Lets approval gates (e.g. run_skill) refuse autonomous execution of
     # draft/testing/broken skills from standard or inner_tick.
     runtime_profile: str = ""
+    # Capability execution provenance. Only run_capability should populate
+    # these; ordinary model-initiated tool dispatch leaves them as None.
+    capability_id: str | None = None
+    capability_version: str | None = None
+    capability_content_hash: str | None = None
 
 
 class ToolResultStatus(str, Enum):

@@ -1082,12 +1082,14 @@ class AppContainer:
                 CAPABILITIES_TRUST_ROOT_TOOLS_ENABLED,
                 CAPABILITIES_STABLE_PROMOTION_TRUST_GATE_ENABLED,
                 CAPABILITIES_REPAIR_QUEUE_TOOLS_ENABLED,
+                CAPABILITIES_RUN_CAPABILITY_ENABLED,
             )
             from src.capabilities.index import CapabilityIndex
             from src.capabilities.store import CapabilityStore
             from src.tools.capability_tools import (
                 register_capability_tools,
                 register_capability_lifecycle_tools,
+                register_capability_runner_tools,
             )
 
             capability_index = CapabilityIndex(CAPABILITIES_INDEX_DB_PATH)
@@ -1177,6 +1179,14 @@ class AppContainer:
                     data_dir=CAPABILITIES_DATA_DIR,
                 )
                 logger.info("Phase 5A capability curator tools registered (reflect/propose)")
+
+            # PR-B1/B2: capability-native runner, separately feature-gated.
+            if CAPABILITIES_RUN_CAPABILITY_ENABLED:
+                register_capability_runner_tools(
+                    self.brain.tool_registry,
+                    capability_store,
+                )
+                logger.info("Capability runner tool registered")
 
             # Phase 5B: Execution summary observer (feature-gated behind
             # capabilities.execution_summary_enabled). Requires capabilities.enabled=true.

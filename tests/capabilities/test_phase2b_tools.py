@@ -292,7 +292,8 @@ class TestCompactSummary:
                           triggers=["on_push"], tags=["a", "b"])
         summary = _compact_summary(doc)
         expected_keys = {"id", "name", "description", "type", "scope", "maturity",
-                         "status", "risk_level", "tags", "triggers", "updated_at"}
+                         "status", "risk_level", "tags", "triggers",
+                         "do_not_apply_when", "sensitive_contexts", "updated_at"}
         assert set(summary.keys()) == expected_keys
         assert summary["id"] == "cs_test"
         assert summary["name"] == "CS Test"
@@ -410,7 +411,8 @@ class TestSearchCapability:
         r = result.payload["results"][0]
         expected = {"id", "name", "description", "type", "scope", "maturity",
                     "status", "risk_level", "trust_required", "triggers", "tags",
-                    "required_tools", "updated_at"}
+                    "required_tools", "do_not_apply_when", "sensitive_contexts",
+                    "updated_at"}
         assert set(r.keys()) == expected
         assert r["id"] == "http_client"
         assert "body" not in r

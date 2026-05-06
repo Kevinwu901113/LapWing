@@ -15,7 +15,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from src.capabilities.evaluator import EvalFinding, EvalRecord, FindingSeverity
+from src.capabilities.evaluator import (
+    EVALUATOR_VERSION,
+    EVAL_SCHEMA_VERSION,
+    EvalFinding,
+    EvalRecord,
+    FindingSeverity,
+)
+from src.eval.axes import AxisResult, AxisStatus, EvalAxis
 
 if TYPE_CHECKING:
     from src.capabilities.document import CapabilityDocument
@@ -46,10 +53,20 @@ def _eval_record_to_dict(record: EvalRecord) -> dict[str, Any]:
         "scope": record.scope,
         "content_hash": record.content_hash,
         "evaluator_version": record.evaluator_version,
+        "schema_version": record.schema_version,
         "created_at": record.created_at,
         "passed": record.passed,
         "score": record.score,
         "findings": findings,
+        "axes": {
+            axis: {
+                "axis": result.axis.value if hasattr(result.axis, "value") else str(result.axis),
+                "status": result.status.value if hasattr(result.status, "value") else str(result.status),
+                "score": result.score,
+                "findings": list(result.findings),
+            }
+            for axis, result in record.axes.items()
+        },
         "required_approval": record.required_approval,
         "recommended_maturity": record.recommended_maturity,
     }
@@ -65,17 +82,40 @@ def _dict_to_eval_record(data: dict[str, Any]) -> EvalRecord:
             location=f.get("location"),
             details=f.get("details", {}),
         ))
+    axes_data = data.get("axes")
+    axes: dict[str, AxisResult] = {}
+    if isinstance(axes_data, dict):
+        for axis_name, raw in axes_data.items():
+            if not isinstance(raw, dict):
+                continue
+            axis_value = raw.get("axis", axis_name)
+            status_value = raw.get("status", "unknown")
+            try:
+                axis = EvalAxis(axis_value)
+                status = AxisStatus(status_value)
+            except ValueError:
+                continue
+            raw_findings = raw.get("findings", ())
+            axes[axis.value] = AxisResult(
+                axis=axis,
+                status=status,
+                score=raw.get("score"),
+                findings=tuple(str(item) for item in raw_findings if item is not None),
+            )
+
     return EvalRecord(
         capability_id=data["capability_id"],
         scope=data["scope"],
         content_hash=data.get("content_hash", ""),
         evaluator_version=data.get("evaluator_version", "3a.1"),
+        schema_version=data.get("schema_version", "eval_record.v1"),
         created_at=data.get("created_at", ""),
         passed=data.get("passed", True),
         score=data.get("score", 1.0),
         findings=findings,
         required_approval=data.get("required_approval", False),
         recommended_maturity=data.get("recommended_maturity"),
+        axes=axes,
     )
 
 
@@ -159,3 +199,26 @@ def get_latest_eval_record(doc: "CapabilityDocument") -> EvalRecord | None:
     """Return the most recent eval record, or None."""
     records = list_eval_records(doc)
     return records[0] if records else None
+
+
+def get_latest_valid_eval_record(
+    doc: "CapabilityDocument",
+    *,
+    evaluator_version: str = EVALUATOR_VERSION,
+    schema_version: str = EVAL_SCHEMA_VERSION,
+) -> EvalRecord | None:
+    """Return the newest record valid for the current capability content.
+
+    Valid means the record matches the current content hash, current evaluator
+    version, and current schema version. Older evaluator records are not used
+    as fallback because they did not run current checks.
+    """
+    for record in list_eval_records(doc):
+        if record.content_hash != doc.content_hash:
+            continue
+        if record.evaluator_version != evaluator_version:
+            continue
+        if record.schema_version != schema_version:
+            continue
+        return record
+    return None

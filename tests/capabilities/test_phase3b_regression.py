@@ -3,14 +3,15 @@
 Verify Phase 3B does not break:
 - Phase 0/1/2A/2B/3A tests
 - Read-only capability tools
-- No write tools exist
-- No run_capability exists
+- No write tools are registered by read-only tools
+- run_capability exists only through the dedicated runner registration
 - Legacy skill promote behavior unchanged
 - Runtime imports remain limited
 """
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -23,7 +24,24 @@ def _run_pytest(test_path: str, *, extra_args: list[str] | None = None) -> tuple
     args = [sys.executable, "-m", "pytest", test_path, "-q", "--tb=short"]
     if extra_args:
         args.extend(extra_args)
-    result = subprocess.run(args, cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=120)
+    env = {
+        **os.environ,
+        "CAPABILITIES_ENABLED": "false",
+        "CAPABILITIES_RETRIEVAL_ENABLED": "false",
+        "CAPABILITIES_CURATOR_DRY_RUN_ENABLED": "false",
+        "CAPABILITIES_EXECUTION_SUMMARY_ENABLED": "false",
+        "CAPABILITIES_AUTO_PROPOSAL_ENABLED": "false",
+        "CAPABILITIES_READ_TOOLS_ENABLED": "false",
+        "CAPABILITIES_RUN_CAPABILITY_ENABLED": "false",
+    }
+    result = subprocess.run(
+        args,
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
     return result.returncode, result.stdout + "\n" + result.stderr
 
 
@@ -87,7 +105,7 @@ class TestPhase3ARegression:
 
 class TestReadOnlyTools:
     def test_no_write_tools_exist(self):
-        """Verify no write capability tools (create, disable, archive, promote, run)."""
+        """Verify read-only capability tools still do not register mutation tools."""
         tools_file = REPO_ROOT / "src" / "tools" / "capability_tools.py"
         content = tools_file.read_text(encoding="utf-8")
 
@@ -96,30 +114,28 @@ class TestReadOnlyTools:
             "disable_capability",
             "archive_capability",
             "promote_capability",
-            "run_capability",
         ]
         for name in forbidden:
             assert f'"{name}"' not in content, f"Write tool '{name}' found in capability_tools.py"
 
-    def test_no_run_capability_exists(self):
-        """Verify no run_capability tool anywhere in src/."""
-        import subprocess
-        result = subprocess.run(
-            ["grep", "-rn", "run_capability", str(REPO_ROOT / "src")],
-            capture_output=True, text=True,
+    def test_run_capability_not_registered_by_read_tools(self):
+        """The runner exists only behind register_capability_runner_tools."""
+        from unittest.mock import MagicMock
+
+        from src.tools.capability_tools import (
+            register_capability_runner_tools,
+            register_capability_tools,
         )
-        # run_capability should only appear in capability_tools.py as a comment
-        # about it not existing, or in docs about Phase 3B
-        for line in result.stdout.splitlines():
-            if line.strip().startswith("#") or "docstring" in line.lower():
-                continue
-            # repair_queue.py has a _BANNED_FUNCTION_NAMES deny-list; those are not actual uses
-            if "repair_queue.py" in line:
-                continue
-            # The only allowed mention is in policy/evaluator docstrings stating it's NOT implemented
-            if "not" in line.lower() or "no" in line.lower() or "never" in line.lower():
-                continue
-            assert False, f"run_capability reference found: {line}"
+
+        read_registry = MagicMock()
+        register_capability_tools(read_registry, MagicMock(), None)
+        read_names = {c[0][0].name for c in read_registry.register.call_args_list}
+        assert "run_capability" not in read_names
+
+        runner_registry = MagicMock()
+        register_capability_runner_tools(runner_registry, MagicMock())
+        runner_names = {c[0][0].name for c in runner_registry.register.call_args_list}
+        assert runner_names == {"run_capability"}
 
 
 class TestLegacyUnchanged:

@@ -162,6 +162,7 @@ CAPABILITIES_QUARANTINE_ACTIVATION_APPLY_ENABLED: bool = _s.capabilities.quarant
 CAPABILITIES_TRUST_ROOT_TOOLS_ENABLED: bool = _s.capabilities.trust_root_tools_enabled
 CAPABILITIES_STABLE_PROMOTION_TRUST_GATE_ENABLED: bool = _s.capabilities.stable_promotion_trust_gate_enabled
 CAPABILITIES_REPAIR_QUEUE_TOOLS_ENABLED: bool = _s.capabilities.repair_queue_tools_enabled
+CAPABILITIES_RUN_CAPABILITY_ENABLED: bool = _s.capabilities.run_capability_enabled
 CAPABILITIES_DATA_DIR: str = _s.capabilities.data_dir
 CAPABILITIES_INDEX_DB_PATH: str = _s.capabilities.index_db_path
 

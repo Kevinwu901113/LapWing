@@ -135,6 +135,14 @@ class ServiceContextView:
     def skill_executor(self):
         return self.raw.get("skill_executor")
 
+    @property
+    def capability_store(self):
+        return self.raw.get("capability_store")
+
+    @property
+    def capability_index(self):
+        return self.raw.get("capability_index")
+
     # ── Memory / notes / vectors ────────────────────────────────────────
 
     @property
@@ -372,6 +380,9 @@ class ToolDispatcher:
         user_id: str = "",
         send_fn: Callable[[str], "Awaitable[Any]"] | None = None,
         focus_id: str | None = None,
+        capability_id: str | None = None,
+        capability_version: str | None = None,
+        capability_content_hash: str | None = None,
     ) -> ToolExecutionResult:
         ctx = ServiceContextView(services or {})
         profile_obj = self._runtime._resolve_profile(profile)
@@ -574,6 +585,33 @@ class ToolDispatcher:
             )
             return ToolExecutionResult(success=False, payload=payload, reason=deny_reason)
 
+        if capability_id is not None:
+            cap_manifest = (services or {}).get("capability_execution_manifest")
+            required_tools = set(getattr(cap_manifest, "required_tools", []) or [])
+            if cap_manifest is not None and request.name not in required_tools:
+                reason = "capability_child_tool_not_declared"
+                if state is not None:
+                    state.record_failure(reason, "blocked")
+                payload = self._blocked_payload(
+                    reason=reason,
+                    cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
+                    command=str(request.arguments.get("command", "")).strip(),
+                    status=ToolResultStatus.PERMISSION_ERROR,
+                    error_code=ToolErrorCode.PERMISSION_DENIED,
+                    error_class=ToolErrorClass.PERMISSION,
+                    safe_details={"guard": "capability_policy", "reason": reason},
+                )
+                await self._record_tool_denied(
+                    tool_name=request.name,
+                    guard="capability_policy",
+                    reason=reason,
+                    auth_level=auth_level,
+                    services=services,
+                    chat_id=chat_id,
+                    extras={"capability_id": capability_id},
+                )
+                return ToolExecutionResult(success=False, payload=payload, reason=reason)
+
         shell_executor = deps.execute_shell if deps is not None else default_execute_shell
         shell_default_cwd = deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD
 
@@ -700,6 +738,9 @@ class ToolDispatcher:
             memory_index=self._runtime._memory_index,
             send_fn=send_fn,
             runtime_profile=profile_obj.name,
+            capability_id=capability_id,
+            capability_version=capability_version,
+            capability_content_hash=capability_content_hash,
         )
 
         policy_hook = str(tool.metadata.get("policy_hook", "")).strip()

@@ -33,6 +33,7 @@ from src.capabilities.schema import (
     CapabilityMaturity,
     CapabilityScope,
     CapabilityStatus,
+    SideEffect,
 )
 from src.capabilities.store import CapabilityStore
 from src.capabilities.versioning import list_version_snapshots
@@ -78,6 +79,17 @@ def _create_cap(store, *, cap_id="cap", body=VALID_BODY, maturity="draft",
         body=body,
         risk_level=risk_level,
     )
+    doc.manifest = doc.manifest.model_copy(update={
+        "do_not_apply_when": ["not for unsafe regression use"],
+        "reuse_boundary": "Regression test capability only.",
+        "side_effects": [SideEffect.NONE],
+    })
+    store._sync_manifest_json(doc.directory, doc)
+    evals_dir = doc.directory / "evals"
+    evals_dir.mkdir(exist_ok=True)
+    (evals_dir / "positive_cases.jsonl").write_text('{"case":"ok"}\n', encoding="utf-8")
+    (evals_dir / "boundary_cases.jsonl").write_text('{"case":"boundary"}\n', encoding="utf-8")
+    doc = store._parser.parse(doc.directory)
     needs_update = False
     updates: dict = {}
     if maturity != "draft":
@@ -748,16 +760,18 @@ class TestNoScriptExecution:
         assert result.applied  # valid transition with proper body
 
     def test_lifecycle_does_not_execute_shell(self, store, tmp_path):
-        """Place a script with shell commands and verify no execution."""
+        """Place a shell script and verify lifecycle static scans do not execute it."""
         _create_cap(store, cap_id="noshell")
         cap_dir = store._get_dir("noshell", CapabilityScope.WORKSPACE)
         scripts_dir = cap_dir / "scripts"
         scripts_dir.mkdir(exist_ok=True)
-        (scripts_dir / "run.sh").write_text("#!/bin/bash\necho 'should not run'\n")
+        marker = tmp_path / "should_not_run"
+        (scripts_dir / "run.sh").write_text(f"#!/bin/bash\ntouch {marker}\n")
 
         lm = _make_lifecycle(store)
         result = lm.apply_transition("noshell", "testing")
-        assert result.applied
+        assert not result.applied
+        assert not marker.exists()
 
     def test_evaluate_does_not_execute_scripts(self, store, tmp_path):
         _create_cap(store, cap_id="ev_noexec")
