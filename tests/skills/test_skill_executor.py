@@ -248,6 +248,7 @@ class TestExecuteDirectory:
                     capability_version="0.1.0",
                     capability_content_hash="abc",
                     maturity="stable",
+                    side_effects=("local_write",),
                 ),
             )
 
@@ -288,6 +289,64 @@ class TestExecuteDirectory:
 
         assert result.success is False
         assert "STRICT" in result.error
+
+
+class TestExecuteDirectorySideEffects:
+    async def test_executable_script_none_side_effect_runs_strict(self, executor, tmp_path):
+        cap_dir = tmp_path / "capability"
+        script = cap_dir / "scripts" / "main.py"
+        script.parent.mkdir(parents=True)
+        script.write_text("def run():\n    return {}\n", encoding="utf-8")
+
+        captured = {}
+
+        async def fake_run(cmd, *, tier, timeout, workspace):
+            captured["tier"] = tier
+            return SimpleNamespace(exit_code=0, stdout="{}", stderr="", timed_out=False)
+
+        with patch.object(executor._sandbox, "run", side_effect=fake_run):
+            result = await executor.execute_directory(
+                cap_dir,
+                "scripts/main.py",
+                capability_context=CapabilityExecutionContext(
+                    capability_id="cap_01",
+                    capability_version="0.1.0",
+                    capability_content_hash="abc",
+                    maturity="stable",
+                    side_effects=("none",),
+                ),
+            )
+
+        assert result.success is True
+        assert captured["tier"] == SandboxTier.STRICT
+
+    async def test_executable_script_with_side_effects_uses_standard(self, executor, tmp_path):
+        cap_dir = tmp_path / "capability"
+        script = cap_dir / "scripts" / "main.py"
+        script.parent.mkdir(parents=True)
+        script.write_text("def run():\n    return {}\n", encoding="utf-8")
+
+        captured = {}
+
+        async def fake_run(cmd, *, tier, timeout, workspace):
+            captured["tier"] = tier
+            return SimpleNamespace(exit_code=0, stdout="{}", stderr="", timed_out=False)
+
+        with patch.object(executor._sandbox, "run", side_effect=fake_run):
+            result = await executor.execute_directory(
+                cap_dir,
+                "scripts/main.py",
+                capability_context=CapabilityExecutionContext(
+                    capability_id="cap_01",
+                    capability_version="0.1.0",
+                    capability_content_hash="abc",
+                    maturity="stable",
+                    side_effects=("local_write", "network_send"),
+                ),
+            )
+
+        assert result.success is True
+        assert captured["tier"] == SandboxTier.STANDARD
 
 
 class TestSandboxDockerFlags:

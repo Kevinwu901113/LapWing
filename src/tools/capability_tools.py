@@ -717,7 +717,12 @@ def _make_run_capability_executor(store: "CapabilityStore"):
                 capability=doc,
                 runtime_profile=runtime_profile,
                 auth_level=context.auth_level,
-                current_context=CapabilityUseContext(),
+                current_context=CapabilityUseContext(
+                    user_task=str(context.services.get("current_user_task", "") or ""),
+                    sensitive_contexts=set(context.services.get("current_sensitive_contexts", set()) or set()),
+                    approved_sensitive_contexts=set(context.services.get("approved_sensitive_contexts", set()) or set()),
+                    satisfied_preflight_checks=set(context.services.get("satisfied_preflight_checks", set()) or set()),
+                ),
                 requested_arguments=args.get("arguments") or {},
                 execution_mode="run",
                 latest_eval_record=latest,
@@ -765,6 +770,10 @@ def _make_run_capability_executor(store: "CapabilityStore"):
                         capability_content_hash=doc.content_hash,
                         maturity=doc.manifest.maturity.value,
                         dependencies=tuple(str(dep) for dep in dependencies),
+                        side_effects=tuple(
+                            v.value if hasattr(v, "value") else str(v)
+                            for v in (doc.manifest.side_effects or [])
+                        ),
                     ),
                 )
                 return ToolExecutionResult(

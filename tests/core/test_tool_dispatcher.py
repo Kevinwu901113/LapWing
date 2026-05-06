@@ -473,3 +473,69 @@ def test_plan_state_accessor():
 def test_shell_default_cwd_accessor():
     view = ServiceContextView({"shell_default_cwd": "/tmp/workspace"})
     assert view.shell_default_cwd == "/tmp/workspace"
+
+
+@pytest.mark.asyncio
+async def test_capability_missing_execution_manifest_denies(dispatcher, mock_runtime):
+    mock_runtime._tool_registry.get.return_value = MagicMock()
+    mock_runtime._tool_names_for_profile.return_value = {"some_tool"}
+    req = ToolExecutionRequest(name="some_tool", arguments={})
+
+    services = {"mutation_log": AsyncMock()}
+    result = await dispatcher.dispatch(
+        request=req,
+        profile="test_profile",
+        services=services,
+        capability_id="cap_01",
+    )
+
+    assert not result.success
+    assert result.reason == "capability_missing_execution_manifest"
+
+
+@pytest.mark.asyncio
+async def test_capability_child_tool_not_declared_denies(dispatcher, mock_runtime):
+    mock_runtime._tool_registry.get.return_value = MagicMock()
+    mock_runtime._tool_names_for_profile.return_value = {"some_tool"}
+    req = ToolExecutionRequest(name="some_tool", arguments={})
+
+    manifest = MagicMock()
+    manifest.required_tools = ["other_tool"]
+    services = {
+        "mutation_log": AsyncMock(),
+        "capability_execution_manifest": manifest,
+    }
+    result = await dispatcher.dispatch(
+        request=req,
+        profile="test_profile",
+        services=services,
+        capability_id="cap_01",
+    )
+
+    assert not result.success
+    assert result.reason == "capability_child_tool_not_declared"
+
+
+@pytest.mark.asyncio
+async def test_capability_child_tool_declared_allows(dispatcher, mock_runtime):
+    mock_runtime._tool_registry.get.return_value = MagicMock()
+    mock_runtime._tool_names_for_profile.return_value = {"some_tool"}
+    mock_runtime._tool_registry.execute = AsyncMock(return_value=ToolExecutionResult(
+        success=True, payload={"ok": True}, reason="",
+    ))
+    req = ToolExecutionRequest(name="some_tool", arguments={})
+
+    manifest = MagicMock()
+    manifest.required_tools = ["some_tool"]
+    services = {
+        "mutation_log": AsyncMock(),
+        "capability_execution_manifest": manifest,
+    }
+    result = await dispatcher.dispatch(
+        request=req,
+        profile="test_profile",
+        services=services,
+        capability_id="cap_01",
+    )
+
+    assert result.success

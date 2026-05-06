@@ -94,6 +94,11 @@ def run_reuse_preflight(inp: ReusePreflightInput) -> ReusePreflightDecision:
     if manifest.risk_level == CapabilityRiskLevel.HIGH and profile_name in {"standard", "inner_tick"}:
         return ReusePreflightDecision.deny("risk_not_allowed_by_profile", risk_level=manifest.risk_level.value)
 
+    if profile_name == "inner_tick":
+        tags = {t.lower() for t in (manifest.tags or [])}
+        if not (tags & {"auto_run", "inner_tick"}):
+            return ReusePreflightDecision.deny("inner_tick_requires_auto_run_tag", tags=sorted(tags))
+
     missing_tools = set(manifest.required_tools) - set(inp.available_tools)
     if missing_tools:
         return ReusePreflightDecision.deny("required_tools_not_in_profile", missing_tools=sorted(missing_tools))

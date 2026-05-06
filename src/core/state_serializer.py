@@ -263,6 +263,8 @@ def _render_ambient_awareness(state: StateView) -> str:
     ambient_entries = _filtered_ambient_entries(state)
     if ambient_entries:
         lines.append("")
+        lines.append(_MEMORY_REFERENCE_CONTRACT)
+        lines.append("")
         lines.append("### 你已知的信息")
         for e in ambient_entries:
             age = _ambient_age_label(e.fetched_at, state.attention_context.now)

@@ -29,6 +29,7 @@ class CapabilityExecutionContext:
     capability_content_hash: str
     maturity: str = "draft"
     dependencies: tuple[str, ...] = ()
+    side_effects: tuple[str, ...] = ()
 
 
 class SkillExecutor:
@@ -106,6 +107,8 @@ class SkillExecutor:
         )
         maturity = ctx.maturity or "draft"
         dependencies = list(ctx.dependencies)
+        side_effects = set(ctx.side_effects or ())
+
         if maturity in _SANDBOX_MATURITIES and dependencies:
             return SkillResult(
                 success=False,
@@ -117,13 +120,20 @@ class SkillExecutor:
                 exit_code=-1,
             )
 
+        if not side_effects or side_effects == {"none"}:
+            tier = SandboxTier.STRICT
+        elif maturity in _SANDBOX_MATURITIES:
+            tier = SandboxTier.STRICT
+        else:
+            tier = SandboxTier.STANDARD
+
         return await self._run_directory(
             directory=directory,
             entry_script=entry.relative_to(directory).as_posix(),
             arguments=arguments or {},
             dependencies=dependencies,
             timeout=timeout or 30,
-            tier=SandboxTier.STRICT if maturity in _SANDBOX_MATURITIES else SandboxTier.STANDARD,
+            tier=tier,
         )
 
     async def _run_in_sandbox(

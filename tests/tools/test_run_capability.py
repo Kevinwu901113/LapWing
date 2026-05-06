@@ -50,6 +50,9 @@ def _write_doc(
     entry_type="skill_bridge",
     skill_id="skill_01",
     entry_script: str | None = None,
+    tags: list[str] | None = None,
+    sensitive_contexts: list[str] | None = None,
+    side_effects: list[str] | None = None,
 ) -> Path:
     cap_dir = root / "workspace" / "cap_01"
     cap_dir.mkdir(parents=True)
@@ -73,6 +76,12 @@ def _write_doc(
         fm["skill_id"] = skill_id
     if entry_script:
         fm["entry_script"] = entry_script
+    if tags is not None:
+        fm["tags"] = tags
+    if sensitive_contexts is not None:
+        fm["sensitive_contexts"] = sensitive_contexts
+    if side_effects is not None:
+        fm["side_effects"] = side_effects
     body = """## When to use
 
 Use when testing the runner.
@@ -117,13 +126,16 @@ def _write_current_eval(doc):
     write_eval_record(record, doc)
 
 
-def _ctx(registry, executor):
+def _ctx(registry, executor, *, runtime_profile="standard", extra_services=None):
+    services = {"skill_executor": executor, "tool_registry": registry}
+    if extra_services:
+        services.update(extra_services)
     return ToolExecutionContext(
         execute_shell=lambda _: None,
         shell_default_cwd="/tmp",
-        services={"skill_executor": executor, "tool_registry": registry},
+        services=services,
         auth_level=3,
-        runtime_profile="standard",
+        runtime_profile=runtime_profile,
     )
 
 
@@ -220,3 +232,95 @@ def test_tool_execution_context_capability_provenance_defaults_none():
     assert ctx.capability_id is None
     assert ctx.capability_version is None
     assert ctx.capability_content_hash is None
+
+
+async def test_run_capability_inner_tick_requires_auto_run_tag(tmp_path):
+    store = CapabilityStore(tmp_path)
+    doc = store._parser.parse(_write_doc(tmp_path, tags=[]))
+    _write_current_eval(doc)
+    registry = ToolRegistry()
+    register_capability_runner_tools(registry, store)
+
+    result = await registry.execute(
+        ToolExecutionRequest(name="run_capability", arguments={"id": "cap_01"}),
+        context=_ctx(registry, FakeSkillExecutor(), runtime_profile="inner_tick"),
+    )
+
+    assert not result.success
+    assert result.payload["reason"] == "inner_tick_requires_auto_run_tag"
+
+
+async def test_run_capability_inner_tick_allows_auto_run_tag(tmp_path):
+    store = CapabilityStore(tmp_path)
+    doc = store._parser.parse(_write_doc(tmp_path, tags=["auto_run"]))
+    _write_current_eval(doc)
+    registry = ToolRegistry()
+    register_capability_runner_tools(registry, store)
+
+    result = await registry.execute(
+        ToolExecutionRequest(name="run_capability", arguments={"id": "cap_01"}),
+        context=_ctx(registry, FakeSkillExecutor(), runtime_profile="inner_tick"),
+    )
+
+    assert result.success
+
+
+async def test_run_capability_do_not_apply_when_blocks_current_task(tmp_path):
+    store = CapabilityStore(tmp_path)
+    doc = store._parser.parse(_write_doc(tmp_path))
+    _write_current_eval(doc)
+    registry = ToolRegistry()
+    register_capability_runner_tools(registry, store)
+
+    result = await registry.execute(
+        ToolExecutionRequest(name="run_capability", arguments={"id": "cap_01"}),
+        context=_ctx(
+            registry,
+            FakeSkillExecutor(),
+            extra_services={"current_user_task": "do this task when unsafe for users"},
+        ),
+    )
+
+    assert not result.success
+    assert result.payload["reason"] == "do_not_apply_when_matched"
+
+
+async def test_run_capability_sensitive_context_blocks_without_approval(tmp_path):
+    store = CapabilityStore(tmp_path)
+    doc = store._parser.parse(
+        _write_doc(tmp_path, sensitive_contexts=["personal_data"]),
+    )
+    _write_current_eval(doc)
+    registry = ToolRegistry()
+    register_capability_runner_tools(registry, store)
+
+    result = await registry.execute(
+        ToolExecutionRequest(name="run_capability", arguments={"id": "cap_01"}),
+        context=_ctx(
+            registry,
+            FakeSkillExecutor(),
+            extra_services={
+                "current_sensitive_contexts": {"personal_data"},
+                "approved_sensitive_contexts": set(),
+            },
+        ),
+    )
+
+    assert not result.success
+    assert result.payload["reason"] == "sensitive_context_not_approved"
+
+
+async def test_run_capability_network_side_effect_denied_by_standard_profile(tmp_path):
+    store = CapabilityStore(tmp_path)
+    doc = store._parser.parse(_write_doc(tmp_path, side_effects=["network_send", "none"]))
+    _write_current_eval(doc)
+    registry = ToolRegistry()
+    register_capability_runner_tools(registry, store)
+
+    result = await registry.execute(
+        ToolExecutionRequest(name="run_capability", arguments={"id": "cap_01"}),
+        context=_ctx(registry, FakeSkillExecutor()),
+    )
+
+    assert not result.success
+    assert result.payload["reason"] == "side_effects_not_allowed_by_profile"

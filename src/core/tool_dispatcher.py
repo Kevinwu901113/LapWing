@@ -587,8 +587,32 @@ class ToolDispatcher:
 
         if capability_id is not None:
             cap_manifest = (services or {}).get("capability_execution_manifest")
+            if cap_manifest is None:
+                reason = "capability_missing_execution_manifest"
+                if state is not None:
+                    state.record_failure(reason, "blocked")
+                payload = self._blocked_payload(
+                    reason=reason,
+                    cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
+                    command=str(request.arguments.get("command", "")).strip(),
+                    status=ToolResultStatus.PERMISSION_ERROR,
+                    error_code=ToolErrorCode.PERMISSION_DENIED,
+                    error_class=ToolErrorClass.PERMISSION,
+                    safe_details={"guard": "capability_policy", "reason": reason},
+                )
+                await self._record_tool_denied(
+                    tool_name=request.name,
+                    guard="capability_policy",
+                    reason=reason,
+                    auth_level=auth_level,
+                    services=services,
+                    chat_id=chat_id,
+                    extras={"capability_id": capability_id},
+                )
+                return ToolExecutionResult(success=False, payload=payload, reason=reason)
+
             required_tools = set(getattr(cap_manifest, "required_tools", []) or [])
-            if cap_manifest is not None and request.name not in required_tools:
+            if request.name not in required_tools:
                 reason = "capability_child_tool_not_declared"
                 if state is not None:
                     state.record_failure(reason, "blocked")
