@@ -209,7 +209,7 @@ def _resolve_proactive_target_chat_id(
         return None
 
     if target.startswith("qq_group:"):
-        group_id = target.split(":", 1)[1]
+        group_id = target.split(":", 1)[1].strip()
         return group_id or None
 
     return None
