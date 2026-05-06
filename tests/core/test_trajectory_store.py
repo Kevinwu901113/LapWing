@@ -348,3 +348,92 @@ class TestHasRecentEntry:
         assert await store.has_recent_entry(
             "any_chat", TrajectoryEntryType.USER_MESSAGE, _time.time() - 86400,
         ) is False
+
+
+class TestProactiveOutboundLegacyProjection:
+    def test_proactive_outbound_renders_as_assistant(self):
+        from src.core.trajectory_store import trajectory_entries_to_messages
+        entry = TrajectoryEntry(
+            id=1, timestamp=1000.0,
+            entry_type=TrajectoryEntryType.PROACTIVE_OUTBOUND.value,
+            source_chat_id="c1", actor="assistant",
+            content={"text": "下午好～", "target": "kevin_qq", "kind": "proactive_outbound", "source": "send_message"},
+            related_commitment_id=None, related_iteration_id=None,
+            related_tool_call_id=None,
+        )
+        msgs = trajectory_entries_to_messages([entry])
+        assert msgs == [{"role": "assistant", "content": "下午好～"}]
+
+    def test_proactive_outbound_excluded_when_include_inner_false(self):
+        from src.core.trajectory_store import trajectory_entries_to_messages
+        inner = TrajectoryEntry(
+            id=1, timestamp=1000.0,
+            entry_type=TrajectoryEntryType.INNER_THOUGHT.value,
+            source_chat_id=None, actor="lapwing",
+            content={"text": "internal reasoning"},
+            related_commitment_id=None, related_iteration_id=None,
+            related_tool_call_id=None,
+        )
+        msgs = trajectory_entries_to_messages([inner], include_inner=False)
+        assert msgs == []
+
+    def test_consecutive_assistant_turns_proactive_after_direct(self):
+        from src.core.trajectory_store import trajectory_entries_to_messages
+        entries = [
+            TrajectoryEntry(
+                id=1, timestamp=1000.0,
+                entry_type=TrajectoryEntryType.USER_MESSAGE.value,
+                source_chat_id="c1", actor="user",
+                content={"text": "你好"},
+                related_commitment_id=None, related_iteration_id=None,
+                related_tool_call_id=None,
+            ),
+            TrajectoryEntry(
+                id=2, timestamp=1001.0,
+                entry_type=TrajectoryEntryType.ASSISTANT_TEXT.value,
+                source_chat_id="c1", actor="lapwing",
+                content={"text": "你好！"},
+                related_commitment_id=None, related_iteration_id=None,
+                related_tool_call_id=None,
+            ),
+            TrajectoryEntry(
+                id=3, timestamp=1002.0,
+                entry_type=TrajectoryEntryType.PROACTIVE_OUTBOUND.value,
+                source_chat_id="c1", actor="assistant",
+                content={"text": "顺便提醒一下～", "target": "kevin_qq", "kind": "proactive_outbound", "source": "send_message"},
+                related_commitment_id=None, related_iteration_id=None,
+                related_tool_call_id=None,
+            ),
+        ]
+        msgs = trajectory_entries_to_messages(entries)
+        assert msgs == [
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": "你好！"},
+            {"role": "assistant", "content": "顺便提醒一下～"},
+        ]
+
+    def test_consecutive_assistant_turns_direct_after_proactive(self):
+        from src.core.trajectory_store import trajectory_entries_to_messages
+        entries = [
+            TrajectoryEntry(
+                id=1, timestamp=1000.0,
+                entry_type=TrajectoryEntryType.PROACTIVE_OUTBOUND.value,
+                source_chat_id="c1", actor="assistant",
+                content={"text": "下午好～", "target": "kevin_qq", "kind": "proactive_outbound", "source": "send_message"},
+                related_commitment_id=None, related_iteration_id=None,
+                related_tool_call_id=None,
+            ),
+            TrajectoryEntry(
+                id=2, timestamp=1001.0,
+                entry_type=TrajectoryEntryType.ASSISTANT_TEXT.value,
+                source_chat_id="c1", actor="lapwing",
+                content={"text": "收到！"},
+                related_commitment_id=None, related_iteration_id=None,
+                related_tool_call_id=None,
+            ),
+        ]
+        msgs = trajectory_entries_to_messages(entries)
+        assert msgs == [
+            {"role": "assistant", "content": "下午好～"},
+            {"role": "assistant", "content": "收到！"},
+        ]

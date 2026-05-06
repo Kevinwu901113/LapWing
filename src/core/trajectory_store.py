@@ -516,6 +516,7 @@ _LEGACY_ROLE_MAP: dict[str, str] = {
     TrajectoryEntryType.USER_MESSAGE.value: "user",
     TrajectoryEntryType.TELL_USER.value: "assistant",
     TrajectoryEntryType.ASSISTANT_TEXT.value: "assistant",
+    TrajectoryEntryType.PROACTIVE_OUTBOUND.value: "assistant",
 }
 
 
@@ -563,6 +564,10 @@ def _extract_legacy_text(entry: TrajectoryEntry) -> str | None:
             return text
         return None
     text = content.get("text")
+    if isinstance(text, str):
+        return text
+    # Fallback for types that use "content" key
+    text = content.get("content")
     if isinstance(text, str):
         return text
     return None
