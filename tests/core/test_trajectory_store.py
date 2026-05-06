@@ -356,7 +356,7 @@ class TestProactiveOutboundLegacyProjection:
         entry = TrajectoryEntry(
             id=1, timestamp=1000.0,
             entry_type=TrajectoryEntryType.PROACTIVE_OUTBOUND.value,
-            source_chat_id="c1", actor="assistant",
+            source_chat_id="c1", actor="lapwing",
             content={"text": "下午好～", "target": "kevin_qq", "kind": "proactive_outbound", "source": "send_message"},
             related_commitment_id=None, related_iteration_id=None,
             related_tool_call_id=None,
@@ -399,7 +399,7 @@ class TestProactiveOutboundLegacyProjection:
             TrajectoryEntry(
                 id=3, timestamp=1002.0,
                 entry_type=TrajectoryEntryType.PROACTIVE_OUTBOUND.value,
-                source_chat_id="c1", actor="assistant",
+                source_chat_id="c1", actor="lapwing",
                 content={"text": "顺便提醒一下～", "target": "kevin_qq", "kind": "proactive_outbound", "source": "send_message"},
                 related_commitment_id=None, related_iteration_id=None,
                 related_tool_call_id=None,
@@ -418,7 +418,7 @@ class TestProactiveOutboundLegacyProjection:
             TrajectoryEntry(
                 id=1, timestamp=1000.0,
                 entry_type=TrajectoryEntryType.PROACTIVE_OUTBOUND.value,
-                source_chat_id="c1", actor="assistant",
+                source_chat_id="c1", actor="lapwing",
                 content={"text": "下午好～", "target": "kevin_qq", "kind": "proactive_outbound", "source": "send_message"},
                 related_commitment_id=None, related_iteration_id=None,
                 related_tool_call_id=None,

@@ -203,24 +203,14 @@ def _resolve_proactive_target_chat_id(
         return None
 
     if target == "kevin_desktop":
-        channel_manager = svc.channel_manager
-        if channel_manager is None:
-            return None
-        try:
-            desktop_adapter = channel_manager.get_adapter("desktop")
-        except Exception:
-            return None
-        if desktop_adapter is None:
-            return None
-        connections = getattr(desktop_adapter, "connections", {})
-        if not connections:
-            return None
-        first_cid = next(iter(connections.keys()))
-        from config.settings import DESKTOP_WS_CHAT_ID_PREFIX
-        return f"{DESKTOP_WS_CHAT_ID_PREFIX}:{first_cid}"
+        from config.settings import DESKTOP_DEFAULT_OWNER, OWNER_IDS
+        if DESKTOP_DEFAULT_OWNER and OWNER_IDS:
+            return next(iter(OWNER_IDS))
+        return None
 
     if target.startswith("qq_group:"):
-        return None
+        group_id = target.split(":", 1)[1]
+        return group_id or None
 
     return None
 
@@ -253,7 +243,7 @@ async def _record_proactive_outbound_trajectory(
         await trajectory_store.append(
             TrajectoryEntryType.PROACTIVE_OUTBOUND,
             resolved_chat_id,
-            "assistant",
+            "lapwing",
             {
                 "text": content,
                 "target": target,

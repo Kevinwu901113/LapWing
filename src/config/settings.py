@@ -141,6 +141,8 @@ _ENV_MAP: dict[str, list[str]] = {
     "MEMORY_WIKI_LINT_ENABLED": ["memory", "wiki", "lint_enabled"],
     "MEMORY_WIKI_DIR": ["memory", "wiki", "wiki_dir"],
     "MEMORY_WIKI_CONTEXT_BUDGET_RATIO": ["memory", "wiki", "context_budget_ratio"],
+    # ── proactive_messages ──
+    "PROACTIVE_OUTBOUND_TRAJECTORY_ENABLED": ["proactive_messages", "proactive_outbound_trajectory_enabled"],
     # ── shell ──
     "SHELL_ENABLED": ["shell", "enabled"],
     "SHELL_ALLOW_SUDO": ["shell", "allow_sudo"],
@@ -642,6 +644,7 @@ class ProactiveMessagesConfig(BaseModel):
     urgent_bypass_categories: list[str] = Field(
         default_factory=lambda: ["reminder_due", "safety", "explicit_commitment"]
     )
+    proactive_outbound_trajectory_enabled: bool = True
 
 
 class IdentityConfig(BaseModel):

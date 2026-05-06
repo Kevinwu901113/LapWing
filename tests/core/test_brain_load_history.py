@@ -90,7 +90,7 @@ class TestLoadHistoryProactiveOutbound:
     async def test_load_history_includes_proactive_outbound_for_same_chat(self, brain):
         brain.trajectory_store = AsyncMock()
         brain.trajectory_store.relevant_to_chat = AsyncMock(return_value=[
-            _mk_entry(1, TrajectoryEntryType.PROACTIVE_OUTBOUND, "c1", "assistant",
+            _mk_entry(1, TrajectoryEntryType.PROACTIVE_OUTBOUND, "c1", "lapwing",
                        "你好～"),
             _mk_entry(2, TrajectoryEntryType.USER_MESSAGE, "c1", "user", "还没"),
         ])
@@ -121,7 +121,7 @@ class TestLoadHistoryProactiveOutbound:
         brain.trajectory_store = AsyncMock()
         brain.trajectory_store.relevant_to_chat = AsyncMock(return_value=[
             _mk_entry(1, TrajectoryEntryType.PROACTIVE_OUTBOUND, "919231551",
-                       "assistant", "下午好～第二个盲审有消息了吗？"),
+                       "lapwing", "下午好～第二个盲审有消息了吗？"),
             _mk_entry(2, TrajectoryEntryType.USER_MESSAGE, "919231551",
                        "user", "还没"),
         ])
