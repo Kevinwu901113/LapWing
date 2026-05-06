@@ -160,8 +160,16 @@ class AgentRegistry:
         name: str,
         reason: str,
         run_history: list[str],
+        *,
+        candidate_id: str | None = None,
+        candidate_store: Any = None,
+        require_candidate_approval: bool = False,
     ) -> None:
-        """Persist a dynamic agent's spec. Validates via policy."""
+        """Persist a dynamic agent's spec. Validates via policy.
+
+        When require_candidate_approval is True and the spec is capability-backed,
+        an approved AgentCandidate with sufficient evidence must be provided.
+        """
         if self._policy is None or self._catalog is None:
             raise RuntimeError("AgentRegistry not configured")
         spec = await self._lookup_spec(name)
@@ -171,6 +179,30 @@ class AgentRegistry:
         if spec.kind == "builtin":
             from src.agents.policy import AgentPolicyViolation
             raise AgentPolicyViolation("cannot_save_builtin", {"name": name})
+
+        # ── Phase 6C save gate ──
+        candidate = None
+        if require_candidate_approval and candidate_store is not None and candidate_id is not None:
+            try:
+                candidate = candidate_store.get_candidate(candidate_id)
+            except Exception as exc:
+                from src.agents.policy import AgentPolicyViolation
+                raise AgentPolicyViolation(
+                    "candidate_lookup_failed",
+                    {"candidate_id": candidate_id, "error": str(exc)},
+                )
+
+        gate_result = self._policy.validate_persistent_save_gate(
+            spec,
+            candidate=candidate,
+            require_candidate_approval=require_candidate_approval,
+        )
+        if not gate_result.allowed:
+            from src.agents.policy import AgentPolicyViolation
+            raise AgentPolicyViolation(
+                "save_gate_denied",
+                {"reason": gate_result.reason, "denials": gate_result.denials},
+            )
 
         await self._policy.validate_save(spec, run_history)
 

@@ -136,12 +136,31 @@ IDENTITY_INJECTOR_ENABLED: bool = _s.identity.injector_enabled
 IDENTITY_GATE_ENABLED: bool = _s.identity.gate_enabled
 IDENTITY_SYSTEM_KILLSWITCH: bool = _s.identity.identity_system_killswitch
 
+# ── Agents (Phase 6C+) ──
+AGENTS_REQUIRE_CANDIDATE_APPROVAL_FOR_PERSISTENCE: bool = _s.agents.require_candidate_approval_for_persistence
+AGENTS_CANDIDATE_TOOLS_ENABLED: bool = _s.agents.candidate_tools_enabled
+AGENTS_CANDIDATE_EVIDENCE_MAX_AGE_DAYS: int | None = _s.agents.candidate_evidence_max_age_days
+
 # ── Capability Evolution System (Phase 0+) ──
 CAPABILITIES_ENABLED: bool = _s.capabilities.enabled
 CAPABILITIES_RETRIEVAL_ENABLED: bool = _s.capabilities.retrieval_enabled
 CAPABILITIES_CURATOR_ENABLED: bool = _s.capabilities.curator_enabled
+CAPABILITIES_CURATOR_DRY_RUN_ENABLED: bool = _s.capabilities.curator_dry_run_enabled
 CAPABILITIES_AUTO_DRAFT_ENABLED: bool = _s.capabilities.auto_draft_enabled
+CAPABILITIES_EXECUTION_SUMMARY_ENABLED: bool = _s.capabilities.execution_summary_enabled
 CAPABILITIES_LIFECYCLE_TOOLS_ENABLED: bool = _s.capabilities.lifecycle_tools_enabled
+CAPABILITIES_AUTO_PROPOSAL_ENABLED: bool = _s.capabilities.auto_proposal_enabled
+CAPABILITIES_AUTO_PROPOSAL_MIN_CONFIDENCE: float = _s.capabilities.auto_proposal_min_confidence
+CAPABILITIES_AUTO_PROPOSAL_ALLOW_HIGH_RISK: bool = _s.capabilities.auto_proposal_allow_high_risk
+CAPABILITIES_AUTO_PROPOSAL_MAX_PER_SESSION: int = _s.capabilities.auto_proposal_max_per_session
+CAPABILITIES_AUTO_PROPOSAL_DEDUPE_WINDOW_HOURS: int = _s.capabilities.auto_proposal_dedupe_window_hours
+CAPABILITIES_EXTERNAL_IMPORT_ENABLED: bool = _s.capabilities.external_import_enabled
+CAPABILITIES_QUARANTINE_TRANSITION_REQUESTS_ENABLED: bool = _s.capabilities.quarantine_transition_requests_enabled
+CAPABILITIES_QUARANTINE_ACTIVATION_PLANNING_ENABLED: bool = _s.capabilities.quarantine_activation_planning_enabled
+CAPABILITIES_QUARANTINE_ACTIVATION_APPLY_ENABLED: bool = _s.capabilities.quarantine_activation_apply_enabled
+CAPABILITIES_TRUST_ROOT_TOOLS_ENABLED: bool = _s.capabilities.trust_root_tools_enabled
+CAPABILITIES_STABLE_PROMOTION_TRUST_GATE_ENABLED: bool = _s.capabilities.stable_promotion_trust_gate_enabled
+CAPABILITIES_REPAIR_QUEUE_TOOLS_ENABLED: bool = _s.capabilities.repair_queue_tools_enabled
 CAPABILITIES_DATA_DIR: str = _s.capabilities.data_dir
 CAPABILITIES_INDEX_DB_PATH: str = _s.capabilities.index_db_path
 

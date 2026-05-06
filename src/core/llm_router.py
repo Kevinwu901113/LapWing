@@ -1049,6 +1049,7 @@ class LLMRouter:
                 refresh_attempted = False
                 current_candidate = candidate
                 while True:
+                    model = None
                     try:
                         candidate_model = str(getattr(current_candidate, "model", "") or "").strip()
                         if session_model_override:

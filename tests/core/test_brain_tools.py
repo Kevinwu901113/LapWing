@@ -109,6 +109,7 @@ class TestBrainTools:
     async def test_openai_style_tool_loop_executes_shell_and_returns_final_text(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.LapwingBrain._fallback_profile_for_message", return_value="chat_shell"), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
             from src.core.brain import LapwingBrain
 
@@ -163,6 +164,7 @@ class TestBrainTools:
     async def test_anthropic_style_tool_loop_uses_provider_continuation_message(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.LapwingBrain._fallback_profile_for_message", return_value="chat_shell"), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
             from src.core.brain import LapwingBrain
 
@@ -350,6 +352,7 @@ class TestBrainTools:
     async def test_tool_loop_limit_returns_fallback_reply(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.LapwingBrain._fallback_profile_for_message", return_value="chat_shell"), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
             from src.core.brain import LapwingBrain
 
@@ -406,6 +409,7 @@ class TestBrainTools:
         # （仅在 SHELL_ALLOW_SUDO=False 时生效）
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.LapwingBrain._fallback_profile_for_message", return_value="chat_shell"), \
              patch("src.core.brain.SHELL_ALLOW_SUDO", False), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
             from src.core.brain import LapwingBrain
@@ -470,6 +474,7 @@ class TestBrainTools:
     async def test_confirmation_reply_resumes_with_approved_directory_and_verifies_success(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.LapwingBrain._fallback_profile_for_message", return_value="chat_shell"), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute, \
              patch("src.core.brain.verify_constraints") as mock_verify:
             from src.core.brain import LapwingBrain
@@ -671,6 +676,7 @@ class TestBrainTools:
         # 权限拒绝时，consent 消息应该包含真实的 stderr 错误，而不是通用的"退出码 1"
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.LapwingBrain._fallback_profile_for_message", return_value="chat_shell"), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute, \
              patch("src.core.brain.extract_execution_constraints") as mock_constraints:
             from src.core.brain import LapwingBrain
@@ -727,6 +733,7 @@ class TestBrainTools:
         # SHELL_ALLOW_SUDO=True 时，权限拒绝不触发 consent，让 LLM 自己决定是否 sudo
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.LapwingBrain._fallback_profile_for_message", return_value="chat_shell"), \
              patch("src.core.brain.SHELL_ALLOW_SUDO", True), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
             from src.core.brain import LapwingBrain
@@ -852,6 +859,7 @@ class TestBrainTools:
     async def test_task_events_emitted_for_successful_tool_loop(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.LapwingBrain._fallback_profile_for_message", return_value="chat_shell"), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute:
             from src.core.brain import LapwingBrain
 
@@ -917,6 +925,7 @@ class TestBrainTools:
     async def test_task_blocked_event_emitted_when_consent_required(self):
         with patch("src.core.brain.load_prompt", return_value="prompt"), \
              patch("src.core.brain.LLMRouter"), \
+             patch("src.core.brain.LapwingBrain._fallback_profile_for_message", return_value="chat_shell"), \
              patch("src.core.brain.SHELL_ALLOW_SUDO", False), \
              patch("src.core.brain.execute_shell", new_callable=AsyncMock) as mock_execute, \
              patch("src.core.brain.extract_execution_constraints") as mock_constraints:

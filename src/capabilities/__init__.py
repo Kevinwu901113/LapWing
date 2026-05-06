@@ -1,6 +1,10 @@
 """Capability Evolution System — Phase 0/1 non-runtime foundation + Phase 2A/B store/index/tools
 + Phase 3A policy/evaluator/records/promotion + Phase 3B lifecycle manager
-+ Phase 4 CapabilityRetriever + progressive disclosure.
++ Phase 4 CapabilityRetriever + progressive disclosure
++ Phase 5A: ExperienceCurator + CapabilityProposal
++ Phase 8B-2: TrustRootStore.
++ Maintenance A: CapabilityHealthReport.
++ Maintenance B: RepairQueueItem, RepairQueueStore.
 
 This package is NOT wired into Brain, TaskRuntime, SkillExecutor,
 ToolDispatcher, or agent execution paths. StateViewBuilder receives
@@ -20,6 +24,10 @@ Public API:
   PromotionPlanner, PromotionPlan
   CapabilityLifecycleManager, TransitionResult
   CapabilityRetriever, CapabilitySummary, RetrievalContext
+  TraceSummary, ExperienceCurator, CuratorDecision, CuratedExperience
+  CapabilityProposal, persist_proposal, load_proposal, list_proposals
+  TrustRootStore
+  CapabilityHealthReport, CapabilityHealthFinding, generate_capability_health_report
 """
 
 from src.capabilities.document import CapabilityDocument, CapabilityParser, parse_capability
@@ -86,6 +94,77 @@ from src.capabilities.retriever import (
     CapabilityRetriever,
     CapabilitySummary,
     RetrievalContext,
+)
+from src.capabilities.curator import CuratedExperience, CuratorDecision, ExperienceCurator
+from src.capabilities.proposal import (
+    CapabilityProposal,
+    list_proposals,
+    load_proposal,
+    persist_proposal,
+)
+from src.capabilities.provenance import (
+    PROVENANCE_INTEGRITY_STATUSES,
+    PROVENANCE_SIGNATURE_STATUSES,
+    PROVENANCE_SOURCE_TYPES,
+    PROVENANCE_TRUST_LEVELS,
+    CapabilityProvenance,
+    CapabilityTrustPolicy,
+    TrustDecision,
+    compute_capability_tree_hash,
+    compute_package_hash,
+    read_provenance,
+    update_provenance_integrity_status,
+    verify_content_hash_against_provenance,
+    write_provenance,
+)
+from src.capabilities.signature import (
+    CapabilitySignature,
+    CapabilityTrustRoot,
+    SignatureVerificationResult,
+    parse_signature_dict,
+    parse_trust_root_dict,
+    read_signature,
+    verify_signature_stub,
+    write_signature,
+)
+from src.capabilities.trust_roots import TrustRootStore
+from src.capabilities.trace_summary import TraceSummary
+from src.capabilities.import_quarantine import (
+    ImportResult,
+    InspectResult,
+    import_capability_package,
+    inspect_capability_package,
+)
+from src.capabilities.quarantine_review import (
+    AuditFinding,
+    AuditReport,
+    ReviewDecision,
+    audit_quarantined_capability,
+    list_quarantined_capabilities,
+    mark_quarantine_review,
+    view_quarantine_report,
+)
+from src.capabilities.quarantine_transition import (
+    QuarantineTransitionRequest,
+    cancel_quarantine_transition_request,
+    list_quarantine_transition_requests,
+    request_quarantine_testing_transition,
+    view_quarantine_transition_request,
+)
+from src.capabilities.quarantine_activation_planner import (
+    QuarantineActivationPlan,
+    list_quarantine_activation_plans,
+    plan_quarantine_activation,
+    view_quarantine_activation_plan,
+)
+from src.capabilities.health import (
+    CapabilityHealthFinding,
+    CapabilityHealthReport,
+    generate_capability_health_report,
+)
+from src.capabilities.repair_queue import (
+    RepairQueueItem,
+    RepairQueueStore,
 )
 from src.capabilities.store import CapabilityStore
 from src.capabilities.versioning import (
@@ -165,6 +244,39 @@ __all__ = [
     "CapabilityRetriever",
     "CapabilitySummary",
     "RetrievalContext",
+    # Phase 5A — Curator + Proposal
+    "TraceSummary",
+    "ExperienceCurator",
+    "CuratorDecision",
+    "CuratedExperience",
+    "CapabilityProposal",
+    "persist_proposal",
+    "load_proposal",
+    "list_proposals",
+    # Phase 7A — External import / quarantine
+    "InspectResult",
+    "ImportResult",
+    "inspect_capability_package",
+    "import_capability_package",
+    # Phase 7B — Quarantine review / audit
+    "AuditFinding",
+    "AuditReport",
+    "ReviewDecision",
+    "list_quarantined_capabilities",
+    "view_quarantine_report",
+    "audit_quarantined_capability",
+    "mark_quarantine_review",
+    # Phase 7C — Quarantine transition requests
+    "QuarantineTransitionRequest",
+    "request_quarantine_testing_transition",
+    "list_quarantine_transition_requests",
+    "view_quarantine_transition_request",
+    "cancel_quarantine_transition_request",
+    # Phase 7D-A — Quarantine activation planner
+    "QuarantineActivationPlan",
+    "plan_quarantine_activation",
+    "list_quarantine_activation_plans",
+    "view_quarantine_activation_plan",
     # Errors
     "CapabilityError",
     "InvalidManifestError",
@@ -173,4 +285,36 @@ __all__ = [
     "InvalidEnumValueError",
     "HashVerificationError",
     "MalformedFrontMatterError",
+    # Phase 8B-1 — Signature metadata / verifier stub
+    "CapabilitySignature",
+    "CapabilityTrustRoot",
+    "SignatureVerificationResult",
+    "parse_signature_dict",
+    "parse_trust_root_dict",
+    "read_signature",
+    "write_signature",
+    "verify_signature_stub",
+    # Phase 8B-2 — Trust root store
+    "TrustRootStore",
+    # Maintenance A — Health report
+    "CapabilityHealthReport",
+    "CapabilityHealthFinding",
+    "generate_capability_health_report",
+    # Maintenance B — Repair queue
+    "RepairQueueItem",
+    "RepairQueueStore",
+    # Phase 8A-1 — Provenance / integrity foundation
+    "CapabilityProvenance",
+    "TrustDecision",
+    "CapabilityTrustPolicy",
+    "PROVENANCE_SOURCE_TYPES",
+    "PROVENANCE_TRUST_LEVELS",
+    "PROVENANCE_INTEGRITY_STATUSES",
+    "PROVENANCE_SIGNATURE_STATUSES",
+    "compute_capability_tree_hash",
+    "compute_package_hash",
+    "verify_content_hash_against_provenance",
+    "write_provenance",
+    "read_provenance",
+    "update_provenance_integrity_status",
 ]

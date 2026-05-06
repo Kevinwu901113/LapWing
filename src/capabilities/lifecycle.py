@@ -78,6 +78,8 @@ class CapabilityLifecycleManager:
         planner: PromotionPlanner for transition planning.
         mutation_log: optional MutationLog for audit events.
         available_tools: optional set/list of tool names for policy validation.
+        trust_policy: optional CapabilityTrustPolicy for stable promotion gate (Phase 8C-1).
+        trust_gate_enabled: feature flag for stable promotion trust gate (default False).
     """
 
     def __init__(
@@ -89,6 +91,8 @@ class CapabilityLifecycleManager:
         *,
         mutation_log: Any | None = None,
         available_tools: list[str] | set[str] | None = None,
+        trust_policy: Any | None = None,
+        trust_gate_enabled: bool = False,
     ) -> None:
         self._store = store
         self._evaluator = evaluator
@@ -98,6 +102,8 @@ class CapabilityLifecycleManager:
         self._available_tools: list[str] = (
             list(available_tools) if available_tools else []
         )
+        self._trust_policy = trust_policy
+        self._trust_gate_enabled = trust_gate_enabled
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -310,6 +316,46 @@ class CapabilityLifecycleManager:
                 policy_decisions=policy_decisions,
                 eval_record_id=eval_record.created_at if eval_record else None,
             )
+
+        # 3.5 Trust gate for testing -> stable (Phase 8C-1).
+        if (
+            self._trust_gate_enabled
+            and self._trust_policy is not None
+            and from_mat == "testing"
+            and to_mat == "stable"
+        ):
+            from src.capabilities.provenance import read_provenance
+
+            trust_provenance = read_provenance(doc.directory)
+
+            trust_risk_level: str = "low"
+            if doc.manifest.risk_level:
+                trust_risk_level = doc.manifest.risk_level.value
+
+            trust_decision = self._trust_policy.can_promote_to_stable(
+                doc.manifest,
+                provenance=trust_provenance,
+                eval_record=eval_record,
+                risk_level=trust_risk_level,
+                approval=approval,
+            )
+
+            trust_decision_dict = {
+                "code": trust_decision.code,
+                "message": trust_decision.message,
+                "severity": trust_decision.severity,
+                "allowed": trust_decision.allowed,
+                "details": trust_decision.details,
+                "source": "CapabilityTrustPolicy",
+            }
+            policy_decisions.append(trust_decision_dict)
+
+            if not trust_decision.allowed:
+                return _blocked(
+                    f"Trust gate denied stable promotion: {trust_decision.message}",
+                    policy_decisions=policy_decisions,
+                    eval_record_id=eval_record.created_at if eval_record else None,
+                )
 
         # 4. Write version snapshot before mutation.
         trigger = f"promote_to_{to_mat}"

@@ -553,7 +553,7 @@ class TestExistingToolsRemainGated:
         content = container_file.read_text(encoding="utf-8")
         # Find the retrieval wiring block
         retrieval_idx = content.find("Phase 4: CapabilityRetriever")
-        end_of_block = content.find("Phase 4: 注册 DurableScheduler", retrieval_idx)
+        end_of_block = content.find("Phase 5A", retrieval_idx)
         retrieval_block = content[retrieval_idx:end_of_block]
         assert "register_capability" not in retrieval_block, (
             "Retrieval wiring must not register tools"
@@ -578,6 +578,7 @@ class TestRuntimeImports:
         )
         allowed_files = {
             "src/tools/capability_tools.py",
+            "src/tools/repair_queue_tools.py",
             "src/app/container.py",
         }
         for line in result.stdout.splitlines():
@@ -621,7 +622,12 @@ class TestNoExperienceCurator:
 
     def test_no_experience_curator_in_capabilities(self):
         cap_dir = REPO_ROOT / "src" / "capabilities"
+        # ExperienceCurator exists in curator.py and is re-exported from __init__.py.
+        # It must NOT exist in any other capability module (retriever, store, etc.).
+        allowed = {"curator.py", "__init__.py", "curator_dry_run_adapter.py", "auto_proposal_adapter.py"}
         for py_file in cap_dir.glob("*.py"):
+            if py_file.name in allowed:
+                continue
             content = py_file.read_text(encoding="utf-8")
             assert "ExperienceCurator" not in content, (
                 f"ExperienceCurator found in {py_file}"

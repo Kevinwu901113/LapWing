@@ -655,3 +655,481 @@ All three tools use `capability="capability_lifecycle"` — distinct from
 - No network access.
 - retrieval_enabled does not grant lifecycle or read permissions.
 - Lifecycle tools remain separately gated behind lifecycle_tools_enabled.
+
+## 13. Phase 5A: Experience Curator + Capability Proposal
+
+### Status: Implemented (2026-05-01)
+### Files: `src/capabilities/trace_summary.py`, `src/capabilities/curator.py`, `src/capabilities/proposal.py`
+
+### Key Design Decisions
+
+1. **Manual, explicit, auditable flow.**
+   The user agent (or a curator operator) calls `reflect_experience` to analyze
+   a trace summary, then calls `propose_capability` to create a draft proposal.
+   No automatic task-end hooks, no automatic curation, no auto-draft.
+
+2. **Deterministic heuristics only.**
+   The ExperienceCurator uses 11 create signals and 5 no-action overrides,
+   all computed from trace fields. No LLM judge, no network, no shell,
+   no file reads. Same input always produces same CuratorDecision.
+
+3. **Separate permission tag.**
+   Both tools use `capability="capability_curator"`, distinct from
+   `capability_read` and `capability_lifecycle`. Only the
+   `CAPABILITY_CURATOR_OPERATOR_PROFILE` grants access. Standard, chat,
+   inner_tick, and agent profiles do NOT include this tag.
+
+4. **Secrets redaction before storage.**
+   TraceSummary.sanitize() applies 5 compiled regex patterns to redact API keys,
+   Bearer tokens, passwords, and PEM private keys. CoT/hidden-inference keys
+   (_cot, chain_of_thought, etc.) are stripped at parse time.
+
+5. **Default apply=false.**
+   `propose_capability` with `apply=false` persists proposal files only
+   (proposal.json, PROPOSAL.md, source_trace_summary.json) in
+   `data/capabilities/proposals/<proposal_id>/`. No capability is created,
+   no store mutation occurs.
+
+### TraceSummary (`src/capabilities/trace_summary.py`)
+
+@dataclass with 16 fields: trace_id, user_request, final_result, task_type,
+context, tools_used, files_touched, commands_run, errors_seen, failed_attempts,
+successful_steps, verification, user_feedback, existing_capability_id,
+created_at, metadata.
+
+- `from_dict(d: dict) -> TraceSummary` — trusted factory; drops hidden-inference
+  and __-prefixed keys; coerces list fields; truncates strings > 50KB; defaults
+  created_at to now
+- `sanitize() -> TraceSummary` — returns new instance with secrets redacted
+- `to_dict() -> dict` — serializes all fields
+- Treats all input as untrusted. No LLM/network/shell/file-read.
+
+### ExperienceCurator (`src/capabilities/curator.py`)
+
+Stateless class with three methods:
+
+- `should_reflect(TraceSummary) -> CuratorDecision` — computes whether the
+  trace warrants capability creation. Picks the highest-confidence matching
+  signal. Returns should_create, recommended_action, confidence, reasons,
+  risk_level, required_approval.
+
+- `summarize(TraceSummary) -> CuratedExperience` — extracts problem, context,
+  steps, commands, files, verification, pitfalls, generalization_boundary,
+  suggested_triggers, suggested_tags.
+
+- `propose_capability(CuratedExperience, scope, type, risk_level, approval)
+  -> CapabilityProposal` — generates proposal_id (`prop_<uuid8>`),
+  capability_id, body_markdown with required CAPABILITY.md sections.
+
+### CapabilityProposal (`src/capabilities/proposal.py`)
+
+@dataclass with 24 fields including proposal_id, proposed_capability_id, name,
+description, type, scope, maturity (default "draft"), risk_level, required_tools,
+triggers, tags, body_markdown, applied (default False).
+
+Persistence functions:
+- `persist_proposal(proposal, trace_summary, data_dir) -> Path` — creates 3 files
+- `load_proposal(proposal_id, data_dir) -> CapabilityProposal | None`
+- `list_proposals(data_dir) -> list[CapabilityProposal]` — sorted by created_at desc
+- `mark_applied(proposal_id, capability_id, data_dir) -> bool`
+
+### Curator Tools (`reflect_experience`, `propose_capability`)
+
+Both registered via `register_capability_curator_tools()` in
+`src/tools/capability_tools.py`, gated behind `CAPABILITIES_CURATOR_ENABLED`.
+
+**reflect_experience:**
+- Parses trace_summary → sanitizes → curator.should_reflect() + curator.summarize()
+- Returns decision + curated experience
+- Risk: low. No mutation.
+
+**propose_capability:**
+- Parses input (curated_experience OR trace_summary)
+- Runs curator pipeline → creates CapabilityProposal
+- `apply=false`: persist proposal files only
+- `apply=true`: also calls store.create_draft(), runs CapabilityEvaluator,
+  writes EvalRecord, refreshes index, marks proposal applied
+- High risk proposals blocked without explicit approval
+- Maturity always "draft", never promoted
+- Risk: medium
+
+### Feature Flag Matrix
+
+| capabilities.enabled | capabilities.curator_enabled | Behavior |
+|---------------------|-----------------------------|----------|
+| false               | *                           | No curator tools registered |
+| true                | false                       | No curator tools registered |
+| true                | true                        | reflect_experience + propose_capability registered |
+
+### Container Wiring
+
+In `src/app/container.py`, after the Phase 4 retriever block:
+```python
+if CAPABILITIES_CURATOR_ENABLED:
+    register_capability_curator_tools(
+        self.brain.tool_registry, capability_store, capability_index,
+        data_dir=CAPABILITIES_DATA_DIR,
+    )
+```
+
+### What Phase 5A Does NOT Do
+
+- No TaskRuntime task-end hook
+- No automatic curation / auto_draft
+- No run_capability / script execution / shell commands
+- No network / LLM judge
+- No Brain/TaskRuntime/SkillExecutor/dynamic agent modifications
+- No stable capability patches
+- No stable capability creation (maturity always stays "draft")
+- No automatic promotion
+
+## 14. Phase 5B: Execution Summary Observer
+
+### Status: Implemented (2026-05-02)
+### Files: `src/core/execution_summary.py`, `src/capabilities/trace_summary_adapter.py`
+
+### Key Design Decisions
+
+1. **Generic interface in core, concrete adapter in capabilities.**
+   `src/core/execution_summary.py` defines the `TaskEndContext` dataclass and
+   `ExecutionSummaryObserver` protocol — it has zero dependency on the
+   capabilities package. The concrete `TraceSummaryObserver` lives in
+   `src/capabilities/trace_summary_adapter.py` and is wired in `container.py`.
+   `TaskRuntime` only depends on the generic core interface.
+
+2. **Best-effort and failure-safe.**
+   The observer's `capture()` method wraps everything in try/except and returns
+   `None` on failure. If summary capture fails, the user task still
+   succeeds/fails normally. The observer never raises into the task flow.
+
+3. **Capture-only — no curation, no proposals, no drafts.**
+   The observer converts task-end data into a sanitized TraceSummary dict and
+   attaches it to in-memory state (`task_runtime._last_execution_summary`).
+   It does NOT call ExperienceCurator, create proposals, create draft
+   capabilities, or mutate the capability index. Persistence is optional and
+   not implemented in Phase 5B.
+
+4. **Independent feature flag.**
+   `capabilities.execution_summary_enabled` is separate from
+   `capabilities.curator_enabled`. Enabling summaries does NOT enable
+   curator tools, and vice versa.
+
+### TaskEndContext (`src/core/execution_summary.py`)
+
+@dataclass with 15 fields: trace_id, user_request, final_result, task_type,
+tools_used, files_touched, commands_run, errors_seen, failed_attempts,
+successful_steps, verification, user_feedback, created_at, metadata.
+
+`build_task_end_context()` extracts data from mutation log rows and message
+history at task end:
+- `user_request` — first user message content
+- `final_result` — final assistant reply text
+- `task_type` — derived heuristically from user request keywords (deploy,
+  bug-fix, refactor, testing, build, analysis, migration, setup, review,
+  documentation, explanation, search)
+- `tools_used` — from TOOL_CALLED mutation events
+- `commands_run` — from execute_shell tool call arguments
+- `files_touched` — from read_file/write_file/edit tool call arguments
+- `errors_seen` — from failed TOOL_RESULT events
+
+### TraceSummaryObserver (`src/capabilities/trace_summary_adapter.py`)
+
+Concrete observer implementing the `ExecutionSummaryObserver` protocol:
+- Converts `TaskEndContext.to_dict()` → `TraceSummary.from_dict()`
+- Calls `TraceSummary.sanitize()` for secrets redaction and CoT stripping
+- Returns the sanitized dict (does NOT persist to disk)
+- Never calls the curator, creates proposals, or mutates capability store
+
+### TaskRuntime Wiring
+
+- `TaskRuntime.__init__` adds `_execution_summary_observer` and
+  `_last_execution_summary` attributes (both default None)
+- `set_execution_summary_observer(observer)` setter
+- `complete_chat()` finally block calls `observer.capture()` after
+  ITERATION_ENDED mutation log record
+- Observer call is wrapped in try/except — failure is non-fatal
+- `reply` is defaulted to `""` before the try block so the observer
+  always has a value
+
+### Feature Flag Matrix
+
+| capabilities.enabled | capabilities.execution_summary_enabled | Behavior |
+|----------------------|---------------------------------------|----------|
+| false                | *                                     | No observer attached |
+| true                 | false                                 | No observer attached |
+| true                 | true                                  | TraceSummaryObserver wired; sanitized summary captured at task end |
+
+### Container Wiring
+
+In `src/app/container.py`, inside the `if CAPABILITIES_ENABLED:` block, after
+the Phase 5A curator tools block:
+```python
+if CAPABILITIES_EXECUTION_SUMMARY_ENABLED:
+    from src.capabilities.trace_summary_adapter import TraceSummaryObserver
+    self.brain.task_runtime.set_execution_summary_observer(TraceSummaryObserver())
+```
+
+### What Phase 5B Does NOT Do
+
+- No automatic curation (no ExperienceCurator called)
+- No proposal creation (no CapabilityProposal, no persist_proposal)
+- No draft capability creation (no CapabilityStore.create_draft)
+- No capability index updates
+- No capability execution (no run_capability)
+- No persistence by default (in-memory only)
+- No task-end hooks beyond lightweight observer capture
+- No modification to existing promote_skill
+- No modification to dynamic agents
+- No network, shell, file reads, or LLM calls in the observer
+- No raw CoT/transcript storage
+- No secrets persistence (sanitized via Phase 5A TraceSummary.sanitize())
+
+## 15. Phase 5C: Curator Dry-Run Observer
+
+### Files: `src/core/execution_summary.py`, `src/capabilities/curator_dry_run_adapter.py`
+
+Phase 5C adds an optional second observer step: sanitized execution summary
+→ curator dry-run decision → in-memory `_last_curator_decision`.  Provides
+observability into which completed tasks are worth later manual curation
+without writing anything.
+
+### CuratorDryRunResult (`src/core/execution_summary.py`)
+
+@dataclass with 15 fields. No dependency on src.capabilities.
+
+Fields: trace_id, should_create, recommended_action, confidence, reasons,
+risk_level, required_approval, generalization_boundary, suggested_capability_type,
+suggested_triggers, suggested_tags, created_at, source: "dry_run", persisted: false.
+
+### CuratorDryRunObserver Protocol (`src/core/execution_summary.py`)
+
+```python
+class CuratorDryRunObserver(Protocol):
+    async def capture(self, summary: dict[str, Any]) -> dict[str, Any] | None: ...
+```
+
+Takes a sanitized summary dict (output of ExecutionSummaryObserver.capture()).
+Returns a CuratorDryRunResult serialized to dict, or None on failure.
+
+### CuratorDryRunAdapter (`src/capabilities/curator_dry_run_adapter.py`)
+
+Concrete adapter:
+1. Receives sanitized summary dict from Phase 5B observer
+2. Converts to TraceSummary via TraceSummary.from_dict()
+3. Calls ExperienceCurator.should_reflect(trace) → CuratorDecision
+4. If should_create=True, calls ExperienceCurator.summarize(trace) → CuratedExperience
+5. Builds CuratorDryRunResult with generalization boundary, triggers, tags
+6. Returns dict via CuratorDryRunResult.to_dict()
+7. On any exception: logs debug, returns None
+
+Does NOT call propose_capability, CapabilityStore, CapabilityIndex, or
+CapabilityLifecycleManager.  Never persists.  Never writes proposals or drafts.
+
+### TaskRuntime Integration
+
+```python
+# Phase 5C: curator dry-run (best-effort, failure-safe).
+# Only runs when a sanitized summary was captured.
+if self._curator_dry_run_observer is not None and self._last_execution_summary is not None:
+    try:
+        self._last_curator_decision = await self._curator_dry_run_observer.capture(
+            self._last_execution_summary
+        )
+    except Exception:
+        logger.debug("Curator dry-run observer failed", exc_info=True)
+```
+
+Key behavioral properties:
+- Observer called in finally block, after Phase 5B summary observer
+- Observer called at most once per complete_chat() invocation
+- Only called when `_last_execution_summary` exists (fail-closed)
+- Observer failure is swallowed/logged; never changes user response
+- Observer failure never erases `_last_execution_summary`
+- No extra tool calls or model calls made by observer
+
+### Feature Flag Matrix
+
+| capabilities.enabled | execution_summary_enabled | curator_dry_run_enabled | Behavior |
+|---------------------|--------------------------|------------------------|----------|
+| false | * | * | No observer wired. No decisions. |
+| true | false | true | Observer wired but no summary → fail-closed, no decision. |
+| true | true | false | Summary only. No curator dry-run. |
+| true | true | true | Summary + curator dry-run. In-memory decision populated. |
+
+All flags default to False. Feature flags are independent:
+- `curator_dry_run_enabled` does NOT imply `curator_enabled`
+- `curator_dry_run_enabled` does NOT imply `execution_summary_enabled`
+- `curator_dry_run_enabled` does NOT imply `lifecycle_tools_enabled`
+- `curator_dry_run_enabled` does NOT imply `retrieval_enabled`
+- `curator_dry_run_enabled` registers no tools
+- `curator_dry_run_enabled` grants no permissions
+
+### What Phase 5C Does NOT Do
+
+- No automatic proposal creation (no propose_capability called)
+- No automatic draft creation (no CapabilityStore.create_draft)
+- No CapabilityIndex update
+- No CapabilityLifecycleManager access
+- No EvalRecord creation
+- No version snapshot creation
+- No MutationLog capability mutation
+- No memory writes
+- No persistence (in-memory only)
+- No file writes under data/capabilities/
+- No capability execution (no run_capability)
+- No modification to existing promote_skill
+- No modification to dynamic agents
+- No Network, shell, file reads, or LLM calls in the observer
+- No raw CoT/transcript storage
+- No secrets persistence (input from sanitized summary)
+
+## 16. Phase 5D: Controlled Auto-Proposal Persistence
+
+Phase 5D adds an optional third observer step: auto-proposal persistence from
+curator dry-run decisions. When explicitly enabled and all gates pass, a
+proposal is persisted to disk. No drafts, no indices, no promotion.
+
+### Architecture
+
+```
+TaskRuntime.complete_chat() finally:
+  Phase 5B: summary = execution_summary_observer.capture(context)
+  Phase 5C: decision = curator_dry_run_observer.capture(summary)
+  Phase 5D: result  = auto_proposal_observer.capture(summary, decision)
+             ^^ only when summary + decision exist AND should_create=true
+```
+
+The auto-proposal adapter receives both the sanitized summary (from 5B) and
+the curator dry-run decision (from 5C). It checks a series of gates before
+persisting:
+
+1. `should_create` must be true
+2. `recommended_action` must be in allowed set (create_skill_draft,
+   create_workflow_draft, create_project_playbook_draft)
+3. `confidence` >= configured threshold (default 0.75)
+4. `risk_level` must not be "high" unless `allow_high_risk_auto_proposal` is true
+5. `generalization_boundary` must be present and non-empty
+6. `verification` must be present for medium/high risk
+7. Summary must contain no unredacted secrets (defense-in-depth double-check)
+8. Rate limit: max N auto proposals per session (default 3)
+9. Dedup: no duplicate proposal within configurable window (default 24 hours)
+
+### Persistence
+
+When all gates pass, the adapter calls `ExperienceCurator.propose_capability()`
+to build a `CapabilityProposal` (with `applied=False`), then `persist_proposal()`
+to write the same three files as Phase 5A:
+
+- `proposal.json`
+- `PROPOSAL.md`
+- `source_trace_summary.json` (sanitized)
+
+### Feature flags
+
+All defaults are conservative:
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `auto_proposal_enabled` | `false` | Master enable |
+| `auto_proposal_min_confidence` | `0.75` | Minimum curator confidence |
+| `auto_proposal_allow_high_risk` | `false` | Allow high-risk auto proposals |
+| `auto_proposal_max_per_session` | `3` | Max auto proposals per session |
+| `auto_proposal_dedupe_window_hours` | `24` | Dedup lookback window |
+
+### Flag independence
+
+- `auto_proposal_enabled` does NOT imply `curator_enabled`
+- `auto_proposal_enabled` does NOT imply `execution_summary_enabled`
+- `auto_proposal_enabled` does NOT imply `curator_dry_run_enabled`
+- `auto_proposal_enabled` does NOT imply `lifecycle_tools_enabled`
+- `auto_proposal_enabled` does NOT imply `retrieval_enabled`
+- `auto_proposal_enabled` registers no tools
+- `auto_proposal_enabled` grants no permissions
+
+### Behavior matrix
+
+| Case | capabilities | exec_summary | curator_dry_run | auto_proposal | Result |
+|------|-------------|-------------|-----------------|---------------|--------|
+| A | false | * | * | * | No summary, no dry-run, no proposal |
+| B | true | false | true | true | No summary → fail-closed |
+| C | true | true | false | true | No dry-run → fail-closed |
+| D | true | true | true | false | Summary + decision exist, no proposal persistence |
+| E | true | true | true | true | Summary + decision + proposal if all gates pass |
+
+### Deduplication
+
+Filesystem-based dedup (no database):
+- Before persisting, scans `data/capabilities/proposals/`
+- Compares `source_trace_id`, `proposed_capability_id`, normalized name+scope
+- Only considers proposals within the dedupe window
+- Returns `AutoProposalResult(persisted=false, skipped_reason="duplicate: ...")`
+
+### Rate limiting
+
+- In-memory counter on the adapter instance (one per container/session)
+- Default max 3 auto proposals per session
+- Returns `AutoProposalResult(persisted=false, skipped_reason="rate_limited")`
+
+### Connector changes
+
+**`src/core/execution_summary.py`:**
+- `AutoProposalResult` @dataclass (13 fields: trace_id, attempted, persisted,
+  proposal_id, proposed_capability_id, reason, skipped_reason, confidence,
+  risk_level, required_approval, created_at, source="task_end_auto_proposal",
+  applied=false)
+- `AutoProposalObserver` Protocol: `async def capture(self, summary, decision)`
+
+**`src/core/task_runtime.py`:**
+- `_auto_proposal_observer: Any | None = None`
+- `_last_auto_proposal_result: dict[str, Any] | None = None`
+- `set_auto_proposal_observer()` setter
+- Phase 5D finally-block code (after 5C):
+  ```python
+  if (self._auto_proposal_observer is not None
+      and self._last_execution_summary is not None
+      and self._last_curator_decision is not None
+      and self._last_curator_decision.get("should_create") is True):
+      try:
+          self._last_auto_proposal_result = await self._auto_proposal_observer.capture(
+              self._last_execution_summary, self._last_curator_decision)
+      except Exception:
+          logger.debug("Auto-proposal observer failed", exc_info=True)
+  ```
+- No `src.capabilities` import in TaskRuntime
+
+**`src/capabilities/auto_proposal_adapter.py`:**
+- `AutoProposalAdapter` class implementing `AutoProposalObserver`
+- Receives sanitized summary + curator decision dict
+- Runs gate checks, dedup, rate limit
+- Converts to `TraceSummary` → `ExperienceCurator.summarize()` →
+  `propose_capability()` → `persist_proposal()`
+- Never calls `CapabilityStore`, `CapabilityIndex`, `CapabilityLifecycleManager`
+- No network, shell, file reads (beyond proposal persistence), LLM calls
+- Returns `AutoProposalResult.to_dict()` on success, `None` on exception
+
+**`src/config/settings.py`:**
+- `CapabilitiesConfig`: 5 new fields (auto_proposal_enabled,
+  auto_proposal_min_confidence, auto_proposal_allow_high_risk,
+  auto_proposal_max_per_session, auto_proposal_dedupe_window_hours)
+- 5 new env var mappings
+
+**`src/app/container.py`:**
+- Imports 5 new compat shim constants
+- Wires `AutoProposalAdapter` behind `CAPABILITIES_AUTO_PROPOSAL_ENABLED` flag
+
+### What Phase 5D Does NOT Do
+
+- No automatic draft creation (no `CapabilityStore.create_draft`)
+- No `propose_capability` with `apply=true`
+- No `CapabilityStore`, `CapabilityIndex`, `CapabilityLifecycleManager` access
+- No EvalRecord creation
+- No version snapshot creation
+- No MutationLog capability mutation (proposal_created type only)
+- No memory writes
+- No capability execution (no `run_capability`)
+- No modification to existing `promote_skill`
+- No modification to dynamic agents
+- No user-facing response change (result in `_last_auto_proposal_result` only)
+- No network, shell, file reads (beyond proposal persistence), LLM calls in observer
+- No raw CoT/transcript storage
+- No secrets persistence (double-check redaction before persistence)

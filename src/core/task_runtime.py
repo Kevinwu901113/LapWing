@@ -226,6 +226,18 @@ class TaskRuntime:
         from src.core.tool_dispatcher import ToolDispatcher
         self.tool_dispatcher = ToolDispatcher(self)
 
+        # Phase 5B: optional execution summary observer (best-effort, failure-safe).
+        self._execution_summary_observer: Any | None = None
+        self._last_execution_summary: dict[str, Any] | None = None
+
+        # Phase 5C: optional curator dry-run observer (best-effort, failure-safe).
+        self._curator_dry_run_observer: Any | None = None
+        self._last_curator_decision: dict[str, Any] | None = None
+
+        # Phase 5D: optional auto-proposal observer (best-effort, failure-safe).
+        self._auto_proposal_observer: Any | None = None
+        self._last_auto_proposal_result: dict[str, Any] | None = None
+
     def set_browser_guard(self, browser_guard: Any | None) -> None:
         self._browser_guard = browser_guard
 
@@ -237,6 +249,18 @@ class TaskRuntime:
 
     def set_checkpoint_manager(self, manager: Any | None) -> None:
         self._checkpoint_manager = manager
+
+    def set_execution_summary_observer(self, observer: Any | None) -> None:
+        """Set the Phase 5B execution summary observer (best-effort, failure-safe)."""
+        self._execution_summary_observer = observer
+
+    def set_curator_dry_run_observer(self, observer: Any | None) -> None:
+        """Set the Phase 5C curator dry-run observer (best-effort, failure-safe)."""
+        self._curator_dry_run_observer = observer
+
+    def set_auto_proposal_observer(self, observer: Any | None) -> None:
+        """Set the Phase 5D auto-proposal observer (best-effort, failure-safe)."""
+        self._auto_proposal_observer = observer
 
     # -- 公开属性，供 Agent 使用 --
 
@@ -465,6 +489,7 @@ class TaskRuntime:
         iteration_id = new_iteration_id()
         iter_start_mono = time.monotonic()
         end_reason = "completed"
+        reply = ""  # default for observer (set before try so finally always sees it)
 
         if mutation_log is not None:
             try:
@@ -534,6 +559,52 @@ class TaskRuntime:
                     )
                 except Exception:
                     logger.warning("ITERATION_ENDED mutation record failed", exc_info=True)
+
+            # Phase 5B: capture execution summary (best-effort, failure-safe).
+            if self._execution_summary_observer is not None:
+                try:
+                    from src.core.execution_summary import build_task_end_context
+
+                    rows = None
+                    if mutation_log is not None:
+                        rows = await mutation_log.query_by_iteration(iteration_id)
+
+                    context = build_task_end_context(
+                        iteration_id=iteration_id,
+                        messages=messages,
+                        final_reply=reply,
+                        mutation_rows=rows,
+                    )
+                    self._last_execution_summary = await self._execution_summary_observer.capture(context)
+                except Exception:
+                    logger.debug("Execution summary observer failed", exc_info=True)
+
+            # Phase 5C: curator dry-run (best-effort, failure-safe).
+            # Only runs when a sanitized summary was captured.
+            if self._curator_dry_run_observer is not None and self._last_execution_summary is not None:
+                try:
+                    self._last_curator_decision = await self._curator_dry_run_observer.capture(
+                        self._last_execution_summary
+                    )
+                except Exception:
+                    logger.debug("Curator dry-run observer failed", exc_info=True)
+
+            # Phase 5D: auto-proposal persistence (best-effort, failure-safe).
+            # Only runs when summary + curator decision both exist AND
+            # the curator says should_create=true.
+            if (
+                self._auto_proposal_observer is not None
+                and self._last_execution_summary is not None
+                and self._last_curator_decision is not None
+                and self._last_curator_decision.get("should_create") is True
+            ):
+                try:
+                    self._last_auto_proposal_result = await self._auto_proposal_observer.capture(
+                        self._last_execution_summary,
+                        self._last_curator_decision,
+                    )
+                except Exception:
+                    logger.debug("Auto-proposal observer failed", exc_info=True)
 
     async def _complete_chat_body(
         self,

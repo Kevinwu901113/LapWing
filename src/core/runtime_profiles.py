@@ -186,6 +186,16 @@ CAPABILITY_LIFECYCLE_OPERATOR_PROFILE = RuntimeProfile(
     shell_policy_enabled=False,
 )
 
+# Operator-only capability curator surface.
+# reflect_experience, propose_capability.
+# Not granted to standard/default/chat/inner_tick profiles.
+CAPABILITY_CURATOR_OPERATOR_PROFILE = RuntimeProfile(
+    name="capability_curator_operator",
+    capabilities=frozenset({"capability_curator"}),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
 # Operator-only identity administration surface.
 IDENTITY_OPERATOR_PROFILE = RuntimeProfile(
     name="identity_operator",
@@ -214,6 +224,53 @@ BROWSER_OPERATOR_PROFILE = RuntimeProfile(
         "browser_wait",
         "browser_login",
     }),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
+# Operator-only agent candidate administration surface.
+# list_agent_candidates, view_agent_candidate, add_agent_candidate_evidence,
+# approve_agent_candidate, reject_agent_candidate, archive_agent_candidate.
+# Not granted to standard/default/chat/local_execution/browser/identity profiles.
+AGENT_CANDIDATE_OPERATOR_PROFILE = RuntimeProfile(
+    name="agent_candidate_operator",
+    capabilities=frozenset({"agent_candidate_operator"}),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
+# Operator-only capability import administration surface.
+# inspect_capability_package, import_capability_package.
+# Not granted to standard/default/chat/local_execution/browser/identity profiles.
+CAPABILITY_IMPORT_OPERATOR_PROFILE = RuntimeProfile(
+    name="capability_import_operator",
+    capabilities=frozenset({"capability_import_operator"}),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
+# Operator-only trust root administration surface.
+# list_capability_trust_roots, view_capability_trust_root,
+# add_capability_trust_root, disable_capability_trust_root,
+# revoke_capability_trust_root.
+# Not granted to standard/default/chat/local_execution/browser/identity/
+# import/lifecycle/curator/candidate profiles.
+CAPABILITY_TRUST_OPERATOR_PROFILE = RuntimeProfile(
+    name="capability_trust_operator",
+    capabilities=frozenset({"capability_trust_operator"}),
+    include_internal=False,
+    shell_policy_enabled=False,
+)
+
+# Operator-only repair queue administration surface.
+# list_repair_queue_items, view_repair_queue_item,
+# create_repair_queue_from_health, acknowledge_repair_queue_item,
+# resolve_repair_queue_item, dismiss_repair_queue_item.
+# Not granted to standard/default/chat/local_execution/browser/identity/
+# import/lifecycle/curator/candidate/trust profiles.
+CAPABILITY_REPAIR_OPERATOR_PROFILE = RuntimeProfile(
+    name="capability_repair_operator",
+    capabilities=frozenset({"capability_repair_operator"}),
     include_internal=False,
     shell_policy_enabled=False,
 )
@@ -350,9 +407,14 @@ _PROFILES = {
         LOCAL_EXECUTION_PROFILE,
         AGENT_ADMIN_OPERATOR_PROFILE,
         CAPABILITY_LIFECYCLE_OPERATOR_PROFILE,
+        CAPABILITY_CURATOR_OPERATOR_PROFILE,
         IDENTITY_OPERATOR_PROFILE,
         BROWSER_OPERATOR_PROFILE,
         SKILL_OPERATOR_PROFILE,
+        AGENT_CANDIDATE_OPERATOR_PROFILE,
+        CAPABILITY_IMPORT_OPERATOR_PROFILE,
+        CAPABILITY_TRUST_OPERATOR_PROFILE,
+        CAPABILITY_REPAIR_OPERATOR_PROFILE,
         CODER_SNIPPET_PROFILE,
         CODER_WORKSPACE_PROFILE,
         FILE_OPS_PROFILE,

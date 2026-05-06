@@ -58,17 +58,26 @@ class TestFeatureFlagsDefaultDisabled:
         s = get_settings()
         assert s.capabilities.auto_draft_enabled is False
 
+    def test_capabilities_execution_summary_enabled_defaults_false(self):
+        from src.config import get_settings
+        s = get_settings()
+        assert s.capabilities.execution_summary_enabled is False
+
     def test_compat_shim_exports_all_false(self):
         from config.settings import (
             CAPABILITIES_ENABLED,
             CAPABILITIES_RETRIEVAL_ENABLED,
             CAPABILITIES_CURATOR_ENABLED,
             CAPABILITIES_AUTO_DRAFT_ENABLED,
+            CAPABILITIES_EXECUTION_SUMMARY_ENABLED,
+            CAPABILITIES_EXTERNAL_IMPORT_ENABLED,
         )
         assert CAPABILITIES_ENABLED is False
         assert CAPABILITIES_RETRIEVAL_ENABLED is False
         assert CAPABILITIES_CURATOR_ENABLED is False
         assert CAPABILITIES_AUTO_DRAFT_ENABLED is False
+        assert CAPABILITIES_EXECUTION_SUMMARY_ENABLED is False
+        assert CAPABILITIES_EXTERNAL_IMPORT_ENABLED is False
 
 
 # ── SkillStore behavior ─────────────────────────────────────────────────
@@ -216,6 +225,9 @@ class TestRuntimeProfileBehaviorUnchanged:
             "compose_proactive", "local_execution", "task_execution",
             "agent_admin_operator", "identity_operator", "browser_operator",
             "skill_operator", "capability_lifecycle_operator",
+            "capability_curator_operator", "agent_candidate_operator",
+            "capability_import_operator", "capability_trust_operator",
+            "capability_repair_operator",
             "coder_snippet", "coder_workspace",
             "file_ops", "agent_researcher", "agent_coder",
         }
