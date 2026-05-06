@@ -21,6 +21,7 @@ from src.agents.builtin_specs import (
     builtin_coder_spec as _builtin_coder_spec,
     builtin_researcher_spec as _builtin_researcher_spec,
 )
+from src.agents.catalog import AgentCatalogIntegrityError
 from src.agents.spec import AgentSpec, AgentLifecyclePolicy
 
 if TYPE_CHECKING:
@@ -66,13 +67,25 @@ class AgentRegistry:
     # ── v2 API ──
 
     async def init(self) -> None:
-        """Ensure builtin specs exist in catalog (no-op if already there)."""
+        """Ensure builtin specs exist in catalog with current spec_hash.
+
+        When spec_hash() computation changes (e.g. new identity fields),
+        existing rows must be re-saved so the stored hash matches.
+        """
         if self._catalog is None:
             return
         for spec_factory in (_builtin_researcher_spec, _builtin_coder_spec):
             spec = spec_factory()
-            existing = await self._catalog.get_by_name(spec.name)
+            try:
+                existing = await self._catalog.get_by_name(spec.name)
+            except AgentCatalogIntegrityError:
+                # Hash evolution: old stored hash doesn't match current
+                # spec_hash() computation. Re-save to fix.
+                await self._catalog.save(spec)
+                continue
             if existing is None:
+                await self._catalog.save(spec)
+            elif existing.spec_hash() != spec.spec_hash():
                 await self._catalog.save(spec)
 
     async def create_agent(
@@ -204,7 +217,11 @@ class AgentRegistry:
                 {"reason": gate_result.reason, "denials": gate_result.denials},
             )
 
-        await self._policy.validate_save(spec, run_history)
+        await self._policy.validate_save(
+            spec,
+            run_history,
+            enforce_capability_eval_evidence=require_candidate_approval,
+        )
 
         # Promote to persistent and write to catalog
         from dataclasses import replace

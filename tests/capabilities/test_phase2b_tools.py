@@ -75,13 +75,18 @@ class TestFeatureGate:
         register_capability_tools(registry, store=None)
         registry.register.assert_not_called()
 
-    def test_exactly_three_read_only_tools_registered(self, tmp_path):
+    def test_read_only_tools_registered(self, tmp_path):
         store = _make_store(tmp_path, with_index=True)
         registry = MagicMock()
         register_capability_tools(registry, store, store._index)
-        assert registry.register.call_count == 3
+        assert registry.register.call_count == 4
         names = {c[0][0].name for c in registry.register.call_args_list}
-        assert names == {"list_capabilities", "search_capability", "view_capability"}
+        assert names == {
+            "list_capabilities",
+            "search_capability",
+            "view_capability",
+            "load_capability",
+        }
 
     def test_no_mutation_tools_registered(self, tmp_path):
         store = _make_store(tmp_path, with_index=True)

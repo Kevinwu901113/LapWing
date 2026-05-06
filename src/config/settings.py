@@ -291,6 +291,7 @@ _ENV_MAP: dict[str, list[str]] = {
     "CAPABILITIES_CURATOR_ENABLED": ["capabilities", "curator_enabled"],
     "CAPABILITIES_CURATOR_DRY_RUN_ENABLED": ["capabilities", "curator_dry_run_enabled"],
     "CAPABILITIES_AUTO_DRAFT_ENABLED": ["capabilities", "auto_draft_enabled"],
+    "CAPABILITIES_READ_TOOLS_ENABLED": ["capabilities", "read_tools_enabled"],
     "CAPABILITIES_EXECUTION_SUMMARY_ENABLED": ["capabilities", "execution_summary_enabled"],
     "CAPABILITIES_AUTO_PROPOSAL_ENABLED": ["capabilities", "auto_proposal_enabled"],
     "CAPABILITIES_AUTO_PROPOSAL_MIN_CONFIDENCE": ["capabilities", "auto_proposal_min_confidence"],
@@ -306,6 +307,9 @@ _ENV_MAP: dict[str, list[str]] = {
     "CAPABILITIES_REPAIR_QUEUE_TOOLS_ENABLED": ["capabilities", "repair_queue_tools_enabled"],
     "CAPABILITIES_DATA_DIR": ["capabilities", "data_dir"],
     "CAPABILITIES_INDEX_DB_PATH": ["capabilities", "index_db_path"],
+    # ── runtime interaction hardening ──
+    "RUNTIME_INTERACTION_HARDENING_ENABLED": ["runtime_interaction_hardening", "enabled"],
+    "RUNTIME_INTERACTION_HARDENING_ADAPTER_STRICT_MODE": ["runtime_interaction_hardening", "adapter_strict_mode"],
 }
 
 
@@ -682,6 +686,7 @@ class CapabilitiesConfig(BaseModel):
     curator_enabled: bool = False
     curator_dry_run_enabled: bool = False
     auto_draft_enabled: bool = False
+    read_tools_enabled: bool = False
     execution_summary_enabled: bool = False
     lifecycle_tools_enabled: bool = False
     # Phase 5D: controlled auto-proposal persistence
@@ -706,6 +711,11 @@ class CapabilitiesConfig(BaseModel):
     repair_queue_tools_enabled: bool = False
     data_dir: str = "data/capabilities"
     index_db_path: str = "data/capabilities/capability_index.sqlite"
+
+
+class RuntimeInteractionHardeningConfig(BaseModel):
+    enabled: bool = True
+    adapter_strict_mode: bool = False
 
 
 # ── root settings ────────────────────────────
@@ -776,6 +786,9 @@ class LapwingSettings(BaseSettings):
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
     agents: AgentsConfig = Field(default_factory=AgentsConfig)
     capabilities: CapabilitiesConfig = Field(default_factory=CapabilitiesConfig)
+    runtime_interaction_hardening: RuntimeInteractionHardeningConfig = Field(
+        default_factory=RuntimeInteractionHardeningConfig,
+    )
     credential_vault_path: str = ""
     phase0_mode: str = ""
 

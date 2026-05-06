@@ -12,7 +12,12 @@ from typing import Awaitable, Callable, Optional
 import websockets
 from websockets.protocol import State as WsState
 
-from src.adapters.base import BaseAdapter, ChannelType
+from src.adapters.base import (
+    AdapterCapabilities,
+    BaseAdapter,
+    ChannelType,
+    NormalizedInboundMessage,
+)
 from src.adapters.qq_group_context import GroupContext, GroupMessage
 from src.adapters.qq_group_filter import GroupEngagementDecider
 from src.core.prompt_loader import load_prompt
@@ -46,6 +51,12 @@ class QQAdapter(BaseAdapter):
     """OneBot v11 WebSocket 客户端适配器。"""
 
     channel_type = ChannelType.QQ
+    capabilities = AdapterCapabilities(
+        can_send_private=True,
+        can_send_group=True,
+        can_send_rich_media=True,
+        supports_reply_reference=True,
+    )
     _FACE_ID_TO_NAME: dict[str, str] | None = None
 
     @classmethod
@@ -266,6 +277,30 @@ class QQAdapter(BaseAdapter):
             })
         except Exception:
             pass  # 非关键操作，失败不影响主流程
+
+    def normalize_inbound(self, raw_event: dict) -> NormalizedInboundMessage | None:
+        if raw_event.get("post_type") != "message":
+            return None
+        message_type = str(raw_event.get("message_type") or "")
+        user_id = str(raw_event.get("user_id", ""))
+        message_id = str(raw_event.get("message_id", ""))
+        text = self._extract_text(raw_event)
+        image_urls = tuple(self._extract_image_urls(raw_event))
+        if not text and not image_urls:
+            return None
+        group_id = str(raw_event.get("group_id", "")) if message_type == "group" else None
+        chat_id = group_id if group_id else user_id
+        return NormalizedInboundMessage(
+            channel=self.channel_type.value,
+            chat_id=chat_id,
+            user_id=user_id,
+            text=text,
+            message_id=message_id,
+            message_type=message_type or "private",
+            group_id=group_id,
+            raw_event=dict(raw_event),
+            image_urls=image_urls,
+        )
 
     # ── 群聊辅助 ─────────────────────────────────────────
 

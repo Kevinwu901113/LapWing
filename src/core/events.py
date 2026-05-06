@@ -89,6 +89,8 @@ class MessageEvent(Event):
     status_callback: Callable[..., Awaitable[Any]] | None = None
     done_future: Any = None  # asyncio.Future[str] | None — kept loose to avoid evaluating the loop at construction
     auth_level: int = int(AuthLevel.IGNORE)
+    interaction_mode: str = "normal"
+    source_message_id: str | None = None
 
     @classmethod
     def from_message(
@@ -104,6 +106,8 @@ class MessageEvent(Event):
         typing_fn: Callable[..., Awaitable[Any]] | None = None,
         status_callback: Callable[..., Awaitable[Any]] | None = None,
         done_future: Any = None,
+        interaction_mode: str = "normal",
+        source_message_id: str | None = None,
     ) -> "MessageEvent":
         priority = (
             PRIORITY_OWNER_MESSAGE
@@ -123,6 +127,8 @@ class MessageEvent(Event):
             status_callback=status_callback,
             done_future=done_future,
             auth_level=auth_level,
+            interaction_mode=interaction_mode,
+            source_message_id=source_message_id,
         )
 
 

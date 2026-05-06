@@ -1,4 +1,4 @@
-"""Read-only capability tools: list_capabilities, search_capability, view_capability.
+"""Read-only capability tools: list/search/view/load capability.
 Phase 3C: lifecycle management tools: evaluate_capability, plan_capability_transition,
 transition_capability (feature-gated behind capabilities.lifecycle_tools_enabled).
 
@@ -28,7 +28,16 @@ logger = logging.getLogger("lapwing.tools.capability_tools")
 ALLOWED_SCOPES = {"global", "user", "workspace", "session"}
 ALLOWED_TYPES = {"skill", "workflow", "dynamic_agent", "memory_pattern", "tool_wrapper", "project_playbook"}
 ALLOWED_MATURITIES = {"draft", "testing", "stable", "broken", "repairing"}
-ALLOWED_STATUSES = {"active", "disabled", "archived", "quarantined"}
+ALLOWED_STATUSES = {
+    "active",
+    "broken",
+    "repairing",
+    "disabled",
+    "archived",
+    "quarantined",
+    "needs_permission",
+    "environment_mismatch",
+}
 ALLOWED_RISK_LEVELS = {"low", "medium", "high"}
 
 
@@ -62,7 +71,7 @@ LIST_CAPABILITIES_SCHEMA = {
         },
         "status": {
             "type": "string",
-            "enum": ["active", "disabled", "archived", "quarantined"],
+            "enum": sorted(ALLOWED_STATUSES),
             "description": "Filter by status",
         },
         "risk_level": {
@@ -116,7 +125,7 @@ SEARCH_CAPABILITY_SCHEMA = {
         },
         "status": {
             "type": "string",
-            "enum": ["active", "disabled", "archived", "quarantined"],
+            "enum": sorted(ALLOWED_STATUSES),
             "description": "Filter by status",
         },
         "risk_level": {
@@ -178,6 +187,31 @@ VIEW_CAPABILITY_SCHEMA = {
         "include_files": {
             "type": "boolean",
             "description": "Include file listings (default true)",
+        },
+    },
+    "required": ["id"],
+}
+
+LOAD_CAPABILITY_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {
+            "type": "string",
+            "description": "Capability ID to load read-only",
+        },
+        "scope": {
+            "type": "string",
+            "enum": ["global", "user", "workspace", "session"],
+            "description": "Scope to look in (omitted = resolve by precedence)",
+        },
+        "sections": {
+            "type": "array",
+            "items": {"type": "string", "enum": ["manifest", "body", "files"]},
+            "description": "Sections to include. Default: manifest and body.",
+        },
+        "include_archived": {
+            "type": "boolean",
+            "description": "Include archived capability (default false)",
         },
     },
     "required": ["id"],
@@ -509,6 +543,43 @@ def _make_view_capability_executor(store: "CapabilityStore", index: "CapabilityI
                 payload={"error": "capability_store_unavailable", "detail": str(e)},
                 reason=f"view_capability failed: {e}",
             )
+
+    return executor
+
+
+def _make_load_capability_executor(store: "CapabilityStore", index: "CapabilityIndex | None"):
+    view_executor = _make_view_capability_executor(store, index)
+
+    async def executor(
+        request: ToolExecutionRequest,
+        context: ToolExecutionContext,
+    ) -> ToolExecutionResult:
+        args = dict(request.arguments)
+        sections = args.pop("sections", None) or ["manifest", "body"]
+        include_body = "body" in sections
+        include_files = "files" in sections
+        view_request = ToolExecutionRequest(
+            name="view_capability",
+            arguments={
+                **args,
+                "include_body": include_body,
+                "include_files": include_files,
+            },
+        )
+        result = await view_executor(view_request, context)
+        if not result.success:
+            return result
+        payload = dict(result.payload)
+        if "manifest" not in sections:
+            for key in (
+                "type", "scope", "version", "maturity", "status", "risk_level",
+                "trust_required", "required_tools", "required_permissions",
+                "triggers", "tags", "created_at", "updated_at", "content_hash",
+            ):
+                payload.pop(key, None)
+        payload["loaded_sections"] = list(sections)
+        payload["read_only"] = True
+        return ToolExecutionResult(success=True, payload=payload)
 
     return executor
 
@@ -860,9 +931,9 @@ def register_capability_tools(
     store: "CapabilityStore",
     index: "CapabilityIndex | None" = None,
 ) -> None:
-    """Register the 3 read-only capability tools.
+    """Register read-only capability tools.
 
-    Only 3 tools: list_capabilities, search_capability, view_capability.
+    Only list/search/view/load. No create, disable, archive, promote, or execution tools.
     No create, disable, archive, promote, or execution tools.
     """
     if store is None:
@@ -909,7 +980,19 @@ def register_capability_tools(
         risk_level="low",
     ))
 
-    logger.info("Phase 2B capability read tools registered (list/search/view)")
+    tool_registry.register(ToolSpec(
+        name="load_capability",
+        description=(
+            "按需读取能力文档的指定部分。只读，不执行脚本，不提升成熟度，"
+            "不安装、不授权、不修改能力。默认返回 manifest 与正文。"
+        ),
+        json_schema=LOAD_CAPABILITY_SCHEMA,
+        executor=_make_load_capability_executor(store, index),
+        capability="capability_read",
+        risk_level="low",
+    ))
+
+    logger.info("Phase 2B capability read tools registered (list/search/view/load)")
 
 
 def register_capability_lifecycle_tools(

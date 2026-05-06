@@ -74,6 +74,8 @@ class AgentSpec:
     failure_count: int = 0
     approval_state: str = "not_required"
     allowed_delegation_depth: int = 0
+    allowed_tools: list[str] = field(default_factory=list)
+    policy_lint_result: dict = field(default_factory=dict)
     capability_binding_mode: str = "metadata_only"
 
     def spec_hash(self) -> str:
@@ -99,6 +101,7 @@ class AgentSpec:
             "risk_level": self.risk_level,
             "approval_state": self.approval_state,
             "allowed_delegation_depth": self.allowed_delegation_depth,
+            "allowed_tools": sorted(self.allowed_tools),
             "capability_binding_mode": self.capability_binding_mode,
         }, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(content.encode()).hexdigest()[:16]
@@ -153,5 +156,7 @@ def is_capability_backed_agent(spec: AgentSpec) -> bool:
     if spec.approval_state != "not_required":
         return True
     if spec.allowed_delegation_depth > 0:
+        return True
+    if spec.allowed_tools:
         return True
     return False

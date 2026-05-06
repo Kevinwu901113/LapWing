@@ -198,6 +198,19 @@ class CapabilitySummary:
     match_reason: str = ""
 
 
+@dataclass(frozen=True, slots=True)
+class SteeringEventView:
+    """Pending steering disclosed only in the dynamic runtime-state block."""
+
+    id: str
+    content: str
+    priority: str
+    reason: str | None = None
+    expires_at: str | None = None
+    source_channel: str | None = None
+    source_trust_level: str | None = None
+
+
 # ── Top-level view ───────────────────────────────────────────────────
 
 @dataclass(frozen=True, slots=True)
@@ -232,6 +245,7 @@ class StateView:
     # Phase 4 capability progressive disclosure — compact summaries only.
     # Never contains full CAPABILITY.md body, procedures, scripts, or evals.
     capability_summaries: tuple[CapabilitySummary, ...] = ()
+    pending_steering_events: tuple[SteeringEventView, ...] = ()
 
 
 # ── Serializer output ────────────────────────────────────────────────

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from src.adapters.base import BaseAdapter, ChannelType
+from src.adapters.base import AdapterCapabilities, BaseAdapter, ChannelType
 from src.models.message import RichMessage, SegmentType
 
 logger = logging.getLogger("lapwing.adapters.desktop_adapter")
@@ -18,6 +18,12 @@ class DesktopChannelAdapter(BaseAdapter):
     """
 
     channel_type = ChannelType.DESKTOP
+    capabilities = AdapterCapabilities(
+        can_send_private=True,
+        can_send_group=False,
+        can_receive_typing_indicator=True,
+        can_send_rich_media=True,
+    )
 
     def __init__(self) -> None:
         super().__init__(config={"kevin_id": "owner"})

@@ -85,6 +85,14 @@ class SaveGateResult:
 # Deliberately avoids importing from the capability package to keep agent
 # modules decoupled from capability internals.
 _CAPABILITY_ID_RE = re.compile(r"^[a-z][a-z0-9_]{2,63}$")
+_SELF_GRANT_TOOL_NAMES = {
+    "grant_tool",
+    "grant_profile",
+    "create_persistent_agent",
+    "promote_capability",
+    "install_capability",
+    "overwrite_stable_capability",
+}
 
 
 class AgentPolicyViolation(Exception):
@@ -339,6 +347,11 @@ class AgentPolicy:
             if "agent_admin" in cap_id or "agent_create" in cap_id:
                 denials.append(f"cannot bind agent-admin capability: {cap_id!r}")
 
+        # 12. allowed_tools is inert metadata, never a grant surface.
+        for tool_name in spec.allowed_tools:
+            if tool_name in DYNAMIC_AGENT_DENYLIST or tool_name in _SELF_GRANT_TOOL_NAMES:
+                denials.append(f"allowed_tools cannot self-grant privileged tool: {tool_name!r}")
+
         return CapabilityMetadataResult(
             allowed=len(denials) == 0,
             warnings=warnings,
@@ -404,6 +417,11 @@ class AgentPolicy:
                 denials.append(
                     f"cannot bind agent-admin capability in candidate: {cap_id!r}"
                 )
+
+        # 8. requested tools cannot include self-granting or persistence-admin tools.
+        for tool_name in candidate.requested_tools:
+            if tool_name in DYNAMIC_AGENT_DENYLIST or tool_name in _SELF_GRANT_TOOL_NAMES:
+                denials.append(f"candidate cannot request privileged tool: {tool_name!r}")
 
         return CandidateValidationResult(
             allowed=len(denials) == 0,
@@ -570,7 +588,13 @@ class AgentPolicy:
 
         return SaveGateResult(allowed=True, reason="save gate passed")
 
-    async def validate_save(self, spec: AgentSpec, run_history: list[str]) -> None:
+    async def validate_save(
+        self,
+        spec: AgentSpec,
+        run_history: list[str],
+        *,
+        enforce_capability_eval_evidence: bool = False,
+    ) -> None:
         """Validate a save_agent request. Raises AgentPolicyViolation on failure."""
 
         # 1. agent must have run at least once
@@ -608,7 +632,39 @@ class AgentPolicy:
                 {"bad_entries": bad_entries},
             )
 
-        # 5. semantic lint again (catches drift if spec was edited post-create).
+        # 5. allowed_tools is metadata only and cannot grant persistence/admin.
+        forbidden_allowed = [
+            t for t in spec.allowed_tools
+            if t in DYNAMIC_AGENT_DENYLIST or t in _SELF_GRANT_TOOL_NAMES
+        ]
+        if forbidden_allowed:
+            raise AgentPolicyViolation(
+                "agent_allowed_tools_self_grant_denied",
+                {"tools": forbidden_allowed},
+            )
+
+        # 6. high-risk persistent agents require explicit approval.
+        if spec.risk_level == "high" and spec.approval_state != "approved":
+            raise AgentPolicyViolation(
+                "high_risk_persistent_agent_requires_approval",
+                {"risk_level": spec.risk_level, "approval_state": spec.approval_state},
+            )
+
+        # 7. capability-backed persistence needs eval evidence or a passed run
+        # signal; old prompt-only low-risk agents remain compatible.
+        if (
+            enforce_capability_eval_evidence
+            and spec.bound_capabilities
+            and spec.risk_level in ("medium", "high")
+            and not spec.eval_tasks
+            and spec.success_count <= 0
+        ):
+            raise AgentPolicyViolation(
+                "capability_backed_persistence_requires_eval_evidence",
+                {"bound_capabilities": spec.bound_capabilities},
+            )
+
+        # 8. semantic lint again (catches drift if spec was edited post-create).
         await self._run_lint_strict(spec.system_prompt)
 
     async def _run_lint_strict(self, prompt: str) -> None:

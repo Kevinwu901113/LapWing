@@ -42,9 +42,13 @@ class CapabilityMaturity(str, Enum):
 
 class CapabilityStatus(str, Enum):
     ACTIVE = "active"
+    BROKEN = "broken"
+    REPAIRING = "repairing"
     DISABLED = "disabled"
     ARCHIVED = "archived"
     QUARANTINED = "quarantined"
+    NEEDS_PERMISSION = "needs_permission"
+    ENVIRONMENT_MISMATCH = "environment_mismatch"
 
 
 class CapabilityRiskLevel(str, Enum):

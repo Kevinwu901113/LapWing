@@ -182,6 +182,8 @@ class CapabilityRetriever:
             risk = str(c.get("risk_level", "low"))
 
             # Status filters
+            if status in {"broken", "repairing", "needs_permission", "environment_mismatch"}:
+                continue
             if status == "archived" and not context.include_archived:
                 continue
             if status == "disabled" and not context.include_disabled:

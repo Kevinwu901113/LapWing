@@ -122,10 +122,37 @@ New feature flags under `[capabilities]` section, all defaulting to false/off:
 - `capabilities.retrieval_enabled` — enables capability document retrieval
 - `capabilities.curator_enabled` — enables ExperienceCurator
 - `capabilities.auto_draft_enabled` — enables automatic capability drafting
+- `capabilities.read_tools_enabled` — registers read-only capability tools
 
 These flags are defined in the config model and exposed via the compat shim,
-but no runtime code reads them in Phase 0/1. They exist so Phase 2+ code
-can gate behavior behind them.
+and capability runtime behavior remains opt-in. Operator-local `config.toml`
+overrides may turn flags on for a deployment, but model defaults remain false.
+
+## 6A. Integrated Governance Foundation
+
+Current integration is intentionally narrow:
+
+- `search_capability`, `view_capability`, `load_capability`, and
+  `list_capabilities` are read-only and registered only when
+  `capabilities.enabled` and `capabilities.read_tools_enabled` are true.
+- Capability retrieval into StateView is progressive disclosure and requires
+  `capabilities.retrieval_enabled`; only compact summaries are injected.
+- Full `CAPABILITY.md`, scripts, traces, eval records, and version contents are
+  never injected automatically. Use read-only `load_capability` for explicit
+  inspection.
+- Standard profile may read capability summaries/documents when read tools are
+  enabled, but no `run`, `promote`, `install`, `grant`, or stable-overwrite
+  tool is exposed there.
+- `reflect_experience` and `propose_capability` are proposal-only curator
+  tools behind `capabilities.curator_enabled`; they do not promote stable,
+  install remote executable code, grant tools, or mutate system prompts.
+- Disabled, broken, repairing, quarantined, needs-permission, archived, and
+  environment-mismatch capabilities are excluded from active retrieval.
+- Medium/high-risk promotion remains policy/evaluator gated; stable
+  capabilities still remain subject to RuntimeProfile, ToolDispatcher,
+  AgentPolicy, CapabilityPolicy, and approval gates.
+
+This is not a plugin marketplace and does not introduce remote auto-install.
 
 ## 7. Phase 2A: CapabilityStore + CapabilityIndex + Versioning
 

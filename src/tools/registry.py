@@ -45,10 +45,19 @@ from src.tools.correction_tools import ADD_CORRECTION_SPEC
 from src.tools.focus_tools import CLOSE_FOCUS_SPEC, RECALL_FOCUS_SPEC
 from src.tools.sports_tool import SPORTS_TOOL_SPEC
 from src.tools.types import (
+    ToolErrorClass,
+    ToolErrorCode,
     ToolExecutionContext,
     ToolExecutionRequest,
     ToolExecutionResult,
+    ToolResultStatus,
     ToolSpec,
+    make_tool_error_result,
+)
+from src.tools.schema_validation import (
+    sanitize_for_tool_error,
+    validate_tool_arguments,
+    validation_error_result,
 )
 
 logger = logging.getLogger("lapwing.tools.registry")
@@ -169,22 +178,116 @@ class ToolRegistry:
         tool = self.get(request.name)
         if tool is None:
             reason = f"未知工具：{request.name}"
-            return ToolExecutionResult(
-                success=False,
+            return make_tool_error_result(
+                status=ToolResultStatus.PRECONDITION_ERROR,
+                error_code=ToolErrorCode.PRECONDITION_FAILED,
+                error_class=ToolErrorClass.PRECONDITION,
+                retryable=False,
                 reason=reason,
-                payload=_blocked_payload(reason=reason, cwd=context.shell_default_cwd, command=""),
+                safe_details={
+                    "tool_name": sanitize_for_tool_error(request.name),
+                    "reason": "tool_not_registered",
+                },
+                base_payload=_blocked_payload(reason=reason, cwd=context.shell_default_cwd, command=""),
             )
 
+        await _emit_hook(context, "on_tool_call_validate", {
+            "tool_name": request.name,
+            "phase": "before_validation",
+        })
+        report = validate_tool_arguments(
+            tool_name=request.name,
+            schema=tool.json_schema,
+            arguments=request.arguments,
+        )
+        if not report.valid:
+            result = validation_error_result(
+                tool_name=request.name,
+                schema=tool.json_schema,
+                arguments=request.arguments,
+                report=report,
+            )
+            await _emit_hook(context, "on_tool_result", {
+                "tool_name": request.name,
+                "result_status": result.payload.get("status"),
+                "error_class": result.payload.get("error_class"),
+                "error_code": result.payload.get("error_code"),
+            })
+            return result
+
         try:
-            return await tool.executor(request, context)
+            result = await tool.executor(request, context)
+            await _emit_hook(context, "on_tool_result", {
+                "tool_name": request.name,
+                "result_status": result.payload.get("status", "success"),
+            })
+            return result
+        except TimeoutError:
+            logger.warning("[tools] 工具 `%s` 执行超时", request.name)
+            reason = f"工具执行超时：{request.name}"
+            result = make_tool_error_result(
+                status=ToolResultStatus.TIMEOUT_ERROR,
+                error_code=ToolErrorCode.TIMEOUT,
+                error_class=ToolErrorClass.TIMEOUT,
+                retryable=True,
+                reason=reason,
+                safe_details={
+                    "tool_name": sanitize_for_tool_error(request.name),
+                    "reason": "timeout",
+                },
+                base_payload=_blocked_payload(reason=reason, cwd=context.shell_default_cwd, command=""),
+            )
+            await _emit_hook(context, "on_tool_result", {
+                "tool_name": request.name,
+                "result_status": result.payload.get("status"),
+                "error_class": result.payload.get("error_class"),
+                "error_code": result.payload.get("error_code"),
+            })
+            return result
+        except (ConnectionError, ImportError):
+            logger.warning("[tools] 工具 `%s` 依赖不可用", request.name)
+            reason = f"工具依赖不可用：{request.name}"
+            result = make_tool_error_result(
+                status=ToolResultStatus.DEPENDENCY_ERROR,
+                error_code=ToolErrorCode.DEPENDENCY_UNAVAILABLE,
+                error_class=ToolErrorClass.DEPENDENCY,
+                retryable=True,
+                reason=reason,
+                safe_details={
+                    "tool_name": sanitize_for_tool_error(request.name),
+                    "reason": "dependency_unavailable",
+                },
+                base_payload=_blocked_payload(reason=reason, cwd=context.shell_default_cwd, command=""),
+            )
+            await _emit_hook(context, "on_tool_result", {
+                "tool_name": request.name,
+                "result_status": result.payload.get("status"),
+                "error_class": result.payload.get("error_class"),
+                "error_code": result.payload.get("error_code"),
+            })
+            return result
         except Exception as exc:
             logger.warning("[tools] 工具 `%s` 执行异常: %s", request.name, exc)
             reason = f"工具执行失败：{request.name}"
-            return ToolExecutionResult(
-                success=False,
+            result = make_tool_error_result(
+                status=ToolResultStatus.EXECUTION_ERROR,
+                error_code=ToolErrorCode.EXECUTION_FAILED,
+                error_class=ToolErrorClass.EXECUTION,
+                retryable=False,
                 reason=reason,
-                payload=_blocked_payload(reason=reason, cwd=context.shell_default_cwd, command=""),
+                safe_details={
+                    "tool_name": sanitize_for_tool_error(request.name),
+                    "reason": "executor_exception",
+                },
+                base_payload=_blocked_payload(reason=reason, cwd=context.shell_default_cwd, command=""),
             )
+            await _emit_hook(context, "on_tool_result", {
+                "tool_name": request.name,
+                "result_status": result.payload.get("status"),
+                "error_class": result.payload.get("error_class"),
+                "error_code": result.payload.get("error_code"),
+            })
+            return result
 
     def as_descriptions(self) -> list[dict[str, Any]]:
         return [
@@ -199,6 +302,20 @@ class ToolRegistry:
             }
             for tool in self._tools.values()
         ]
+
+
+async def _emit_hook(
+    context: ToolExecutionContext,
+    name: str,
+    payload: dict[str, Any],
+) -> None:
+    hook_bus = (context.services or {}).get("hook_bus")
+    if hook_bus is None or not hasattr(hook_bus, "emit"):
+        return
+    try:
+        await hook_bus.emit(name, payload)
+    except Exception:
+        logger.debug("tool hook emit failed: %s", name, exc_info=True)
 
 
 def build_default_tool_registry() -> ToolRegistry:

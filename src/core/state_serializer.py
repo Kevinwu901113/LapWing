@@ -202,6 +202,15 @@ def _render_runtime_state(state: StateView) -> str:
     if state.focus_context:
         lines.append(state.focus_context)
 
+    if state.pending_steering_events:
+        steering_lines = []
+        for event in state.pending_steering_events:
+            source = f" 来源:{event.source_channel}" if event.source_channel else ""
+            steering_lines.append(
+                f"  - [{event.priority}] {event.content} [id={event.id[:12]}]{source}"
+            )
+        lines.append("待处理的用户转向（下一个安全边界处理，处理后确认）：\n" + "\n".join(steering_lines))
+
     # Skill summary
     if state.skill_summary is not None:
         ss = state.skill_summary
@@ -217,6 +226,17 @@ def _render_runtime_state(state: StateView) -> str:
             if ss.broken_count:
                 skill_lines.append(f"  - broken: {ss.broken_count} 个（需修复）")
             lines.append("我的技能：\n" + "\n".join(skill_lines))
+
+    if state.capability_summaries:
+        cap_lines = []
+        for cap in state.capability_summaries:
+            triggers = " / ".join(cap.triggers[:3])
+            hint = f"；use_when: {triggers}" if triggers else ""
+            cap_lines.append(
+                f"  - {cap.id}: {cap.name} ({cap.maturity}, risk={cap.risk_level})"
+                f" — {cap.description[:120]}{hint}；read-only action: load_capability"
+            )
+        lines.append("可参考能力（摘要，需显式 load_capability 才能查看全文）：\n" + "\n".join(cap_lines))
 
     return "## 当前状态\n\n" + "\n".join(lines)
 

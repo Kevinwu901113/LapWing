@@ -147,6 +147,7 @@ CAPABILITIES_RETRIEVAL_ENABLED: bool = _s.capabilities.retrieval_enabled
 CAPABILITIES_CURATOR_ENABLED: bool = _s.capabilities.curator_enabled
 CAPABILITIES_CURATOR_DRY_RUN_ENABLED: bool = _s.capabilities.curator_dry_run_enabled
 CAPABILITIES_AUTO_DRAFT_ENABLED: bool = _s.capabilities.auto_draft_enabled
+CAPABILITIES_READ_TOOLS_ENABLED: bool = _s.capabilities.read_tools_enabled
 CAPABILITIES_EXECUTION_SUMMARY_ENABLED: bool = _s.capabilities.execution_summary_enabled
 CAPABILITIES_LIFECYCLE_TOOLS_ENABLED: bool = _s.capabilities.lifecycle_tools_enabled
 CAPABILITIES_AUTO_PROPOSAL_ENABLED: bool = _s.capabilities.auto_proposal_enabled
@@ -163,6 +164,9 @@ CAPABILITIES_STABLE_PROMOTION_TRUST_GATE_ENABLED: bool = _s.capabilities.stable_
 CAPABILITIES_REPAIR_QUEUE_TOOLS_ENABLED: bool = _s.capabilities.repair_queue_tools_enabled
 CAPABILITIES_DATA_DIR: str = _s.capabilities.data_dir
 CAPABILITIES_INDEX_DB_PATH: str = _s.capabilities.index_db_path
+
+RUNTIME_INTERACTION_HARDENING_ENABLED: bool = _s.runtime_interaction_hardening.enabled
+RUNTIME_INTERACTION_HARDENING_ADAPTER_STRICT_MODE: bool = _s.runtime_interaction_hardening.adapter_strict_mode
 
 # ── Sandbox (unified) ───────────────────────
 SANDBOX_DOCKER_IMAGE: str = _s.sandbox.docker_image

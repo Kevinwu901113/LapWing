@@ -67,6 +67,7 @@ class _ThinkCtx:
     approved_directory: str | None
     early_reply: str | None = None
     focus_id: str | None = None
+    steering_event_ids: tuple[str, ...] = ()
 
 
 class LapwingBrain:
@@ -338,6 +339,9 @@ class LapwingBrain:
         correction_manager = getattr(self, "_correction_manager", None)
         if correction_manager is not None:
             services["correction_manager"] = correction_manager
+        hook_bus = getattr(self, "_hook_bus_ref", None)
+        if hook_bus is not None:
+            services["hook_bus"] = hook_bus
         # Per-turn BudgetLedger (Blueprint §5) — fresh ledger every call so
         # Brain + delegated agents share the same caps across the turn but
         # new turns start with full budget.
@@ -579,6 +583,9 @@ class LapwingBrain:
                 group_id=group_id,
                 trajectory_turns_override=turns,
             )
+        self._last_rendered_steering_event_ids = tuple(
+            event.id for event in getattr(state_view, "pending_steering_events", ())
+        )
 
         serialized = _serialize_state(state_view)
         system_content = serialized.system_prompt
@@ -836,7 +843,24 @@ class LapwingBrain:
             effective_user_message=effective_user_message,
             approved_directory=approved_directory,
             focus_id=focus_id,
+            steering_event_ids=tuple(getattr(self, "_last_rendered_steering_event_ids", ())),
         )
+
+    async def _acknowledge_steering_events(
+        self,
+        event_ids: tuple[str, ...],
+        *,
+        chat_id: str,
+    ) -> None:
+        if not event_ids:
+            return
+        store = getattr(self, "_steering_store_ref", None)
+        if store is None:
+            return
+        try:
+            await store.acknowledge(event_ids)
+        except Exception:
+            logger.debug("steering acknowledge failed for %s", chat_id, exc_info=True)
 
     async def think(self, chat_id: str, user_message: str, status_callback=None) -> str:
         """处理用户消息，返回 Lapwing 的回复。
@@ -867,6 +891,10 @@ class LapwingBrain:
             try:
                 await self._record_turn(
                     chat_id, "assistant", reply, focus_id=ctx.focus_id,
+                )
+                await self._acknowledge_steering_events(
+                    ctx.steering_event_ids,
+                    chat_id=chat_id,
                 )
                 logger.debug(f"[{chat_id}] 回复生成成功，长度: {len(reply)}")
             except Exception as post_exc:
@@ -1125,6 +1153,10 @@ class LapwingBrain:
                     await self._record_turn(
                         chat_id, "assistant", memory_text, focus_id=ctx.focus_id,
                     )
+                await self._acknowledge_steering_events(
+                    ctx.steering_event_ids,
+                    chat_id=chat_id,
+                )
                 logger.debug(
                     "[%s] spoken_parts=%d 条",
                     chat_id, len(spoken_parts),
