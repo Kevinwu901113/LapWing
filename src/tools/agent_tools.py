@@ -35,9 +35,33 @@ logger = logging.getLogger("lapwing.tools.agent_tools")
 _ephemeral_run_counts: dict[str, int] = {}
 _completed_delegations: dict[str, int] = {}
 
+_AGENT_BASE_REQUIRED_SERVICES = ("dispatcher", "tool_registry", "llm_router")
+_RESEARCHER_REQUIRED_SERVICES = ("research_engine", "ambient_store")
+_HARD_ERROR_PATTERNS = (
+    "未注入", "unavailable", "service_not_found", "not_initialized",
+    "disabled", "circuit_break", "engine_unavailable",
+)
+
 
 def _generate_task_id() -> str:
     return f"task_{uuid.uuid4().hex[:12]}"
+
+
+def _missing_required_agent_services(agent_name: str, services: dict) -> list[str]:
+    required = list(_AGENT_BASE_REQUIRED_SERVICES)
+    if agent_name == "researcher":
+        required.extend(_RESEARCHER_REQUIRED_SERVICES)
+    return [key for key in required if services.get(key) is None]
+
+
+def _hard_tool_error_reason(result: AgentResult) -> str | None:
+    for error in getattr(result, "tool_errors", []) or []:
+        reason = str(error.get("reason") or "")
+        payload = error.get("payload")
+        text = f"{reason} {payload}"
+        if any(pattern in text for pattern in _HARD_ERROR_PATTERNS):
+            return reason[:200] or "agent_tool_hard_error"
+    return None
 
 
 def _extract_context_digest(ctx: ToolExecutionContext) -> str:
@@ -74,6 +98,22 @@ def _serialize_agent_result(result: AgentResult, task_id: str) -> ToolExecutionR
     JSON. ``result`` is still emitted for backward compatibility.
     """
     trace_tail = result.execution_trace[-5:] if result.execution_trace else []
+    hard_error_reason = _hard_tool_error_reason(result)
+
+    if hard_error_reason is not None:
+        payload = {
+            "task_id": task_id,
+            "status": result.status,
+            "agent_output": result.result,
+            "tool_errors": result.tool_errors,
+        }
+        if trace_tail:
+            payload["execution_trace"] = trace_tail
+        return ToolExecutionResult(
+            success=False,
+            payload=payload,
+            reason=hard_error_reason,
+        )
 
     if result.status == "done":
         payload: dict = {
@@ -154,6 +194,14 @@ async def _run_agent(
         return ToolExecutionResult(
             success=False, payload={},
             reason=f"Agent '{agent_name}' 不可用",
+        )
+
+    missing_services = _missing_required_agent_services(agent_name, svc.raw)
+    if missing_services:
+        return ToolExecutionResult(
+            success=False,
+            payload={"missing_services": missing_services},
+            reason=f"agent_services_unavailable: {', '.join(missing_services)}",
         )
 
     # Budget: enter delegation depth (raises BudgetExhausted on overflow).

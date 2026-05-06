@@ -65,6 +65,7 @@ class AgentResult:
     attempted_actions: list[str] = field(default_factory=list)
     error_detail: str | None = None
     execution_trace: list[str] = field(default_factory=list)
+    tool_errors: list[dict] = field(default_factory=list)
     budget_status: str = ""
     # Optional structured payload — Researcher populates this with
     # ``{"summary": str, "sources": [...]}`` so consumers can read the

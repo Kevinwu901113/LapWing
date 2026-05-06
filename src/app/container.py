@@ -803,6 +803,7 @@ class AppContainer:
         # Factory on every delegation, mirroring dynamic-agent semantics.
         from config.settings import AGENT_TEAM_ENABLED
         if AGENT_TEAM_ENABLED:
+            from config.settings import AGENTS_CANDIDATE_EVIDENCE_MAX_AGE_DAYS
             from src.agents.catalog import AgentCatalog
             from src.agents.factory import AgentFactory
             from src.agents.policy import AgentPolicy
@@ -824,6 +825,7 @@ class AppContainer:
             agent_policy = AgentPolicy(
                 catalog=agent_catalog,
                 llm_router=self.brain.router,
+                evidence_max_age_days=AGENTS_CANDIDATE_EVIDENCE_MAX_AGE_DAYS,
             )
             agent_registry = AgentRegistry(
                 catalog=agent_catalog,
@@ -875,6 +877,24 @@ class AppContainer:
             self.brain._agent_registry = agent_registry
             # StateView agent summary (Blueprint §9): wire registry into builder.
             self.brain.state_view_builder._agent_registry = agent_registry
+
+            # Phase 6D: Agent candidate operator tools (feature-gated behind
+            # agents.candidate_tools_enabled). Requires AGENT_TEAM_ENABLED=true.
+            from config.settings import AGENTS_CANDIDATE_TOOLS_ENABLED
+            if AGENTS_CANDIDATE_TOOLS_ENABLED:
+                from src.agents.candidate_store import AgentCandidateStore
+                from src.tools.agent_candidate_tools import register_agent_candidate_tools
+
+                candidate_store = AgentCandidateStore(
+                    self._data_dir / "agent_candidates"
+                )
+                self.brain._candidate_store = candidate_store
+                register_agent_candidate_tools(
+                    self.brain.tool_registry,
+                    candidate_store,
+                    policy=agent_policy,
+                )
+                logger.info("Phase 6D agent candidate operator tools registered")
 
             # 创建工作区目录
             Path("data/agent_workspace").mkdir(parents=True, exist_ok=True)
@@ -994,6 +1014,275 @@ class AppContainer:
                 "Skill Growth Model 已装配（%d stable skills registered as tools）",
                 len(skill_store.get_stable_skills()),
             )
+
+        # Phase 2B: Capability read tools (feature-gated behind capabilities.enabled)
+        from config.settings import CAPABILITIES_ENABLED
+        if CAPABILITIES_ENABLED:
+            from config.settings import (
+                CAPABILITIES_DATA_DIR,
+                CAPABILITIES_INDEX_DB_PATH,
+                CAPABILITIES_CURATOR_ENABLED,
+                CAPABILITIES_CURATOR_DRY_RUN_ENABLED,
+                CAPABILITIES_EXECUTION_SUMMARY_ENABLED,
+                CAPABILITIES_LIFECYCLE_TOOLS_ENABLED,
+                CAPABILITIES_RETRIEVAL_ENABLED,
+                CAPABILITIES_AUTO_PROPOSAL_ENABLED,
+                CAPABILITIES_AUTO_PROPOSAL_MIN_CONFIDENCE,
+                CAPABILITIES_AUTO_PROPOSAL_ALLOW_HIGH_RISK,
+                CAPABILITIES_AUTO_PROPOSAL_MAX_PER_SESSION,
+                CAPABILITIES_AUTO_PROPOSAL_DEDUPE_WINDOW_HOURS,
+                CAPABILITIES_EXTERNAL_IMPORT_ENABLED,
+                CAPABILITIES_QUARANTINE_TRANSITION_REQUESTS_ENABLED,
+                CAPABILITIES_QUARANTINE_ACTIVATION_PLANNING_ENABLED,
+                CAPABILITIES_TRUST_ROOT_TOOLS_ENABLED,
+                CAPABILITIES_STABLE_PROMOTION_TRUST_GATE_ENABLED,
+                CAPABILITIES_REPAIR_QUEUE_TOOLS_ENABLED,
+            )
+            from src.capabilities.index import CapabilityIndex
+            from src.capabilities.store import CapabilityStore
+            from src.tools.capability_tools import (
+                register_capability_tools,
+                register_capability_lifecycle_tools,
+            )
+
+            capability_index = CapabilityIndex(CAPABILITIES_INDEX_DB_PATH)
+            capability_index.init()
+            capability_store = CapabilityStore(
+                data_dir=CAPABILITIES_DATA_DIR,
+                mutation_log=self.mutation_log,
+                index=capability_index,
+            )
+            self.brain._capability_store = capability_store
+            self.brain._capability_index = capability_index
+
+            register_capability_tools(
+                self.brain.tool_registry,
+                capability_store,
+                capability_index,
+            )
+            logger.info("Phase 2B capability read tools registered (list/search/view)")
+
+            # Phase 3C: Lifecycle management tools (feature-gated behind
+            # capabilities.lifecycle_tools_enabled). Requires capabilities.enabled=true.
+            capability_policy = None  # may be set by lifecycle block below
+            # Phase 8C-1: stable promotion trust gate — analytical policy only.
+            def _build_trust_policy():
+                from src.capabilities.provenance import CapabilityTrustPolicy
+                return CapabilityTrustPolicy()
+
+            if CAPABILITIES_LIFECYCLE_TOOLS_ENABLED:
+                from src.capabilities.evaluator import CapabilityEvaluator
+                from src.capabilities.policy import CapabilityPolicy
+                from src.capabilities.promotion import PromotionPlanner
+                from src.capabilities.lifecycle import CapabilityLifecycleManager
+
+                capability_evaluator = CapabilityEvaluator()
+                capability_policy = CapabilityPolicy()
+                capability_planner = PromotionPlanner()
+
+                capability_lifecycle = CapabilityLifecycleManager(
+                    store=capability_store,
+                    evaluator=capability_evaluator,
+                    policy=capability_policy,
+                    planner=capability_planner,
+                    mutation_log=self.mutation_log,
+                    trust_policy=(
+                        _build_trust_policy()
+                        if CAPABILITIES_STABLE_PROMOTION_TRUST_GATE_ENABLED
+                        else None
+                    ),
+                    trust_gate_enabled=CAPABILITIES_STABLE_PROMOTION_TRUST_GATE_ENABLED,
+                )
+                self.brain._capability_lifecycle = capability_lifecycle
+
+                register_capability_lifecycle_tools(
+                    self.brain.tool_registry,
+                    capability_lifecycle,
+                )
+                logger.info(
+                    "Phase 3C capability lifecycle tools registered "
+                    "(evaluate/plan/transition)"
+                )
+
+            # Phase 4: CapabilityRetriever — progressive disclosure (feature-gated
+            # behind capabilities.retrieval_enabled). Requires capabilities.enabled=true.
+            if CAPABILITIES_RETRIEVAL_ENABLED:
+                from src.capabilities.retriever import CapabilityRetriever
+
+                capability_retriever = CapabilityRetriever(
+                    store=capability_store,
+                    index=capability_index,
+                    policy=capability_policy,
+                )
+                self.brain.state_view_builder._capability_retriever = capability_retriever
+                logger.info("Phase 4 CapabilityRetriever wired for progressive disclosure")
+
+            # Phase 5A: Capability curator tools (feature-gated behind
+            # capabilities.curator_enabled). Requires capabilities.enabled=true.
+            if CAPABILITIES_CURATOR_ENABLED:
+                from src.tools.capability_tools import register_capability_curator_tools
+
+                register_capability_curator_tools(
+                    self.brain.tool_registry,
+                    capability_store,
+                    capability_index,
+                    data_dir=CAPABILITIES_DATA_DIR,
+                )
+                logger.info("Phase 5A capability curator tools registered (reflect/propose)")
+
+            # Phase 5B: Execution summary observer (feature-gated behind
+            # capabilities.execution_summary_enabled). Requires capabilities.enabled=true.
+            # Best-effort, failure-safe — captures sanitized trace summaries at task
+            # end without creating proposals, drafts, or calling the curator.
+            if CAPABILITIES_EXECUTION_SUMMARY_ENABLED:
+                from src.capabilities.trace_summary_adapter import TraceSummaryObserver
+
+                self.brain.task_runtime.set_execution_summary_observer(
+                    TraceSummaryObserver()
+                )
+                logger.info("Phase 5B execution summary observer wired")
+
+            # Phase 5C: Curator dry-run observer (feature-gated behind
+            # capabilities.curator_dry_run_enabled). Requires capabilities.enabled=true.
+            # Best-effort, failure-safe — runs ExperienceCurator.should_reflect +
+            # summarize on the sanitized summary, stores result in-memory only.
+            # No proposals, drafts, store/index mutations, or persistence.
+            # Fail-closed: if execution_summary_enabled is false, no summary
+            # exists so the observer will never be called at task end.
+            if CAPABILITIES_CURATOR_DRY_RUN_ENABLED:
+                from src.capabilities.curator_dry_run_adapter import CuratorDryRunAdapter
+
+                self.brain.task_runtime.set_curator_dry_run_observer(
+                    CuratorDryRunAdapter()
+                )
+                logger.info("Phase 5C curator dry-run observer wired")
+
+            # Phase 5D: Auto-proposal persistence observer (feature-gated behind
+            # capabilities.auto_proposal_enabled). Requires capabilities.enabled=true
+            # + execution_summary_enabled=true + curator_dry_run_enabled=true.
+            # Best-effort, failure-safe — persists proposal files only when all
+            # gates pass. Never creates drafts, never updates indices, never promotes.
+            # Fail-closed: if any prerequisite flag is off, no summary or dry-run
+            # decision exists, so the observer will never be called at task end.
+            if CAPABILITIES_AUTO_PROPOSAL_ENABLED:
+                from src.capabilities.auto_proposal_adapter import AutoProposalAdapter
+
+                self.brain.task_runtime.set_auto_proposal_observer(
+                    AutoProposalAdapter(
+                        min_confidence=CAPABILITIES_AUTO_PROPOSAL_MIN_CONFIDENCE,
+                        allow_high_risk=CAPABILITIES_AUTO_PROPOSAL_ALLOW_HIGH_RISK,
+                        max_per_session=CAPABILITIES_AUTO_PROPOSAL_MAX_PER_SESSION,
+                        dedupe_window_hours=CAPABILITIES_AUTO_PROPOSAL_DEDUPE_WINDOW_HOURS,
+                        data_dir=CAPABILITIES_DATA_DIR,
+                    )
+                )
+                logger.info("Phase 5D auto-proposal observer wired")
+
+            # Phase 7A: External capability import tools (feature-gated behind
+            # capabilities.external_import_enabled). Requires capabilities.enabled=true.
+            # import_capability_package / inspect_capability_package are operator-only.
+            if CAPABILITIES_EXTERNAL_IMPORT_ENABLED:
+                from src.tools.capability_tools import register_capability_import_tools
+                from src.capabilities.evaluator import CapabilityEvaluator as _CE
+                from src.capabilities.policy import CapabilityPolicy as _CP
+
+                _import_evaluator = _CE()
+                _import_policy = _CP()
+
+                register_capability_import_tools(
+                    self.brain.tool_registry,
+                    capability_store,
+                    capability_index,
+                    _import_evaluator,
+                    _import_policy,
+                )
+                logger.info("Phase 7A capability import tools registered (inspect/import)")
+
+                # Phase 7B: Quarantine review tools — same gate as 7A,
+                # same operator profile. Report-only: never activates or promotes.
+                from src.tools.capability_tools import register_quarantine_review_tools
+
+                register_quarantine_review_tools(
+                    self.brain.tool_registry,
+                    capability_store,
+                    _import_evaluator,
+                    _import_policy,
+                )
+                logger.info("Phase 7B quarantine review tools registered (list/view/audit/mark)")
+
+                # Phase 7C: Quarantine transition request bridge — narrower flag,
+                # same operator profile. Never activates, promotes, executes, or moves.
+                if CAPABILITIES_QUARANTINE_TRANSITION_REQUESTS_ENABLED:
+                    from src.tools.capability_tools import register_quarantine_transition_tools
+
+                    register_quarantine_transition_tools(
+                        self.brain.tool_registry,
+                        capability_store,
+                        _import_evaluator,
+                        _import_policy,
+                    )
+                    logger.info("Phase 7C quarantine transition request tools registered (request/list/view/cancel)")
+
+                # Phase 7D-A: Quarantine activation planning — narrower flag,
+                # same operator profile. Planner-only: never activates.
+                if CAPABILITIES_QUARANTINE_ACTIVATION_PLANNING_ENABLED:
+                    from src.tools.capability_tools import register_quarantine_activation_planning_tools
+
+                    register_quarantine_activation_planning_tools(
+                        self.brain.tool_registry,
+                        capability_store,
+                        _import_evaluator,
+                        _import_policy,
+                    )
+                    logger.info("Phase 7D-A quarantine activation planning tool registered (plan_quarantine_activation)")
+
+                    # Phase 7D-B: Quarantine activation apply — narrowest flag,
+                    # same operator profile. Explicit apply only: testing maturity,
+                    # active status. Never stable, never runs scripts.
+                    if CAPABILITIES_QUARANTINE_ACTIVATION_APPLY_ENABLED:
+                        from src.tools.capability_tools import register_quarantine_activation_apply_tools
+
+                        register_quarantine_activation_apply_tools(
+                            self.brain.tool_registry,
+                            capability_store,
+                            capability_index,
+                            _import_evaluator,
+                            _import_policy,
+                        )
+                        logger.info("Phase 7D-B quarantine activation apply tool registered (apply_quarantine_activation)")
+
+            # Phase 8B-3: Trust root operator tools (feature-gated behind
+            # capabilities.trust_root_tools_enabled). Requires capabilities.enabled=true.
+            # Operator-only: no standard/default/chat/inner_tick access.
+            # Not nested inside EXTERNAL_IMPORT_ENABLED — independent flag.
+            if CAPABILITIES_TRUST_ROOT_TOOLS_ENABLED:
+                from src.capabilities.trust_roots import TrustRootStore
+                from src.tools.capability_tools import register_capability_trust_root_tools
+
+                trust_root_store = TrustRootStore(data_dir=CAPABILITIES_DATA_DIR)
+                self.brain._trust_root_store = trust_root_store
+                register_capability_trust_root_tools(
+                    self.brain.tool_registry,
+                    trust_root_store,
+                )
+                logger.info("Phase 8B-3 trust root operator tools registered (list/view/add/disable/revoke)")
+
+            # Maintenance C: repair queue operator tools (feature-gated behind
+            # capabilities.repair_queue_tools_enabled). Requires capabilities.enabled=true.
+            # Operator-only: no standard/default/chat access.
+            # Not granted to any other operator profile.
+            if CAPABILITIES_REPAIR_QUEUE_TOOLS_ENABLED:
+                from src.capabilities.repair_queue import RepairQueueStore
+                from src.tools.repair_queue_tools import register_repair_queue_tools
+
+                repair_queue_store = RepairQueueStore(data_dir=CAPABILITIES_DATA_DIR)
+                self.brain._repair_queue_store = repair_queue_store
+                register_repair_queue_tools(
+                    self.brain.tool_registry,
+                    repair_queue_store,
+                    capability_store=capability_store,
+                )
+                logger.info("Maintenance C repair queue operator tools registered (list/view/create-from-health/acknowledge/resolve/dismiss)")
 
         # Phase 4: 注册 DurableScheduler 提醒工具
         from src.core.durable_scheduler import DURABLE_SCHEDULER_EXECUTORS

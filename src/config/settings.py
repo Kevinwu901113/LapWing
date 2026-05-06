@@ -281,6 +281,31 @@ _ENV_MAP: dict[str, list[str]] = {
     # ── top-level ──
     "CREDENTIAL_VAULT_PATH": ["credential_vault_path"],
     "PHASE0_MODE": ["phase0_mode"],
+    # ── agents ──
+    "AGENTS_REQUIRE_CANDIDATE_APPROVAL_FOR_PERSISTENCE": ["agents", "require_candidate_approval_for_persistence"],
+    "AGENTS_CANDIDATE_TOOLS_ENABLED": ["agents", "candidate_tools_enabled"],
+    "AGENTS_CANDIDATE_EVIDENCE_MAX_AGE_DAYS": ["agents", "candidate_evidence_max_age_days"],
+    # ── capabilities ──
+    "CAPABILITIES_ENABLED": ["capabilities", "enabled"],
+    "CAPABILITIES_RETRIEVAL_ENABLED": ["capabilities", "retrieval_enabled"],
+    "CAPABILITIES_CURATOR_ENABLED": ["capabilities", "curator_enabled"],
+    "CAPABILITIES_CURATOR_DRY_RUN_ENABLED": ["capabilities", "curator_dry_run_enabled"],
+    "CAPABILITIES_AUTO_DRAFT_ENABLED": ["capabilities", "auto_draft_enabled"],
+    "CAPABILITIES_EXECUTION_SUMMARY_ENABLED": ["capabilities", "execution_summary_enabled"],
+    "CAPABILITIES_AUTO_PROPOSAL_ENABLED": ["capabilities", "auto_proposal_enabled"],
+    "CAPABILITIES_AUTO_PROPOSAL_MIN_CONFIDENCE": ["capabilities", "auto_proposal_min_confidence"],
+    "CAPABILITIES_AUTO_PROPOSAL_ALLOW_HIGH_RISK": ["capabilities", "auto_proposal_allow_high_risk"],
+    "CAPABILITIES_AUTO_PROPOSAL_MAX_PER_SESSION": ["capabilities", "auto_proposal_max_per_session"],
+    "CAPABILITIES_AUTO_PROPOSAL_DEDUPE_WINDOW_HOURS": ["capabilities", "auto_proposal_dedupe_window_hours"],
+    "CAPABILITIES_EXTERNAL_IMPORT_ENABLED": ["capabilities", "external_import_enabled"],
+    "CAPABILITIES_QUARANTINE_TRANSITION_REQUESTS_ENABLED": ["capabilities", "quarantine_transition_requests_enabled"],
+    "CAPABILITIES_QUARANTINE_ACTIVATION_PLANNING_ENABLED": ["capabilities", "quarantine_activation_planning_enabled"],
+    "CAPABILITIES_LIFECYCLE_TOOLS_ENABLED": ["capabilities", "lifecycle_tools_enabled"],
+    "CAPABILITIES_TRUST_ROOT_TOOLS_ENABLED": ["capabilities", "trust_root_tools_enabled"],
+    "CAPABILITIES_STABLE_PROMOTION_TRUST_GATE_ENABLED": ["capabilities", "stable_promotion_trust_gate_enabled"],
+    "CAPABILITIES_REPAIR_QUEUE_TOOLS_ENABLED": ["capabilities", "repair_queue_tools_enabled"],
+    "CAPABILITIES_DATA_DIR": ["capabilities", "data_dir"],
+    "CAPABILITIES_INDEX_DB_PATH": ["capabilities", "index_db_path"],
 }
 
 
@@ -627,6 +652,62 @@ class IdentityConfig(BaseModel):
     identity_system_killswitch: bool = False
 
 
+class AgentsConfig(BaseModel):
+    """Feature flags for the dynamic agent system (Phase 6C+).
+
+    All flags default to False so that existing behavior is unchanged
+    unless explicitly enabled.
+    """
+    require_candidate_approval_for_persistence: bool = False
+    # Phase 6D: operator tools for managing AgentCandidate objects.
+    candidate_tools_enabled: bool = False
+    # Phase 6D: optional evidence staleness threshold in days.
+    # None = no enforcement; an integer = max age for high/medium evidence.
+    # Default 90 days; set to 0 or None to disable freshness checks.
+    candidate_evidence_max_age_days: int | None = 90
+
+
+class CapabilitiesConfig(BaseModel):
+    """Feature flags for the Capability Evolution System (Phase 0+).
+
+    All flags default to False. No runtime code reads these in Phase 0/1;
+    they exist so Phase 2+ can gate capability retrieval, curation, and
+    auto-drafting behind them.
+
+    Phase 3C: lifecycle_tools_enabled gates evaluate/plan/transition tools
+    which require both capabilities.enabled=true AND this flag to be registered.
+    """
+    enabled: bool = False
+    retrieval_enabled: bool = False
+    curator_enabled: bool = False
+    curator_dry_run_enabled: bool = False
+    auto_draft_enabled: bool = False
+    execution_summary_enabled: bool = False
+    lifecycle_tools_enabled: bool = False
+    # Phase 5D: controlled auto-proposal persistence
+    auto_proposal_enabled: bool = False
+    auto_proposal_min_confidence: float = 0.75
+    auto_proposal_allow_high_risk: bool = False
+    auto_proposal_max_per_session: int = 3
+    auto_proposal_dedupe_window_hours: int = 24
+    # Phase 7A: external package import into quarantine only
+    external_import_enabled: bool = False
+    # Phase 7C: quarantine testing transition requests (operator-only bridge)
+    quarantine_transition_requests_enabled: bool = False
+    # Phase 7D-A: quarantine activation planning (planner-only, no activation)
+    quarantine_activation_planning_enabled: bool = False
+    # Phase 7D-B: quarantine activation apply (operator-only, testing only)
+    quarantine_activation_apply_enabled: bool = False
+    # Phase 8B-3: trust root operator tools (operator-only metadata management)
+    trust_root_tools_enabled: bool = False
+    # Phase 8C-1: stable promotion trust gate (testing -> stable provenance/trust/integrity checks)
+    stable_promotion_trust_gate_enabled: bool = False
+    # Maintenance C: repair queue operator tools (operator-only)
+    repair_queue_tools_enabled: bool = False
+    data_dir: str = "data/capabilities"
+    index_db_path: str = "data/capabilities/capability_index.sqlite"
+
+
 # ── root settings ────────────────────────────
 
 def _inject_env(data: dict[str, Any]) -> dict[str, Any]:
@@ -693,6 +774,8 @@ class LapwingSettings(BaseSettings):
     proactive_messages: ProactiveMessagesConfig = Field(default_factory=ProactiveMessagesConfig)
     inner_tick: InnerTickConfig = Field(default_factory=InnerTickConfig)
     identity: IdentityConfig = Field(default_factory=IdentityConfig)
+    agents: AgentsConfig = Field(default_factory=AgentsConfig)
+    capabilities: CapabilitiesConfig = Field(default_factory=CapabilitiesConfig)
     credential_vault_path: str = ""
     phase0_mode: str = ""
 

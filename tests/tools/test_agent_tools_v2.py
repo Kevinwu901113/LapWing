@@ -16,7 +16,13 @@ from src.tools.types import ToolExecutionContext, ToolExecutionRequest
 
 
 def _make_ctx(*, registry=None, ledger=None, mutation_log=None):
-    services = {}
+    services = {
+        "dispatcher": MagicMock(),
+        "tool_registry": MagicMock(),
+        "llm_router": MagicMock(),
+        "research_engine": MagicMock(),
+        "ambient_store": MagicMock(),
+    }
     if registry is not None:
         services["agent_registry"] = registry
     if ledger is not None:

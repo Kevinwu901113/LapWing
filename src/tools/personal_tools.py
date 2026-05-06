@@ -9,6 +9,7 @@ from __future__ import annotations
 import ipaddress
 import logging
 import re
+import time
 import urllib.parse
 from typing import Any
 
@@ -51,6 +52,77 @@ async def _get_time(
 # ─────────────────────────────────────────────────────────────────────────────
 
 _PROACTIVE_PROFILES = frozenset({"inner_tick", "compose_proactive"})
+_FACTUAL_CLAIM_KEYWORDS = (
+    "刚搜到", "刚查到", "最新", "现在",
+    "比分", "领先", "赢了", "输了",
+    "股价", "汇率",
+)
+_SOFTENED_CACHE_PHRASES = (
+    "缓存", "之前查到", "之前的信息", "此前查到", "上次查到",
+)
+
+
+def _contains_factual_claim(text: str) -> bool:
+    return any(keyword in text for keyword in _FACTUAL_CLAIM_KEYWORDS)
+
+
+def _uses_softened_cache_wording(text: str) -> bool:
+    return any(phrase in text for phrase in _SOFTENED_CACHE_PHRASES)
+
+
+async def _has_fresh_external_fact_evidence(ctx: ToolExecutionContext) -> bool:
+    from src.core.tool_dispatcher import ServiceContextView
+    from src.logging.state_mutation_log import MutationType, current_iteration_id
+
+    svc = ServiceContextView(ctx.services or {})
+    mutation_log = svc.mutation_log
+    iteration_id = current_iteration_id()
+    if mutation_log is None or not iteration_id:
+        return False
+
+    try:
+        rows = await mutation_log.query_by_iteration(iteration_id)
+    except Exception:
+        logger.debug("[send_message] factual gate mutation lookup failed", exc_info=True)
+        return False
+
+    cutoff = time.time() - 60
+    for row in rows:
+        if getattr(row, "event_type", "") != MutationType.TOOL_RESULT.value:
+            continue
+        if float(getattr(row, "timestamp", 0.0) or 0.0) < cutoff:
+            continue
+        payload = getattr(row, "payload", {}) or {}
+        if payload.get("tool_name") not in {"research", "get_sports_score"}:
+            continue
+        result_payload = payload.get("payload") or {}
+        if isinstance(result_payload, dict) and result_payload.get("cache_hit") is True:
+            continue
+        if str(payload.get("reason", "")).startswith("ambient_cache_hit:"):
+            continue
+        return True
+    return False
+
+
+async def _factual_claim_gate(content: str, ctx: ToolExecutionContext) -> ToolExecutionResult | None:
+    if not _contains_factual_claim(content):
+        return None
+    if _uses_softened_cache_wording(content):
+        return None
+    if await _has_fresh_external_fact_evidence(ctx):
+        return None
+    return ToolExecutionResult(
+        success=False,
+        payload={
+            "sent": False,
+            "error": (
+                "文案包含强事实声明，但当前 turn 内没有真实外部检索证据。"
+                "请改写为“之前缓存的信息显示”或先调用 research/get_sports_score。"
+            ),
+            "content": content,
+        },
+        reason="factual_claim_requires_fresh_search",
+    )
 
 
 async def _record_proactive_decision(
@@ -159,6 +231,10 @@ async def _send_message(
 
     from src.core.tool_dispatcher import ServiceContextView
     svc = ServiceContextView(ctx.services or {})
+
+    factual_gate_result = await _factual_claim_gate(content, ctx)
+    if factual_gate_result is not None:
+        return factual_gate_result
 
     # Proactive gate — fires only on background/autonomous flows. Direct
     # assistant replies use bare model text and never reach this code.

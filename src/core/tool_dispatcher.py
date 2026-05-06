@@ -51,10 +51,6 @@ class ServiceContextView:
     # ── Core routing ────────────────────────────────────────────────────
 
     @property
-    def router(self):
-        return self.raw.get("router")
-
-    @property
     def llm_router(self):
         return self.raw.get("llm_router")
 

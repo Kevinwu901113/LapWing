@@ -33,7 +33,14 @@ def _make_ctx(*, agent_name: str):
     )
     registry.get_or_create_instance = AsyncMock(return_value=fake_agent)
     registry._ephemeral_agents = {}
-    services = {"agent_registry": registry}
+    services = {
+        "agent_registry": registry,
+        "dispatcher": MagicMock(),
+        "tool_registry": MagicMock(),
+        "llm_router": MagicMock(),
+        "research_engine": MagicMock(),
+        "ambient_store": MagicMock(),
+    }
     return ToolExecutionContext(
         execute_shell=AsyncMock(),
         shell_default_cwd=".",

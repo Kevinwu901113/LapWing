@@ -331,7 +331,6 @@ async def test_tool_dispatcher_browser_guard_missing(dispatcher, mock_runtime):
 
 _ALL_SERVICE_KEYS = [
     # Core routing
-    ("router", "router"),
     ("llm_router", "llm_router"),
     # Tool execution
     ("tool_registry", "tool_registry"),

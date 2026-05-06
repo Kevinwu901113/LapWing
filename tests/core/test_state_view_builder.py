@@ -21,6 +21,7 @@ import pytest
 from src.core.state_view import CommitmentView, StateView
 from src.core.state_view_builder import StateViewBuilder
 from src.core.trajectory_store import TrajectoryEntry, TrajectoryEntryType
+from src.ambient.models import AmbientEntry
 
 
 # ── Stubs ────────────────────────────────────────────────────────────
@@ -84,6 +85,14 @@ class _StubTaskStore:
 
     async def list_active(self) -> list[Any]:
         return list(self._tasks)
+
+
+class _StubAmbient:
+    def __init__(self, entries: list[AmbientEntry]) -> None:
+        self._entries = tuple(entries)
+
+    async def get_all_fresh(self):
+        return self._entries
 
 
 @dataclass(frozen=True)
@@ -398,6 +407,46 @@ class TestInnerBuild:
         )
         sv = asyncio.run(builder.build_for_inner())
         assert sv.attention_context.channel == ""
+
+
+class TestAmbientEntries:
+    def _entry(
+        self,
+        key: str,
+        *,
+        category: str = "snooker",
+        confidence: float = 0.8,
+        fetched_at: str = "2026-05-04T10:00:00+00:00",
+        expires_at: str = "2999-01-01T00:00:00+00:00",
+    ) -> AmbientEntry:
+        return AmbientEntry(
+            key=key,
+            category=category,
+            topic=key,
+            data="{}",
+            summary=key,
+            fetched_at=fetched_at,
+            expires_at=expires_at,
+            source="research_writeback",
+            confidence=confidence,
+        )
+
+    def test_filters_low_confidence_and_keeps_top_per_category(self, tmp_path: Path):
+        entries = [
+            self._entry("low", confidence=0.6),
+            self._entry("fresh-high", confidence=0.9, fetched_at="2026-05-04T09:00:00+00:00"),
+            self._entry("fresh-mid", confidence=0.8, fetched_at="2026-05-04T11:00:00+00:00"),
+        ]
+        builder = StateViewBuilder(
+            soul_path=tmp_path / "_",
+            constitution_path=tmp_path / "_",
+            voice_prompt_name="does_not_exist",
+        )
+        builder._ambient = _StubAmbient(entries)
+
+        result = asyncio.run(builder._build_ambient_entries())
+
+        assert tuple(e.key for e in result) == ("fresh-high",)
 
 
 # ── End-to-end: builder → serializer ──────────────────────────────────

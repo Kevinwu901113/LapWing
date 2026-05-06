@@ -74,7 +74,7 @@ class TestProfileExists:
         assert "delegate_to_researcher" in names
         assert "delegate_to_coder" in names
         assert "delegate_to_agent" not in names
-        assert "list_agents" not in names
+        assert "list_agents" in names
         # Commitments
         assert "commit_promise" in names
         assert "fulfill_promise" in names

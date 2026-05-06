@@ -8,10 +8,11 @@ import hashlib
 import json
 import logging
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 import re
 import time
+from urllib.parse import urlparse
 import uuid
 from typing import Any, Awaitable, Callable
 
@@ -99,6 +100,14 @@ TOOL_RESULT_DIR = os.path.join(str(ROOT_DIR), "data", "tool_results")
 BUDGET_EXEMPT_TOOLS = frozenset({
     "file_read", "read_file", "file_read_segment", "memory_read",
 })
+_AMBIENT_WRITEBACK_MIN_CONFIDENCE = 0.7
+_AMBIENT_CACHE_MIN_CONFIDENCE = 0.8
+_AMBIENT_CACHE_MAX_AGE_SECONDS = 60 * 60
+_VOLATILE_TOPIC_PATTERNS = (
+    "今天", "现在", "刚才", "最新", "实时", "当前",
+    "比分", "赛况", "进度", "领先",
+    "股价", "汇率", "天气",
+)
 
 # VitalGuard 对命令类型的分类（模块级常量，避免每次 execute_tool() 重建）
 _SHELL_TOOLS: frozenset[str] = frozenset({"execute_shell", "run_python_code"})
@@ -154,6 +163,38 @@ def _truncate_result(payload: Any, max_chars: int = 800) -> str:
     return text
 
 
+def _is_volatile_research_question(question: str) -> bool:
+    return any(pattern in question for pattern in _VOLATILE_TOPIC_PATTERNS)
+
+
+def _parse_aware_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _evidence_domains(evidence: Any) -> set[str]:
+    domains: set[str] = set()
+    if not isinstance(evidence, list):
+        return domains
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        url = item.get("source_url") or item.get("url") or item.get("link")
+        if not url:
+            continue
+        netloc = urlparse(str(url)).netloc.lower()
+        if netloc.startswith("www."):
+            netloc = netloc[4:]
+        if netloc:
+            domains.add(netloc)
+    return domains
+
+
 class TaskRuntime:
     """负责执行工具轮次、统一工具执行和任务级事件发布。"""
 
@@ -185,6 +226,18 @@ class TaskRuntime:
         from src.core.tool_dispatcher import ToolDispatcher
         self.tool_dispatcher = ToolDispatcher(self)
 
+        # Phase 5B: optional execution summary observer (best-effort, failure-safe).
+        self._execution_summary_observer: Any | None = None
+        self._last_execution_summary: dict[str, Any] | None = None
+
+        # Phase 5C: optional curator dry-run observer (best-effort, failure-safe).
+        self._curator_dry_run_observer: Any | None = None
+        self._last_curator_decision: dict[str, Any] | None = None
+
+        # Phase 5D: optional auto-proposal observer (best-effort, failure-safe).
+        self._auto_proposal_observer: Any | None = None
+        self._last_auto_proposal_result: dict[str, Any] | None = None
+
     def set_browser_guard(self, browser_guard: Any | None) -> None:
         self._browser_guard = browser_guard
 
@@ -196,6 +249,18 @@ class TaskRuntime:
 
     def set_checkpoint_manager(self, manager: Any | None) -> None:
         self._checkpoint_manager = manager
+
+    def set_execution_summary_observer(self, observer: Any | None) -> None:
+        """Set the Phase 5B execution summary observer (best-effort, failure-safe)."""
+        self._execution_summary_observer = observer
+
+    def set_curator_dry_run_observer(self, observer: Any | None) -> None:
+        """Set the Phase 5C curator dry-run observer (best-effort, failure-safe)."""
+        self._curator_dry_run_observer = observer
+
+    def set_auto_proposal_observer(self, observer: Any | None) -> None:
+        """Set the Phase 5D auto-proposal observer (best-effort, failure-safe)."""
+        self._auto_proposal_observer = observer
 
     # -- 公开属性，供 Agent 使用 --
 
@@ -424,6 +489,7 @@ class TaskRuntime:
         iteration_id = new_iteration_id()
         iter_start_mono = time.monotonic()
         end_reason = "completed"
+        reply = ""  # default for observer (set before try so finally always sees it)
 
         if mutation_log is not None:
             try:
@@ -493,6 +559,52 @@ class TaskRuntime:
                     )
                 except Exception:
                     logger.warning("ITERATION_ENDED mutation record failed", exc_info=True)
+
+            # Phase 5B: capture execution summary (best-effort, failure-safe).
+            if self._execution_summary_observer is not None:
+                try:
+                    from src.core.execution_summary import build_task_end_context
+
+                    rows = None
+                    if mutation_log is not None:
+                        rows = await mutation_log.query_by_iteration(iteration_id)
+
+                    context = build_task_end_context(
+                        iteration_id=iteration_id,
+                        messages=messages,
+                        final_reply=reply,
+                        mutation_rows=rows,
+                    )
+                    self._last_execution_summary = await self._execution_summary_observer.capture(context)
+                except Exception:
+                    logger.debug("Execution summary observer failed", exc_info=True)
+
+            # Phase 5C: curator dry-run (best-effort, failure-safe).
+            # Only runs when a sanitized summary was captured.
+            if self._curator_dry_run_observer is not None and self._last_execution_summary is not None:
+                try:
+                    self._last_curator_decision = await self._curator_dry_run_observer.capture(
+                        self._last_execution_summary
+                    )
+                except Exception:
+                    logger.debug("Curator dry-run observer failed", exc_info=True)
+
+            # Phase 5D: auto-proposal persistence (best-effort, failure-safe).
+            # Only runs when summary + curator decision both exist AND
+            # the curator says should_create=true.
+            if (
+                self._auto_proposal_observer is not None
+                and self._last_execution_summary is not None
+                and self._last_curator_decision is not None
+                and self._last_curator_decision.get("should_create") is True
+            ):
+                try:
+                    self._last_auto_proposal_result = await self._auto_proposal_observer.capture(
+                        self._last_execution_summary,
+                        self._last_curator_decision,
+                    )
+                except Exception:
+                    logger.debug("Auto-proposal observer failed", exc_info=True)
 
     async def _complete_chat_body(
         self,
@@ -1810,15 +1922,26 @@ class TaskRuntime:
         request: ToolExecutionRequest,
         ambient_store: Any,
     ) -> ToolExecutionResult | None:
-        """保守的 research 缓存拦截：question 包含已缓存条目的 topic 关键词时命中。"""
+        """保守的 research 缓存拦截：只短路高置信、短龄、非实时问题。"""
         question = str(request.arguments.get("question", "")).strip().lower()
         if not question or len(question) < 4:
+            return None
+        if _is_volatile_research_question(question):
             return None
         try:
             all_entries = await ambient_store.get_all_fresh()
         except Exception:
             return None
+        now_dt = datetime.now(timezone.utc)
         for entry in all_entries:
+            if float(getattr(entry, "confidence", 0.0) or 0.0) < _AMBIENT_CACHE_MIN_CONFIDENCE:
+                continue
+            fetched_dt = _parse_aware_datetime(entry.fetched_at)
+            if fetched_dt is None:
+                continue
+            age_seconds = (now_dt - fetched_dt.astimezone(timezone.utc)).total_seconds()
+            if age_seconds > _AMBIENT_CACHE_MAX_AGE_SECONDS:
+                continue
             topic_lower = entry.topic.lower()
             keywords = [w for w in topic_lower.split() if len(w) >= 2][:3]
             if not keywords:
@@ -1836,6 +1959,7 @@ class TaskRuntime:
                         "evidence": data.get("evidence", []),
                         "confidence": entry.confidence,
                         "source": f"ambient_cache:{entry.key}",
+                        "cache_hit": True,
                         "cached_at": entry.fetched_at,
                     },
                     reason=f"ambient_cache_hit:{entry.key}",
@@ -1855,11 +1979,21 @@ class TaskRuntime:
 
         payload = execution.payload
         confidence = float(payload.get("confidence", 0))
-        if confidence < 0.5:
+        if confidence < _AMBIENT_WRITEBACK_MIN_CONFIDENCE:
+            return
+
+        evidence = payload.get("evidence", [])
+        if not isinstance(evidence, list) or len(evidence) < 2:
+            return
+        if len(_evidence_domains(evidence)) < 2:
+            return
+        if payload.get("unclear"):
             return
 
         question = str(request.arguments.get("question", "")).strip()
         if not question:
+            return
+        if _is_volatile_research_question(question):
             return
 
         answer = str(payload.get("answer", ""))

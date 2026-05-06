@@ -47,6 +47,12 @@ def _normalize_anthropic_base_url(base_url: str) -> str:
     return normalized
 
 
+def _anthropic_messages_endpoint(base_url: str) -> str:
+    """Build the messages endpoint URL without dropping provider path prefixes."""
+    normalized = _normalize_anthropic_base_url(base_url)
+    return f"{normalized}/v1/messages"
+
+
 def _split_system_messages(messages: list[dict[str, Any]]) -> tuple[str | None, list[dict[str, Any]]]:
     """将 OpenAI 风格消息拆成 Anthropic 需要的 system + messages。"""
     system_parts: list[str] = []

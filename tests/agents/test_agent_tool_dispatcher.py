@@ -193,6 +193,8 @@ async def test_delegate_to_coder_passes_turn_services_into_registry():
         "agent_registry": registry,
         "dispatcher": object(),
         "agent_policy": object(),
+        "tool_registry": object(),
+        "llm_router": object(),
         "budget_ledger": None,
     }
     ctx = ToolExecutionContext(

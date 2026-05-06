@@ -23,7 +23,7 @@ of its fields.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Final
 
 from src.core.state_view import (
@@ -226,15 +226,70 @@ def _render_ambient_awareness(state: StateView) -> str:
     lines: list[str] = []
     if state.time_context is not None:
         lines.append(state.time_context.to_prompt_text())
-    if state.ambient_entries:
+    ambient_entries = _filtered_ambient_entries(state)
+    if ambient_entries:
         lines.append("")
         lines.append("### 你已知的信息")
-        for e in state.ambient_entries:
-            lines.append(f"- {e.topic}：{e.summary}")
+        for e in ambient_entries:
+            age = _ambient_age_label(e.fetched_at, state.attention_context.now)
+            lines.append(
+                f"- {e.topic}：{e.summary} "
+                f"(来源:{e.source}, 置信:{e.confidence:g}, {age})"
+            )
     elif state.time_context is not None:
         lines.append("")
         lines.append("（暂无已缓存的环境知识）")
     return "## 你的环境感知\n\n" + "\n".join(lines)
+
+
+def _filtered_ambient_entries(state: StateView) -> tuple:
+    now = state.attention_context.now
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    now = now.astimezone(timezone.utc)
+
+    by_category = {}
+    for entry in state.ambient_entries:
+        if float(getattr(entry, "confidence", 0.0) or 0.0) < 0.7:
+            continue
+        expires_at = _parse_aware_datetime(getattr(entry, "expires_at", ""))
+        if expires_at is None or expires_at <= now:
+            continue
+        category = getattr(entry, "category", "")
+        current = by_category.get(category)
+        if current is None or _ambient_rank(entry) > _ambient_rank(current):
+            by_category[category] = entry
+    return tuple(sorted(by_category.values(), key=_ambient_rank, reverse=True))
+
+
+def _parse_aware_datetime(value: str) -> datetime | None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _ambient_rank(entry) -> tuple[float, datetime]:
+    fetched_at = _parse_aware_datetime(getattr(entry, "fetched_at", ""))
+    if fetched_at is None:
+        fetched_at = datetime.min.replace(tzinfo=timezone.utc)
+    return (float(getattr(entry, "confidence", 0.0) or 0.0), fetched_at)
+
+
+def _ambient_age_label(fetched_at: str, now: datetime) -> str:
+    fetched = _parse_aware_datetime(fetched_at)
+    if fetched is None:
+        return "时间未知"
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    seconds = max((now.astimezone(timezone.utc) - fetched).total_seconds(), 0)
+    minutes = int(seconds // 60)
+    if minutes < 60:
+        return f"{minutes}分钟前"
+    return f"{int(minutes // 60)}小时前"
 
 
 def _render_memory_snippets(state: StateView) -> str:

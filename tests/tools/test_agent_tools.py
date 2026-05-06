@@ -15,6 +15,11 @@ from src.tools.types import ToolExecutionContext, ToolExecutionRequest
 def _make_ctx(**services_override):
     services = {
         "agent_registry": MagicMock(),
+        "dispatcher": MagicMock(),
+        "tool_registry": MagicMock(),
+        "llm_router": MagicMock(),
+        "research_engine": MagicMock(),
+        "ambient_store": MagicMock(),
     }
     services.update(services_override)
     return ToolExecutionContext(
@@ -98,6 +103,82 @@ class TestDelegateToResearcher:
         assert not result.success
         assert result.payload.get("error_detail")
         assert "超时" in result.reason
+
+    async def test_child_tool_hard_error_fails_delegation(self):
+        agent = MagicMock()
+        agent.execute = AsyncMock(return_value=AgentResult(
+            task_id="t1",
+            status="done",
+            result="我查不到。",
+            execution_trace=["started: researcher", "tool: research", "completed"],
+            tool_errors=[{
+                "tool": "research",
+                "reason": "research_engine 未注入",
+                "payload": {"error": "research_engine 未注入"},
+            }],
+        ))
+        registry = MagicMock()
+        registry.get.return_value = agent
+
+        result = await delegate_to_researcher_executor(
+            ToolExecutionRequest(
+                name="delegate_to_researcher",
+                arguments={"task": "查斯诺克比分"},
+            ),
+            _make_ctx(agent_registry=registry),
+        )
+
+        assert not result.success
+        assert "research_engine 未注入" in result.reason
+        assert result.payload["agent_output"] == "我查不到。"
+
+    async def test_soft_no_result_does_not_fail_delegation(self):
+        agent = MagicMock()
+        agent.execute = AsyncMock(return_value=AgentResult(
+            task_id="t1",
+            status="done",
+            result="没有找到相关信息。",
+            execution_trace=["started: researcher", "tool: research", "completed"],
+        ))
+        registry = MagicMock()
+        registry.get.return_value = agent
+
+        result = await delegate_to_researcher_executor(
+            ToolExecutionRequest(
+                name="delegate_to_researcher",
+                arguments={"task": "查一个冷门信息"},
+            ),
+            _make_ctx(agent_registry=registry),
+        )
+
+        assert result.success
+        assert "没有找到相关信息" in result.payload["result"]
+
+    async def test_hard_error_wins_over_soft_tool_error(self):
+        agent = MagicMock()
+        agent.execute = AsyncMock(return_value=AgentResult(
+            task_id="t1",
+            status="done",
+            result="部分工具失败。",
+            execution_trace=["started: researcher", "tool: research", "tool: browse"],
+            tool_errors=[
+                {"tool": "research", "reason": "没有找到相关信息"},
+                {"tool": "browse", "reason": "browser_engine_unavailable"},
+            ],
+        ))
+        registry = MagicMock()
+        registry.get.return_value = agent
+
+        result = await delegate_to_researcher_executor(
+            ToolExecutionRequest(
+                name="delegate_to_researcher",
+                arguments={"task": "查斯诺克比分"},
+            ),
+            _make_ctx(agent_registry=registry),
+        )
+
+        assert not result.success
+        assert result.reason == "browser_engine_unavailable"
 
 
 class TestDelegateToCoder:

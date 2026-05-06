@@ -29,6 +29,21 @@ class AgentResourceLimits:
     max_child_agents: int = 0
 
 
+# ── Phase 6A capability metadata enumerations ──
+
+VALID_RISK_LEVELS: frozenset[str] = frozenset({"low", "medium", "high"})
+
+VALID_APPROVAL_STATES: frozenset[str] = frozenset({
+    "not_required", "pending", "approved", "rejected",
+})
+
+VALID_CAPABILITY_BINDING_MODES: frozenset[str] = frozenset({
+    "metadata_only", "advisory", "enforced",
+})
+
+MAX_DELEGATION_DEPTH: int = 3
+
+
 @dataclass
 class AgentSpec:
     id: str = field(default_factory=lambda: f"agent_{uuid.uuid4().hex[:12]}")
@@ -49,6 +64,18 @@ class AgentSpec:
     created_at: datetime = field(default_factory=local_now)
     updated_at: datetime = field(default_factory=local_now)
 
+    # ── Phase 6A capability-backed metadata (non-runtime) ──
+
+    bound_capabilities: list[str] = field(default_factory=list)
+    memory_scope: str | None = None
+    risk_level: str = "low"
+    eval_tasks: list[dict] = field(default_factory=list)
+    success_count: int = 0
+    failure_count: int = 0
+    approval_state: str = "not_required"
+    allowed_delegation_depth: int = 0
+    capability_binding_mode: str = "metadata_only"
+
     def spec_hash(self) -> str:
         content = json.dumps({
             "name": self.name,
@@ -63,6 +90,16 @@ class AgentSpec:
                 "max_wall_time_seconds": self.resource_limits.max_wall_time_seconds,
                 "max_child_agents": self.resource_limits.max_child_agents,
             },
+            # Phase 6A: structural metadata that defines agent identity.
+            # Runtime counters (success_count, failure_count, eval_tasks)
+            # are intentionally excluded — they change on every run and
+            # would break hash stability.
+            "bound_capabilities": sorted(self.bound_capabilities),
+            "memory_scope": self.memory_scope,
+            "risk_level": self.risk_level,
+            "approval_state": self.approval_state,
+            "allowed_delegation_depth": self.allowed_delegation_depth,
+            "capability_binding_mode": self.capability_binding_mode,
         }, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(content.encode()).hexdigest()[:16]
 
@@ -90,3 +127,31 @@ DYNAMIC_AGENT_DENYLIST: frozenset[str] = frozenset({
     "plan_task", "update_plan",
     "close_focus", "recall_focus",
 })
+
+
+def is_capability_backed_agent(spec: AgentSpec) -> bool:
+    """Return True if spec carries capability-backed metadata beyond inert defaults.
+
+    Conservative heuristic — true when any of these hold:
+      - bound_capabilities non-empty
+      - capability_binding_mode != "metadata_only"
+      - risk_level in {"medium", "high"}
+      - eval_tasks non-empty
+      - approval_state != "not_required"
+      - allowed_delegation_depth > 0
+
+    Returns False for old specs and ordinary metadata-only low-risk agents.
+    """
+    if spec.bound_capabilities:
+        return True
+    if spec.capability_binding_mode != "metadata_only":
+        return True
+    if spec.risk_level in {"medium", "high"}:
+        return True
+    if spec.eval_tasks:
+        return True
+    if spec.approval_state != "not_required":
+        return True
+    if spec.allowed_delegation_depth > 0:
+        return True
+    return False

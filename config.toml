@@ -189,6 +189,19 @@ enabled = false
 sandbox_image = "lapwing-sandbox"
 sandbox_timeout = 30
 
+[agents]
+# Phase 6C: require an approved AgentCandidate with sufficient evidence
+# before saving a capability-backed persistent dynamic agent.
+# Default false — existing save_agent behavior is unchanged.
+require_candidate_approval_for_persistence = false
+# Phase 6D: expose operator-only tools for managing AgentCandidate objects.
+# Default false — candidate tools are absent from the tool registry.
+candidate_tools_enabled = false
+# Phase 6D: optional evidence staleness threshold in days.
+# When set, high/medium evidence older than this is denied by the save gate.
+# Default 90 (unset = no enforcement).
+candidate_evidence_max_age_days = 90
+
 [agent_team]
 enabled = true
 
@@ -292,3 +305,29 @@ retriever_enabled = true
 injector_enabled = false
 gate_enabled = false
 identity_system_killswitch = false
+
+[capabilities]
+# Phase 0/1: All flags disabled. No runtime behavior is wired yet.
+# Phase 2+ will gate capability retrieval, curation, and auto-drafting
+# behind these flags.
+# Phase 3C: lifecycle_tools_enabled gates evaluate/plan/transition tools.
+# Requires capabilities.enabled=true. Defaults to false (operator-only).
+enabled = false
+retrieval_enabled = false
+curator_enabled = false
+auto_draft_enabled = false
+lifecycle_tools_enabled = false
+# Phase 7A: external package import into quarantine only (operator-only)
+external_import_enabled = false
+# Phase 7C: quarantine testing transition requests (operator-only bridge)
+quarantine_transition_requests_enabled = false
+# Phase 7D-A: quarantine activation planning (planner-only, no activation)
+quarantine_activation_planning_enabled = false
+# Phase 8B-3: trust root operator tools (operator-only metadata management)
+trust_root_tools_enabled = false
+# Maintenance C: repair queue operator tools (operator-only)
+repair_queue_tools_enabled = false
+# Phase 8C-1: stable promotion trust gate (testing -> stable provenance/trust/integrity checks)
+stable_promotion_trust_gate_enabled = false
+data_dir = "data/capabilities"
+index_db_path = "data/capabilities/capability_index.sqlite"

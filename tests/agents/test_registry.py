@@ -2,6 +2,8 @@
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from src.agents.registry import AgentRegistry
 
 
@@ -40,3 +42,19 @@ class TestAgentRegistry:
         assert len(specs) == 2
         spec_names = {s["name"] for s in specs}
         assert spec_names == {"researcher", "coder"}
+
+    @pytest.mark.asyncio
+    async def test_legacy_get_or_create_applies_services_override(self):
+        reg = AgentRegistry()
+        agent = _make_agent("researcher")
+        agent._services = {}
+        reg.register("researcher", agent)
+
+        services = {"research_engine": object(), "llm_router": object()}
+        resolved = await reg.get_or_create_instance(
+            "researcher",
+            services_override=services,
+        )
+
+        assert resolved is agent
+        assert agent._services is services
