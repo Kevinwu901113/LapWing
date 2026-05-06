@@ -12,7 +12,7 @@ Covers Blueprint v2.0 Step 2 §2 requirements:
 
 from __future__ import annotations
 
-import time
+import time as _time
 
 import pytest
 
@@ -258,7 +258,7 @@ class TestReadQueries:
         assert [r.content["purpose"] for r in rows_b] == ["b"]
 
     async def test_in_window_filters_by_timestamp(self, store):
-        now = time.time()
+        now = _time.time()
         await store.append(
             TrajectoryEntryType.USER_MESSAGE, "chat1", "user",
             {"text": "past"}, timestamp=now - 100,
@@ -294,3 +294,146 @@ class TestEmptyStore:
 
     async def test_relevant_to_chat_on_empty_returns_empty(self, store):
         assert await store.relevant_to_chat("nobody", n=10) == []
+
+
+class TestHasRecentEntry:
+    async def test_has_recent_entry_returns_true_when_entry_exists(self, store):
+        chat_id = "919231551"
+        now = _time.time()
+        await store.append(
+            TrajectoryEntryType.USER_MESSAGE, chat_id, "user",
+            {"text": "hello"},
+            timestamp=now - 3600,
+        )
+        assert await store.has_recent_entry(
+            chat_id, TrajectoryEntryType.USER_MESSAGE, now - 86400,
+        ) is True
+
+    async def test_has_recent_entry_returns_false_when_too_old(self, store):
+        chat_id = "919231551"
+        now = _time.time()
+        await store.append(
+            TrajectoryEntryType.USER_MESSAGE, chat_id, "user",
+            {"text": "old"},
+            timestamp=now - 172800,
+        )
+        assert await store.has_recent_entry(
+            chat_id, TrajectoryEntryType.USER_MESSAGE, now - 86400,
+        ) is False
+
+    async def test_has_recent_entry_returns_false_when_wrong_type(self, store):
+        chat_id = "919231551"
+        now = _time.time()
+        await store.append(
+            TrajectoryEntryType.USER_MESSAGE, chat_id, "user",
+            {"text": "hi"},
+            timestamp=now - 60,
+        )
+        assert await store.has_recent_entry(
+            chat_id, TrajectoryEntryType.INNER_THOUGHT, now - 86400,
+        ) is False
+
+    async def test_has_recent_entry_returns_false_when_wrong_chat(self, store):
+        now = _time.time()
+        await store.append(
+            TrajectoryEntryType.USER_MESSAGE, "chat_a", "user",
+            {"text": "hi"},
+            timestamp=now - 60,
+        )
+        assert await store.has_recent_entry(
+            "chat_b", TrajectoryEntryType.USER_MESSAGE, now - 86400,
+        ) is False
+
+    async def test_has_recent_entry_returns_false_when_empty(self, store):
+        assert await store.has_recent_entry(
+            "any_chat", TrajectoryEntryType.USER_MESSAGE, _time.time() - 86400,
+        ) is False
+
+
+class TestProactiveOutboundLegacyProjection:
+    def test_proactive_outbound_renders_as_assistant(self):
+        from src.core.trajectory_store import trajectory_entries_to_messages
+        entry = TrajectoryEntry(
+            id=1, timestamp=1000.0,
+            entry_type=TrajectoryEntryType.PROACTIVE_OUTBOUND.value,
+            source_chat_id="c1", actor="assistant",
+            content={"text": "下午好～", "target": "kevin_qq", "kind": "proactive_outbound", "source": "send_message"},
+            related_commitment_id=None, related_iteration_id=None,
+            related_tool_call_id=None,
+        )
+        msgs = trajectory_entries_to_messages([entry])
+        assert msgs == [{"role": "assistant", "content": "下午好～"}]
+
+    def test_proactive_outbound_excluded_when_include_inner_false(self):
+        from src.core.trajectory_store import trajectory_entries_to_messages
+        inner = TrajectoryEntry(
+            id=1, timestamp=1000.0,
+            entry_type=TrajectoryEntryType.INNER_THOUGHT.value,
+            source_chat_id=None, actor="lapwing",
+            content={"text": "internal reasoning"},
+            related_commitment_id=None, related_iteration_id=None,
+            related_tool_call_id=None,
+        )
+        msgs = trajectory_entries_to_messages([inner], include_inner=False)
+        assert msgs == []
+
+    def test_consecutive_assistant_turns_proactive_after_direct(self):
+        from src.core.trajectory_store import trajectory_entries_to_messages
+        entries = [
+            TrajectoryEntry(
+                id=1, timestamp=1000.0,
+                entry_type=TrajectoryEntryType.USER_MESSAGE.value,
+                source_chat_id="c1", actor="user",
+                content={"text": "你好"},
+                related_commitment_id=None, related_iteration_id=None,
+                related_tool_call_id=None,
+            ),
+            TrajectoryEntry(
+                id=2, timestamp=1001.0,
+                entry_type=TrajectoryEntryType.ASSISTANT_TEXT.value,
+                source_chat_id="c1", actor="lapwing",
+                content={"text": "你好！"},
+                related_commitment_id=None, related_iteration_id=None,
+                related_tool_call_id=None,
+            ),
+            TrajectoryEntry(
+                id=3, timestamp=1002.0,
+                entry_type=TrajectoryEntryType.PROACTIVE_OUTBOUND.value,
+                source_chat_id="c1", actor="assistant",
+                content={"text": "顺便提醒一下～", "target": "kevin_qq", "kind": "proactive_outbound", "source": "send_message"},
+                related_commitment_id=None, related_iteration_id=None,
+                related_tool_call_id=None,
+            ),
+        ]
+        msgs = trajectory_entries_to_messages(entries)
+        assert msgs == [
+            {"role": "user", "content": "你好"},
+            {"role": "assistant", "content": "你好！"},
+            {"role": "assistant", "content": "顺便提醒一下～"},
+        ]
+
+    def test_consecutive_assistant_turns_direct_after_proactive(self):
+        from src.core.trajectory_store import trajectory_entries_to_messages
+        entries = [
+            TrajectoryEntry(
+                id=1, timestamp=1000.0,
+                entry_type=TrajectoryEntryType.PROACTIVE_OUTBOUND.value,
+                source_chat_id="c1", actor="assistant",
+                content={"text": "下午好～", "target": "kevin_qq", "kind": "proactive_outbound", "source": "send_message"},
+                related_commitment_id=None, related_iteration_id=None,
+                related_tool_call_id=None,
+            ),
+            TrajectoryEntry(
+                id=2, timestamp=1001.0,
+                entry_type=TrajectoryEntryType.ASSISTANT_TEXT.value,
+                source_chat_id="c1", actor="lapwing",
+                content={"text": "收到！"},
+                related_commitment_id=None, related_iteration_id=None,
+                related_tool_call_id=None,
+            ),
+        ]
+        msgs = trajectory_entries_to_messages(entries)
+        assert msgs == [
+            {"role": "assistant", "content": "下午好～"},
+            {"role": "assistant", "content": "收到！"},
+        ]

@@ -50,6 +50,7 @@ class TrajectoryEntryType(str, Enum):
     STATE_CHANGE = "state_change"
     STAY_SILENT = "stay_silent"            # Step 4+
     INTERRUPTED = "interrupted"            # Step 4 M4 — partial output saved on OWNER preempt
+    PROACTIVE_OUTBOUND = "proactive_outbound"
 
 
 _VALID_ACTORS = frozenset({"user", "lapwing", "system"})
@@ -124,6 +125,10 @@ class TrajectoryStore:
         await self._db.execute(
             "CREATE INDEX IF NOT EXISTS idx_trajectory_focus "
             "ON trajectory(focus_id, timestamp)"
+        )
+        await self._db.execute(
+            "CREATE INDEX IF NOT EXISTS idx_trajectory_chat_type_timestamp "
+            "ON trajectory(source_chat_id, entry_type, timestamp)"
         )
         await self._db.commit()
 
@@ -438,6 +443,24 @@ class TrajectoryStore:
             limit=limit,
         )
 
+    async def has_recent_entry(
+        self,
+        source_chat_id: str,
+        entry_type: TrajectoryEntryType,
+        since: float,
+    ) -> bool:
+        """Return True if an entry of the given type exists for chat_id since timestamp."""
+        if self._db is None:
+            return False
+        async with self._db.execute(
+            "SELECT 1 FROM trajectory "
+            "WHERE source_chat_id = ? AND entry_type = ? AND timestamp > ? "
+            "LIMIT 1",
+            (source_chat_id, entry_type.value, since),
+        ) as cur:
+            row = await cur.fetchone()
+            return row is not None
+
     async def _fetch(
         self,
         where: str,
@@ -493,6 +516,7 @@ _LEGACY_ROLE_MAP: dict[str, str] = {
     TrajectoryEntryType.USER_MESSAGE.value: "user",
     TrajectoryEntryType.TELL_USER.value: "assistant",
     TrajectoryEntryType.ASSISTANT_TEXT.value: "assistant",
+    TrajectoryEntryType.PROACTIVE_OUTBOUND.value: "assistant",
 }
 
 
@@ -540,6 +564,10 @@ def _extract_legacy_text(entry: TrajectoryEntry) -> str | None:
             return text
         return None
     text = content.get("text")
+    if isinstance(text, str):
+        return text
+    # Fallback for types that use "content" key
+    text = content.get("content")
     if isinstance(text, str):
         return text
     return None

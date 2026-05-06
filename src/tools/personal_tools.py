@@ -184,6 +184,114 @@ def _is_proactive_context(ctx: ToolExecutionContext) -> bool:
     return False
 
 
+def _resolve_proactive_target_chat_id(
+    target: str,
+    ctx: ToolExecutionContext,
+) -> str | None:
+    """Map a send_message target to the canonical chat_id used by inbound routing.
+
+    Returns None when the mapping cannot be resolved. Callers must handle None
+    by skipping trajectory write (not by skipping the send itself).
+    """
+    from src.core.tool_dispatcher import ServiceContextView
+    svc = ServiceContextView(ctx.services or {})
+
+    if target == "kevin_qq":
+        owner_qq_id = svc.owner_qq_id
+        if owner_qq_id:
+            return str(owner_qq_id)
+        return None
+
+    if target == "kevin_desktop":
+        channel_manager = svc.channel_manager
+        if channel_manager is None:
+            return None
+        try:
+            desktop_adapter = channel_manager.get_adapter("desktop")
+        except Exception:
+            return None
+        if desktop_adapter is None:
+            return None
+        connections = getattr(desktop_adapter, "connections", {})
+        if not connections:
+            return None
+        first_cid = next(iter(connections.keys()))
+        from config.settings import DESKTOP_WS_CHAT_ID_PREFIX
+        return f"{DESKTOP_WS_CHAT_ID_PREFIX}:{first_cid}"
+
+    if target.startswith("qq_group:"):
+        return None
+
+    return None
+
+
+async def _record_proactive_outbound_trajectory(
+    *,
+    ctx: ToolExecutionContext,
+    target: str,
+    content: str,
+    channel: str,
+    resolved_chat_id: str,
+) -> None:
+    """Best-effort record of a delivered proactive outbound message.
+
+    Failure must not fail send_message — the message already reached the user.
+    """
+    from src.core.tool_dispatcher import ServiceContextView
+    from src.core.trajectory_store import TrajectoryEntryType
+    from config.settings import PROACTIVE_OUTBOUND_TRAJECTORY_ENABLED
+
+    if not PROACTIVE_OUTBOUND_TRAJECTORY_ENABLED:
+        return
+
+    svc = ServiceContextView(ctx.services or {})
+    trajectory_store = svc.trajectory_store
+    if trajectory_store is None:
+        return
+
+    try:
+        await trajectory_store.append(
+            TrajectoryEntryType.PROACTIVE_OUTBOUND,
+            resolved_chat_id,
+            "assistant",
+            {
+                "text": content,
+                "target": target,
+                "channel": channel,
+                "kind": "proactive_outbound",
+                "source": "send_message",
+            },
+        )
+    except Exception:
+        logger.exception(
+            "Failed to record proactive outbound trajectory entry "
+            "target=%s chat_id=%s",
+            target, resolved_chat_id,
+        )
+        return
+
+    # Observability: warn if the resolved chat_id has no recent inbound
+    try:
+        import time as _time
+        since = _time.time() - 86400
+        has_recent = await trajectory_store.has_recent_entry(
+            resolved_chat_id,
+            TrajectoryEntryType.USER_MESSAGE,
+            since,
+        )
+        if not has_recent:
+            logger.warning(
+                "proactive_outbound_no_recent_inbound target=%s "
+                "resolved_chat_id=%s channel=%s",
+                target, resolved_chat_id, channel,
+            )
+    except Exception:
+        logger.debug(
+            "has_recent_entry check failed for proactive outbound",
+            exc_info=True,
+        )
+
+
 async def _send_message(
     req: ToolExecutionRequest,
     ctx: ToolExecutionContext,
@@ -287,6 +395,17 @@ async def _send_message(
                     reason="desktop_not_connected",
                 )
             await desktop_adapter.send_text(desktop_adapter.config.get("kevin_id", "owner"), content)
+            _resolved = _resolve_proactive_target_chat_id(target, ctx)
+            if _resolved is not None:
+                await _record_proactive_outbound_trajectory(
+                    ctx=ctx, target=target, content=content,
+                    channel="desktop", resolved_chat_id=_resolved,
+                )
+            else:
+                logger.info(
+                    "[send_message] skipped proactive trajectory write: "
+                    "no resolved chat_id for target=%s", target,
+                )
             return ToolExecutionResult(
                 success=True,
                 payload={"sent": True, "target": target, "content": content},
@@ -315,6 +434,12 @@ async def _send_message(
                     reason="qq_adapter_unavailable",
                 )
             await qq_adapter.send_private_message(str(owner_qq_id), content)
+            _resolved = _resolve_proactive_target_chat_id(target, ctx)
+            if _resolved is not None:
+                await _record_proactive_outbound_trajectory(
+                    ctx=ctx, target=target, content=content,
+                    channel="qq", resolved_chat_id=_resolved,
+                )
             return ToolExecutionResult(
                 success=True,
                 payload={"sent": True, "target": target, "content": content},
@@ -343,6 +468,18 @@ async def _send_message(
                     reason="qq_adapter_unavailable",
                 )
             await qq_adapter.send_group_message(group_id, content)
+            _resolved = _resolve_proactive_target_chat_id(target, ctx)
+            if _resolved is not None:
+                await _record_proactive_outbound_trajectory(
+                    ctx=ctx, target=target, content=content,
+                    channel="qq_group", resolved_chat_id=_resolved,
+                )
+            else:
+                logger.info(
+                    "[send_message] skipped proactive trajectory write: "
+                    "group canonical chat_id not resolved for target=%s",
+                    target,
+                )
             return ToolExecutionResult(
                 success=True,
                 payload={"sent": True, "target": target, "content": content},

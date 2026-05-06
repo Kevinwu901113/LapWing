@@ -472,3 +472,35 @@ class TestBuilderSerializerRoundtrip:
         assert "I am Lapwing." in out.system_prompt
         # Two trajectory turns + total=3 < 4 → no voice inject
         assert len(out.messages) == 2
+
+
+class TestEntriesToTurnsProactiveOutbound:
+    def test_proactive_outbound_renders_as_assistant_in_turns(self):
+        from src.core.state_view_builder import _entries_to_turns
+        from src.core.trajectory_store import TrajectoryEntry, TrajectoryEntryType
+        entry = TrajectoryEntry(
+            id=1, timestamp=1000.0,
+            entry_type=TrajectoryEntryType.PROACTIVE_OUTBOUND.value,
+            source_chat_id="c1", actor="assistant",
+            content={"text": "下午好～", "target": "kevin_qq", "kind": "proactive_outbound", "source": "send_message"},
+            related_commitment_id=None, related_iteration_id=None,
+            related_tool_call_id=None,
+        )
+        turns = _entries_to_turns([entry])
+        assert len(turns) == 1
+        assert turns[0].role == "assistant"
+        assert turns[0].content == "下午好～"
+
+    def test_inner_thought_still_excluded_from_turns(self):
+        from src.core.state_view_builder import _entries_to_turns
+        from src.core.trajectory_store import TrajectoryEntry, TrajectoryEntryType
+        entry = TrajectoryEntry(
+            id=1, timestamp=1000.0,
+            entry_type=TrajectoryEntryType.INNER_THOUGHT.value,
+            source_chat_id=None, actor="lapwing",
+            content={"text": "internal"},
+            related_commitment_id=None, related_iteration_id=None,
+            related_tool_call_id=None,
+        )
+        turns = _entries_to_turns([entry])
+        assert turns == []
