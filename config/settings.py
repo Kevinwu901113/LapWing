@@ -320,7 +320,7 @@ DESKTOP_AUTH_TOKENS_PATH: Path = AUTH_DIR / "desktop-tokens.json"
 
 # ── Proactive outbound trajectory ─────────────────────
 
-PROACTIVE_OUTBOUND_TRAJECTORY_ENABLED: bool = True
+PROACTIVE_OUTBOUND_TRAJECTORY_ENABLED: bool = _s.proactive_messages.proactive_outbound_trajectory_enabled
 
 # ── 验证（保留原有约束） ─────────────────────
 

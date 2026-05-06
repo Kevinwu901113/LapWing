@@ -81,19 +81,37 @@ class TestResolveProactiveTargetChatId:
         result = _resolve_proactive_target_chat_id("kevin_qq", ctx)
         assert result is None
 
-    def test_kevin_desktop_resolves_to_prefix_with_connection_id(self):
+    def test_kevin_desktop_resolves_to_owner_when_default_owner_enabled(self, monkeypatch):
+        import config.settings as _cs
+        monkeypatch.setattr(_cs, "DESKTOP_DEFAULT_OWNER", True)
+        monkeypatch.setattr(_cs, "OWNER_IDS", {"owner1"})
         ctx, _ = _make_desktop_ctx(connected=True)
         result = _resolve_proactive_target_chat_id("kevin_desktop", ctx)
-        assert result == "desktop:12345"
+        assert result == "owner1"
 
-    def test_kevin_desktop_returns_none_when_no_connections(self):
-        ctx, _ = _make_desktop_ctx(connected=False)
+    def test_kevin_desktop_returns_none_when_default_owner_disabled(self, monkeypatch):
+        import config.settings as _cs
+        monkeypatch.setattr(_cs, "DESKTOP_DEFAULT_OWNER", False)
+        ctx, _ = _make_desktop_ctx(connected=True)
         result = _resolve_proactive_target_chat_id("kevin_desktop", ctx)
         assert result is None
 
-    def test_qq_group_returns_none(self):
+    def test_kevin_desktop_returns_none_when_owner_ids_empty(self, monkeypatch):
+        import config.settings as _cs
+        monkeypatch.setattr(_cs, "DESKTOP_DEFAULT_OWNER", True)
+        monkeypatch.setattr(_cs, "OWNER_IDS", set())
+        ctx, _ = _make_desktop_ctx(connected=True)
+        result = _resolve_proactive_target_chat_id("kevin_desktop", ctx)
+        assert result is None
+
+    def test_qq_group_resolves_to_group_id(self):
         ctx, _ = _make_qq_ctx()
         result = _resolve_proactive_target_chat_id("qq_group:123456", ctx)
+        assert result == "123456"
+
+    def test_qq_group_empty_id_returns_none(self):
+        ctx, _ = _make_qq_ctx()
+        result = _resolve_proactive_target_chat_id("qq_group:", ctx)
         assert result is None
 
     def test_unknown_target_returns_none(self):
@@ -121,7 +139,7 @@ class TestSendMessageTrajectoryWrite:
         call_args = ts.append.call_args
         assert call_args.args[0] == TrajectoryEntryType.PROACTIVE_OUTBOUND
         assert call_args.args[1] == "919231551"
-        assert call_args.args[2] == "assistant"
+        assert call_args.args[2] == "lapwing"
         content = call_args.args[3]
         assert content["text"] == "下午好～"
         assert content["target"] == "kevin_qq"
@@ -130,7 +148,10 @@ class TestSendMessageTrajectoryWrite:
         assert content["source"] == "send_message"
 
     @pytest.mark.asyncio
-    async def test_successful_kevin_desktop_send_writes_proactive_outbound(self):
+    async def test_successful_kevin_desktop_send_writes_proactive_outbound(self, monkeypatch):
+        import config.settings as _cs
+        monkeypatch.setattr(_cs, "DESKTOP_DEFAULT_OWNER", True)
+        monkeypatch.setattr(_cs, "OWNER_IDS", {"owner1"})
         ts = AsyncMock()
         ts.append = AsyncMock(return_value=42)
         ts.has_recent_entry = AsyncMock(return_value=True)
@@ -145,9 +166,26 @@ class TestSendMessageTrajectoryWrite:
         assert result.success is True
         ts.append.assert_awaited_once()
         call_args = ts.append.call_args
-        assert call_args.args[1] == "desktop:12345"
+        assert call_args.args[1] == "owner1"
         content = call_args.args[3]
         assert content["channel"] == "desktop"
+
+    @pytest.mark.asyncio
+    async def test_desktop_default_owner_disabled_skips_trajectory(self, monkeypatch):
+        import config.settings as _cs
+        monkeypatch.setattr(_cs, "DESKTOP_DEFAULT_OWNER", False)
+        ts = AsyncMock()
+        ts.append = AsyncMock()
+        ctx, desktop = _make_desktop_ctx(trajectory_store=ts, connected=True)
+
+        req = ToolExecutionRequest(
+            name="send_message",
+            arguments={"target": "kevin_desktop", "content": "hello from desktop"},
+        )
+        result = await _send_message(req, ctx)
+
+        assert result.success is True
+        ts.append.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_gate_deny_does_not_write_trajectory(self):
