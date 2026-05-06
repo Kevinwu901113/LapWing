@@ -12,7 +12,7 @@ Covers Blueprint v2.0 Step 2 §2 requirements:
 
 from __future__ import annotations
 
-import time
+import time as _time
 
 import pytest
 
@@ -258,7 +258,7 @@ class TestReadQueries:
         assert [r.content["purpose"] for r in rows_b] == ["b"]
 
     async def test_in_window_filters_by_timestamp(self, store):
-        now = time.time()
+        now = _time.time()
         await store.append(
             TrajectoryEntryType.USER_MESSAGE, "chat1", "user",
             {"text": "past"}, timestamp=now - 100,
@@ -294,3 +294,57 @@ class TestEmptyStore:
 
     async def test_relevant_to_chat_on_empty_returns_empty(self, store):
         assert await store.relevant_to_chat("nobody", n=10) == []
+
+
+class TestHasRecentEntry:
+    async def test_has_recent_entry_returns_true_when_entry_exists(self, store):
+        chat_id = "919231551"
+        now = _time.time()
+        await store.append(
+            TrajectoryEntryType.USER_MESSAGE, chat_id, "user",
+            {"text": "hello"},
+            timestamp=now - 3600,
+        )
+        assert await store.has_recent_entry(
+            chat_id, TrajectoryEntryType.USER_MESSAGE, now - 86400,
+        ) is True
+
+    async def test_has_recent_entry_returns_false_when_too_old(self, store):
+        chat_id = "919231551"
+        now = _time.time()
+        await store.append(
+            TrajectoryEntryType.USER_MESSAGE, chat_id, "user",
+            {"text": "old"},
+            timestamp=now - 172800,
+        )
+        assert await store.has_recent_entry(
+            chat_id, TrajectoryEntryType.USER_MESSAGE, now - 86400,
+        ) is False
+
+    async def test_has_recent_entry_returns_false_when_wrong_type(self, store):
+        chat_id = "919231551"
+        now = _time.time()
+        await store.append(
+            TrajectoryEntryType.USER_MESSAGE, chat_id, "user",
+            {"text": "hi"},
+            timestamp=now - 60,
+        )
+        assert await store.has_recent_entry(
+            chat_id, TrajectoryEntryType.INNER_THOUGHT, now - 86400,
+        ) is False
+
+    async def test_has_recent_entry_returns_false_when_wrong_chat(self, store):
+        now = _time.time()
+        await store.append(
+            TrajectoryEntryType.USER_MESSAGE, "chat_a", "user",
+            {"text": "hi"},
+            timestamp=now - 60,
+        )
+        assert await store.has_recent_entry(
+            "chat_b", TrajectoryEntryType.USER_MESSAGE, now - 86400,
+        ) is False
+
+    async def test_has_recent_entry_returns_false_when_empty(self, store):
+        assert await store.has_recent_entry(
+            "any_chat", TrajectoryEntryType.USER_MESSAGE, _time.time() - 86400,
+        ) is False
