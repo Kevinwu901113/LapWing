@@ -5,7 +5,16 @@ from typing import TYPE_CHECKING, Any, Callable, Awaitable
 
 from src.logging.state_mutation_log import MutationType, current_iteration_id, current_chat_id
 from src.tools.registry import ToolRegistry
-from src.tools.types import ToolExecutionRequest, ToolExecutionResult, ToolExecutionContext
+from src.tools.types import (
+    ToolErrorClass,
+    ToolErrorCode,
+    ToolExecutionContext,
+    ToolExecutionRequest,
+    ToolExecutionResult,
+    ToolResultStatus,
+    make_tool_error_result,
+)
+from src.tools.schema_validation import sanitize_for_tool_error
 from src.core.runtime_profiles import RuntimeProfile
 from src.core.task_types import RuntimeDeps
 from src.core.shell_policy import ShellRuntimePolicy as ShellPolicy, ExecutionSessionState
@@ -256,6 +265,11 @@ class ToolDispatcher:
         reason: str,
         cwd: str,
         command: str,
+        status: ToolResultStatus = ToolResultStatus.PRECONDITION_ERROR,
+        error_code: ToolErrorCode = ToolErrorCode.PRECONDITION_FAILED,
+        error_class: ToolErrorClass = ToolErrorClass.PRECONDITION,
+        retryable: bool = False,
+        safe_details: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         return {
             "command": command,
@@ -268,7 +282,46 @@ class ToolDispatcher:
             "cwd": cwd,
             "stdout_truncated": False,
             "stderr_truncated": False,
+            "status": status.value,
+            "error_code": error_code.value,
+            "error_class": error_class.value,
+            "retryable": retryable,
+            "safe_details": safe_details or {
+                "reason": sanitize_for_tool_error(reason),
+            },
+            "details_schema_version": "tool_error.v1",
         }
+
+    def _blocked_result(
+        self,
+        *,
+        reason: str,
+        cwd: str,
+        command: str,
+        status: ToolResultStatus = ToolResultStatus.PRECONDITION_ERROR,
+        error_code: ToolErrorCode = ToolErrorCode.PRECONDITION_FAILED,
+        error_class: ToolErrorClass = ToolErrorClass.PRECONDITION,
+        retryable: bool = False,
+        safe_details: dict[str, Any] | None = None,
+    ) -> ToolExecutionResult:
+        return make_tool_error_result(
+            status=status,
+            error_code=error_code,
+            error_class=error_class,
+            retryable=retryable,
+            reason=reason,
+            safe_details=safe_details or {"reason": sanitize_for_tool_error(reason)},
+            base_payload=self._blocked_payload(
+                reason=reason,
+                cwd=cwd,
+                command=command,
+                status=status,
+                error_code=error_code,
+                error_class=error_class,
+                retryable=retryable,
+                safe_details=safe_details,
+            ),
+        )
 
     async def _record_tool_denied(
         self,
@@ -338,6 +391,10 @@ class ToolDispatcher:
                     reason=reason,
                     cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
                     command=str(request.arguments.get("command", "")).strip(),
+                    status=ToolResultStatus.PERMISSION_ERROR,
+                    error_code=ToolErrorCode.PERMISSION_DENIED,
+                    error_class=ToolErrorClass.PERMISSION,
+                    safe_details={"guard": "agent_policy", "reason": reason},
                 )
                 await self._record_tool_denied(
                     tool_name=request.name,
@@ -363,6 +420,11 @@ class ToolDispatcher:
                     reason=reason,
                     cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
                     command=str(request.arguments.get("command", "")).strip(),
+                    status=ToolResultStatus.DEPENDENCY_ERROR,
+                    error_code=ToolErrorCode.DEPENDENCY_UNAVAILABLE,
+                    error_class=ToolErrorClass.DEPENDENCY,
+                    retryable=True,
+                    safe_details={"guard": "agent_policy", "reason": reason},
                 )
                 await self._record_tool_denied(
                     tool_name=request.name,
@@ -383,6 +445,10 @@ class ToolDispatcher:
                     reason=reason,
                     cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
                     command=str(request.arguments.get("command", "")).strip(),
+                    status=ToolResultStatus.PERMISSION_ERROR,
+                    error_code=ToolErrorCode.PERMISSION_DENIED,
+                    error_class=ToolErrorClass.PERMISSION,
+                    safe_details={"guard": "agent_policy", "reason": reason},
                 )
                 await self._record_tool_denied(
                     tool_name=request.name,
@@ -410,6 +476,10 @@ class ToolDispatcher:
                 reason=reason,
                 cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
                 command=str(request.arguments.get("command", "")).strip(),
+                status=ToolResultStatus.PERMISSION_ERROR,
+                error_code=ToolErrorCode.PERMISSION_DENIED,
+                error_class=ToolErrorClass.PERMISSION,
+                safe_details={"guard": "agent_policy", "reason": reason},
             )
             await self._record_tool_denied(
                 tool_name=request.name,
@@ -455,6 +525,10 @@ class ToolDispatcher:
                 reason=reason,
                 cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
                 command=str(request.arguments.get("command", "")).strip(),
+                status=ToolResultStatus.PERMISSION_ERROR,
+                error_code=ToolErrorCode.PERMISSION_DENIED,
+                error_class=ToolErrorClass.PERMISSION,
+                safe_details={"guard": "profile_not_allowed", "reason": "tool_not_allowed_for_profile"},
             )
             await self._record_tool_denied(
                 tool_name=request.name,
@@ -484,6 +558,10 @@ class ToolDispatcher:
                 reason=deny_reason,
                 cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
                 command=str(request.arguments.get("command", "")).strip(),
+                status=ToolResultStatus.PERMISSION_ERROR,
+                error_code=ToolErrorCode.PERMISSION_DENIED,
+                error_class=ToolErrorClass.PERMISSION,
+                safe_details={"guard": "authority_gate", "reason": sanitize_for_tool_error(deny_reason)},
             )
             await self._record_tool_denied(
                 tool_name=request.name,
@@ -569,7 +647,16 @@ class ToolDispatcher:
                 )
                 if state is not None:
                     state.record_failure(reason, "blocked")
-                payload = self._blocked_payload(reason=reason, cwd=shell_default_cwd, command="")
+                payload = self._blocked_payload(
+                    reason=reason,
+                    cwd=shell_default_cwd,
+                    command="",
+                    status=ToolResultStatus.DEPENDENCY_ERROR,
+                    error_code=ToolErrorCode.DEPENDENCY_UNAVAILABLE,
+                    error_class=ToolErrorClass.DEPENDENCY,
+                    retryable=True,
+                    safe_details={"guard": "browser_guard_missing", "reason": "dependency_unavailable"},
+                )
                 await self._record_tool_denied(
                     tool_name=request.name,
                     guard="browser_guard_missing",

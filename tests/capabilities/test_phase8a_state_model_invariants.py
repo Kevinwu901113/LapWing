@@ -914,7 +914,16 @@ class TestCapabilityStatusDomain:
     """All capability status values are well-defined and distinct."""
 
     def test_all_statuses_defined(self):
-        expected = {"active", "disabled", "archived", "quarantined"}
+        expected = {
+            "active",
+            "broken",
+            "repairing",
+            "disabled",
+            "archived",
+            "quarantined",
+            "needs_permission",
+            "environment_mismatch",
+        }
         actual = {e.value for e in CapabilityStatus}
         assert actual == expected
 

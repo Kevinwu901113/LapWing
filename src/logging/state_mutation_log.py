@@ -184,6 +184,12 @@ class MutationType(str, Enum):
     CAPABILITY_ARCHIVED = "capability.archived"
     CAPABILITY_VERSION_CREATED = "capability.version_created"
 
+    # --- Runtime interaction hardening ---
+    STEERING_RECEIVED = "steering.received"
+    STEERING_ACKNOWLEDGED = "steering.acknowledged"
+    STEERING_EXPIRED = "steering.expired"
+    STEERING_DROPPED = "steering.dropped"
+
 
 @dataclass
 class Mutation:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any, Awaitable, Callable, Literal
 
 from src.tools.shell_executor import ShellResult
@@ -41,12 +42,141 @@ class ToolExecutionContext:
     runtime_profile: str = ""
 
 
+class ToolResultStatus(str, Enum):
+    SUCCESS = "success"
+    VALIDATION_ERROR = "validation_error"
+    PERMISSION_ERROR = "permission_error"
+    PRECONDITION_ERROR = "precondition_error"
+    EXECUTION_ERROR = "execution_error"
+    TIMEOUT_ERROR = "timeout_error"
+    DEPENDENCY_ERROR = "dependency_error"
+    INTERNAL_ERROR = "internal_error"
+
+
+class ToolErrorCode(str, Enum):
+    SCHEMA_VALIDATION_FAILED = "tool.schema_validation_failed"
+    PRECONDITION_FAILED = "tool.precondition_failed"
+    EXECUTION_FAILED = "tool.execution_failed"
+    TIMEOUT = "tool.timeout"
+    PERMISSION_DENIED = "tool.permission_denied"
+    DEPENDENCY_UNAVAILABLE = "tool.dependency_unavailable"
+    INTERNAL_ERROR = "tool.internal_error"
+
+
+class ToolErrorClass(str, Enum):
+    VALIDATION = "validation"
+    PERMISSION = "permission"
+    PRECONDITION = "precondition"
+    EXECUTION = "execution"
+    TIMEOUT = "timeout"
+    DEPENDENCY = "dependency"
+    INTERNAL = "internal"
+
+
+DETAILS_SCHEMA_VERSION = "tool_error.v1"
+
+
+@dataclass(frozen=True)
+class ToolErrorPayload:
+    status: ToolResultStatus
+    error_code: ToolErrorCode
+    error_class: ToolErrorClass
+    retryable: bool
+    safe_details: dict[str, Any] = field(default_factory=dict)
+    details_schema_version: str = DETAILS_SCHEMA_VERSION
+
+    def to_payload(self, *, base: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = dict(base or {})
+        payload.update({
+            "status": self.status.value,
+            "error_code": self.error_code.value,
+            "error_class": self.error_class.value,
+            "retryable": self.retryable,
+            "safe_details": self.safe_details,
+            "details_schema_version": self.details_schema_version,
+        })
+        return payload
+
+
 @dataclass
 class ToolExecutionResult:
     success: bool
     payload: dict[str, Any]
     reason: str = ""
     shell_result: ShellResult | None = None
+    status: ToolResultStatus | str | None = None
+    error_code: ToolErrorCode | str | None = None
+    error_class: ToolErrorClass | str | None = None
+    retryable: bool | None = None
+    safe_details: dict[str, Any] | None = None
+    details_schema_version: str | None = None
+
+    def __post_init__(self) -> None:
+        payload = self.payload if isinstance(self.payload, dict) else {}
+        if self.status is None:
+            self.status = payload.get("status") or (
+                ToolResultStatus.SUCCESS if self.success else ToolResultStatus.EXECUTION_ERROR
+            )
+        if self.error_code is None:
+            self.error_code = payload.get("error_code")
+        if self.error_class is None:
+            self.error_class = payload.get("error_class")
+        if self.retryable is None:
+            retryable = payload.get("retryable")
+            self.retryable = bool(retryable) if retryable is not None else None
+        if self.safe_details is None:
+            details = payload.get("safe_details")
+            self.safe_details = details if isinstance(details, dict) else None
+        if self.details_schema_version is None:
+            version = payload.get("details_schema_version")
+            self.details_schema_version = str(version) if version else None
+
+
+def make_tool_error_result(
+    *,
+    status: ToolResultStatus,
+    error_code: ToolErrorCode,
+    error_class: ToolErrorClass,
+    retryable: bool,
+    safe_details: dict[str, Any],
+    reason: str = "",
+    base_payload: dict[str, Any] | None = None,
+) -> ToolExecutionResult:
+    error = ToolErrorPayload(
+        status=status,
+        error_code=error_code,
+        error_class=error_class,
+        retryable=retryable,
+        safe_details=safe_details,
+    )
+    payload = error.to_payload(base=base_payload)
+    return ToolExecutionResult(
+        success=False,
+        payload=payload,
+        reason=reason or _reason_from_error(error_code),
+        status=status,
+        error_code=error_code,
+        error_class=error_class,
+        retryable=retryable,
+        safe_details=safe_details,
+        details_schema_version=DETAILS_SCHEMA_VERSION,
+    )
+
+
+def _reason_from_error(error_code: ToolErrorCode) -> str:
+    if error_code == ToolErrorCode.SCHEMA_VALIDATION_FAILED:
+        return "tool arguments failed schema validation"
+    if error_code == ToolErrorCode.PERMISSION_DENIED:
+        return "tool execution denied by policy"
+    if error_code == ToolErrorCode.TIMEOUT:
+        return "tool execution timed out"
+    if error_code == ToolErrorCode.DEPENDENCY_UNAVAILABLE:
+        return "tool dependency unavailable"
+    if error_code == ToolErrorCode.INTERNAL_ERROR:
+        return "tool internal error"
+    if error_code == ToolErrorCode.PRECONDITION_FAILED:
+        return "tool precondition failed"
+    return "tool execution failed"
 
 
 @dataclass(frozen=True)

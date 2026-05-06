@@ -312,10 +312,12 @@ identity_system_killswitch = false
 # behind these flags.
 # Phase 3C: lifecycle_tools_enabled gates evaluate/plan/transition tools.
 # Requires capabilities.enabled=true. Defaults to false (operator-only).
-enabled = false
-retrieval_enabled = false
+enabled = true
+retrieval_enabled = true
 curator_enabled = false
+curator_dry_run_enabled = true
 auto_draft_enabled = false
+execution_summary_enabled = true
 lifecycle_tools_enabled = false
 # Phase 7A: external package import into quarantine only (operator-only)
 external_import_enabled = false

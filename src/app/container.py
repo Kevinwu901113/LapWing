@@ -123,6 +123,14 @@ class AppContainer:
         # event_queue must already exist before LocalApiServer is built so
         # the desktop /ws/chat route can enqueue MessageEvent on it.
         self.event_queue: EventQueue = EventQueue()
+        from src.core.inbound import (
+            BusySessionController,
+            CommandInterceptLayer,
+            InboundMessageGate,
+        )
+        self.inbound_gate = InboundMessageGate()
+        self.command_intercept_layer = CommandInterceptLayer()
+        self.busy_session_controller = BusySessionController()
 
         # mutation_log is wired into the API server lazily — see prepare()
         # where the StateMutationLog instance is constructed. The server
@@ -156,6 +164,9 @@ class AppContainer:
         # Dispatcher — 内存 pub/sub 总线，给桌面端 SSE 和子系统实时广播用。
         # 持久化由 StateMutationLog 负责；dispatcher 只是 live stream。
         self.dispatcher: Dispatcher | None = None
+        from src.core.hook_bus import InternalHookBus
+        self.hook_bus = InternalHookBus()
+        self.brain._hook_bus_ref = self.hook_bus
 
         # v2.0 Step 1: StateMutationLog — durable append-only log of state mutations
         self.mutation_log: StateMutationLog | None = None
@@ -174,6 +185,7 @@ class AppContainer:
         # commit/fulfill/abandon_promise tools can write to it, and into
         # StateViewBuilder so inner ticks see open + overdue commitments.
         self.commitment_store: CommitmentStore | None = None
+        self.steering_store = None
 
         # v2.0 Step 4: MainLoop — single runtime driver. event_queue was
         # constructed above (so LocalApiServer could pick it up). The
@@ -245,6 +257,25 @@ class AppContainer:
         await self.attention_manager.initialize()
         self.brain.attention_manager = self.attention_manager
         logger.info("AttentionManager 已初始化")
+
+        from src.core.steering import SteeringStore
+        self.steering_store = SteeringStore(
+            self._data_dir / "lapwing.db",
+            mutation_log=self.mutation_log,
+        )
+        try:
+            await self.steering_store.init()
+        except Exception:
+            logger.warning("SteeringStore 初始化失败，转向事件将仅不可用", exc_info=True)
+            try:
+                await self.steering_store.close()
+            except Exception:
+                logger.debug("failed SteeringStore close after init error", exc_info=True)
+            self.steering_store = None
+            self.brain._steering_store_ref = None
+        else:
+            self.brain._steering_store_ref = self.steering_store
+            logger.info("SteeringStore 已初始化")
 
         # ProxyRouter — 按域名自适应选择代理或直连
         from src.core.proxy_router import ProxyRouter
@@ -353,7 +384,12 @@ class AppContainer:
             await self.inner_tick_scheduler.start()
         logger.info("MainLoop + InnerTickScheduler 已启动")
 
-        await self.channel_manager.start_all()
+        strict_adapters = bool(getattr(
+            getattr(get_settings(), "runtime_interaction_hardening", object()),
+            "adapter_strict_mode",
+            False,
+        ))
+        await self.channel_manager.start_all(strict=strict_adapters)
 
         await self.api_server.start()
 
@@ -486,6 +522,13 @@ class AppContainer:
                 logger.warning("focus_manager close failed", exc_info=True)
             self.focus_manager = None
 
+        if self.steering_store is not None:
+            try:
+                await self.steering_store.close()
+            except Exception:
+                logger.warning("steering_store close failed", exc_info=True)
+            self.steering_store = None
+
         # v2.0 Step 5: same ordering rule for CommitmentStore — flush before
         # mutation_log so COMMITMENT_* events land in the audit trail.
         if self.commitment_store is not None:
@@ -536,6 +579,7 @@ class AppContainer:
             task_store=None,
             reminder_source=None,
             previous_state_reader=get_previous_state,
+            steering_store=self.steering_store,
         )
 
         # AmbientKnowledgeStore —— 环境知识缓存
@@ -1021,6 +1065,7 @@ class AppContainer:
             from config.settings import (
                 CAPABILITIES_DATA_DIR,
                 CAPABILITIES_INDEX_DB_PATH,
+                CAPABILITIES_READ_TOOLS_ENABLED,
                 CAPABILITIES_CURATOR_ENABLED,
                 CAPABILITIES_CURATOR_DRY_RUN_ENABLED,
                 CAPABILITIES_EXECUTION_SUMMARY_ENABLED,
@@ -1055,12 +1100,15 @@ class AppContainer:
             self.brain._capability_store = capability_store
             self.brain._capability_index = capability_index
 
-            register_capability_tools(
-                self.brain.tool_registry,
-                capability_store,
-                capability_index,
-            )
-            logger.info("Phase 2B capability read tools registered (list/search/view)")
+            if CAPABILITIES_READ_TOOLS_ENABLED:
+                register_capability_tools(
+                    self.brain.tool_registry,
+                    capability_store,
+                    capability_index,
+                )
+                logger.info("Capability read tools registered (list/search/view/load)")
+            else:
+                logger.info("Capability read tools disabled by capabilities.read_tools_enabled=false")
 
             # Phase 3C: Lifecycle management tools (feature-gated behind
             # capabilities.lifecycle_tools_enabled). Requires capabilities.enabled=true.

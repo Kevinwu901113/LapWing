@@ -40,6 +40,7 @@ from src.core.state_view import (
     MemorySnippets,
     SkillSummary,
     StateView,
+    SteeringEventView,
     TrajectoryTurn,
     TrajectoryWindow,
 )
@@ -95,6 +96,9 @@ class StateViewBuilder:
         memory_query_chat_turns: int = 3,
         agent_registry=None,  # Blueprint §9.1: optional, for compact agent list
         capability_retriever=None,  # Phase 4: optional, duck-typed (has retrieve method)
+        steering_store=None,  # Runtime hardening: optional, duck-typed (has pending)
+        steering_max_count: int = 5,
+        steering_token_budget: int = 600,
     ) -> None:
         self._soul_path = Path(soul_path)
         self._constitution_path = Path(constitution_path)
@@ -119,6 +123,10 @@ class StateViewBuilder:
         self._time_provider = TimeContextProvider()
         self._agent_registry = agent_registry  # Blueprint §9: AgentRegistry facade
         self._capability_retriever = capability_retriever  # Phase 4: duck-typed
+        self._steering_store = steering_store
+        self._steering_max_count = steering_max_count
+        self._steering_token_budget = steering_token_budget
+        self._last_pending_steering_event_ids: tuple[str, ...] = ()
 
     # ── Entry points ─────────────────────────────────────────────────
 
@@ -162,6 +170,7 @@ class StateViewBuilder:
         ambient_entries = await self._build_ambient_entries()
         focus_context = await self._build_focus_context(chat_id)
         capability_summaries = self._build_capability_summaries(trajectory_window)
+        pending_steering_events = await self._build_pending_steering_events(chat_id=chat_id)
 
         return StateView(
             identity_docs=identity_docs,
@@ -176,6 +185,7 @@ class StateViewBuilder:
             focus_context=focus_context,
             agent_summary=self._build_agent_summary(),
             capability_summaries=capability_summaries,
+            pending_steering_events=pending_steering_events,
         )
 
     async def build_for_inner(
@@ -212,6 +222,7 @@ class StateViewBuilder:
         ambient_entries = await self._build_ambient_entries()
         focus_context = await self._build_inner_focus_context()
         capability_summaries = self._build_capability_summaries(trajectory_window)
+        pending_steering_events = await self._build_pending_steering_events(chat_id=None)
 
         return StateView(
             identity_docs=identity_docs,
@@ -226,6 +237,7 @@ class StateViewBuilder:
             focus_context=focus_context,
             agent_summary=self._build_agent_summary(),
             capability_summaries=capability_summaries,
+            pending_steering_events=pending_steering_events,
         )
 
     # ── Agents ───────────────────────────────────────────────────────
@@ -285,6 +297,49 @@ class StateViewBuilder:
                 )
             )
         return tuple(summaries)
+
+    async def _build_pending_steering_events(
+        self,
+        *,
+        chat_id: str | None,
+    ) -> tuple[SteeringEventView, ...]:
+        if self._steering_store is None:
+            self._last_pending_steering_event_ids = ()
+            return ()
+        try:
+            events = await self._steering_store.pending(
+                chat_id=chat_id,
+                max_count=max(0, self._steering_max_count),
+            )
+        except Exception:
+            logger.debug("Steering retrieval failed", exc_info=True)
+            self._last_pending_steering_event_ids = ()
+            return ()
+
+        views: list[SteeringEventView] = []
+        used_budget = 0
+        for event in events:
+            content = (event.content or "").strip()
+            if not content:
+                continue
+            remaining = self._steering_token_budget - used_budget
+            if remaining <= 0:
+                break
+            compact = content[: min(len(content), remaining)]
+            used_budget += len(compact)
+            views.append(
+                SteeringEventView(
+                    id=event.id,
+                    content=compact,
+                    priority=event.priority,
+                    reason=event.reason,
+                    expires_at=event.expires_at.isoformat() if event.expires_at else None,
+                    source_channel=event.source_channel,
+                    source_trust_level=event.source_trust_level,
+                )
+            )
+        self._last_pending_steering_event_ids = tuple(view.id for view in views)
+        return tuple(views)
 
     # ── Identity ─────────────────────────────────────────────────────
 

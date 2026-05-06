@@ -621,6 +621,10 @@ def register_agent_tools(registry, agent_registry=None) -> None:
                 "type": "string",
                 "description": "要查的内容——清晰具体地描述你想知道什么",
             },
+            "request": {
+                "type": "string",
+                "description": "Legacy alias for task; kept for persisted plans.",
+            },
             "freshness_hint": {
                 "type": "string",
                 "enum": ["realtime", "recent", "anytime"],
@@ -638,6 +642,7 @@ def register_agent_tools(registry, agent_registry=None) -> None:
             },
         },
         "required": ["task"],
+        "x_legacy_required_aliases": {"task": ["request"]},
     }
 
     DELEGATE_CODER_SCHEMA = {
@@ -647,12 +652,17 @@ def register_agent_tools(registry, agent_registry=None) -> None:
                 "type": "string",
                 "description": "要执行的任务——清晰具体地描述",
             },
+            "request": {
+                "type": "string",
+                "description": "Legacy alias for task; kept for persisted plans.",
+            },
             "context_digest": {
                 "type": "string",
                 "description": "当前对话的背景摘要(可选)",
             },
         },
         "required": ["task"],
+        "x_legacy_required_aliases": {"task": ["request"]},
     }
 
     registry.register(ToolSpec(

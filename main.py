@@ -376,9 +376,58 @@ def run_bot(logger: logging.Logger) -> int:
             async def send_fn(reply_text: str) -> None:
                 await container.channel_manager.send(ChannelType.QQ, chat_id, reply_text)
 
-            # 命令拦截
-            if text.startswith("/model") or text.startswith("/models"):
-                await _qq_cmd_model(chat_id, text, brain, send_fn)
+            from src.core.authority_gate import identify
+            from src.core.inbound import BusyInputMode
+
+            user_id = str(raw_event.get("user_id", ""))
+            auth_level = identify("qq", user_id)
+            qq_adp = container.channel_manager.adapters.get(ChannelType.QQ)
+            normalized = (
+                qq_adp.normalize_inbound(raw_event)
+                if qq_adp is not None and hasattr(qq_adp, "normalize_inbound")
+                else None
+            )
+            if normalized is None:
+                return
+
+            gate_decision = container.inbound_gate.evaluate(
+                normalized,
+                auth_level=int(auth_level),
+            )
+            if not gate_decision.accepted:
+                logger.debug("[qq/inbound] dropped: %s", gate_decision.reason)
+                return
+
+            intercept = container.command_intercept_layer.intercept(normalized)
+            if intercept.mode == BusyInputMode.COMMAND:
+                if intercept.command in {"model", "models"}:
+                    await _qq_cmd_model(chat_id, text, brain, send_fn)
+                else:
+                    await send_fn("这个命令我现在不处理。")
+                return
+
+            session_state = "idle"
+            main_loop = getattr(container, "main_loop", None)
+            current = getattr(main_loop, "_current_task", None)
+            if current is not None and not current.done():
+                session_state = "running"
+            busy_decision = container.busy_session_controller.classify(
+                normalized,
+                session_state=session_state,
+                intercept=intercept,
+            )
+            if busy_decision.mode == BusyInputMode.STEER:
+                store = getattr(container, "steering_store", None)
+                if store is not None:
+                    steering = container.busy_session_controller.steering_event_from_message(
+                        normalized,
+                        source_trust_level=getattr(auth_level, "name", str(auth_level)).lower(),
+                    )
+                    await store.add(steering)
+                await send_fn("收到，我会在下一个安全边界处理这条修正。")
+                return
+            if busy_decision.mode == BusyInputMode.QUEUE:
+                await send_fn("收到，这条我先排队，当前任务结束后处理。")
                 return
 
             # 图片下载转 base64（QQ CDN URL 有时效性，需在调用 LLM 前下载）
@@ -403,11 +452,7 @@ def run_bot(logger: logging.Logger) -> int:
             # v2.0 Step 4: route through MainLoop's EventQueue instead
             # of calling brain directly. Adapters are now event producers,
             # MainLoop is the sole consumer.
-            from src.core.authority_gate import AuthLevel, identify
             from src.core.events import MessageEvent
-
-            user_id = str(raw_event.get("user_id", ""))
-            auth_level = identify("qq", user_id)
             event = MessageEvent.from_message(
                 chat_id=chat_id,
                 user_id=user_id,
@@ -418,6 +463,8 @@ def run_bot(logger: logging.Logger) -> int:
                 images=tuple(images) if images else (),
                 typing_fn=typing_fn,
                 status_callback=noop_status,
+                interaction_mode=busy_decision.mode.value,
+                source_message_id=normalized.message_id,
             )
             await container.event_queue.put(event)
 

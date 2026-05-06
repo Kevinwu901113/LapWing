@@ -88,6 +88,17 @@ class MemoryCandidate(BaseModel):
     evidence_quote: str = ""
     expires_at: str | None = None
     relations: list[Relation] = Field(default_factory=list)
+    why_this_matters: str = ""
+    user_intent_evidence: str = ""
+    emotional_or_relational_context: str | None = None
+    decision_boundary: str = ""
+    reversibility_handle: str = ""
+    approval_state: str = "pending"
+    source_handles: list[str] = Field(default_factory=list)
+    review_after: str | None = None
+    published_at: str | None = None
+    supersedes: list[str] = Field(default_factory=list)
+    superseded_by: str | None = None
 
 
 # ── Compiled patch ──────────────────────────────────────────────────

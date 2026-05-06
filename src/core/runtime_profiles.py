@@ -78,6 +78,8 @@ STANDARD_PROFILE = RuntimeProfile(
         "list_agents",
         # ── skills ──
         "run_skill",
+        # ── capability read-only progressive disclosure ──
+        "list_capabilities", "search_capability", "view_capability", "load_capability",
         # ── planning ──
         "plan_task", "update_plan",
         # send_message intentionally excluded — proactive-only, see

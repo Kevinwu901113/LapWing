@@ -7,8 +7,37 @@ from typing import Optional
 
 from src.adapters.base import BaseAdapter, ChannelType
 from src.models.message import RichMessage
+from src.tools.types import ToolErrorClass, ToolErrorCode, ToolResultStatus
 
 logger = logging.getLogger("lapwing.core.channel_manager")
+
+
+class StartupError(RuntimeError):
+    """Raised when a strict startup contract fails."""
+
+
+class ChannelOperationError(RuntimeError):
+    """Structured channel send failure safe for logs/tool payloads."""
+
+    def __init__(self, payload: dict) -> None:
+        super().__init__(payload.get("reason", "channel operation failed"))
+        self.payload = payload
+
+
+def make_channel_error(*, channel: str, operation: str, reason: str) -> dict:
+    return {
+        "status": ToolResultStatus.PRECONDITION_ERROR.value,
+        "error_code": ToolErrorCode.PRECONDITION_FAILED.value,
+        "error_class": ToolErrorClass.PRECONDITION.value,
+        "retryable": False,
+        "safe_details": {
+            "channel": channel,
+            "operation": operation,
+            "reason": reason,
+        },
+        "details_schema_version": "tool_error.v1",
+        "reason": reason,
+    }
 
 
 class ChannelManager:
@@ -17,6 +46,7 @@ class ChannelManager:
     def __init__(self) -> None:
         self.adapters: dict[ChannelType, BaseAdapter] = {}
         self.last_active_channel: Optional[ChannelType] = None
+        self.disabled_routes: set[tuple[str, str]] = set()
 
     def register(self, channel_type: ChannelType, adapter: BaseAdapter) -> None:
         self.adapters[channel_type] = adapter
@@ -31,7 +61,43 @@ class ChannelManager:
                 return None
         return self.adapters.get(channel)
 
-    async def start_all(self) -> None:
+    def validate_adapter_capabilities(self, *, strict: bool = False) -> list[str]:
+        """Validate adapter capability declarations before runtime send paths.
+
+        Non-strict mode logs warnings and disables unsupported routes; strict
+        mode raises ``StartupError`` so latent AttributeError-style send
+        failures are caught during boot.
+        """
+        warnings: list[str] = []
+        self.disabled_routes.clear()
+        for ch_type, adapter in self.adapters.items():
+            caps = getattr(adapter, "capabilities", None)
+            if caps is None:
+                warnings.append(f"{ch_type.value}: missing AdapterCapabilities")
+                continue
+
+            required: list[tuple[str, bool]] = []
+            if ch_type == ChannelType.QQ:
+                required.append(("private", bool(getattr(caps, "can_send_private", False))))
+                if adapter.config.get("group_ids"):
+                    required.append(("group", bool(getattr(caps, "can_send_group", False))))
+            elif ch_type == ChannelType.DESKTOP:
+                required.append(("private", bool(getattr(caps, "can_send_private", False))))
+
+            for route, ok in required:
+                if ok:
+                    continue
+                self.disabled_routes.add((ch_type.value, route))
+                warnings.append(f"{ch_type.value}: unsupported required route {route}")
+
+        if warnings and strict:
+            raise StartupError("; ".join(warnings))
+        for warning in warnings:
+            logger.warning("adapter capability validation: %s", warning)
+        return warnings
+
+    async def start_all(self, *, strict: bool = False) -> None:
+        self.validate_adapter_capabilities(strict=strict)
         for ch_type, adapter in self.adapters.items():
             try:
                 await adapter.start()
@@ -45,6 +111,12 @@ class ChannelManager:
             logger.info("通道已停止: %s", ch_type.value)
 
     async def send(self, channel: ChannelType, chat_id: str, text: str) -> None:
+        if (channel.value, "private") in self.disabled_routes:
+            raise ChannelOperationError(make_channel_error(
+                channel=channel.value,
+                operation="send_private",
+                reason="adapter route disabled by capability validation",
+            ))
         adapter = self.adapters.get(channel)
         if adapter and await adapter.is_connected():
             await adapter.send_text(chat_id, text)
@@ -88,6 +160,12 @@ class ChannelManager:
         message: RichMessage,
     ) -> None:
         """通过指定通道发送富媒体消息。"""
+        if (channel.value, "private") in self.disabled_routes:
+            raise ChannelOperationError(make_channel_error(
+                channel=channel.value,
+                operation="send_message",
+                reason="adapter route disabled by capability validation",
+            ))
         adapter = self.adapters.get(channel)
         if adapter and await adapter.is_connected():
             await adapter.send_message(chat_id, message)
