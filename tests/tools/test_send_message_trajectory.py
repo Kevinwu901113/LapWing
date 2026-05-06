@@ -114,6 +114,11 @@ class TestResolveProactiveTargetChatId:
         result = _resolve_proactive_target_chat_id("qq_group:", ctx)
         assert result is None
 
+    def test_qq_group_resolver_strips_group_id(self):
+        ctx, _ = _make_qq_ctx()
+        result = _resolve_proactive_target_chat_id("qq_group: 123456", ctx)
+        assert result == "123456"
+
     def test_unknown_target_returns_none(self):
         ctx, _ = _make_qq_ctx()
         result = _resolve_proactive_target_chat_id("unknown_target", ctx)
