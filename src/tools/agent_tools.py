@@ -411,12 +411,19 @@ async def _start_background_delegate(
             payload={"status": "background_task_supervisor_unavailable"},
             reason="background_task_supervisor unavailable while concurrent background work is active",
         )
+    if ctx.turn_id:
+        parent_event_id = f"delegate_{ctx.turn_id}"
+        parent_turn_id = ctx.turn_id
+    else:
+        parent_event_id = f"delegate_unscoped_{uuid.uuid4().hex}"
+        parent_turn_id = None
     handle = await supervisor.start_agent_task(
         spec_id=agent_name,
         objective=task,
         chat_id=ctx.chat_id or "unknown",
         owner_user_id=ctx.user_id or "owner",
-        parent_event_id=f"delegate_{uuid.uuid4().hex}",
+        parent_event_id=parent_event_id,
+        parent_turn_id=parent_turn_id,
         expected_output=expected_output or None,
         notify_policy=NotifyPolicy.AUTO,
         salience=SalienceLevel.NORMAL,

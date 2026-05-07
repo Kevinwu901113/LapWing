@@ -761,6 +761,7 @@ class ToolDispatcher:
             user_id=user_id,
             auth_level=auth_level,
             chat_id=chat_id or "",
+            turn_id=current_iteration_id() or "",
             focus_id=focus_id,
             memory=None,
             memory_index=self._runtime._memory_index,

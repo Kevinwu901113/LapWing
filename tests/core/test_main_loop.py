@@ -279,3 +279,47 @@ async def test_coalesced_done_futures_all_resolved():
     await loop.stop()
     await q.put(InnerTickEvent.make())
     await asyncio.wait_for(runner, timeout=2.0)
+
+
+# ── Fix 5: OWNER-preempt persistence regression ──────────────────────
+
+
+@pytest.mark.asyncio
+async def test_agent_needs_input_state_visible_after_owner_preempt(tmp_path):
+    """After OWNER preempt cancels inner tick, StateView still shows WAITING_INPUT task."""
+    from datetime import datetime, timezone
+
+    from src.core.concurrent_bg_work.store import AgentTaskStore
+    from src.core.concurrent_bg_work.supervisor import TaskSupervisor
+    from src.core.concurrent_bg_work.types import TaskStatus
+    from src.core.state_view_builder import StateViewBuilder
+
+    class _Reg:
+        async def _lookup_spec(self, name: str):
+            from src.agents.spec import AgentSpec
+            return AgentSpec(name=name, kind="builtin")
+
+    store = AgentTaskStore(tmp_path / "lapwing.db")
+    await store.init()
+    supervisor = TaskSupervisor(store=store, agent_registry=_Reg())
+    handle = await supervisor.start_agent_task(
+        spec_id="researcher",
+        objective="find lunch",
+        chat_id="chat",
+        owner_user_id="owner",
+        parent_turn_id="turn-1",
+    )
+    await store.update_status(
+        handle.task_id, TaskStatus.WAITING_INPUT,
+        checkpoint_id="cp1", checkpoint_question="which city?",
+    )
+
+    builder = StateViewBuilder(background_task_store=store)
+    view = await builder._build_concurrent_bg_work(chat_id="chat")
+    assert view is not None
+    waiting = [t for t in view.in_flight_tasks if t.status == TaskStatus.WAITING_INPUT]
+    assert len(waiting) == 1
+    assert waiting[0].is_blocked_by_input is True
+    assert waiting[0].pending_question == "which city?"
+
+    await store.close()

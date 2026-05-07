@@ -498,3 +498,185 @@ async def test_runtime_needs_input_saves_checkpoint_and_waits(tmp_path):
     assert accepted.accepted is True
     assert accepted.new_status == TaskStatus.RESUMING
     await store.close()
+
+
+# ── Fix 1: delegate idempotency ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_delegate_same_turn_id_is_idempotent(monkeypatch, tmp_path):
+    """Same ctx.turn_id + same objective → same task_id, one task in store."""
+    store = AgentTaskStore(tmp_path / "lapwing.db")
+    await store.init()
+    supervisor = TaskSupervisor(store=store, agent_registry=_Registry())
+    _set_bg_flags(
+        monkeypatch,
+        CONCURRENT_BG_WORK_ENABLED=True,
+        CONCURRENT_BG_WORK_P2B_TASK_SUPERVISOR_READONLY=True,
+        CONCURRENT_BG_WORK_P2C_AGENT_RUNTIME_ASYNC=True,
+    )
+
+    ctx = ToolExecutionContext(
+        execute_shell=_noop_shell,
+        shell_default_cwd=".",
+        services={"background_task_supervisor": supervisor},
+        chat_id="chat",
+        user_id="owner",
+        turn_id="turn-1",
+    )
+
+    r1 = await delegate_to_researcher_executor(
+        ToolExecutionRequest("delegate_to_researcher", {"task": "search lunch"}),
+        ctx,
+    )
+    r2 = await delegate_to_researcher_executor(
+        ToolExecutionRequest("delegate_to_researcher", {"task": "search lunch"}),
+        ctx,
+    )
+
+    assert r1.success is True
+    assert r2.success is True
+    assert r1.payload["task_id"] == r2.payload["task_id"]
+
+    tasks = await store.list_tasks(chat_id="chat")
+    assert len(tasks) == 1
+
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_delegate_different_turn_id_creates_new_task(monkeypatch, tmp_path):
+    """Different ctx.turn_id + same objective → different task_id, two tasks in store."""
+    store = AgentTaskStore(tmp_path / "lapwing.db")
+    await store.init()
+    supervisor = TaskSupervisor(store=store, agent_registry=_Registry())
+    _set_bg_flags(
+        monkeypatch,
+        CONCURRENT_BG_WORK_ENABLED=True,
+        CONCURRENT_BG_WORK_P2B_TASK_SUPERVISOR_READONLY=True,
+        CONCURRENT_BG_WORK_P2C_AGENT_RUNTIME_ASYNC=True,
+    )
+
+    ctx1 = ToolExecutionContext(
+        execute_shell=_noop_shell,
+        shell_default_cwd=".",
+        services={"background_task_supervisor": supervisor},
+        chat_id="chat",
+        user_id="owner",
+        turn_id="turn-1",
+    )
+    ctx2 = ToolExecutionContext(
+        execute_shell=_noop_shell,
+        shell_default_cwd=".",
+        services={"background_task_supervisor": supervisor},
+        chat_id="chat",
+        user_id="owner",
+        turn_id="turn-2",
+    )
+
+    r1 = await delegate_to_researcher_executor(
+        ToolExecutionRequest("delegate_to_researcher", {"task": "search lunch"}),
+        ctx1,
+    )
+    r2 = await delegate_to_researcher_executor(
+        ToolExecutionRequest("delegate_to_researcher", {"task": "search lunch"}),
+        ctx2,
+    )
+
+    assert r1.success is True
+    assert r2.success is True
+    assert r1.payload["task_id"] != r2.payload["task_id"]
+
+    tasks = await store.list_tasks(chat_id="chat")
+    assert len(tasks) == 2
+
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_delegate_missing_turn_id_creates_unique_tasks(monkeypatch, tmp_path):
+    """Missing ctx.turn_id must never dedupe across calls — each call is a new task."""
+    store = AgentTaskStore(tmp_path / "lapwing.db")
+    await store.init()
+    supervisor = TaskSupervisor(store=store, agent_registry=_Registry())
+    _set_bg_flags(
+        monkeypatch,
+        CONCURRENT_BG_WORK_ENABLED=True,
+        CONCURRENT_BG_WORK_P2B_TASK_SUPERVISOR_READONLY=True,
+        CONCURRENT_BG_WORK_P2C_AGENT_RUNTIME_ASYNC=True,
+    )
+
+    ctx = ToolExecutionContext(
+        execute_shell=_noop_shell,
+        shell_default_cwd=".",
+        services={"background_task_supervisor": supervisor},
+        chat_id="chat",
+        user_id="owner",
+        turn_id="",  # missing
+    )
+
+    r1 = await delegate_to_researcher_executor(
+        ToolExecutionRequest("delegate_to_researcher", {"task": "search lunch"}),
+        ctx,
+    )
+    r2 = await delegate_to_researcher_executor(
+        ToolExecutionRequest("delegate_to_researcher", {"task": "search lunch"}),
+        ctx,
+    )
+
+    assert r1.success is True
+    assert r2.success is True
+    assert r1.payload["task_id"] != r2.payload["task_id"]
+
+    tasks = await store.list_tasks(chat_id="chat")
+    assert len(tasks) == 2
+
+    await store.close()
+
+
+# ── Fix 2: audit coverage ────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_agent_cancelled_and_needs_input_records_mutation(tmp_path):
+    """Mutation log records AGENT_CANCELLED and AGENT_NEEDS_INPUT events."""
+    from src.core.concurrent_bg_work.event_bus import AgentEventBus, new_agent_event
+    from src.core.concurrent_bg_work.types import AgentEventType, SalienceLevel
+
+    mutation_log = AsyncMock()
+    mutation_log.record = AsyncMock()
+    store = AgentTaskStore(tmp_path / "lapwing.db")
+    await store.init()
+    supervisor = TaskSupervisor(store=store, agent_registry=_Registry())
+
+    handle = await supervisor.start_agent_task(
+        spec_id="researcher", objective="test", chat_id="chat",
+        owner_user_id="owner", parent_turn_id="turn-1",
+    )
+    tid = handle.task_id
+
+    bus = AgentEventBus(task_store=store, mutation_log=mutation_log)
+
+    cancelled_ev = new_agent_event(
+        task_id=tid, chat_id="chat", type=AgentEventType.AGENT_CANCELLED,
+        summary="cancelled", sequence=1, salience=SalienceLevel.HIGH,
+    )
+    await bus.emit(cancelled_ev)
+    mutation_log.record.assert_called()
+    first_call_type = mutation_log.record.call_args_list[0][0][0]
+    assert first_call_type == MutationType.AGENT_CANCELLED
+
+    mutation_log.record.reset_mock()
+    await store.update_status(tid, TaskStatus.WAITING_INPUT)
+
+    needs_input_ev = new_agent_event(
+        task_id=tid, chat_id="chat", type=AgentEventType.AGENT_NEEDS_INPUT,
+        summary="need city", sequence=2, salience=SalienceLevel.HIGH,
+        payload={"question_for_lapwing": "Which city?"},
+    )
+    await bus.emit(needs_input_ev)
+    mutation_log.record.assert_called()
+    second_call_type = mutation_log.record.call_args_list[0][0][0]
+    assert second_call_type == MutationType.AGENT_NEEDS_INPUT
+
+    await store.close()

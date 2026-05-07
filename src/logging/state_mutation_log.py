@@ -138,6 +138,8 @@ class MutationType(str, Enum):
     AGENT_DESTROYED = "agent.destroyed"
     AGENT_SPEC_UPDATED = "agent.spec_updated"
     AGENT_BUDGET_EXHAUSTED = "agent.budget_exhausted"
+    AGENT_NEEDS_INPUT = "agent.needs_input"
+    AGENT_CANCELLED = "agent.task_cancelled"
 
     # --- Researcher fast-path telemetry (post-MVP planning) ---
     # Fired at the start of every Researcher.execute(); payload includes

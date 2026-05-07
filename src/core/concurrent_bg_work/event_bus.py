@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
-from src.core.events import Event, PRIORITY_TOOL_COMPLETE
+from src.core.events import Event, PRIORITY_TOOL_COMPLETE, PRIORITY_AGENT_URGENT, PRIORITY_INNER_TICK
 from src.core.concurrent_bg_work.types import (
     AgentEvent,
     AgentEventType,
@@ -108,6 +108,8 @@ class AgentEventBus:
             AgentEventType.AGENT_FAILED: MutationType.AGENT_FAILED,
             AgentEventType.AGENT_TOOL_CALL: MutationType.AGENT_TOOL_CALL,
             AgentEventType.AGENT_BUDGET_EXHAUSTED: MutationType.AGENT_BUDGET_EXHAUSTED,
+            AgentEventType.AGENT_CANCELLED: MutationType.AGENT_CANCELLED,
+            AgentEventType.AGENT_NEEDS_INPUT: MutationType.AGENT_NEEDS_INPUT,
         }
         mutation_type = mapping.get(event.type)
         if mutation_type is None:
@@ -168,8 +170,16 @@ class AgentEventBus:
                 timeout_at=payload.timeout_at,
                 triggering_event=event,
                 effective_salience=effective,
+                priority=PRIORITY_AGENT_URGENT,
             ))
             return
+
+        if event.type in {AgentEventType.AGENT_FAILED, AgentEventType.AGENT_BUDGET_EXHAUSTED}:
+            prio = PRIORITY_AGENT_URGENT
+        elif event.type == AgentEventType.AGENT_CANCELLED:
+            prio = PRIORITY_INNER_TICK
+        else:
+            prio = PRIORITY_INNER_TICK
 
         snapshot = await self._snapshot_for_event(event)
         if snapshot is not None:
@@ -178,6 +188,7 @@ class AgentEventBus:
                 task_snapshot=snapshot,
                 triggering_event=event,
                 effective_salience=effective,
+                priority=prio,
             ))
 
     async def _snapshot_for_event(self, event: AgentEvent) -> AgentTaskSnapshot | None:

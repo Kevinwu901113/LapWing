@@ -29,6 +29,7 @@ from src.core.authority_gate import AuthLevel
 # Event-queue priority (NOT auth level). Lower number = handled first.
 PRIORITY_OWNER_MESSAGE = 0
 PRIORITY_USER_MESSAGE = 1
+PRIORITY_AGENT_URGENT = 1
 PRIORITY_INNER_TICK = 2
 PRIORITY_TOOL_COMPLETE = 3
 PRIORITY_SYSTEM = 4

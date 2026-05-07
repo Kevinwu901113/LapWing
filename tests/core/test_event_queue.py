@@ -120,5 +120,89 @@ async def test_concurrent_producers_and_consumer():
     assert all(k == "inner_tick" for k in seen)
 
 
+@pytest.mark.asyncio
+async def test_agent_needs_input_dequeues_before_inner_tick():
+    from src.core.concurrent_bg_work.event_bus import AgentNeedsInputEvent
+    from src.core.concurrent_bg_work.types import AgentNeedsInputPayload
+    from src.core.events import PRIORITY_AGENT_URGENT
+
+    q = EventQueue()
+    tick = InnerTickEvent.make()
+    urgent = AgentNeedsInputEvent(
+        task_id="t1",
+        payload=AgentNeedsInputPayload(
+            question_for_lapwing="what file?",
+            question_for_owner=None,
+            expected_answer_shape=None,
+        ),
+        priority=PRIORITY_AGENT_URGENT,
+    )
+    await q.put(tick)       # priority 2
+    await q.put(urgent)     # priority 1
+
+    first = await q.get()
+    second = await q.get()
+    assert first.kind == "agent_needs_input"
+    assert second.kind == "inner_tick"
+
+
+@pytest.mark.asyncio
+async def test_agent_failed_dequeues_before_inner_tick():
+    from src.core.concurrent_bg_work.event_bus import AgentTaskResultEvent
+    from src.core.concurrent_bg_work.types import AgentEvent, AgentEventType, SalienceLevel
+    from src.core.events import PRIORITY_AGENT_URGENT
+    from datetime import datetime, timezone
+
+    q = EventQueue()
+    tick = InnerTickEvent.make()
+    trigger = AgentEvent(
+        event_id="ev_1", task_id="t1", chat_id="c", type=AgentEventType.AGENT_FAILED,
+        occurred_at=datetime.now(timezone.utc), summary_for_lapwing="boom",
+        summary_for_owner=None, raw_payload_ref=None,
+        salience=SalienceLevel.HIGH, payload={}, sequence_in_task=1,
+    )
+    failed = AgentTaskResultEvent(
+        task_id="t1", triggering_event=trigger, effective_salience=SalienceLevel.HIGH,
+        priority=PRIORITY_AGENT_URGENT,
+    )
+    await q.put(tick)       # priority 2
+    await q.put(failed)     # priority 1
+
+    first = await q.get()
+    second = await q.get()
+    assert first.kind == "agent_task_result"
+    assert second.kind == "inner_tick"
+
+
+@pytest.mark.asyncio
+async def test_owner_dequeues_before_agent_needs_input():
+    from src.core.concurrent_bg_work.event_bus import AgentNeedsInputEvent
+    from src.core.concurrent_bg_work.types import AgentNeedsInputPayload
+    from src.core.events import PRIORITY_AGENT_URGENT
+
+    q = EventQueue()
+    urgent = AgentNeedsInputEvent(
+        task_id="t1",
+        payload=AgentNeedsInputPayload(
+            question_for_lapwing="what file?",
+            question_for_owner=None,
+            expected_answer_shape=None,
+        ),
+        priority=PRIORITY_AGENT_URGENT,
+    )
+    owner = MessageEvent.from_message(
+        chat_id="k", user_id="k", text="stop",
+        adapter="qq", send_fn=_noop, auth_level=int(AuthLevel.OWNER),
+    )
+    await q.put(urgent)     # priority 1
+    await q.put(owner)      # priority 0
+
+    first = await q.get()
+    second = await q.get()
+    assert first.priority == PRIORITY_OWNER_MESSAGE
+    assert first.kind == "owner_message"
+    assert second.kind == "agent_needs_input"
+
+
 async def _noop(*_args, **_kwargs):  # pragma: no cover
     return None

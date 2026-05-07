@@ -44,8 +44,10 @@ async def start_agent_task_executor(req: ToolExecutionRequest, ctx: ToolExecutio
             objective=str(args.get("objective") or "").strip(),
             chat_id=ctx.chat_id or "unknown",
             owner_user_id=ctx.user_id or "owner",
-            parent_event_id=str(args.get("parent_event_id") or ""),
-            parent_turn_id=str(args.get("parent_turn_id") or "") or None,
+            parent_event_id=str(args.get("parent_event_id") or "") or (
+                f"tool_{ctx.turn_id}" if ctx.turn_id else ""
+            ),
+            parent_turn_id=str(args.get("parent_turn_id") or "") or ctx.turn_id or None,
             context=args.get("context") or {},
             expected_output=args.get("expected_output"),
             notify_policy=NotifyPolicy(args.get("notify_policy", "auto")),
