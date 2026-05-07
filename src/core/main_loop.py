@@ -41,6 +41,12 @@ if TYPE_CHECKING:  # pragma: no cover - type-only imports
 
 logger = logging.getLogger("lapwing.core.main_loop")
 
+_AGENT_COGNITIVE_EVENT_KINDS = {
+    "agent_task_result",
+    "agent_needs_input",
+    "agent_progress_urgency",
+}
+
 
 def _concurrent_bg_work_p4_enabled() -> bool:
     try:
@@ -201,6 +207,8 @@ class MainLoop:
                 await self._handle_system(event)
             elif isinstance(event, OperatorControlEvent):
                 await self._handle_operator_control(event)
+            elif event.kind in _AGENT_COGNITIVE_EVENT_KINDS:
+                await self._handle_agent_cognitive_event(event)
             else:
                 logger.warning("Unknown event kind: %s", event.kind)
         except asyncio.CancelledError:
@@ -404,6 +412,35 @@ class MainLoop:
         if event.action == "shutdown":
             await self.stop()
 
+    async def _handle_agent_cognitive_event(self, event: Event) -> None:
+        """Route background-agent events into Lapwing's cognitive path.
+
+        The full P2.5 TurnBatcher is still foundation-only. Until that phase is
+        enabled end-to-end, agent result/needs-input/progress events must not
+        fall through as unknown queue entries; they become urgent inner-turn
+        context so the global cognitive loop can observe the updated StateView.
+        """
+        if self._brain is None:
+            logger.debug("Agent cognitive event received but no brain wired: %s", event.kind)
+            return
+
+        urgent_item = _agent_event_to_urgent_item(event)
+
+        async def _drive():
+            return await self._brain.think_inner(urgent_items=[urgent_item])
+
+        task = asyncio.create_task(_drive(), name=f"agent_event:{event.kind}")
+        self._current_task = task
+        try:
+            await task
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("agent cognitive event handling failed: %s", event.kind)
+        finally:
+            if self._current_task is task:
+                self._current_task = None
+
     async def _handle_operator_control(self, event: OperatorControlEvent) -> None:
         try:
             from src.config import get_settings
@@ -415,3 +452,16 @@ class MainLoop:
             return
         if event.command in {"freeze_loop", "stop_all"}:
             await self._cancel_in_flight(f"operator:{event.reason}")
+
+
+def _agent_event_to_urgent_item(event: Event) -> dict:
+    triggering = getattr(event, "triggering_event", None)
+    summary = getattr(triggering, "summary_for_lapwing", None)
+    if not summary:
+        summary = getattr(event, "summary", "") or getattr(event, "kind", "agent_event")
+    return {
+        "type": getattr(event, "kind", "agent_event"),
+        "content": str(summary),
+        "task_id": getattr(event, "task_id", ""),
+        "salience": str(getattr(event, "effective_salience", "")),
+    }

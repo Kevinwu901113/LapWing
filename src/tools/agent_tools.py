@@ -73,6 +73,19 @@ def _legacy_wait_forbidden_enabled() -> bool:
         return False
 
 
+def _background_delegate_enabled() -> bool:
+    try:
+        from src.config import get_settings
+        flags = get_settings().concurrent_bg_work
+        return bool(
+            flags.enabled
+            and flags.p2b_task_supervisor_readonly
+            and flags.p2c_agent_runtime_async
+        )
+    except Exception:
+        return False
+
+
 async def delegate_to_agent_legacy_wait(spec_id: str, query: str, ctx: ToolExecutionContext, **kwargs) -> ToolExecutionResult:
     """Deprecated blocking compatibility wrapper for offline/batch callers."""
     if _legacy_wait_forbidden_enabled() and _is_called_from_cognitive_runtime():
@@ -362,6 +375,13 @@ async def _execute_delegation(
         return ToolExecutionResult(
             success=False, payload={}, reason="task 不能为空",
         )
+    if _background_delegate_enabled() and agent_name in {"researcher", "coder"}:
+        return await _start_background_delegate(
+            agent_name=agent_name,
+            task=task,
+            ctx=ctx,
+            expected_output=expected_output,
+        )
     return await _run_agent(
         agent_name=agent_name,
         request=task,
@@ -370,6 +390,48 @@ async def _execute_delegation(
         parent_task_id=parent_task_id,
         expected_output=expected_output,
         freshness_hint=freshness_hint,
+    )
+
+
+async def _start_background_delegate(
+    *,
+    agent_name: str,
+    task: str,
+    ctx: ToolExecutionContext,
+    expected_output: str = "",
+) -> ToolExecutionResult:
+    from src.core.concurrent_bg_work.types import NotifyPolicy, SalienceLevel
+    from src.core.tool_dispatcher import ServiceContextView
+
+    svc = ServiceContextView(ctx.services or {})
+    supervisor = svc.background_task_supervisor
+    if supervisor is None:
+        return ToolExecutionResult(
+            success=False,
+            payload={"status": "background_task_supervisor_unavailable"},
+            reason="background_task_supervisor unavailable while concurrent background work is active",
+        )
+    handle = await supervisor.start_agent_task(
+        spec_id=agent_name,
+        objective=task,
+        chat_id=ctx.chat_id or "unknown",
+        owner_user_id=ctx.user_id or "owner",
+        parent_event_id=f"delegate_{uuid.uuid4().hex}",
+        expected_output=expected_output or None,
+        notify_policy=NotifyPolicy.AUTO,
+        salience=SalienceLevel.NORMAL,
+        services=svc.raw,
+    )
+    return ToolExecutionResult(
+        success=True,
+        payload={
+            "task_id": handle.task_id,
+            "status": handle.status.value,
+            "workspace_path": handle.workspace_path,
+            "background": True,
+            "spec_id": agent_name,
+        },
+        reason="background task accepted",
     )
 
 

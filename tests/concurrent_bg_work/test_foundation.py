@@ -4,10 +4,15 @@ import asyncio
 from datetime import datetime, timezone
 
 import pytest
+from unittest.mock import AsyncMock
 
 from src.adapters.base import NormalizedInboundMessage
+from src.agents.base import BaseAgent
+from src.agents.types import AgentResult, AgentSpec as RuntimeAgentSpec
+from src.config import reload_settings
 from src.agents.spec import AgentSpec
 from src.config.settings import ConcurrentBackgroundWorkConfig, OperatorConfig
+from src.core.main_loop import MainLoop
 from src.core.concurrent_bg_work.ingress import IngressNormalizer
 from src.core.concurrent_bg_work.invariants import invariant_ids
 from src.core.concurrent_bg_work.operations import reduce_operations
@@ -22,6 +27,7 @@ from src.core.concurrent_bg_work.tools import (
 from src.core.concurrent_bg_work.types import (
     CancelAgentTaskOp,
     CancellationScope,
+    AgentTaskHandle,
     RespondToAgentInputOp,
     StartAgentTaskOp,
     TaskStatus,
@@ -30,6 +36,14 @@ from src.core.event_queue import EventQueue
 from src.core.events import MessageEvent
 from src.tools.registry import ToolRegistry
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest
+from src.tools.agent_tools import delegate_to_researcher_executor
+from src.logging.state_mutation_log import MutationType
+
+
+@pytest.fixture(autouse=True)
+def _reset_settings_cache_after_test():
+    yield
+    reload_settings()
 
 
 class _Registry:
@@ -37,6 +51,31 @@ class _Registry:
         if name in {"researcher", "coder"}:
             return AgentSpec(name=name, kind="builtin")
         return None
+
+
+class _FakeAgent:
+    def __init__(self, result: AgentResult | None = None):
+        self.result = result or AgentResult("task", "done", "done")
+        self.messages = []
+
+    async def execute(self, message):
+        self.messages.append(message)
+        return self.result
+
+
+class _RuntimeRegistry:
+    def __init__(self, agent):
+        self.agent = agent
+        self.captured_services = None
+
+    async def _lookup_spec(self, name: str):
+        if name in {"researcher", "coder"}:
+            return AgentSpec(name=name, kind="builtin")
+        return None
+
+    async def get_or_create_instance(self, name: str, services_override=None):
+        self.captured_services = services_override
+        return self.agent
 
 
 async def _noop_shell(_command: str):
@@ -51,6 +90,20 @@ def _ctx(supervisor) -> ToolExecutionContext:
         chat_id="chat",
         user_id="owner",
     )
+
+
+def _set_bg_flags(monkeypatch, **overrides):
+    env_names = {
+        "CONCURRENT_BG_WORK_ENABLED": False,
+        "CONCURRENT_BG_WORK_P2B_TASK_SUPERVISOR_READONLY": False,
+        "CONCURRENT_BG_WORK_P2C_AGENT_RUNTIME_ASYNC": False,
+        "CONCURRENT_BG_WORK_P2D_CANCEL_AND_NEEDS_INPUT": False,
+        "CONCURRENT_BG_WORK_P2_5_ARBITRATION": False,
+    }
+    env_names.update(overrides)
+    for name, enabled in env_names.items():
+        monkeypatch.setenv(name, "true" if enabled else "false")
+    reload_settings()
 
 
 def test_p0_flags_default_off_and_invariant_matrix_complete():
@@ -228,7 +281,12 @@ def test_event_queue_detects_high_salience_event():
     from src.core.concurrent_bg_work.types import AgentTaskSnapshot, AgentEvent, AgentEventType, SalienceLevel
     snapshot = AgentTaskSnapshot("t1", "researcher", "x", TaskStatus.FAILED, None, None, None, [], None, "err", [], SalienceLevel.HIGH, False, None)
     event = AgentEvent("e1", "t1", "chat", AgentEventType.AGENT_FAILED, datetime.now(timezone.utc), "failed", None, None, SalienceLevel.HIGH, {}, 1)
-    queue._queue.put_nowait(AgentTaskResultEvent("t1", snapshot, event, SalienceLevel.HIGH))
+    queue._queue.put_nowait(AgentTaskResultEvent(
+        task_id="t1",
+        task_snapshot=snapshot,
+        triggering_event=event,
+        effective_salience=SalienceLevel.HIGH,
+    ))
     assert queue.has_high_salience_event() is True
 
 
@@ -249,4 +307,194 @@ async def test_tool_registration_and_start_executor(tmp_path):
     )
     assert result.success is True
     assert result.payload["status"] == "pending"
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_result_event_reaches_brain_inner_turn():
+    from src.core.concurrent_bg_work.event_bus import AgentTaskResultEvent
+    from src.core.concurrent_bg_work.types import AgentTaskSnapshot, AgentEvent, AgentEventType, SalienceLevel
+
+    brain = AsyncMock()
+    brain.think_inner = AsyncMock(return_value=("", None, False))
+    snapshot = AgentTaskSnapshot("t1", "researcher", "x", TaskStatus.COMPLETED, None, None, None, [], "done", None, [], SalienceLevel.NORMAL, False, None)
+    event = AgentEvent("e1", "t1", "chat", AgentEventType.AGENT_COMPLETED, datetime.now(timezone.utc), "B finished first", None, None, None, {}, 1)
+    loop = MainLoop(EventQueue(), brain=brain)
+
+    await loop._dispatch(AgentTaskResultEvent(
+        task_id="t1",
+        task_snapshot=snapshot,
+        triggering_event=event,
+        effective_salience=SalienceLevel.NORMAL,
+    ))
+
+    brain.think_inner.assert_awaited_once()
+    urgent = brain.think_inner.call_args.kwargs["urgent_items"][0]
+    assert urgent["type"] == "agent_task_result"
+    assert urgent["task_id"] == "t1"
+    assert "B finished first" in urgent["content"]
+
+
+def test_background_tool_profile_overlay_is_phase_staged(monkeypatch):
+    from src.core.task_runtime import TaskRuntime
+
+    registry = ToolRegistry()
+    register_concurrent_bg_work_tools(registry)
+    runtime = TaskRuntime(router=object(), tool_registry=registry)
+
+    _set_bg_flags(monkeypatch, CONCURRENT_BG_WORK_ENABLED=True, CONCURRENT_BG_WORK_P2B_TASK_SUPERVISOR_READONLY=True)
+    names = {tool["function"]["name"] for tool in runtime.tools_for_profile("standard")}
+    assert {"list_agent_tasks", "read_agent_task"}.issubset(names)
+    assert "start_agent_task" not in names
+    assert "cancel_agent_task" not in names
+    assert "respond_to_agent_input" not in names
+
+    _set_bg_flags(
+        monkeypatch,
+        CONCURRENT_BG_WORK_ENABLED=True,
+        CONCURRENT_BG_WORK_P2B_TASK_SUPERVISOR_READONLY=True,
+        CONCURRENT_BG_WORK_P2C_AGENT_RUNTIME_ASYNC=True,
+    )
+    names = {tool["function"]["name"] for tool in runtime.tools_for_profile("standard")}
+    assert "start_agent_task" in names
+    assert "respond_to_agent_input" not in names
+
+    _set_bg_flags(
+        monkeypatch,
+        CONCURRENT_BG_WORK_ENABLED=True,
+        CONCURRENT_BG_WORK_P2B_TASK_SUPERVISOR_READONLY=True,
+        CONCURRENT_BG_WORK_P2C_AGENT_RUNTIME_ASYNC=True,
+        CONCURRENT_BG_WORK_P2D_CANCEL_AND_NEEDS_INPUT=True,
+    )
+    names = {tool["function"]["name"] for tool in runtime.tools_for_profile("standard")}
+    assert {"cancel_agent_task", "respond_to_agent_input"}.issubset(names)
+
+
+@pytest.mark.asyncio
+async def test_delegate_to_researcher_routes_to_background_handle_under_p2c(monkeypatch):
+    class FakeSupervisor:
+        def __init__(self):
+            self.calls = []
+
+        async def start_agent_task(self, **kwargs):
+            self.calls.append(kwargs)
+            return AgentTaskHandle("task_bg", TaskStatus.PENDING, None, "/tmp/ws")
+
+    supervisor = FakeSupervisor()
+    _set_bg_flags(
+        monkeypatch,
+        CONCURRENT_BG_WORK_ENABLED=True,
+        CONCURRENT_BG_WORK_P2B_TASK_SUPERVISOR_READONLY=True,
+        CONCURRENT_BG_WORK_P2C_AGENT_RUNTIME_ASYNC=True,
+    )
+    result = await delegate_to_researcher_executor(
+        ToolExecutionRequest("delegate_to_researcher", {"task": "search lunch"}),
+        _ctx(supervisor),
+    )
+
+    assert result.success is True
+    assert result.payload["background"] is True
+    assert result.payload["task_id"] == "task_bg"
+    assert supervisor.calls[0]["spec_id"] == "researcher"
+    assert supervisor.calls[0]["objective"] == "search lunch"
+
+
+@pytest.mark.asyncio
+async def test_spawn_runtime_injects_event_bus_and_background_metadata(tmp_path):
+    store = AgentTaskStore(tmp_path / "lapwing.db")
+    await store.init()
+    registry = _RuntimeRegistry(_FakeAgent())
+    supervisor = TaskSupervisor(
+        store=store,
+        agent_registry=registry,
+        runtime_enabled=True,
+    )
+    handle = await supervisor.start_agent_task(
+        spec_id="researcher",
+        objective="find lunch",
+        chat_id="chat",
+        owner_user_id="owner",
+        services={"existing": "yes"},
+    )
+
+    while handle.task_id in supervisor._runtime_tasks:
+        await asyncio.sleep(0.01)
+
+    assert registry.captured_services["existing"] == "yes"
+    assert registry.captured_services["agent_event_bus"] is supervisor.event_bus
+    assert registry.captured_services["background_task_id"] == handle.task_id
+    assert registry.captured_services["background_chat_id"] == "chat"
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_base_agent_emit_uses_background_metadata_fallback():
+    class FakeEventBus:
+        def __init__(self):
+            self.events = []
+
+        async def emit(self, event):
+            self.events.append(event)
+
+    event_bus = FakeEventBus()
+    agent = BaseAgent(
+        RuntimeAgentSpec(
+            name="researcher",
+            description="",
+            system_prompt="",
+            model_slot="agent_execution",
+        ),
+        llm_router=object(),
+        tool_registry=ToolRegistry(),
+        mutation_log=None,
+        services={
+            "agent_event_bus": event_bus,
+            "background_task_id": "task_bg",
+            "background_chat_id": "chat",
+        },
+    )
+
+    await agent._emit(MutationType.AGENT_TOOL_CALL, {"content": "progress"})
+
+    assert len(event_bus.events) == 1
+    event = event_bus.events[0]
+    assert event.task_id == "task_bg"
+    assert event.chat_id == "chat"
+    assert event.payload["task_id"] == "task_bg"
+
+
+@pytest.mark.asyncio
+async def test_runtime_needs_input_saves_checkpoint_and_waits(tmp_path):
+    store = AgentTaskStore(tmp_path / "lapwing.db")
+    await store.init()
+    agent = _FakeAgent(AgentResult(
+        task_id="task",
+        status="needs_input",
+        result="need city",
+        structured_result={"question_for_lapwing": "Which city?"},
+    ))
+    supervisor = TaskSupervisor(
+        store=store,
+        agent_registry=_RuntimeRegistry(agent),
+        runtime_enabled=True,
+    )
+    handle = await supervisor.start_agent_task(
+        spec_id="researcher",
+        objective="find food",
+        chat_id="chat",
+        owner_user_id="owner",
+    )
+
+    while handle.task_id in supervisor._runtime_tasks:
+        await asyncio.sleep(0.01)
+
+    record = await store.read(handle.task_id)
+    assert record is not None
+    assert record.status == TaskStatus.WAITING_INPUT
+    assert record.checkpoint_id is not None
+    assert record.checkpoint_question == "Which city?"
+    supervisor.runtime_enabled = False
+    accepted = await supervisor.respond_to_agent_input(handle.task_id, "Guangzhou")
+    assert accepted.accepted is True
+    assert accepted.new_status == TaskStatus.RESUMING
     await store.close()

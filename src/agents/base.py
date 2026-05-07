@@ -334,7 +334,11 @@ class BaseAgent:
 
     async def _emit(self, event_type: MutationType, payload: dict[str, Any]) -> None:
         event_bus = self._services.get("agent_event_bus") if self._services else None
-        if event_bus is not None and payload.get("task_id"):
+        background_task_id = (
+            payload.get("task_id")
+            or (self._services or {}).get("background_task_id")
+        )
+        if event_bus is not None and background_task_id:
             try:
                 from datetime import datetime, timezone
                 from src.core.concurrent_bg_work.types import AgentEvent, AgentEventType
@@ -347,24 +351,35 @@ class BaseAgent:
                 }
                 bg_type = mapping.get(event_type)
                 if bg_type is not None:
-                    task_id = str(payload["task_id"])
+                    task_id = str(background_task_id)
+                    sequence = time.time_ns()
+                    chat_id = (
+                        payload.get("chat_id")
+                        or payload.get("parent_chat_id")
+                        or (self._services or {}).get("background_chat_id")
+                        or ""
+                    )
+                    event_payload = dict(payload)
+                    event_payload.setdefault("task_id", task_id)
+                    if chat_id:
+                        event_payload.setdefault("chat_id", str(chat_id))
                     await event_bus.emit(AgentEvent(
-                        event_id=f"agent_evt_{task_id}_{event_type.value}_{int(time.time() * 1000)}",
+                        event_id=f"agent_evt_{task_id}_{event_type.value}_{sequence}",
                         task_id=task_id,
-                        chat_id=str(payload.get("chat_id") or payload.get("parent_chat_id") or ""),
+                        chat_id=str(chat_id),
                         type=bg_type,
                         occurred_at=datetime.now(timezone.utc),
                         summary_for_lapwing=str(
-                            payload.get("summary")
-                            or payload.get("content")
-                            or payload.get("reason")
+                            event_payload.get("summary")
+                            or event_payload.get("content")
+                            or event_payload.get("reason")
                             or event_type.value
                         )[:500],
                         summary_for_owner=None,
                         raw_payload_ref=None,
                         salience=None,
-                        payload=payload,
-                        sequence_in_task=int(time.time() * 1000),
+                        payload=event_payload,
+                        sequence_in_task=sequence,
                     ))
                     return
             except Exception:

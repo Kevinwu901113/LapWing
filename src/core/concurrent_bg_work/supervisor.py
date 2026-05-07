@@ -304,7 +304,7 @@ class TaskSupervisor:
         if checkpoint is None:
             await self.store.update_status(task_id, TaskStatus.FAILED, status_reason="missing_checkpoint")
             return RespondResult(False, TaskStatus.FAILED)
-        await self.store.update_status(task_id, TaskStatus.PENDING)
+        await self.store.update_status(task_id, TaskStatus.RESUMING)
         if self.runtime_enabled:
             updated = await self.store.read(task_id)
             if updated is not None:
@@ -314,6 +314,13 @@ class TaskSupervisor:
     def _spawn_runtime(self, record: AgentTaskRecord, services: dict[str, Any]) -> None:
         if self.agent_registry is None:
             return
+        child_services = dict(services)
+        child_services.update({
+            "agent_event_bus": self.event_bus,
+            "background_task_id": record.task_id,
+            "background_chat_id": record.chat_id,
+            "background_owner_user_id": record.owner_user_id,
+        })
         token = CancellationToken()
         self._tokens[record.task_id] = token
         runtime = AgentRuntime(
@@ -326,7 +333,7 @@ class TaskSupervisor:
             owner_user_id=record.owner_user_id,
             objective=record.objective,
             expected_output=record.expected_output,
-            services=services,
+            services=child_services,
             cancellation_token=token,
         )
         task = asyncio.create_task(runtime.run(), name=f"agent-runtime:{record.task_id}")

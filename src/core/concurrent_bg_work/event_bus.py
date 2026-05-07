@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import logging
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any
 
+from src.core.events import Event, PRIORITY_TOOL_COMPLETE
 from src.core.concurrent_bg_work.types import (
     AgentEvent,
     AgentEventType,
+    AgentNeedsInputPayload,
     AgentTaskSnapshot,
     NotifyPolicy,
     SalienceLevel,
@@ -32,20 +33,35 @@ SILENT_OVERRIDE_TYPES = {
 
 
 @dataclass(frozen=True, slots=True)
-class AgentTaskResultEvent:
-    task_id: str
-    task_snapshot: AgentTaskSnapshot
-    triggering_event: AgentEvent
-    effective_salience: SalienceLevel
-    priority: int = -1
+class AgentTaskResultEvent(Event):
+    task_id: str = ""
+    task_snapshot: AgentTaskSnapshot | None = None
+    triggering_event: AgentEvent | None = None
+    effective_salience: SalienceLevel = SalienceLevel.NORMAL
+    priority: int = PRIORITY_TOOL_COMPLETE
     kind: str = "agent_task_result"
-    timestamp: float = 0.0
 
-    def __post_init__(self):
-        object.__setattr__(self, "timestamp", time.monotonic())
 
-    def __lt__(self, other):
-        return (self.priority, self.timestamp) < (other.priority, other.timestamp)
+@dataclass(frozen=True, slots=True)
+class AgentNeedsInputEvent(Event):
+    task_id: str = ""
+    payload: AgentNeedsInputPayload | None = None
+    timeout_at: datetime | None = None
+    triggering_event: AgentEvent | None = None
+    effective_salience: SalienceLevel = SalienceLevel.HIGH
+    priority: int = PRIORITY_TOOL_COMPLETE
+    kind: str = "agent_needs_input"
+
+
+@dataclass(frozen=True, slots=True)
+class AgentProgressUrgencyEvent(Event):
+    task_id: str = ""
+    summary: str = ""
+    elapsed_seconds: float = 0.0
+    triggering_event: AgentEvent | None = None
+    effective_salience: SalienceLevel = SalienceLevel.NORMAL
+    priority: int = PRIORITY_TOOL_COMPLETE
+    kind: str = "agent_progress_urgency"
 
 
 class AgentEventBus:
@@ -134,6 +150,37 @@ class AgentEventBus:
             return
         if self._event_queue is None:
             return
+        if event.type == AgentEventType.AGENT_PROGRESS_SUMMARY:
+            await self._event_queue.put(AgentProgressUrgencyEvent(
+                task_id=event.task_id,
+                summary=event.summary_for_lapwing,
+                elapsed_seconds=float(event.payload.get("elapsed_seconds") or 0.0),
+                triggering_event=event,
+                effective_salience=effective,
+            ))
+            return
+
+        if event.type == AgentEventType.AGENT_NEEDS_INPUT:
+            payload = _needs_input_payload_from_event(event)
+            await self._event_queue.put(AgentNeedsInputEvent(
+                task_id=event.task_id,
+                payload=payload,
+                timeout_at=payload.timeout_at,
+                triggering_event=event,
+                effective_salience=effective,
+            ))
+            return
+
+        snapshot = await self._snapshot_for_event(event)
+        if snapshot is not None:
+            await self._event_queue.put(AgentTaskResultEvent(
+                task_id=event.task_id,
+                task_snapshot=snapshot,
+                triggering_event=event,
+                effective_salience=effective,
+            ))
+
+    async def _snapshot_for_event(self, event: AgentEvent) -> AgentTaskSnapshot | None:
         snapshots = await self._task_store.list_tasks(
             chat_id=event.chat_id,
             statuses=[
@@ -147,17 +194,12 @@ class AgentEventBus:
                 TaskStatus.CANCELLED,
             ],
             include_recently_completed=True,
-            limit=1,
+            limit=50,
         )
-        snapshot = snapshots[0] if snapshots else None
-        if snapshot is None:
-            return
-        await self._event_queue.put(AgentTaskResultEvent(
-            task_id=event.task_id,
-            task_snapshot=snapshot,
-            triggering_event=event,
-            effective_salience=effective,
-        ))
+        for snapshot in snapshots:
+            if snapshot.task_id == event.task_id:
+                return snapshot
+        return snapshots[0] if snapshots else None
 
 
 def new_agent_event(
@@ -182,4 +224,28 @@ def new_agent_event(
         salience=salience,
         payload=payload or {},
         sequence_in_task=sequence,
+    )
+
+
+def _needs_input_payload_from_event(event: AgentEvent) -> AgentNeedsInputPayload:
+    raw = event.payload or {}
+    timeout_raw = raw.get("timeout_at")
+    timeout_at = None
+    if isinstance(timeout_raw, datetime):
+        timeout_at = timeout_raw
+    elif timeout_raw:
+        try:
+            timeout_at = datetime.fromisoformat(str(timeout_raw))
+        except ValueError:
+            timeout_at = None
+    return AgentNeedsInputPayload(
+        question_for_lapwing=str(
+            raw.get("question_for_lapwing")
+            or raw.get("question")
+            or event.summary_for_lapwing
+        ),
+        question_for_owner=raw.get("question_for_owner"),
+        expected_answer_shape=raw.get("expected_answer_shape"),
+        blocking=bool(raw.get("blocking", True)),
+        timeout_at=timeout_at,
     )

@@ -9,6 +9,13 @@ from src.core.concurrent_bg_work.types import CognitiveStateView, SalienceLevel,
 
 
 class TurnBatcher:
+    """P2.5 foundation.
+
+    MainLoop does not yet use this as the primary dispatcher. Until the full
+    transactional cognitive turn lands, agent events are handled explicitly by
+    MainLoop so EventQueue entries are not dropped.
+    """
+
     DEFAULT_WINDOWS_MS = {
         "ordinary_user_message": 1800,
         "agent_result_burst": 700,

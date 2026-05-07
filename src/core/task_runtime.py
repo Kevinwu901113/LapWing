@@ -103,10 +103,12 @@ BUDGET_EXEMPT_TOOLS = frozenset({
 _AMBIENT_WRITEBACK_MIN_CONFIDENCE = 0.7
 _AMBIENT_CACHE_MIN_CONFIDENCE = 0.8
 _AMBIENT_CACHE_MAX_AGE_SECONDS = 60 * 60
-_BACKGROUND_AGENT_TOOL_NAMES = frozenset({
-    "start_agent_task",
+_BACKGROUND_AGENT_READ_TOOL_NAMES = frozenset({
     "list_agent_tasks",
     "read_agent_task",
+})
+_BACKGROUND_AGENT_START_TOOL_NAMES = frozenset({"start_agent_task"})
+_BACKGROUND_AGENT_CONTROL_TOOL_NAMES = frozenset({
     "cancel_agent_task",
     "respond_to_agent_input",
 })
@@ -117,18 +119,22 @@ _VOLATILE_TOPIC_PATTERNS = (
 )
 
 
-def _background_task_surface_enabled(profile: RuntimeProfile) -> bool:
+def _background_task_tool_names_for_profile(profile: RuntimeProfile) -> set[str]:
     if getattr(profile, "name", "") != "standard":
-        return False
+        return set()
     try:
         from src.config import get_settings
         flags = get_settings().concurrent_bg_work
-        return bool(
-            flags.enabled
-            and flags.p2b_task_supervisor_readonly
-        )
+        if not (flags.enabled and flags.p2b_task_supervisor_readonly):
+            return set()
+        names = set(_BACKGROUND_AGENT_READ_TOOL_NAMES)
+        if flags.p2c_agent_runtime_async:
+            names.update(_BACKGROUND_AGENT_START_TOOL_NAMES)
+        if flags.p2d_cancel_and_needs_input:
+            names.update(_BACKGROUND_AGENT_CONTROL_TOOL_NAMES)
+        return names
     except Exception:
-        return False
+        return set()
 
 # VitalGuard 对命令类型的分类（模块级常量，避免每次 execute_tool() 重建）
 _SHELL_TOOLS: frozenset[str] = frozenset({"execute_shell", "run_python_code"})
@@ -393,20 +399,22 @@ class TaskRuntime:
         names = {spec.name for spec in specs}
         exclude = set(getattr(profile, "exclude_tool_names", frozenset()))
         names = names - exclude
-        if _background_task_surface_enabled(profile):
+        bg_tool_names = _background_task_tool_names_for_profile(profile)
+        if bg_tool_names:
             names.update(
-                name for name in _BACKGROUND_AGENT_TOOL_NAMES
+                name for name in bg_tool_names
                 if self._tool_registry.get(name) is not None
             )
         return names
 
     def tools_for_profile(self, profile: str | RuntimeProfile) -> list[dict[str, Any]]:
         profile_obj = self._resolve_profile(profile)
-        if _background_task_surface_enabled(profile_obj):
+        bg_tool_names = _background_task_tool_names_for_profile(profile_obj)
+        if bg_tool_names:
             specs = self._tool_registry.get_tools_for_profile(profile_obj, include_internal=False)
             tool_names = {spec.name for spec in specs}
             tool_names.update(
-                name for name in _BACKGROUND_AGENT_TOOL_NAMES
+                name for name in bg_tool_names
                 if self._tool_registry.get(name) is not None
             )
             return self._tool_registry.function_tools(

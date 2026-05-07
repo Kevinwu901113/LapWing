@@ -3,10 +3,18 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
+import uuid
 
 from src.agents.types import AgentMessage
 from src.core.concurrent_bg_work.event_bus import new_agent_event
-from src.core.concurrent_bg_work.types import AgentEventType, SalienceLevel, TaskStatus
+from src.core.concurrent_bg_work.types import (
+    AgentEventType,
+    AgentNeedsInputPayload,
+    AgentRuntimeCheckpoint,
+    SalienceLevel,
+    TaskStatus,
+)
 
 logger = logging.getLogger("lapwing.core.concurrent_bg_work.runtime")
 
@@ -68,6 +76,8 @@ class AgentRuntime:
         content = self.objective
         if self.expected_output:
             content = f"{content}\n\nExpected output: {self.expected_output}"
+        if self.services.get("checkpoint_answer") is not None:
+            content = f"{content}\n\nLapwing supplied missing input: {self.services['checkpoint_answer']}"
         message = AgentMessage(
             from_agent="lapwing",
             to_agent=self.spec_id,
@@ -101,6 +111,8 @@ class AgentRuntime:
             ))
             return
         if getattr(result, "status", "") == "done":
+            if await self._task_is_terminal():
+                return
             await self.event_bus.emit(new_agent_event(
                 task_id=self.task_id,
                 chat_id=self.chat_id,
@@ -108,7 +120,11 @@ class AgentRuntime:
                 summary=(getattr(result, "result", "") or "Task completed.")[:500],
                 sequence=3,
             ))
+        elif getattr(result, "status", "") in {"needs_input", "waiting_input"}:
+            await self._checkpoint_needs_input(result)
         else:
+            if await self._task_is_terminal():
+                return
             reason = getattr(result, "reason", None) or getattr(result, "error_detail", None) or "Task failed."
             await self.event_bus.emit(new_agent_event(
                 task_id=self.task_id,
@@ -118,3 +134,67 @@ class AgentRuntime:
                 sequence=3,
                 salience=SalienceLevel.HIGH,
             ))
+
+    async def _task_is_terminal(self) -> bool:
+        record = await self.store.read(self.task_id)
+        return bool(record and record.status in {
+            TaskStatus.COMPLETED,
+            TaskStatus.FAILED,
+            TaskStatus.CANCELLED,
+            TaskStatus.WAITING_INPUT,
+        })
+
+    async def _checkpoint_needs_input(self, result) -> None:
+        structured = getattr(result, "structured_result", None)
+        data = structured if isinstance(structured, dict) else {}
+        question = (
+            data.get("question_for_lapwing")
+            or data.get("question")
+            or getattr(result, "reason", None)
+            or getattr(result, "result", None)
+            or "Background agent needs input."
+        )
+        timeout_at = data.get("timeout_at")
+        if isinstance(timeout_at, str):
+            try:
+                timeout_at = datetime.fromisoformat(timeout_at)
+            except ValueError:
+                timeout_at = None
+        payload = AgentNeedsInputPayload(
+            question_for_lapwing=str(question),
+            question_for_owner=data.get("question_for_owner"),
+            expected_answer_shape=data.get("expected_answer_shape"),
+            blocking=bool(data.get("blocking", True)),
+            timeout_at=timeout_at,
+        )
+        checkpoint = AgentRuntimeCheckpoint(
+            checkpoint_id=f"checkpoint_{self.task_id}_{uuid.uuid4().hex[:8]}",
+            task_id=self.task_id,
+            created_at=datetime.now(timezone.utc),
+            conversation_state={
+                "objective": self.objective,
+                "expected_output": self.expected_output,
+            },
+            scratchpad_summary=str(getattr(result, "result", "") or "")[:2000],
+            pending_question=payload,
+            tool_context={},
+            workspace_snapshot_ref=None,
+            rounds_consumed=int(data.get("rounds_consumed") or 0),
+        )
+        await self.store.save_checkpoint(checkpoint)
+        await self.event_bus.emit(new_agent_event(
+            task_id=self.task_id,
+            chat_id=self.chat_id,
+            type=AgentEventType.AGENT_NEEDS_INPUT,
+            summary=payload.question_for_lapwing[:500],
+            sequence=3,
+            payload={
+                "question_for_lapwing": payload.question_for_lapwing,
+                "question_for_owner": payload.question_for_owner,
+                "expected_answer_shape": payload.expected_answer_shape,
+                "blocking": payload.blocking,
+                "timeout_at": payload.timeout_at.isoformat() if payload.timeout_at else None,
+                "checkpoint_id": checkpoint.checkpoint_id,
+            },
+            salience=SalienceLevel.HIGH,
+        ))
