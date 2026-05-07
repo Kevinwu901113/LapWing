@@ -634,6 +634,41 @@ async def test_delegate_missing_turn_id_creates_unique_tasks(monkeypatch, tmp_pa
     await store.close()
 
 
+@pytest.mark.asyncio
+async def test_direct_start_agent_task_missing_turn_id_creates_unique_tasks(monkeypatch, tmp_path):
+    """Direct start_agent_task with missing ctx.turn_id must not reuse old task."""
+    store = AgentTaskStore(tmp_path / "lapwing.db")
+    await store.init()
+    supervisor = TaskSupervisor(store=store, agent_registry=_Registry())
+
+    ctx = ToolExecutionContext(
+        execute_shell=_noop_shell,
+        shell_default_cwd=".",
+        services={"background_task_supervisor": supervisor},
+        chat_id="chat",
+        user_id="owner",
+        turn_id="",  # missing
+    )
+
+    r1 = await start_agent_task_executor(
+        ToolExecutionRequest("start_agent_task", {"spec_id": "researcher", "objective": "find food"}),
+        ctx,
+    )
+    r2 = await start_agent_task_executor(
+        ToolExecutionRequest("start_agent_task", {"spec_id": "researcher", "objective": "find food"}),
+        ctx,
+    )
+
+    assert r1.success is True
+    assert r2.success is True
+    assert r1.payload["task_id"] != r2.payload["task_id"]
+
+    tasks = await store.list_tasks(chat_id="chat")
+    assert len(tasks) == 2
+
+    await store.close()
+
+
 # ── Fix 2: audit coverage ────────────────────────────────────────────
 
 

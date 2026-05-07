@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import asdict
 from typing import Any
 
@@ -45,7 +46,7 @@ async def start_agent_task_executor(req: ToolExecutionRequest, ctx: ToolExecutio
             chat_id=ctx.chat_id or "unknown",
             owner_user_id=ctx.user_id or "owner",
             parent_event_id=str(args.get("parent_event_id") or "") or (
-                f"tool_{ctx.turn_id}" if ctx.turn_id else ""
+                f"tool_{ctx.turn_id}" if ctx.turn_id else f"tool_unscoped_{uuid.uuid4().hex}"
             ),
             parent_turn_id=str(args.get("parent_turn_id") or "") or ctx.turn_id or None,
             context=args.get("context") or {},
