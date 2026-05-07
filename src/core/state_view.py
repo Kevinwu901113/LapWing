@@ -22,6 +22,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from src.ambient.models import AmbientEntry, TimeContext
+    from src.core.concurrent_bg_work.types import CognitiveStateView
 
 
 # ── Identity ─────────────────────────────────────────────────────────
@@ -248,6 +249,7 @@ class StateView:
     # Never contains full CAPABILITY.md body, procedures, scripts, or evals.
     capability_summaries: tuple[CapabilitySummary, ...] = ()
     pending_steering_events: tuple[SteeringEventView, ...] = ()
+    concurrent_bg_work: "CognitiveStateView | None" = None
 
 
 # ── Serializer output ────────────────────────────────────────────────

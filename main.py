@@ -397,6 +397,15 @@ def run_bot(logger: logging.Logger) -> int:
             if not gate_decision.accepted:
                 logger.debug("[qq/inbound] dropped: %s", gate_decision.reason)
                 return
+            from config.settings import get_settings
+            concurrent_flags = get_settings().concurrent_bg_work
+            ingress_event_id = None
+            ingress_idempotency_key = None
+            if concurrent_flags.enabled and concurrent_flags.p1_ingress_correctness:
+                from src.core.concurrent_bg_work.ingress import IngressNormalizer
+                ingress = IngressNormalizer().normalize(normalized)
+                ingress_event_id = ingress.event_id
+                ingress_idempotency_key = ingress.idempotency_key
 
             intercept = container.command_intercept_layer.intercept(normalized)
             if intercept.mode == BusyInputMode.COMMAND:
@@ -424,11 +433,13 @@ def run_bot(logger: logging.Logger) -> int:
                         source_trust_level=getattr(auth_level, "name", str(auth_level)).lower(),
                     )
                     await store.add(steering)
-                await send_fn("收到，我会在下一个安全边界处理这条修正。")
-                return
+                if not (concurrent_flags.enabled and concurrent_flags.p1_ingress_correctness):
+                    await send_fn("收到，我会在下一个安全边界处理这条修正。")
+                    return
             if busy_decision.mode == BusyInputMode.QUEUE:
-                await send_fn("收到，这条我先排队，当前任务结束后处理。")
-                return
+                if not (concurrent_flags.enabled and concurrent_flags.p1_ingress_correctness):
+                    await send_fn("收到，这条我先排队，当前任务结束后处理。")
+                    return
 
             # 图片下载转 base64（QQ CDN URL 有时效性，需在调用 LLM 前下载）
             images: list[dict] | None = None
@@ -465,6 +476,8 @@ def run_bot(logger: logging.Logger) -> int:
                 status_callback=noop_status,
                 interaction_mode=busy_decision.mode.value,
                 source_message_id=normalized.message_id,
+                event_id=ingress_event_id,
+                idempotency_key=ingress_idempotency_key,
             )
             await container.event_queue.put(event)
 

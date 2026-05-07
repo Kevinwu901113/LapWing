@@ -333,6 +333,42 @@ class BaseAgent:
         )
 
     async def _emit(self, event_type: MutationType, payload: dict[str, Any]) -> None:
+        event_bus = self._services.get("agent_event_bus") if self._services else None
+        if event_bus is not None and payload.get("task_id"):
+            try:
+                from datetime import datetime, timezone
+                from src.core.concurrent_bg_work.types import AgentEvent, AgentEventType
+                mapping = {
+                    MutationType.AGENT_STARTED: AgentEventType.AGENT_STARTED,
+                    MutationType.AGENT_TOOL_CALL: AgentEventType.AGENT_TOOL_CALL,
+                    MutationType.AGENT_COMPLETED: AgentEventType.AGENT_COMPLETED,
+                    MutationType.AGENT_FAILED: AgentEventType.AGENT_FAILED,
+                    MutationType.AGENT_BUDGET_EXHAUSTED: AgentEventType.AGENT_BUDGET_EXHAUSTED,
+                }
+                bg_type = mapping.get(event_type)
+                if bg_type is not None:
+                    task_id = str(payload["task_id"])
+                    await event_bus.emit(AgentEvent(
+                        event_id=f"agent_evt_{task_id}_{event_type.value}_{int(time.time() * 1000)}",
+                        task_id=task_id,
+                        chat_id=str(payload.get("chat_id") or payload.get("parent_chat_id") or ""),
+                        type=bg_type,
+                        occurred_at=datetime.now(timezone.utc),
+                        summary_for_lapwing=str(
+                            payload.get("summary")
+                            or payload.get("content")
+                            or payload.get("reason")
+                            or event_type.value
+                        )[:500],
+                        summary_for_owner=None,
+                        raw_payload_ref=None,
+                        salience=None,
+                        payload=payload,
+                        sequence_in_task=int(time.time() * 1000),
+                    ))
+                    return
+            except Exception:
+                logger.warning("AgentEventBus emit failed; falling back to mutation_log", exc_info=True)
         if self.mutation_log is None:
             return
         try:
@@ -344,6 +380,7 @@ class BaseAgent:
 
     _AGENT_PERSONA_ANCHOR: str = (
         "记住：你是 Lapwing 的一部分。"
+        "你不能直接对用户说话；需要用户信息时必须通过 AGENT_NEEDS_INPUT 协议返回给 Lapwing。"
         "输出风格保持温暖自然，短句为主，不列清单，不用加粗标题。"
     )
 

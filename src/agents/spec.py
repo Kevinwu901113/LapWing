@@ -77,6 +77,14 @@ class AgentSpec:
     allowed_tools: list[str] = field(default_factory=list)
     policy_lint_result: dict = field(default_factory=dict)
     capability_binding_mode: str = "metadata_only"
+    side_effect_class: str = "read_only"
+    can_spawn_subtasks: bool = False
+    max_subtask_depth: int = 0
+    allowed_child_specs: list[str] = field(default_factory=list)
+    default_salience: str = "normal"
+    default_notify_policy: str = "auto"
+    default_timeout_seconds: int | None = None
+    supports_checkpoint: bool = True
 
     def spec_hash(self) -> str:
         content = json.dumps({
@@ -103,6 +111,10 @@ class AgentSpec:
             "allowed_delegation_depth": self.allowed_delegation_depth,
             "allowed_tools": sorted(self.allowed_tools),
             "capability_binding_mode": self.capability_binding_mode,
+            # Concurrent background-work runtime fields are intentionally not
+            # part of the catalog identity hash yet. Older persisted specs were
+            # hashed before these defaults existed; including them here would
+            # invalidate the catalog on import without a dedicated migration.
         }, sort_keys=True, ensure_ascii=False)
         return hashlib.sha256(content.encode()).hexdigest()[:16]
 

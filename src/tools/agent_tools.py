@@ -41,10 +41,58 @@ _HARD_ERROR_PATTERNS = (
     "未注入", "unavailable", "service_not_found", "not_initialized",
     "disabled", "circuit_break", "engine_unavailable",
 )
+_COGNITIVE_RUNTIME_MODULE_MARKERS = (
+    "src.core.main_loop",
+    "src.core.task_runtime",
+    "src.core.tool_dispatcher",
+    "src.core.concurrent_bg_work.runtime",
+    "src.core.concurrent_bg_work.supervisor",
+)
 
 
 def _generate_task_id() -> str:
     return f"task_{uuid.uuid4().hex[:12]}"
+
+
+def _is_called_from_cognitive_runtime() -> bool:
+    frame = inspect.currentframe()
+    while frame:
+        module_name = frame.f_globals.get("__name__", "")
+        if any(marker in module_name for marker in _COGNITIVE_RUNTIME_MODULE_MARKERS):
+            return True
+        frame = frame.f_back
+    return False
+
+
+def _legacy_wait_forbidden_enabled() -> bool:
+    try:
+        from src.config import get_settings
+        flags = get_settings().concurrent_bg_work
+        return bool(flags.enabled and flags.p2c_agent_runtime_async)
+    except Exception:
+        return False
+
+
+async def delegate_to_agent_legacy_wait(spec_id: str, query: str, ctx: ToolExecutionContext, **kwargs) -> ToolExecutionResult:
+    """Deprecated blocking compatibility wrapper for offline/batch callers."""
+    if _legacy_wait_forbidden_enabled() and _is_called_from_cognitive_runtime():
+        return ToolExecutionResult(
+            success=False,
+            payload={"status": "legacy_wait_forbidden"},
+            reason=(
+                "delegate_to_agent_legacy_wait is forbidden inside Lapwing "
+                "cognitive/runtime paths; use start_agent_task instead"
+            ),
+        )
+    req = ToolExecutionRequest(
+        name="delegate_to_agent",
+        arguments={
+            "agent_name": spec_id,
+            "task": query,
+            **kwargs,
+        },
+    )
+    return await delegate_to_agent_executor(req, ctx)
 
 
 def _missing_required_agent_services(agent_name: str, services: dict) -> list[str]:
@@ -392,6 +440,12 @@ async def delegate_to_coder_executor(
 async def delegate_to_agent_executor(
     req: ToolExecutionRequest, ctx: ToolExecutionContext,
 ) -> ToolExecutionResult:
+    if _legacy_wait_forbidden_enabled() and _is_called_from_cognitive_runtime():
+        return ToolExecutionResult(
+            success=False,
+            payload={"status": "legacy_wait_forbidden"},
+            reason="delegate_to_agent is disabled in cognitive runtime while concurrent background work is active",
+        )
     args = req.arguments
     agent_name = (args.get("agent_name") or "").strip()
     task = (args.get("task") or "").strip()

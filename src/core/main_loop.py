@@ -30,6 +30,7 @@ from src.core.events import (
     Event,
     InnerTickEvent,
     MessageEvent,
+    OperatorControlEvent,
     SystemEvent,
 )
 
@@ -39,6 +40,24 @@ if TYPE_CHECKING:  # pragma: no cover - type-only imports
     from src.core.inner_tick_scheduler import InnerTickScheduler
 
 logger = logging.getLogger("lapwing.core.main_loop")
+
+
+def _concurrent_bg_work_p4_enabled() -> bool:
+    try:
+        from src.config import get_settings
+        flags = get_settings().concurrent_bg_work
+        return bool(flags.enabled and flags.p4_cancellation_evolution)
+    except Exception:
+        return False
+
+
+def _concurrent_bg_work_p2_5_enabled() -> bool:
+    try:
+        from src.config import get_settings
+        flags = get_settings().concurrent_bg_work
+        return bool(flags.enabled and flags.p2_5_arbitration)
+    except Exception:
+        return False
 
 
 class MainLoop:
@@ -80,6 +99,8 @@ class MainLoop:
         self._cancel_requested = False
         self._owner_watcher_task: asyncio.Task | None = None
         self._handling_owner: bool = False
+        from src.core.concurrent_bg_work.speaking import SpeakingArbiter
+        self._speaking_arbiter = SpeakingArbiter()
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -91,9 +112,10 @@ class MainLoop:
         # handler the moment an OWNER message lands in the queue. Without
         # it the run loop is blocked awaiting the handler and only sees
         # the new event after the handler completes.
-        self._owner_watcher_task = asyncio.create_task(
-            self._owner_preempt_watcher(), name="lapwing-owner-watcher",
-        )
+        if not _concurrent_bg_work_p4_enabled():
+            self._owner_watcher_task = asyncio.create_task(
+                self._owner_preempt_watcher(), name="lapwing-owner-watcher",
+            )
         try:
             while self._alive:
                 event = await self._queue.get()
@@ -156,6 +178,8 @@ class MainLoop:
         by ``_handle_message``).
         """
         if (
+            not _concurrent_bg_work_p4_enabled()
+            and
             event.priority == PRIORITY_OWNER_MESSAGE
             and self._current_task is not None
             and not self._current_task.done()
@@ -175,6 +199,8 @@ class MainLoop:
                 await self._handle_inner_tick(event)
             elif isinstance(event, SystemEvent):
                 await self._handle_system(event)
+            elif isinstance(event, OperatorControlEvent):
+                await self._handle_operator_control(event)
             else:
                 logger.warning("Unknown event kind: %s", event.kind)
         except asyncio.CancelledError:
@@ -272,10 +298,18 @@ class MainLoop:
         final_images = merged_images
 
         async def _drive() -> str:
+            send_fn = event.send_fn
+            if _concurrent_bg_work_p2_5_enabled() and event.send_fn is not None:
+                async def _send_serialized(text: str) -> None:
+                    async with self._speaking_arbiter.acquire(event.chat_id):
+                        await event.send_fn(text)
+
+                send_fn = _send_serialized
+
             return await self._brain.think_conversational(
                 chat_id=event.chat_id,
                 user_message=final_text,
-                send_fn=event.send_fn,
+                send_fn=send_fn,
                 typing_fn=event.typing_fn,
                 status_callback=event.status_callback,
                 adapter=event.adapter,
@@ -369,3 +403,15 @@ class MainLoop:
         logger.debug("SystemEvent stub: action=%s", event.action)
         if event.action == "shutdown":
             await self.stop()
+
+    async def _handle_operator_control(self, event: OperatorControlEvent) -> None:
+        try:
+            from src.config import get_settings
+            enabled = get_settings().operator.emergency_control_enabled
+        except Exception:
+            enabled = False
+        if not enabled:
+            logger.info("OperatorControlEvent ignored because emergency control is disabled")
+            return
+        if event.command in {"freeze_loop", "stop_all"}:
+            await self._cancel_in_flight(f"operator:{event.reason}")

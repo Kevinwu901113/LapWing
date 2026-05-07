@@ -99,6 +99,7 @@ class StateViewBuilder:
         steering_store=None,  # Runtime hardening: optional, duck-typed (has pending)
         steering_max_count: int = 5,
         steering_token_budget: int = 600,
+        background_task_store=None,
     ) -> None:
         self._soul_path = Path(soul_path)
         self._constitution_path = Path(constitution_path)
@@ -127,6 +128,7 @@ class StateViewBuilder:
         self._steering_max_count = steering_max_count
         self._steering_token_budget = steering_token_budget
         self._last_pending_steering_event_ids: tuple[str, ...] = ()
+        self._background_task_store = background_task_store
 
     # ── Entry points ─────────────────────────────────────────────────
 
@@ -171,6 +173,7 @@ class StateViewBuilder:
         focus_context = await self._build_focus_context(chat_id)
         capability_summaries = self._build_capability_summaries(trajectory_window)
         pending_steering_events = await self._build_pending_steering_events(chat_id=chat_id)
+        concurrent_bg_work = await self._build_concurrent_bg_work(chat_id=chat_id)
 
         return StateView(
             identity_docs=identity_docs,
@@ -186,6 +189,7 @@ class StateViewBuilder:
             agent_summary=self._build_agent_summary(),
             capability_summaries=capability_summaries,
             pending_steering_events=pending_steering_events,
+            concurrent_bg_work=concurrent_bg_work,
         )
 
     async def build_for_inner(
@@ -223,6 +227,7 @@ class StateViewBuilder:
         focus_context = await self._build_inner_focus_context()
         capability_summaries = self._build_capability_summaries(trajectory_window)
         pending_steering_events = await self._build_pending_steering_events(chat_id=None)
+        concurrent_bg_work = await self._build_concurrent_bg_work(chat_id=None)
 
         return StateView(
             identity_docs=identity_docs,
@@ -238,7 +243,43 @@ class StateViewBuilder:
             agent_summary=self._build_agent_summary(),
             capability_summaries=capability_summaries,
             pending_steering_events=pending_steering_events,
+            concurrent_bg_work=concurrent_bg_work,
         )
+
+    async def _build_concurrent_bg_work(self, *, chat_id: str | None):
+        if self._background_task_store is None:
+            return None
+        try:
+            from src.core.concurrent_bg_work.types import CognitiveStateView, TaskStatus
+            active = await self._background_task_store.list_tasks(
+                chat_id=chat_id,
+                statuses=[
+                    TaskStatus.PENDING,
+                    TaskStatus.RUNNING,
+                    TaskStatus.WAITING_RESOURCE,
+                    TaskStatus.WAITING_INPUT,
+                    TaskStatus.RESUMING,
+                ],
+                limit=20,
+            )
+            recent = await self._background_task_store.list_tasks(
+                chat_id=chat_id,
+                statuses=[TaskStatus.COMPLETED, TaskStatus.FAILED, TaskStatus.CANCELLED],
+                include_recently_completed=True,
+                limit=10,
+            )
+            return CognitiveStateView(
+                chat_id=chat_id,
+                turn_id="state_view",
+                snapshot_at=local_now(),
+                in_flight_tasks=active,
+                recently_completed=recent,
+                recovery_notice=getattr(self._background_task_store, "pending_recovery_notice", None),
+                busy_hint="waiting_on_background" if active else "idle",
+            )
+        except Exception:
+            logger.debug("concurrent background work StateView projection failed", exc_info=True)
+            return None
 
     # ── Agents ───────────────────────────────────────────────────────
 

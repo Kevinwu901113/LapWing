@@ -103,11 +103,32 @@ BUDGET_EXEMPT_TOOLS = frozenset({
 _AMBIENT_WRITEBACK_MIN_CONFIDENCE = 0.7
 _AMBIENT_CACHE_MIN_CONFIDENCE = 0.8
 _AMBIENT_CACHE_MAX_AGE_SECONDS = 60 * 60
+_BACKGROUND_AGENT_TOOL_NAMES = frozenset({
+    "start_agent_task",
+    "list_agent_tasks",
+    "read_agent_task",
+    "cancel_agent_task",
+    "respond_to_agent_input",
+})
 _VOLATILE_TOPIC_PATTERNS = (
     "今天", "现在", "刚才", "最新", "实时", "当前",
     "比分", "赛况", "进度", "领先",
     "股价", "汇率", "天气",
 )
+
+
+def _background_task_surface_enabled(profile: RuntimeProfile) -> bool:
+    if getattr(profile, "name", "") != "standard":
+        return False
+    try:
+        from src.config import get_settings
+        flags = get_settings().concurrent_bg_work
+        return bool(
+            flags.enabled
+            and flags.p2b_task_supervisor_readonly
+        )
+    except Exception:
+        return False
 
 # VitalGuard 对命令类型的分类（模块级常量，避免每次 execute_tool() 重建）
 _SHELL_TOOLS: frozenset[str] = frozenset({"execute_shell", "run_python_code"})
@@ -371,10 +392,27 @@ class TaskRuntime:
             specs = []
         names = {spec.name for spec in specs}
         exclude = set(getattr(profile, "exclude_tool_names", frozenset()))
-        return names - exclude
+        names = names - exclude
+        if _background_task_surface_enabled(profile):
+            names.update(
+                name for name in _BACKGROUND_AGENT_TOOL_NAMES
+                if self._tool_registry.get(name) is not None
+            )
+        return names
 
     def tools_for_profile(self, profile: str | RuntimeProfile) -> list[dict[str, Any]]:
         profile_obj = self._resolve_profile(profile)
+        if _background_task_surface_enabled(profile_obj):
+            specs = self._tool_registry.get_tools_for_profile(profile_obj, include_internal=False)
+            tool_names = {spec.name for spec in specs}
+            tool_names.update(
+                name for name in _BACKGROUND_AGENT_TOOL_NAMES
+                if self._tool_registry.get(name) is not None
+            )
+            return self._tool_registry.function_tools(
+                include_internal=False,
+                tool_names=tool_names,
+            )
         return self._tool_registry.function_tools_for_profile(profile_obj)
 
     _BROWSER_TOOL_NAMES: frozenset[str] = frozenset({

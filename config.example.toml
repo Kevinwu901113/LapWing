@@ -177,6 +177,27 @@ max_persistent_agents = 10
 max_session_agents = 5
 session_cleanup_interval_seconds = 300
 
+[concurrent_bg_work]
+enabled = false
+p1_ingress_correctness = false
+p2a_task_store_foundation = false
+p2b_task_supervisor_readonly = false
+p2c_agent_runtime_async = false
+p2d_cancel_and_needs_input = false
+p2_5_arbitration = false
+p3_progress_attention = false
+p4_cancellation_evolution = false
+p5_desktop_progress = false
+
+[concurrent_bg_work.diagnostic]
+log_validation_warnings = true
+log_silent_overrides = true
+log_concurrency_decisions = false
+log_semantic_cancel_decisions = true
+
+[operator]
+emergency_control_enabled = false
+
 [budget]
 max_llm_calls = 50
 max_tool_calls = 100

@@ -3,6 +3,7 @@
 import asyncio
 import json
 import logging
+import uuid
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
@@ -177,6 +178,21 @@ async def websocket_chat(ws: WebSocket):
 
                     done = asyncio.get_running_loop().create_future()
                     images_tuple = tuple(images) if images else ()
+                    event_id = None
+                    idempotency_key = None
+                    try:
+                        from config.settings import get_settings
+                        flags = get_settings().concurrent_bg_work
+                        if flags.enabled and flags.p1_ingress_correctness:
+                            digest_source = f"desktop|{chat_id}|owner|{content}"
+                            import hashlib
+                            event_id = f"evt_{uuid.uuid4().hex}"
+                            idempotency_key = "ingress:" + hashlib.sha256(
+                                digest_source.encode("utf-8"),
+                            ).hexdigest()[:32]
+                    except Exception:
+                        event_id = None
+                        idempotency_key = None
                     event = MessageEvent.from_message(
                         chat_id=chat_id,
                         user_id="owner",
@@ -188,6 +204,8 @@ async def websocket_chat(ws: WebSocket):
                         typing_fn=typing_fn,
                         status_callback=status_callback,
                         done_future=done,
+                        event_id=event_id,
+                        idempotency_key=idempotency_key,
                     )
                     await _event_queue.put(event)
                     await done  # propagate handler exception to except block

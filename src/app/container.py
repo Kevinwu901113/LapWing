@@ -186,6 +186,9 @@ class AppContainer:
         # StateViewBuilder so inner ticks see open + overdue commitments.
         self.commitment_store: CommitmentStore | None = None
         self.steering_store = None
+        self.background_task_store = None
+        self.background_task_supervisor = None
+        self.background_agent_event_bus = None
 
         # v2.0 Step 4: MainLoop — single runtime driver. event_queue was
         # constructed above (so LocalApiServer could pick it up). The
@@ -276,6 +279,22 @@ class AppContainer:
         else:
             self.brain._steering_store_ref = self.steering_store
             logger.info("SteeringStore 已初始化")
+
+        concurrent_flags = get_settings().concurrent_bg_work
+        if concurrent_flags.enabled and concurrent_flags.p2a_task_store_foundation:
+            from src.core.concurrent_bg_work.event_bus import AgentEventBus
+            from src.core.concurrent_bg_work.store import AgentTaskStore
+            self.background_task_store = AgentTaskStore(self._data_dir / "lapwing.db")
+            await self.background_task_store.init()
+            await self.background_task_store.startup_recovery()
+            self.background_agent_event_bus = AgentEventBus(
+                task_store=self.background_task_store,
+                mutation_log=self.mutation_log,
+                event_queue=self.event_queue,
+            )
+            self.brain.state_view_builder._background_task_store = self.background_task_store
+            self.brain._background_task_store_ref = self.background_task_store
+            logger.info("Concurrent background AgentTaskStore 已初始化")
 
         # ProxyRouter — 按域名自适应选择代理或直连
         from src.core.proxy_router import ProxyRouter
@@ -529,6 +548,17 @@ class AppContainer:
                 logger.warning("steering_store close failed", exc_info=True)
             self.steering_store = None
 
+        if self.background_task_store is not None:
+            try:
+                await self.background_task_store.lifecycle_log(
+                    "shutdown",
+                    {"reason": "normal_shutdown"},
+                )
+                await self.background_task_store.close()
+            except Exception:
+                logger.warning("background_task_store close failed", exc_info=True)
+            self.background_task_store = None
+
         # v2.0 Step 5: same ordering rule for CommitmentStore — flush before
         # mutation_log so COMMITMENT_* events land in the audit trail.
         if self.commitment_store is not None:
@@ -580,6 +610,7 @@ class AppContainer:
             reminder_source=None,
             previous_state_reader=get_previous_state,
             steering_store=self.steering_store,
+            background_task_store=self.background_task_store,
         )
 
         # AmbientKnowledgeStore —— 环境知识缓存
@@ -921,6 +952,24 @@ class AppContainer:
             self.brain._agent_registry = agent_registry
             # StateView agent summary (Blueprint §9): wire registry into builder.
             self.brain.state_view_builder._agent_registry = agent_registry
+
+            concurrent_flags = get_settings().concurrent_bg_work
+            if (
+                concurrent_flags.enabled
+                and concurrent_flags.p2b_task_supervisor_readonly
+                and self.background_task_store is not None
+            ):
+                from src.core.concurrent_bg_work.supervisor import TaskSupervisor
+                from src.core.concurrent_bg_work.tools import register_concurrent_bg_work_tools
+                self.background_task_supervisor = TaskSupervisor(
+                    store=self.background_task_store,
+                    agent_registry=agent_registry,
+                    agent_event_bus=self.background_agent_event_bus,
+                    runtime_enabled=concurrent_flags.p2c_agent_runtime_async,
+                )
+                self.brain._background_task_supervisor_ref = self.background_task_supervisor
+                register_concurrent_bg_work_tools(self.brain.tool_registry)
+                logger.info("Concurrent background work tools registered")
 
             # Phase 6D: Agent candidate operator tools (feature-gated behind
             # agents.candidate_tools_enabled). Requires AGENT_TEAM_ENABLED=true.

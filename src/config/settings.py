@@ -313,6 +313,22 @@ _ENV_MAP: dict[str, list[str]] = {
     # ── runtime interaction hardening ──
     "RUNTIME_INTERACTION_HARDENING_ENABLED": ["runtime_interaction_hardening", "enabled"],
     "RUNTIME_INTERACTION_HARDENING_ADAPTER_STRICT_MODE": ["runtime_interaction_hardening", "adapter_strict_mode"],
+    # ── concurrent background work ──
+    "CONCURRENT_BG_WORK_ENABLED": ["concurrent_bg_work", "enabled"],
+    "CONCURRENT_BG_WORK_P1_INGRESS_CORRECTNESS": ["concurrent_bg_work", "p1_ingress_correctness"],
+    "CONCURRENT_BG_WORK_P2A_TASK_STORE_FOUNDATION": ["concurrent_bg_work", "p2a_task_store_foundation"],
+    "CONCURRENT_BG_WORK_P2B_TASK_SUPERVISOR_READONLY": ["concurrent_bg_work", "p2b_task_supervisor_readonly"],
+    "CONCURRENT_BG_WORK_P2C_AGENT_RUNTIME_ASYNC": ["concurrent_bg_work", "p2c_agent_runtime_async"],
+    "CONCURRENT_BG_WORK_P2D_CANCEL_AND_NEEDS_INPUT": ["concurrent_bg_work", "p2d_cancel_and_needs_input"],
+    "CONCURRENT_BG_WORK_P2_5_ARBITRATION": ["concurrent_bg_work", "p2_5_arbitration"],
+    "CONCURRENT_BG_WORK_P3_PROGRESS_ATTENTION": ["concurrent_bg_work", "p3_progress_attention"],
+    "CONCURRENT_BG_WORK_P4_CANCELLATION_EVOLUTION": ["concurrent_bg_work", "p4_cancellation_evolution"],
+    "CONCURRENT_BG_WORK_P5_DESKTOP_PROGRESS": ["concurrent_bg_work", "p5_desktop_progress"],
+    "CONCURRENT_BG_WORK_LOG_VALIDATION_WARNINGS": ["concurrent_bg_work", "diagnostic", "log_validation_warnings"],
+    "CONCURRENT_BG_WORK_LOG_SILENT_OVERRIDES": ["concurrent_bg_work", "diagnostic", "log_silent_overrides"],
+    "CONCURRENT_BG_WORK_LOG_CONCURRENCY_DECISIONS": ["concurrent_bg_work", "diagnostic", "log_concurrency_decisions"],
+    "CONCURRENT_BG_WORK_LOG_SEMANTIC_CANCEL_DECISIONS": ["concurrent_bg_work", "diagnostic", "log_semantic_cancel_decisions"],
+    "OPERATOR_EMERGENCY_CONTROL_ENABLED": ["operator", "emergency_control_enabled"],
 }
 
 
@@ -724,6 +740,33 @@ class RuntimeInteractionHardeningConfig(BaseModel):
     adapter_strict_mode: bool = False
 
 
+class ConcurrentBackgroundWorkDiagnosticConfig(BaseModel):
+    log_validation_warnings: bool = True
+    log_silent_overrides: bool = True
+    log_concurrency_decisions: bool = False
+    log_semantic_cancel_decisions: bool = True
+
+
+class ConcurrentBackgroundWorkConfig(BaseModel):
+    enabled: bool = False
+    p1_ingress_correctness: bool = False
+    p2a_task_store_foundation: bool = False
+    p2b_task_supervisor_readonly: bool = False
+    p2c_agent_runtime_async: bool = False
+    p2d_cancel_and_needs_input: bool = False
+    p2_5_arbitration: bool = False
+    p3_progress_attention: bool = False
+    p4_cancellation_evolution: bool = False
+    p5_desktop_progress: bool = False
+    diagnostic: ConcurrentBackgroundWorkDiagnosticConfig = Field(
+        default_factory=ConcurrentBackgroundWorkDiagnosticConfig,
+    )
+
+
+class OperatorConfig(BaseModel):
+    emergency_control_enabled: bool = False
+
+
 # ── root settings ────────────────────────────
 
 def _inject_env(data: dict[str, Any]) -> dict[str, Any]:
@@ -795,6 +838,10 @@ class LapwingSettings(BaseSettings):
     runtime_interaction_hardening: RuntimeInteractionHardeningConfig = Field(
         default_factory=RuntimeInteractionHardeningConfig,
     )
+    concurrent_bg_work: ConcurrentBackgroundWorkConfig = Field(
+        default_factory=ConcurrentBackgroundWorkConfig,
+    )
+    operator: OperatorConfig = Field(default_factory=OperatorConfig)
     credential_vault_path: str = ""
     phase0_mode: str = ""
 

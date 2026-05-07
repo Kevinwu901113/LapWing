@@ -348,6 +348,10 @@ class LapwingBrain:
         hook_bus = getattr(self, "_hook_bus_ref", None)
         if hook_bus is not None:
             services["hook_bus"] = hook_bus
+        background_supervisor = getattr(self, "_background_task_supervisor_ref", None)
+        if background_supervisor is not None:
+            services["background_task_supervisor"] = background_supervisor
+            services["concurrent_bg_work_supervisor"] = background_supervisor
         # Per-turn BudgetLedger (Blueprint §5) — fresh ledger every call so
         # Brain + delegated agents share the same caps across the turn but
         # new turns start with full budget.

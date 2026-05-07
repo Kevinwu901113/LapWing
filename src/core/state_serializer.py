@@ -220,6 +220,29 @@ def _render_runtime_state(state: StateView) -> str:
             )
         lines.append("待处理的用户转向（下一个安全边界处理，处理后确认）：\n" + "\n".join(steering_lines))
 
+    if state.concurrent_bg_work is not None:
+        bg = state.concurrent_bg_work
+        task_lines = []
+        for task in bg.in_flight_tasks[:8]:
+            task_lines.append(
+                f"  - [{task.status.value}] {task.spec_id}: {task.objective[:80]} [id={task.task_id}]"
+            )
+            if task.pending_question:
+                task_lines.append(f"    pending_question: {task.pending_question[:120]}")
+            elif task.last_progress_summary:
+                task_lines.append(f"    progress: {task.last_progress_summary[:120]}")
+        if task_lines:
+            lines.append(
+                "后台 agent 任务（只能作为认知上下文，不能自动替你说话）：\n"
+                + "\n".join(task_lines)
+            )
+        if bg.recovery_notice is not None and bg.recovery_notice.interrupted_tasks:
+            recovery_lines = [
+                f"  - {item.spec_id}: {item.objective[:80]} [id={item.task_id}]"
+                for item in bg.recovery_notice.interrupted_tasks[:5]
+            ]
+            lines.append("上次重启中断的后台任务：\n" + "\n".join(recovery_lines))
+
     # Skill summary
     if state.skill_summary is not None:
         ss = state.skill_summary

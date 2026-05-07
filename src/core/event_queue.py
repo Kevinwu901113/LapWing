@@ -70,3 +70,13 @@ class EventQueue:
         """
         heap = self._queue._queue  # type: ignore[attr-defined]
         return any(ev.priority == PRIORITY_OWNER_MESSAGE for ev in heap)
+
+    def has_high_salience_event(self) -> bool:
+        """True when a queued system/agent event should cut debounce short."""
+        heap = self._queue._queue  # type: ignore[attr-defined]
+        for ev in heap:
+            salience = getattr(ev, "effective_salience", None) or getattr(ev, "salience", None)
+            value = getattr(salience, "value", salience)
+            if str(value).lower() in {"high", "critical"}:
+                return True
+        return False

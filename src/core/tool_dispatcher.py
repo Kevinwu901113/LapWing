@@ -209,6 +209,10 @@ class ServiceContextView:
     def plan_state(self):
         return self.raw.get("plan_state")
 
+    @property
+    def background_task_supervisor(self):
+        return self.raw.get("background_task_supervisor") or self.raw.get("concurrent_bg_work_supervisor")
+
     # ── Agent-factory (set by AgentFactory, not _build_services) ───────
 
     @property

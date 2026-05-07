@@ -32,6 +32,7 @@ PRIORITY_USER_MESSAGE = 1
 PRIORITY_INNER_TICK = 2
 PRIORITY_TOOL_COMPLETE = 3
 PRIORITY_SYSTEM = 4
+PRIORITY_OPERATOR_EMERGENCY = -10
 
 
 @dataclass(frozen=True, order=False)
@@ -91,6 +92,8 @@ class MessageEvent(Event):
     auth_level: int = int(AuthLevel.IGNORE)
     interaction_mode: str = "normal"
     source_message_id: str | None = None
+    event_id: str | None = None
+    idempotency_key: str | None = None
 
     @classmethod
     def from_message(
@@ -108,6 +111,8 @@ class MessageEvent(Event):
         done_future: Any = None,
         interaction_mode: str = "normal",
         source_message_id: str | None = None,
+        event_id: str | None = None,
+        idempotency_key: str | None = None,
     ) -> "MessageEvent":
         priority = (
             PRIORITY_OWNER_MESSAGE
@@ -129,6 +134,8 @@ class MessageEvent(Event):
             auth_level=auth_level,
             interaction_mode=interaction_mode,
             source_message_id=source_message_id,
+            event_id=event_id,
+            idempotency_key=idempotency_key,
         )
 
 
@@ -167,4 +174,30 @@ class SystemEvent(Event):
             kind="system",
             action=action,
             payload=payload or {},
+        )
+
+
+@dataclass(frozen=True, order=False)
+class OperatorControlEvent(Event):
+    command: str = ""
+    reason: str = ""
+    issued_by: str = "operator"
+    target_task_id: str | None = None
+
+    @classmethod
+    def make(
+        cls,
+        *,
+        command: str,
+        reason: str,
+        issued_by: str = "operator",
+        target_task_id: str | None = None,
+    ) -> "OperatorControlEvent":
+        return cls(
+            priority=PRIORITY_OPERATOR_EMERGENCY,
+            kind="operator_control",
+            command=command,
+            reason=reason,
+            issued_by=issued_by,
+            target_task_id=target_task_id,
         )
