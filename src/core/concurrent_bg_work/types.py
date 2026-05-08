@@ -34,6 +34,14 @@ class NotifyPolicy(_StrEnum):
     SILENT = "silent"
 
 
+class AgentResultDeliveryTarget(_StrEnum):
+    PARENT_TURN = "parent_turn"
+    CHAT_STATUS = "chat_status"
+    PROACTIVE_ALLOWED = "proactive_allowed"
+    SILENT = "silent"
+    DESKTOP_PROGRESS_ONLY = "desktop_progress_only"
+
+
 class SideEffectClass(_StrEnum):
     READ_ONLY = "read_only"
     MUTATING = "mutating"

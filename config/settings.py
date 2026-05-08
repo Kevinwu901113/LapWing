@@ -168,6 +168,8 @@ CAPABILITIES_INDEX_DB_PATH: str = _s.capabilities.index_db_path
 
 RUNTIME_INTERACTION_HARDENING_ENABLED: bool = _s.runtime_interaction_hardening.enabled
 RUNTIME_INTERACTION_HARDENING_ADAPTER_STRICT_MODE: bool = _s.runtime_interaction_hardening.adapter_strict_mode
+RUNTIME_INTERACTION_HARDENING_FOREGROUND_TURN_TIMEOUT_SECONDS: int = _s.runtime_interaction_hardening.foreground_turn_timeout_seconds
+RUNTIME_INTERACTION_HARDENING_OWNER_STATUS_PROBE_GRACE_SECONDS: int = _s.runtime_interaction_hardening.owner_status_probe_grace_seconds
 
 # ── Sandbox (unified) ───────────────────────
 SANDBOX_DOCKER_IMAGE: str = _s.sandbox.docker_image

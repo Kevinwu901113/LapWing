@@ -313,6 +313,8 @@ _ENV_MAP: dict[str, list[str]] = {
     # ── runtime interaction hardening ──
     "RUNTIME_INTERACTION_HARDENING_ENABLED": ["runtime_interaction_hardening", "enabled"],
     "RUNTIME_INTERACTION_HARDENING_ADAPTER_STRICT_MODE": ["runtime_interaction_hardening", "adapter_strict_mode"],
+    "RUNTIME_INTERACTION_HARDENING_FOREGROUND_TURN_TIMEOUT_SECONDS": ["runtime_interaction_hardening", "foreground_turn_timeout_seconds"],
+    "RUNTIME_INTERACTION_HARDENING_OWNER_STATUS_PROBE_GRACE_SECONDS": ["runtime_interaction_hardening", "owner_status_probe_grace_seconds"],
     # ── concurrent background work ──
     "CONCURRENT_BG_WORK_ENABLED": ["concurrent_bg_work", "enabled"],
     "CONCURRENT_BG_WORK_P1_INGRESS_CORRECTNESS": ["concurrent_bg_work", "p1_ingress_correctness"],
@@ -738,6 +740,8 @@ class CapabilitiesConfig(BaseModel):
 class RuntimeInteractionHardeningConfig(BaseModel):
     enabled: bool = True
     adapter_strict_mode: bool = False
+    foreground_turn_timeout_seconds: int = Field(default=300, ge=1)
+    owner_status_probe_grace_seconds: int = Field(default=30, ge=0)
 
 
 class ConcurrentBackgroundWorkDiagnosticConfig(BaseModel):

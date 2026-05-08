@@ -352,6 +352,24 @@ class LapwingBrain:
         if background_supervisor is not None:
             services["background_task_supervisor"] = background_supervisor
             services["concurrent_bg_work_supervisor"] = background_supervisor
+        background_store = getattr(self, "_background_task_store_ref", None)
+        if background_store is not None:
+            services["background_task_store"] = background_store
+        event_queue = getattr(self, "_event_queue_ref", None)
+        if event_queue is not None:
+            services["event_queue"] = event_queue
+        main_loop = getattr(self, "_main_loop_ref", None)
+        if main_loop is not None:
+            services["main_loop"] = main_loop
+        busy_session_controller = getattr(self, "_busy_session_controller_ref", None)
+        if busy_session_controller is not None:
+            services["busy_session_controller"] = busy_session_controller
+        chat_activity_tracker = getattr(self, "_chat_activity_tracker_ref", None)
+        if chat_activity_tracker is not None:
+            services["chat_activity_tracker"] = chat_activity_tracker
+        speaking_arbiter = getattr(self, "_speaking_arbiter_ref", None)
+        if speaking_arbiter is not None:
+            services["speaking_arbiter"] = speaking_arbiter
         # Per-turn BudgetLedger (Blueprint §5) — fresh ledger every call so
         # Brain + delegated agents share the same caps across the turn but
         # new turns start with full budget.

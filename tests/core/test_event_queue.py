@@ -82,6 +82,31 @@ async def test_has_owner_message_false_when_no_owner():
 
 
 @pytest.mark.asyncio
+async def test_has_user_message_for_chat_and_pop_matching():
+    q = EventQueue()
+    tick = InnerTickEvent.make()
+    owner = MessageEvent.from_message(
+        chat_id="k", user_id="k", text="hi",
+        adapter="qq", send_fn=_noop, auth_level=int(AuthLevel.OWNER),
+    )
+    other = MessageEvent.from_message(
+        chat_id="other", user_id="k", text="hi",
+        adapter="qq", send_fn=_noop, auth_level=int(AuthLevel.OWNER),
+    )
+    await q.put(tick)
+    await q.put(owner)
+    await q.put(other)
+
+    assert q.has_user_message_for_chat("k") is True
+    popped = q.pop_matching(
+        lambda ev: isinstance(ev, MessageEvent) and ev.chat_id == "k"
+    )
+    assert popped is owner
+    assert q.has_user_message_for_chat("k") is False
+    assert q.has_user_message_for_chat("other") is True
+
+
+@pytest.mark.asyncio
 async def test_get_blocks_until_event_arrives():
     q = EventQueue()
 

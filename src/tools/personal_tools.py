@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import ipaddress
+import inspect
 import logging
 import re
 import time
@@ -130,6 +131,7 @@ async def _record_proactive_decision(
     ctx: ToolExecutionContext,
     decision,
     target: str,
+    target_chat_id: str | None = None,
     category: str | None,
     urgent: bool,
 ) -> None:
@@ -156,6 +158,7 @@ async def _record_proactive_decision(
                 "urgent": bool(urgent),
                 "bypassed": bool(getattr(decision, "bypassed", False)),
                 "target": target,
+                "target_chat_id": target_chat_id,
                 "runtime_profile": ctx.runtime_profile or "",
             },
             iteration_id=current_iteration_id(),
@@ -213,6 +216,143 @@ def _resolve_proactive_target_chat_id(
         return group_id or None
 
     return None
+
+
+async def _maybe_await(value):
+    if inspect.isawaitable(value):
+        return await value
+    return value
+
+
+async def _build_proactive_gate_context(
+    *,
+    ctx: ToolExecutionContext,
+    target_chat_id: str | None,
+):
+    from src.core.proactive_message_gate import ProactiveGateContext
+    from src.core.tool_dispatcher import ServiceContextView
+
+    if not target_chat_id:
+        return ProactiveGateContext(target_chat_id=None)
+
+    svc = ServiceContextView(ctx.services or {})
+    latest_user_at = None
+    latest_assistant_at = None
+
+    tracker = svc.chat_activity_tracker
+    if tracker is not None:
+        try:
+            snapshot = tracker.snapshot(target_chat_id)
+            latest_user_at = snapshot.latest_user_message_at
+            latest_assistant_at = snapshot.latest_assistant_reply_at
+        except Exception:
+            logger.debug("[send_message] chat activity snapshot failed", exc_info=True)
+
+    trajectory_store = svc.trajectory_store
+    latest_method = getattr(trajectory_store, "latest_chat_turn_times", None)
+    if callable(latest_method):
+        try:
+            result = await _maybe_await(latest_method(target_chat_id))
+            if isinstance(result, tuple) and len(result) == 2:
+                traj_user, traj_assistant = result
+                latest_user_at = _max_timeish(latest_user_at, traj_user)
+                latest_assistant_at = _max_timeish(latest_assistant_at, traj_assistant)
+        except Exception:
+            logger.debug("[send_message] trajectory latest-turn lookup failed", exc_info=True)
+
+    pending_user_message = False
+    event_queue = svc.event_queue
+    pending_method = getattr(event_queue, "has_user_message_for_chat", None)
+    if callable(pending_method):
+        try:
+            pending_user_message = bool(pending_method(target_chat_id))
+        except Exception:
+            logger.debug("[send_message] event_queue pending check failed", exc_info=True)
+
+    active_user_turn = False
+    stuck_user_turn = False
+    main_loop = svc.main_loop
+    active_method = getattr(main_loop, "is_handling_foreground_user_turn", None)
+    if callable(active_method):
+        try:
+            active_user_turn = bool(active_method(target_chat_id))
+        except Exception:
+            logger.debug("[send_message] main_loop active-turn check failed", exc_info=True)
+    stuck_method = getattr(main_loop, "has_stuck_user_turn", None)
+    if callable(stuck_method):
+        try:
+            stuck_user_turn = bool(stuck_method(target_chat_id))
+        except Exception:
+            logger.debug("[send_message] main_loop stuck-turn check failed", exc_info=True)
+    elif tracker is not None:
+        try:
+            from src.config import get_settings
+            timeout = get_settings().runtime_interaction_hardening.foreground_turn_timeout_seconds
+            stuck_user_turn = bool(
+                tracker.has_stuck_user_turn(target_chat_id, timeout_seconds=timeout)
+            )
+        except Exception:
+            logger.debug("[send_message] tracker stuck-turn check failed", exc_info=True)
+
+    queued_user_input = False
+    busy = svc.busy_session_controller
+    queue_for = getattr(busy, "queue_for", None)
+    if callable(queue_for):
+        try:
+            queued_user_input = bool(queue_for(target_chat_id))
+        except Exception:
+            logger.debug("[send_message] busy queue check failed", exc_info=True)
+
+    active_user_task = False
+    store = svc.background_task_store
+    active_task_method = getattr(store, "has_active_user_task_for_chat", None)
+    if callable(active_task_method):
+        try:
+            active_user_task = bool(await _maybe_await(active_task_method(target_chat_id)))
+        except Exception:
+            logger.debug("[send_message] background task active check failed", exc_info=True)
+
+    arbiter = svc.speaking_arbiter
+    can_acquire = getattr(arbiter, "can_acquire", None)
+    if callable(can_acquire):
+        try:
+            allowed, reason = can_acquire(
+                target_chat_id,
+                purpose="proactive",
+                chat_activity_tracker=tracker,
+            )
+            if not allowed and reason == "active_user_turn":
+                active_user_turn = True
+            elif not allowed and reason == "unanswered_user_message":
+                # Preserve the canonical proactive-gate reason by relying on
+                # latest_user_message_at > latest_assistant_reply_at.
+                pass
+        except Exception:
+            logger.debug("[send_message] speaking policy check failed", exc_info=True)
+
+    return ProactiveGateContext(
+        target_chat_id=target_chat_id,
+        latest_user_message_at=latest_user_at,
+        latest_assistant_reply_at=latest_assistant_at,
+        pending_user_message=pending_user_message,
+        active_user_turn=active_user_turn,
+        queued_user_input=queued_user_input,
+        active_user_task=active_user_task,
+        stuck_user_turn=stuck_user_turn,
+    )
+
+
+def _max_timeish(left, right):
+    if left is None:
+        return right
+    if right is None:
+        return left
+    try:
+        left_ts = left.timestamp() if hasattr(left, "timestamp") else float(left)
+        right_ts = right.timestamp() if hasattr(right, "timestamp") else float(right)
+        return left if left_ts >= right_ts else right
+    except Exception:
+        return left
 
 
 async def _record_proactive_outbound_trajectory(
@@ -334,17 +474,28 @@ async def _send_message(
     if factual_gate_result is not None:
         return factual_gate_result
 
+    resolved_target_chat_id = _resolve_proactive_target_chat_id(target, ctx)
+    gate_context = await _build_proactive_gate_context(
+        ctx=ctx,
+        target_chat_id=resolved_target_chat_id,
+    )
+
     # Proactive gate — fires only on background/autonomous flows. Direct
     # assistant replies use bare model text and never reach this code.
     gate = svc.proactive_message_gate
     if gate is not None and _is_proactive_context(ctx):
-        gate_decision = gate.evaluate(category=category, urgent=urgent)
+        gate_decision = gate.evaluate(
+            category=category,
+            urgent=urgent,
+            context=gate_context,
+        )
         # Audit every decision (allow / defer / deny) into the mutation log
         # so allow:defer:deny ratios can be inspected after the fact.
         await _record_proactive_decision(
             ctx=ctx,
             decision=gate_decision,
             target=target,
+            target_chat_id=resolved_target_chat_id,
             category=category,
             urgent=urgent,
         )
@@ -363,6 +514,24 @@ async def _send_message(
                     "category": category,
                 },
                 reason=f"proactive_gate:{gate_decision.decision}:{gate_decision.reason}",
+            )
+    elif _is_proactive_context(ctx):
+        hard_reason = gate_context.hard_denial_reason()
+        if hard_reason is not None:
+            logger.info(
+                "[send_message] proactive hard-deny without gate reason=%s target=%s target_chat_id=%s",
+                hard_reason, target, resolved_target_chat_id or "",
+            )
+            return ToolExecutionResult(
+                success=False,
+                payload={
+                    "sent": False,
+                    "gate_decision": "deny",
+                    "gate_reason": hard_reason,
+                    "target": target,
+                    "category": category,
+                },
+                reason=f"proactive_gate:deny:{hard_reason}",
             )
 
     channel_manager = svc.channel_manager
@@ -385,7 +554,7 @@ async def _send_message(
                     reason="desktop_not_connected",
                 )
             await desktop_adapter.send_text(desktop_adapter.config.get("kevin_id", "owner"), content)
-            _resolved = _resolve_proactive_target_chat_id(target, ctx)
+            _resolved = resolved_target_chat_id
             if _resolved is not None:
                 await _record_proactive_outbound_trajectory(
                     ctx=ctx, target=target, content=content,
@@ -424,7 +593,7 @@ async def _send_message(
                     reason="qq_adapter_unavailable",
                 )
             await qq_adapter.send_private_message(str(owner_qq_id), content)
-            _resolved = _resolve_proactive_target_chat_id(target, ctx)
+            _resolved = resolved_target_chat_id
             if _resolved is not None:
                 await _record_proactive_outbound_trajectory(
                     ctx=ctx, target=target, content=content,
@@ -458,7 +627,7 @@ async def _send_message(
                     reason="qq_adapter_unavailable",
                 )
             await qq_adapter.send_group_message(group_id, content)
-            _resolved = _resolve_proactive_target_chat_id(target, ctx)
+            _resolved = resolved_target_chat_id
             if _resolved is not None:
                 await _record_proactive_outbound_trajectory(
                     ctx=ctx, target=target, content=content,

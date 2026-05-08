@@ -375,6 +375,9 @@ def run_bot(logger: logging.Logger) -> int:
 
             async def send_fn(reply_text: str) -> None:
                 await container.channel_manager.send(ChannelType.QQ, chat_id, reply_text)
+                tracker = getattr(container, "chat_activity_tracker", None)
+                if tracker is not None:
+                    tracker.mark_assistant_reply(chat_id, source="qq_send_fn")
 
             from src.core.authority_gate import identify
             from src.core.inbound import BusyInputMode
@@ -395,7 +398,13 @@ def run_bot(logger: logging.Logger) -> int:
                 auth_level=int(auth_level),
             )
             if not gate_decision.accepted:
-                logger.debug("[qq/inbound] dropped: %s", gate_decision.reason)
+                logger.info(
+                    "[qq/inbound] rejected chat_id=%s user_id=%s message_id=%s reason=%s",
+                    normalized.chat_id,
+                    normalized.user_id,
+                    normalized.message_id,
+                    gate_decision.reason,
+                )
                 return
             from config.settings import get_settings
             concurrent_flags = get_settings().concurrent_bg_work
@@ -406,6 +415,24 @@ def run_bot(logger: logging.Logger) -> int:
                 ingress = IngressNormalizer().normalize(normalized)
                 ingress_event_id = ingress.event_id
                 ingress_idempotency_key = ingress.idempotency_key
+
+            tracker = getattr(container, "chat_activity_tracker", None)
+            if tracker is not None:
+                tracker.mark_inbound_user_message(
+                    normalized.chat_id,
+                    user_id=normalized.user_id,
+                    message_id=normalized.message_id,
+                    event_id=ingress_event_id,
+                    idempotency_key=ingress_idempotency_key,
+                )
+            logger.info(
+                "[qq/inbound] accepted chat_id=%s user_id=%s message_id=%s event_id=%s idempotency_key=%s",
+                normalized.chat_id,
+                normalized.user_id,
+                normalized.message_id,
+                ingress_event_id or "",
+                ingress_idempotency_key or "",
+            )
 
             intercept = container.command_intercept_layer.intercept(normalized)
             if intercept.mode == BusyInputMode.COMMAND:
@@ -437,9 +464,11 @@ def run_bot(logger: logging.Logger) -> int:
                     await send_fn("收到，我会在下一个安全边界处理这条修正。")
                     return
             if busy_decision.mode == BusyInputMode.QUEUE:
-                if not (concurrent_flags.enabled and concurrent_flags.p1_ingress_correctness):
-                    await send_fn("收到，这条我先排队，当前任务结束后处理。")
-                    return
+                logger.info(
+                    "[qq/inbound] busy input routed to EventQueue chat_id=%s message_id=%s",
+                    normalized.chat_id,
+                    normalized.message_id,
+                )
 
             # 图片下载转 base64（QQ CDN URL 有时效性，需在调用 LLM 前下载）
             images: list[dict] | None = None
@@ -480,6 +509,14 @@ def run_bot(logger: logging.Logger) -> int:
                 idempotency_key=ingress_idempotency_key,
             )
             await container.event_queue.put(event)
+            logger.info(
+                "[qq/inbound] enqueued chat_id=%s user_id=%s message_id=%s event_id=%s idempotency_key=%s",
+                chat_id,
+                user_id,
+                normalized.message_id,
+                ingress_event_id or "",
+                ingress_idempotency_key or "",
+            )
 
         qq_adapter = QQAdapter(config=qq_config, on_message=_qq_on_message)
         qq_adapter.router = container.brain.router  # Inject LLM router for group decisions

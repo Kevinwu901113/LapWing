@@ -349,6 +349,30 @@ class TestHasRecentEntry:
             "any_chat", TrajectoryEntryType.USER_MESSAGE, _time.time() - 86400,
         ) is False
 
+    async def test_latest_chat_turn_times_ignores_undelivered_system_send(self, store):
+        await store.append(
+            TrajectoryEntryType.USER_MESSAGE,
+            "chat1",
+            "user",
+            {"text": "hello"},
+            timestamp=100.0,
+        )
+        await store.append(
+            TrajectoryEntryType.TELL_USER,
+            "chat1",
+            "system",
+            {"text": "failed", "delivered": False},
+            timestamp=101.0,
+        )
+        await store.append(
+            TrajectoryEntryType.ASSISTANT_TEXT,
+            "chat1",
+            "lapwing",
+            {"text": "ok"},
+            timestamp=102.0,
+        )
+        assert await store.latest_chat_turn_times("chat1") == (100.0, 102.0)
+
 
 class TestProactiveOutboundLegacyProjection:
     def test_proactive_outbound_renders_as_assistant(self):

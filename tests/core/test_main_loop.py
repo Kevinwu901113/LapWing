@@ -130,13 +130,18 @@ async def _noop(*_a, **_kw):  # pragma: no cover
     return None
 
 
+async def _wait_until(predicate, *, interval: float = 0.01) -> None:
+    while not predicate():
+        await asyncio.sleep(interval)
+
+
 # ── OWNER coalesce & preemption tests ──────────────────────────────
 
 
-def _make_owner_event(chat_id="kev", text="hi", done_future=None):
+def _make_owner_event(chat_id="kev", text="hi", done_future=None, send_fn=_noop):
     return MessageEvent.from_message(
         chat_id=chat_id, user_id="kev", text=text,
-        adapter="qq", send_fn=_noop, auth_level=int(AuthLevel.OWNER),
+        adapter="qq", send_fn=send_fn, auth_level=int(AuthLevel.OWNER),
         done_future=done_future,
     )
 
@@ -207,6 +212,96 @@ async def test_owner_does_not_preempt_owner():
     assert len(brain.calls) == 2
     assert brain.calls[0]["user_message"] == "first"
     assert brain.calls[1]["user_message"] == "second"
+
+
+@pytest.mark.asyncio
+async def test_owner_over_owner_cancel_probe_replies_without_waiting_for_hung_turn():
+    q = EventQueue()
+    brain = FakeBrain(delay=10.0, reply="late")
+    sent: list[str] = []
+
+    async def send_fn(text: str):
+        sent.append(text)
+
+    loop = MainLoop(
+        q,
+        brain=brain,
+        foreground_turn_timeout_seconds=60,
+        owner_status_probe_grace_seconds=0,
+    )
+    loop.OWNER_COALESCE_SECONDS = 0.01
+    loop.OWNER_WATCHER_POLL_SECONDS = 0.01
+
+    runner = asyncio.create_task(loop.run())
+    await q.put(_make_owner_event(text="帮我查午饭", send_fn=send_fn))
+    await asyncio.sleep(0.05)
+    await q.put(_make_owner_event(text="先别管吃的了，告诉我你现在是不是还在查。", send_fn=send_fn))
+
+    await asyncio.wait_for(_wait_until(lambda: bool(sent)), timeout=1.0)
+    assert "这次查询卡住了" in sent[0]
+    await asyncio.sleep(0.05)
+    assert loop._current_task is None  # type: ignore[attr-defined]
+
+    await loop.stop()
+    await q.put(InnerTickEvent.make())
+    await asyncio.wait_for(runner, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_owner_over_owner_hello_probe_gets_recovery_status():
+    q = EventQueue()
+    brain = FakeBrain(delay=10.0, reply="late")
+    sent: list[str] = []
+
+    async def send_fn(text: str):
+        sent.append(text)
+
+    loop = MainLoop(
+        q,
+        brain=brain,
+        foreground_turn_timeout_seconds=60,
+        owner_status_probe_grace_seconds=0,
+    )
+    loop.OWNER_COALESCE_SECONDS = 0.01
+    loop.OWNER_WATCHER_POLL_SECONDS = 0.01
+    runner = asyncio.create_task(loop.run())
+
+    await q.put(_make_owner_event(text="帮我查午饭", send_fn=send_fn))
+    await asyncio.sleep(0.05)
+    await q.put(_make_owner_event(text="喂？", send_fn=send_fn))
+
+    await asyncio.wait_for(_wait_until(lambda: bool(sent)), timeout=1.0)
+    assert "这次查询卡住了" in sent[0]
+
+    await loop.stop()
+    await q.put(InnerTickEvent.make())
+    await asyncio.wait_for(runner, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_foreground_user_turn_timeout_sends_recovery_reply():
+    q = EventQueue()
+    brain = FakeBrain(delay=10.0, reply="late")
+    sent: list[str] = []
+    done = asyncio.get_event_loop().create_future()
+
+    async def send_fn(text: str):
+        sent.append(text)
+
+    loop = MainLoop(q, brain=brain, foreground_turn_timeout_seconds=1)
+    loop.OWNER_COALESCE_SECONDS = 0.01
+    runner = asyncio.create_task(loop.run())
+
+    await q.put(_make_owner_event(text="帮我查午饭", send_fn=send_fn, done_future=done))
+    result = await asyncio.wait_for(done, timeout=2.0)
+
+    assert "这次查询卡住了" in result
+    assert sent and "这次查询卡住了" in sent[0]
+    assert loop._current_task is None  # type: ignore[attr-defined]
+
+    await loop.stop()
+    await q.put(InnerTickEvent.make())
+    await asyncio.wait_for(runner, timeout=2.0)
 
 
 @pytest.mark.asyncio

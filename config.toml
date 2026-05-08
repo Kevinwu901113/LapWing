@@ -335,3 +335,19 @@ stable_promotion_trust_gate_enabled = false
 run_capability_enabled = false
 data_dir = "data/capabilities"
 index_db_path = "data/capabilities/capability_index.sqlite"
+
+[concurrent_bg_work]
+enabled = true
+p1_ingress_correctness = true
+p2a_task_store_foundation = true
+p2b_task_supervisor_readonly = true
+p2c_agent_runtime_async = true
+p2d_cancel_and_needs_input = false
+p2_5_arbitration = false
+p3_progress_attention = false
+
+[concurrent_bg_work.diagnostic]
+log_validation_warnings = true
+log_silent_overrides = true
+log_concurrency_decisions = false
+log_semantic_cancel_decisions = true

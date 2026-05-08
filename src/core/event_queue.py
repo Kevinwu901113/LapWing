@@ -18,8 +18,10 @@ counter — would let the two views drift.
 from __future__ import annotations
 
 import asyncio
+import heapq
+from typing import Callable
 
-from src.core.events import PRIORITY_OWNER_MESSAGE, Event
+from src.core.events import PRIORITY_OWNER_MESSAGE, Event, MessageEvent
 
 
 class EventQueue:
@@ -70,6 +72,30 @@ class EventQueue:
         """
         heap = self._queue._queue  # type: ignore[attr-defined]
         return any(ev.priority == PRIORITY_OWNER_MESSAGE for ev in heap)
+
+    def has_user_message_for_chat(self, chat_id: str) -> bool:
+        """True when a user/owner MessageEvent for ``chat_id`` is queued."""
+        heap = self._queue._queue  # type: ignore[attr-defined]
+        return any(
+            isinstance(ev, MessageEvent) and ev.chat_id == chat_id
+            for ev in heap
+        )
+
+    def pop_matching(self, predicate: Callable[[Event], bool]) -> Event | None:
+        """Remove and return the first queued event matching ``predicate``.
+
+        Used by MainLoop's OWNER-over-OWNER watcher to answer status/cancel
+        probes without waiting for a stuck foreground task. The priority queue
+        has no public remove API, so this performs a small heap scan and then
+        restores heap order.
+        """
+        heap = self._queue._queue  # type: ignore[attr-defined]
+        for idx, event in enumerate(heap):
+            if predicate(event):
+                removed = heap.pop(idx)
+                heapq.heapify(heap)
+                return removed
+        return None
 
     def has_high_salience_event(self) -> bool:
         """True when a queued system/agent event should cut debounce short."""

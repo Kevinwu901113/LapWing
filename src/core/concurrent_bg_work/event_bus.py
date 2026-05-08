@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from src.core.events import Event, PRIORITY_TOOL_COMPLETE, PRIORITY_AGENT_URGENT, PRIORITY_INNER_TICK
@@ -10,6 +10,7 @@ from src.core.concurrent_bg_work.types import (
     AgentEvent,
     AgentEventType,
     AgentNeedsInputPayload,
+    AgentResultDeliveryTarget,
     AgentTaskSnapshot,
     NotifyPolicy,
     SalienceLevel,
@@ -38,6 +39,9 @@ class AgentTaskResultEvent(Event):
     task_snapshot: AgentTaskSnapshot | None = None
     triggering_event: AgentEvent | None = None
     effective_salience: SalienceLevel = SalienceLevel.NORMAL
+    delivery_target: AgentResultDeliveryTarget = AgentResultDeliveryTarget.SILENT
+    orphan: bool = False
+    stale: bool = False
     priority: int = PRIORITY_TOOL_COMPLETE
     kind: str = "agent_task_result"
 
@@ -49,6 +53,9 @@ class AgentNeedsInputEvent(Event):
     timeout_at: datetime | None = None
     triggering_event: AgentEvent | None = None
     effective_salience: SalienceLevel = SalienceLevel.HIGH
+    delivery_target: AgentResultDeliveryTarget = AgentResultDeliveryTarget.SILENT
+    orphan: bool = False
+    stale: bool = False
     priority: int = PRIORITY_TOOL_COMPLETE
     kind: str = "agent_needs_input"
 
@@ -60,6 +67,9 @@ class AgentProgressUrgencyEvent(Event):
     elapsed_seconds: float = 0.0
     triggering_event: AgentEvent | None = None
     effective_salience: SalienceLevel = SalienceLevel.NORMAL
+    delivery_target: AgentResultDeliveryTarget = AgentResultDeliveryTarget.SILENT
+    orphan: bool = False
+    stale: bool = False
     priority: int = PRIORITY_TOOL_COMPLETE
     kind: str = "agent_progress_urgency"
 
@@ -86,12 +96,37 @@ class AgentEventBus:
         await self._task_store.append_event(event)
         task = await self._task_store.read(event.task_id)
         if task is None:
+            logger.info(
+                "agent_task_result_routing task_id=%s parent_turn_id=%s parent_event_id=%s delivery_target=%s orphan=%s stale=%s",
+                event.task_id,
+                "",
+                "",
+                AgentResultDeliveryTarget.SILENT.value,
+                True,
+                False,
+            )
             return
         effective = event.salience or task.salience
+        delivery_target, orphan, stale = self._delivery_decision(event, task)
+        logger.info(
+            "agent_task_result_routing task_id=%s parent_turn_id=%s parent_event_id=%s delivery_target=%s orphan=%s stale=%s",
+            event.task_id,
+            task.parent_turn_id or "",
+            task.parent_event_id or "",
+            delivery_target.value,
+            orphan,
+            stale,
+        )
         await self._record_mutation(event, task)
         await self._send_desktop(event, task)
         if self._should_notify_cognitive(event, task, effective):
-            await self._push_cognitive(event, effective)
+            await self._push_cognitive(
+                event,
+                effective,
+                delivery_target=delivery_target,
+                orphan=orphan,
+                stale=stale,
+            )
 
     def _validate_and_normalize_salience(self, event: AgentEvent) -> AgentEvent:
         if event.salience == SalienceLevel.CRITICAL and event.type not in CRITICAL_ALLOWED_TYPES:
@@ -127,6 +162,21 @@ class AgentEventBus:
             await result
 
     def _should_notify_cognitive(self, event: AgentEvent, task, effective: SalienceLevel) -> bool:
+        delivery_target, _orphan, _stale = self._delivery_decision(event, task)
+        if delivery_target in {
+            AgentResultDeliveryTarget.PARENT_TURN,
+            AgentResultDeliveryTarget.CHAT_STATUS,
+        }:
+            return event.type in {
+                AgentEventType.AGENT_COMPLETED,
+                AgentEventType.AGENT_FAILED,
+                AgentEventType.AGENT_BUDGET_EXHAUSTED,
+                AgentEventType.AGENT_CANCELLED,
+                AgentEventType.AGENT_NEEDS_INPUT,
+                AgentEventType.AGENT_PROGRESS_SUMMARY,
+            }
+        if delivery_target == AgentResultDeliveryTarget.SILENT:
+            return False
         if task.notify_policy == NotifyPolicy.SILENT:
             return event.type in SILENT_OVERRIDE_TYPES
         if event.type in {
@@ -144,7 +194,15 @@ class AgentEventBus:
                 return True
         return False
 
-    async def _push_cognitive(self, event: AgentEvent, effective: SalienceLevel) -> None:
+    async def _push_cognitive(
+        self,
+        event: AgentEvent,
+        effective: SalienceLevel,
+        *,
+        delivery_target: AgentResultDeliveryTarget,
+        orphan: bool,
+        stale: bool,
+    ) -> None:
         if self._cognitive_sink is not None:
             result = self._cognitive_sink.push(event, effective)
             if hasattr(result, "__await__"):
@@ -159,6 +217,9 @@ class AgentEventBus:
                 elapsed_seconds=float(event.payload.get("elapsed_seconds") or 0.0),
                 triggering_event=event,
                 effective_salience=effective,
+                delivery_target=delivery_target,
+                orphan=orphan,
+                stale=stale,
             ))
             return
 
@@ -170,6 +231,9 @@ class AgentEventBus:
                 timeout_at=payload.timeout_at,
                 triggering_event=event,
                 effective_salience=effective,
+                delivery_target=delivery_target,
+                orphan=orphan,
+                stale=stale,
                 priority=PRIORITY_AGENT_URGENT,
             ))
             return
@@ -188,8 +252,31 @@ class AgentEventBus:
                 task_snapshot=snapshot,
                 triggering_event=event,
                 effective_salience=effective,
+                delivery_target=delivery_target,
+                orphan=orphan,
+                stale=stale,
                 priority=prio,
             ))
+
+    def _delivery_decision(
+        self,
+        event: AgentEvent,
+        task,
+    ) -> tuple[AgentResultDeliveryTarget, bool, bool]:
+        if task is None:
+            return AgentResultDeliveryTarget.SILENT, True, False
+        stale = _is_stale_parent_result(event, task)
+        if task.parent_turn_id:
+            if stale:
+                return AgentResultDeliveryTarget.CHAT_STATUS, False, True
+            if event.type == AgentEventType.AGENT_PROGRESS_SUMMARY:
+                return AgentResultDeliveryTarget.CHAT_STATUS, False, False
+            return AgentResultDeliveryTarget.PARENT_TURN, False, False
+        if task.spawned_by == "system":
+            return AgentResultDeliveryTarget.SILENT, False, stale
+        if task.notify_policy == NotifyPolicy.SILENT:
+            return AgentResultDeliveryTarget.SILENT, False, stale
+        return AgentResultDeliveryTarget.SILENT, False, stale
 
     async def _snapshot_for_event(self, event: AgentEvent) -> AgentTaskSnapshot | None:
         snapshots = await self._task_store.list_tasks(
@@ -260,3 +347,20 @@ def _needs_input_payload_from_event(event: AgentEvent) -> AgentNeedsInputPayload
         blocking=bool(raw.get("blocking", True)),
         timeout_at=timeout_at,
     )
+
+
+def _is_stale_parent_result(event: AgentEvent, task) -> bool:
+    if not getattr(task, "parent_turn_id", None):
+        return False
+    created_at = getattr(task, "created_at", None)
+    if created_at is None:
+        return False
+    terminal = event.type in {
+        AgentEventType.AGENT_COMPLETED,
+        AgentEventType.AGENT_FAILED,
+        AgentEventType.AGENT_BUDGET_EXHAUSTED,
+        AgentEventType.AGENT_CANCELLED,
+    }
+    if not terminal:
+        return False
+    return (event.occurred_at - created_at) > timedelta(minutes=30)

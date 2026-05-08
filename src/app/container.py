@@ -123,6 +123,8 @@ class AppContainer:
         # event_queue must already exist before LocalApiServer is built so
         # the desktop /ws/chat route can enqueue MessageEvent on it.
         self.event_queue: EventQueue = EventQueue()
+        from src.core.chat_activity import ChatActivityTracker
+        self.chat_activity_tracker = ChatActivityTracker()
         from src.core.inbound import (
             BusySessionController,
             CommandInterceptLayer,
@@ -131,6 +133,9 @@ class AppContainer:
         self.inbound_gate = InboundMessageGate()
         self.command_intercept_layer = CommandInterceptLayer()
         self.busy_session_controller = BusySessionController()
+        self.brain._event_queue_ref = self.event_queue
+        self.brain._chat_activity_tracker_ref = self.chat_activity_tracker
+        self.brain._busy_session_controller_ref = self.busy_session_controller
 
         # mutation_log is wired into the API server lazily — see prepare()
         # where the StateMutationLog instance is constructed. The server
@@ -394,8 +399,13 @@ class AppContainer:
         # consumer). InnerTickScheduler was constructed at the top of
         # start() so DurableScheduler could wire its urgency callback.
         self.main_loop = MainLoop(
-            self.event_queue, self.brain, self.inner_tick_scheduler,
+            self.event_queue,
+            self.brain,
+            self.inner_tick_scheduler,
+            chat_activity_tracker=self.chat_activity_tracker,
         )
+        self.brain._main_loop_ref = self.main_loop
+        self.brain._speaking_arbiter_ref = self.main_loop.speaking_arbiter
         self._main_loop_task = _asyncio.create_task(
             self.main_loop.run(), name="lapwing-main-loop",
         )
@@ -995,7 +1005,6 @@ class AppContainer:
 
             # Periodic session cleanup (Blueprint §6 / §13).
             try:
-                from src.config import get_settings
                 interval = get_settings().agent_team.dynamic.session_cleanup_interval_seconds
                 # Schedule via APScheduler if available; otherwise rely on
                 # ad-hoc cleanup at delegation time. Only fire if we have a

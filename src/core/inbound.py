@@ -129,7 +129,12 @@ class CommandInterceptLayer:
 
 
 class BusySessionController:
-    """Classify busy-time input and maintain per-chat pending queues."""
+    """Classify busy-time input.
+
+    MainLoop/EventQueue remain the only runtime handoff. The private queue
+    helpers are kept for explicit tests/tools, but ``classify`` no longer hides
+    accepted chat input there.
+    """
 
     _interrupt_tokens = ("stop", "cancel", "interrupt", "停止", "取消", "中止", "别继续")
     _steer_prefixes = ("/steer", "steer:", "纠正：", "纠正:", "补充约束：", "补充约束:")
@@ -172,8 +177,7 @@ class BusySessionController:
         if self._looks_like_steer(text):
             return BusyDecision(BusyInputMode.STEER, message, reason="explicit_steer")
         if session_state in ("thinking", "running"):
-            queued = self.enqueue(message, mode=BusyInputMode.QUEUE)
-            return BusyDecision(BusyInputMode.QUEUE, message, queued=queued, reason="session_busy")
+            return BusyDecision(BusyInputMode.QUEUE, message, queued=False, reason="session_busy")
         return BusyDecision(BusyInputMode.NORMAL, message)
 
     def enqueue(self, message: NormalizedInboundMessage, *, mode: BusyInputMode) -> bool:

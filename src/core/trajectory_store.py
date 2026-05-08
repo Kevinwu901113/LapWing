@@ -461,6 +461,44 @@ class TrajectoryStore:
             row = await cur.fetchone()
             return row is not None
 
+    async def latest_chat_turn_times(
+        self,
+        source_chat_id: str,
+    ) -> tuple[float | None, float | None]:
+        """Return latest user-message and delivered assistant-reply timestamps."""
+        if self._db is None:
+            return None, None
+        async with self._db.execute(
+            "SELECT entry_type, timestamp, content_json FROM trajectory "
+            "WHERE source_chat_id = ? AND entry_type IN (?, ?, ?) "
+            "ORDER BY timestamp DESC LIMIT 50",
+            (
+                source_chat_id,
+                TrajectoryEntryType.USER_MESSAGE.value,
+                TrajectoryEntryType.ASSISTANT_TEXT.value,
+                TrajectoryEntryType.TELL_USER.value,
+            ),
+        ) as cur:
+            rows = await cur.fetchall()
+
+        latest_user: float | None = None
+        latest_assistant: float | None = None
+        for row in rows:
+            entry_type = row[0]
+            ts = float(row[1])
+            if entry_type == TrajectoryEntryType.USER_MESSAGE.value:
+                latest_user = ts if latest_user is None else max(latest_user, ts)
+                continue
+            if entry_type == TrajectoryEntryType.TELL_USER.value:
+                try:
+                    payload = json.loads(row[2] or "{}")
+                except Exception:
+                    payload = {}
+                if payload.get("delivered") is False:
+                    continue
+            latest_assistant = ts if latest_assistant is None else max(latest_assistant, ts)
+        return latest_user, latest_assistant
+
     async def _fetch(
         self,
         where: str,

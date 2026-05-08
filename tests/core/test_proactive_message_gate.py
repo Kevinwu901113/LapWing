@@ -19,6 +19,7 @@ from datetime import datetime, time as dtime, timedelta
 import pytest
 
 from src.core.proactive_message_gate import (
+    ProactiveGateContext,
     ProactiveGateDecision,
     ProactiveMessageGate,
     _in_quiet_window,
@@ -98,6 +99,41 @@ class TestBasicDecisions:
         d = gate.evaluate()
         assert d.decision == "defer"
         assert "quiet_hours" in d.reason
+
+    def test_unanswered_user_message_hard_denies_before_budget(self):
+        now = datetime(2026, 1, 1, 14, 0)
+        gate = _gate(now, max_per_day=1, min_minutes_between=0)
+        ctx = ProactiveGateContext(
+            target_chat_id="chat",
+            latest_user_message_at=datetime(2026, 1, 1, 13, 59),
+            latest_assistant_reply_at=datetime(2026, 1, 1, 13, 58),
+        )
+        d = gate.evaluate(category="reminder_due", urgent=True, context=ctx)
+        assert d.decision == "deny"
+        assert "unanswered_user_message" in d.reason
+        assert gate.remaining_today() == 1
+
+    def test_pending_user_message_hard_denies(self):
+        gate = _gate(datetime(2026, 1, 1, 14, 0))
+        d = gate.evaluate(
+            context=ProactiveGateContext(
+                target_chat_id="chat",
+                pending_user_message=True,
+            )
+        )
+        assert d.decision == "deny"
+        assert "pending_user_message" in d.reason
+
+    def test_active_user_turn_hard_denies(self):
+        gate = _gate(datetime(2026, 5, 8, 8, 10), quiet_hours_start="00:00", quiet_hours_end="00:00")
+        d = gate.evaluate(
+            context=ProactiveGateContext(
+                target_chat_id="chat",
+                active_user_turn=True,
+            )
+        )
+        assert d.decision == "deny"
+        assert "active_user_turn" in d.reason
 
 
 class TestMinInterval:
@@ -339,6 +375,52 @@ class TestSendMessageIntegration:
         r2, _ = await self._execute(runtime_profile="inner_tick", gate=gate)
         assert r2.success is False
         assert r2.payload["gate_decision"] == "deny"
+
+    async def test_inner_tick_denies_when_tracker_has_unanswered_user_message(self):
+        from src.core.chat_activity import ChatActivityTracker
+
+        gate = _gate(datetime(2026, 1, 1, 14, 0), min_minutes_between=0)
+        tracker = ChatActivityTracker()
+        tracker.mark_inbound_user_message("12345", user_id="owner", message_id="m1")
+        sent = []
+        from src.tools.personal_tools import _send_message
+        from src.tools.types import ToolExecutionContext, ToolExecutionRequest
+        from src.tools.shell_executor import ShellResult
+
+        class _FakeQQ:
+            async def send_private_message(self, qq_id, content):
+                sent.append((qq_id, content))
+
+        class _FakeChannelManager:
+            def get_adapter(self, name):
+                return _FakeQQ() if name == "qq" else None
+
+        async def _noop_shell(_):
+            return ShellResult(stdout="", stderr="", return_code=0)
+
+        ctx = ToolExecutionContext(
+            execute_shell=_noop_shell,
+            shell_default_cwd="/tmp",
+            services={
+                "channel_manager": _FakeChannelManager(),
+                "owner_qq_id": "12345",
+                "proactive_message_gate": gate,
+                "chat_activity_tracker": tracker,
+            },
+            auth_level=2,
+            runtime_profile="inner_tick",
+        )
+        result = await _send_message(
+            ToolExecutionRequest(
+                name="send_message",
+                arguments={"target": "kevin_qq", "content": "hello"},
+            ),
+            ctx,
+        )
+        assert result.success is False
+        assert result.payload["gate_decision"] == "deny"
+        assert "unanswered_user_message" in result.payload["gate_reason"]
+        assert sent == []
 
     async def test_proactive_send_active_flag_engages_gate(self):
         """A non-inner_tick caller can opt in via services flag."""

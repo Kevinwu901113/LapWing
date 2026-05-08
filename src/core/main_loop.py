@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
+import uuid
 from typing import TYPE_CHECKING
 
 from src.core.events import (
@@ -36,6 +38,7 @@ from src.core.events import (
 
 if TYPE_CHECKING:  # pragma: no cover - type-only imports
     from src.core.brain import LapwingBrain
+    from src.core.chat_activity import ChatActivityTracker
     from src.core.event_queue import EventQueue
     from src.core.inner_tick_scheduler import InnerTickScheduler
 
@@ -53,15 +56,6 @@ def _concurrent_bg_work_p4_enabled() -> bool:
         from src.config import get_settings
         flags = get_settings().concurrent_bg_work
         return bool(flags.enabled and flags.p4_cancellation_evolution)
-    except Exception:
-        return False
-
-
-def _concurrent_bg_work_p2_5_enabled() -> bool:
-    try:
-        from src.config import get_settings
-        flags = get_settings().concurrent_bg_work
-        return bool(flags.enabled and flags.p2_5_arbitration)
     except Exception:
         return False
 
@@ -89,24 +83,73 @@ class MainLoop:
     # enough to catch copy-paste bursts.
     OWNER_COALESCE_SECONDS = 0.5
 
+    FOREGROUND_TIMEOUT_REPLY = (
+        "这次查询卡住了，可能是工具调度或外部检索异常。"
+        "我先停止这次查询；如果你还需要，我可以不用实时搜索，"
+        "直接按已有信息给你一个保守建议。"
+    )
+
     def __init__(
         self,
         queue: "EventQueue",
         brain: "LapwingBrain | None" = None,
         inner_tick_scheduler: "InnerTickScheduler | None" = None,
+        *,
+        chat_activity_tracker: "ChatActivityTracker | None" = None,
+        foreground_turn_timeout_seconds: int | None = None,
+        owner_status_probe_grace_seconds: int | None = None,
     ) -> None:
         self._queue = queue
         self._brain = brain
         self._scheduler = inner_tick_scheduler
+        self._chat_activity_tracker = chat_activity_tracker
         self._alive = False
         self._current_task: asyncio.Task | None = None
+        self._current_message_event: MessageEvent | None = None
+        self._current_turn_id: str | None = None
+        self._current_turn_started_mono: float | None = None
+        self._cancel_user_visible_status: str | None = None
         # M4 will read this to decide whether a cancellation was
         # pre-emptive (set True) versus a normal task completion.
         self._cancel_requested = False
         self._owner_watcher_task: asyncio.Task | None = None
         self._handling_owner: bool = False
+        self.foreground_turn_timeout_seconds = (
+            int(foreground_turn_timeout_seconds)
+            if foreground_turn_timeout_seconds is not None
+            else _foreground_turn_timeout_seconds()
+        )
+        self.owner_status_probe_grace_seconds = (
+            float(owner_status_probe_grace_seconds)
+            if owner_status_probe_grace_seconds is not None
+            else _owner_status_probe_grace_seconds()
+        )
         from src.core.concurrent_bg_work.speaking import SpeakingArbiter
-        self._speaking_arbiter = SpeakingArbiter()
+        self._speaking_arbiter = SpeakingArbiter(
+            chat_activity_tracker=chat_activity_tracker,
+        )
+
+    @property
+    def speaking_arbiter(self):
+        return self._speaking_arbiter
+
+    def is_handling_foreground_user_turn(self, chat_id: str) -> bool:
+        event = self._current_message_event
+        task = self._current_task
+        return (
+            event is not None
+            and event.chat_id == chat_id
+            and task is not None
+            and not task.done()
+        )
+
+    def has_stuck_user_turn(self, chat_id: str) -> bool:
+        if not self.is_handling_foreground_user_turn(chat_id):
+            return False
+        started = self._current_turn_started_mono
+        if started is None:
+            return False
+        return (time.monotonic() - started) > self.foreground_turn_timeout_seconds
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -164,6 +207,7 @@ class MainLoop:
                 if task is None or task.done():
                     continue
                 if self._handling_owner:
+                    await self._maybe_handle_owner_over_owner_interrupt()
                     continue
                 if not self._queue.has_owner_message():
                     continue
@@ -269,6 +313,17 @@ class MainLoop:
                 event.done_future.set_result("")
             return
 
+        turn_id = event.event_id or f"turn_{uuid.uuid4().hex}"
+        tracker = self._chat_activity_tracker
+        if tracker is not None:
+            tracker.mark_inbound_user_message(
+                event.chat_id,
+                user_id=event.user_id,
+                message_id=event.source_message_id,
+                event_id=event.event_id,
+                idempotency_key=event.idempotency_key,
+            )
+
         # ── Coalesce rapid-fire OWNER messages ──────────────────────
         merged_text = event.text
         merged_images = list(event.images) if event.images else []
@@ -296,6 +351,14 @@ class MainLoop:
                         merged_images.extend(extra.images)
                     if extra.done_future is not None and not extra.done_future.done():
                         coalesced_futures.append(extra.done_future)
+                    if tracker is not None:
+                        tracker.mark_inbound_user_message(
+                            extra.chat_id,
+                            user_id=extra.user_id,
+                            message_id=extra.source_message_id,
+                            event_id=extra.event_id,
+                            idempotency_key=extra.idempotency_key,
+                        )
                 else:
                     requeue.append(extra)
             for ev in requeue:
@@ -305,15 +368,9 @@ class MainLoop:
         final_text = merged_text
         final_images = merged_images
 
+        send_fn = self._wrap_user_reply_send_fn(event)
+
         async def _drive() -> str:
-            send_fn = event.send_fn
-            if _concurrent_bg_work_p2_5_enabled() and event.send_fn is not None:
-                async def _send_serialized(text: str) -> None:
-                    async with self._speaking_arbiter.acquire(event.chat_id):
-                        await event.send_fn(text)
-
-                send_fn = _send_serialized
-
             return await self._brain.think_conversational(
                 chat_id=event.chat_id,
                 user_message=final_text,
@@ -327,19 +384,107 @@ class MainLoop:
 
         task = asyncio.create_task(_drive(), name=f"think_conv:{event.chat_id}")
         self._current_task = task
+        self._current_message_event = event
+        self._current_turn_id = turn_id
+        self._current_turn_started_mono = time.monotonic()
+        self._cancel_user_visible_status = None
+        if tracker is not None:
+            tracker.mark_turn_started(
+                event.chat_id,
+                turn_id=turn_id,
+                user_id=event.user_id,
+                event_id=event.event_id,
+                source_message_id=event.source_message_id,
+                text_preview=final_text,
+            )
+        logger.info(
+            "foreground_turn_started chat_id=%s user_id=%s event_id=%s turn_id=%s message_id=%s",
+            event.chat_id,
+            event.user_id,
+            event.event_id or "",
+            turn_id,
+            event.source_message_id or "",
+        )
         try:
-            reply = await task
+            reply = await asyncio.wait_for(
+                task,
+                timeout=self.foreground_turn_timeout_seconds,
+            )
             if event.done_future is not None and not event.done_future.done():
                 event.done_future.set_result(reply)
             for f in coalesced_futures:
                 if not f.done():
                     f.set_result(reply)
-        except asyncio.CancelledError:
+            if tracker is not None:
+                tracker.mark_turn_terminal(event.chat_id, turn_id=turn_id, status="replied")
+            logger.info(
+                "foreground_turn_ended chat_id=%s turn_id=%s status=replied",
+                event.chat_id,
+                turn_id,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "foreground_turn_timed_out chat_id=%s turn_id=%s timeout_seconds=%s",
+                event.chat_id,
+                turn_id,
+                self.foreground_turn_timeout_seconds,
+            )
+            delivered = await self._send_user_visible_status(
+                event,
+                self.FOREGROUND_TIMEOUT_REPLY,
+                source="foreground_timeout",
+            )
+            terminal_status = (
+                "failed_with_user_visible_error"
+                if delivered
+                else "failed_without_user_visible_error"
+            )
+            if tracker is not None:
+                tracker.mark_turn_terminal(
+                    event.chat_id,
+                    turn_id=turn_id,
+                    status=terminal_status,
+                )
             if event.done_future is not None and not event.done_future.done():
-                event.done_future.cancel()
+                event.done_future.set_result(self.FOREGROUND_TIMEOUT_REPLY if delivered else "")
             for f in coalesced_futures:
                 if not f.done():
-                    f.cancel()
+                    f.set_result(self.FOREGROUND_TIMEOUT_REPLY if delivered else "")
+            logger.info(
+                "stuck_user_turn_recovery chat_id=%s turn_id=%s delivered=%s",
+                event.chat_id,
+                turn_id,
+                delivered,
+            )
+        except asyncio.CancelledError:
+            status_text = self._cancel_user_visible_status
+            if event.done_future is not None and not event.done_future.done():
+                if status_text:
+                    event.done_future.set_result(status_text)
+                else:
+                    event.done_future.cancel()
+            for f in coalesced_futures:
+                if not f.done():
+                    if status_text:
+                        f.set_result(status_text)
+                    else:
+                        f.cancel()
+            if tracker is not None:
+                tracker.mark_turn_terminal(
+                    event.chat_id,
+                    turn_id=turn_id,
+                    status=(
+                        "superseded_with_user_visible_status"
+                        if status_text
+                        else "cancelled"
+                    ),
+                )
+            logger.info(
+                "foreground_turn_cancelled chat_id=%s turn_id=%s user_visible=%s",
+                event.chat_id,
+                turn_id,
+                bool(status_text),
+            )
             raise
         except Exception as exc:
             logger.exception("think_conversational failed for %s", event.chat_id)
@@ -348,9 +493,20 @@ class MainLoop:
             for f in coalesced_futures:
                 if not f.done():
                     f.set_exception(exc)
+            if tracker is not None:
+                tracker.mark_turn_terminal(
+                    event.chat_id,
+                    turn_id=turn_id,
+                    status="failed",
+                )
         finally:
             if self._current_task is task:
                 self._current_task = None
+            if self._current_message_event is event:
+                self._current_message_event = None
+                self._current_turn_id = None
+                self._current_turn_started_mono = None
+                self._cancel_user_visible_status = None
 
     async def _handle_inner_tick(self, event: InnerTickEvent) -> None:
         """Drive ``brain.think_inner`` for one tick.
@@ -424,6 +580,25 @@ class MainLoop:
             logger.debug("Agent cognitive event received but no brain wired: %s", event.kind)
             return
 
+        delivery_target = str(getattr(event, "delivery_target", "") or "")
+        if delivery_target in {
+            "parent_turn",
+            "chat_status",
+            "silent",
+            "desktop_progress_only",
+        }:
+            triggering = getattr(event, "triggering_event", None)
+            logger.info(
+                "agent_task_result_routing task_id=%s parent_turn_id=%s parent_event_id=%s delivery_target=%s orphan=%s stale=%s",
+                getattr(event, "task_id", ""),
+                getattr(triggering, "payload", {}).get("parent_turn_id", "") if triggering else "",
+                getattr(triggering, "payload", {}).get("parent_event_id", "") if triggering else "",
+                delivery_target,
+                bool(getattr(event, "orphan", False)),
+                bool(getattr(event, "stale", False)),
+            )
+            return
+
         urgent_item = _agent_event_to_urgent_item(event)
 
         async def _drive():
@@ -453,6 +628,135 @@ class MainLoop:
         if event.command in {"freeze_loop", "stop_all"}:
             await self._cancel_in_flight(f"operator:{event.reason}")
 
+    def _wrap_user_reply_send_fn(self, event: MessageEvent):
+        if event.send_fn is None:
+            return None
+
+        async def _send(text: str) -> None:
+            async with self._speaking_arbiter.acquire(
+                event.chat_id,
+                purpose="user_reply",
+                chat_activity_tracker=self._chat_activity_tracker,
+            ):
+                await event.send_fn(text)
+            if self._chat_activity_tracker is not None:
+                self._chat_activity_tracker.mark_assistant_reply(
+                    event.chat_id,
+                    source="user_reply",
+                )
+
+        return _send
+
+    async def _send_user_visible_status(
+        self,
+        event: MessageEvent,
+        text: str,
+        *,
+        source: str,
+    ) -> bool:
+        if event.send_fn is None:
+            return False
+        from src.core.system_send import send_system_message
+
+        async def _send(text_to_send: str) -> None:
+            async with self._speaking_arbiter.acquire(
+                event.chat_id,
+                purpose="user_reply",
+                chat_activity_tracker=self._chat_activity_tracker,
+            ):
+                await event.send_fn(text_to_send)
+
+        delivered = await send_system_message(
+            _send,
+            text,
+            source=source,
+            chat_id=event.chat_id,
+            adapter=event.adapter,
+            trajectory_store=getattr(self._brain, "trajectory_store", None),
+            mutation_log=getattr(self._brain, "_mutation_log_ref", None),
+        )
+        if delivered and self._chat_activity_tracker is not None:
+            self._chat_activity_tracker.mark_assistant_reply(
+                event.chat_id,
+                source=source,
+            )
+        return delivered
+
+    async def _maybe_handle_owner_over_owner_interrupt(self) -> None:
+        current = self._current_message_event
+        if current is None:
+            return
+
+        selected: tuple[MessageEvent, str] | None = None
+
+        def _candidate(ev: Event) -> bool:
+            nonlocal selected
+            if not (
+                isinstance(ev, MessageEvent)
+                and ev.priority == PRIORITY_OWNER_MESSAGE
+                and ev.chat_id == current.chat_id
+            ):
+                return False
+            kind = _classify_owner_over_owner_text(ev.text)
+            if kind == "ordinary_followup":
+                return False
+            selected = (ev, kind)
+            return True
+
+        popped = self._queue.pop_matching(_candidate)
+        if popped is None or selected is None:
+            return
+        event, classification = selected
+        if self._chat_activity_tracker is not None:
+            self._chat_activity_tracker.mark_inbound_user_message(
+                event.chat_id,
+                user_id=event.user_id,
+                message_id=event.source_message_id,
+                event_id=event.event_id,
+                idempotency_key=event.idempotency_key,
+            )
+        elapsed = (
+            time.monotonic() - self._current_turn_started_mono
+            if self._current_turn_started_mono is not None
+            else 0.0
+        )
+        should_cancel = (
+            classification == "cancel_or_supersede"
+            or elapsed >= self.owner_status_probe_grace_seconds
+        )
+        logger.info(
+            "owner_over_owner_interrupt chat_id=%s classification=%s event_id=%s message_id=%s elapsed_seconds=%.3f cancel=%s",
+            event.chat_id,
+            classification,
+            event.event_id or "",
+            event.source_message_id or "",
+            elapsed,
+            should_cancel,
+        )
+
+        if should_cancel:
+            reply = self.FOREGROUND_TIMEOUT_REPLY
+            delivered = await self._send_user_visible_status(
+                event,
+                reply,
+                source=f"owner_over_owner_{classification}",
+            )
+            if event.done_future is not None and not event.done_future.done():
+                event.done_future.set_result(reply if delivered else "")
+            if delivered:
+                self._cancel_user_visible_status = reply
+            await self._cancel_in_flight(f"owner_over_owner:{classification}")
+            return
+
+        reply = "还在处理这次请求，还没结束。我会继续盯着，结束后马上回你。"
+        delivered = await self._send_user_visible_status(
+            event,
+            reply,
+            source="owner_over_owner_status_probe",
+        )
+        if event.done_future is not None and not event.done_future.done():
+            event.done_future.set_result(reply if delivered else "")
+
 
 def _agent_event_to_urgent_item(event: Event) -> dict:
     triggering = getattr(event, "triggering_event", None)
@@ -465,3 +769,67 @@ def _agent_event_to_urgent_item(event: Event) -> dict:
         "task_id": getattr(event, "task_id", ""),
         "salience": str(getattr(event, "effective_salience", "")),
     }
+
+
+def _foreground_turn_timeout_seconds() -> int:
+    try:
+        from src.config import get_settings
+        return int(
+            get_settings()
+            .runtime_interaction_hardening
+            .foreground_turn_timeout_seconds
+        )
+    except Exception:
+        return 300
+
+
+def _owner_status_probe_grace_seconds() -> float:
+    try:
+        from src.config import get_settings
+        return float(
+            get_settings()
+            .runtime_interaction_hardening
+            .owner_status_probe_grace_seconds
+        )
+    except Exception:
+        return 30.0
+
+
+_OWNER_CANCEL_TOKENS = (
+    "先别管",
+    "别管",
+    "别查",
+    "不用查",
+    "停一下",
+    "停一停",
+    "停止",
+    "取消",
+    "算了",
+    "中止",
+    "stop",
+    "cancel",
+)
+
+_OWNER_STATUS_TOKENS = (
+    "还在查",
+    "还在处理",
+    "还在吗",
+    "在吗",
+    "是不是还在",
+    "怎么不回",
+    "为什么不回",
+    "喂",
+    "喂?",
+    "喂？",
+)
+
+
+def _classify_owner_over_owner_text(text: str) -> str:
+    normalized = " ".join((text or "").strip().lower().split())
+    if not normalized:
+        return "ordinary_followup"
+    if any(token in normalized for token in _OWNER_CANCEL_TOKENS):
+        return "cancel_or_supersede"
+    if any(token in normalized for token in _OWNER_STATUS_TOKENS):
+        return "status_probe"
+    return "ordinary_followup"

@@ -221,7 +221,8 @@ def test_inbound_gate_command_and_busy_modes():
         session_state="running",
     )
     assert queued.mode == BusyInputMode.QUEUE
-    assert controller.queue_for("c1")[0].message.message_id == "m2"
+    assert queued.queued is False
+    assert controller.queue_for("c1") == ()
 
     interrupt = controller.classify(
         NormalizedInboundMessage(

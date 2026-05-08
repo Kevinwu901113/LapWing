@@ -275,6 +275,21 @@ async def test_speaking_arbiter_serializes_same_chat():
     assert events in (["start:a", "end:a", "start:b", "end:b"], ["start:b", "end:b", "start:a", "end:a"])
 
 
+def test_speaking_arbiter_blocks_proactive_when_user_unanswered():
+    from src.core.chat_activity import ChatActivityTracker
+
+    tracker = ChatActivityTracker()
+    tracker.mark_inbound_user_message("chat", user_id="owner", message_id="m1")
+    arbiter = SpeakingArbiter(chat_activity_tracker=tracker)
+
+    allowed, reason = arbiter.can_acquire("chat", purpose="proactive")
+    assert allowed is False
+    assert reason == "unanswered_user_message"
+
+    allowed, reason = arbiter.can_acquire("chat", purpose="user_reply")
+    assert allowed is True
+
+
 def test_event_queue_detects_high_salience_event():
     queue = EventQueue()
     from src.core.concurrent_bg_work.event_bus import AgentTaskResultEvent
@@ -311,14 +326,32 @@ async def test_tool_registration_and_start_executor(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_agent_result_event_reaches_brain_inner_turn():
+async def test_user_initiated_agent_result_does_not_reach_proactive_inner_turn():
     from src.core.concurrent_bg_work.event_bus import AgentTaskResultEvent
-    from src.core.concurrent_bg_work.types import AgentTaskSnapshot, AgentEvent, AgentEventType, SalienceLevel
+    from src.core.concurrent_bg_work.types import (
+        AgentResultDeliveryTarget,
+        AgentTaskSnapshot,
+        AgentEvent,
+        AgentEventType,
+        SalienceLevel,
+    )
 
     brain = AsyncMock()
     brain.think_inner = AsyncMock(return_value=("", None, False))
     snapshot = AgentTaskSnapshot("t1", "researcher", "x", TaskStatus.COMPLETED, None, None, None, [], "done", None, [], SalienceLevel.NORMAL, False, None)
-    event = AgentEvent("e1", "t1", "chat", AgentEventType.AGENT_COMPLETED, datetime.now(timezone.utc), "B finished first", None, None, None, {}, 1)
+    event = AgentEvent(
+        "e1",
+        "t1",
+        "chat",
+        AgentEventType.AGENT_COMPLETED,
+        datetime.now(timezone.utc),
+        "B finished first",
+        None,
+        None,
+        None,
+        {"parent_turn_id": "turn-1", "parent_event_id": "evt-1"},
+        1,
+    )
     loop = MainLoop(EventQueue(), brain=brain)
 
     await loop._dispatch(AgentTaskResultEvent(
@@ -326,13 +359,49 @@ async def test_agent_result_event_reaches_brain_inner_turn():
         task_snapshot=snapshot,
         triggering_event=event,
         effective_salience=SalienceLevel.NORMAL,
+        delivery_target=AgentResultDeliveryTarget.PARENT_TURN,
     ))
 
-    brain.think_inner.assert_awaited_once()
-    urgent = brain.think_inner.call_args.kwargs["urgent_items"][0]
-    assert urgent["type"] == "agent_task_result"
-    assert urgent["task_id"] == "t1"
-    assert "B finished first" in urgent["content"]
+    brain.think_inner.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_event_bus_routes_parent_turn_result_to_parent_not_proactive(tmp_path):
+    from src.core.concurrent_bg_work.event_bus import (
+        AgentEventBus,
+        AgentTaskResultEvent,
+        new_agent_event,
+    )
+    from src.core.concurrent_bg_work.types import (
+        AgentEventType,
+        AgentResultDeliveryTarget,
+    )
+
+    store = AgentTaskStore(tmp_path / "lapwing.db")
+    await store.init()
+    supervisor = TaskSupervisor(store=store, agent_registry=_Registry())
+    handle = await supervisor.start_agent_task(
+        spec_id="researcher",
+        objective="find lunch",
+        chat_id="chat",
+        owner_user_id="owner",
+        parent_turn_id="turn-1",
+        parent_event_id="evt-1",
+    )
+    queue = EventQueue()
+    bus = AgentEventBus(task_store=store, event_queue=queue)
+    await bus.emit(new_agent_event(
+        task_id=handle.task_id,
+        chat_id="chat",
+        type=AgentEventType.AGENT_COMPLETED,
+        summary="done",
+        sequence=1,
+    ))
+
+    queued = await queue.get()
+    assert isinstance(queued, AgentTaskResultEvent)
+    assert queued.delivery_target == AgentResultDeliveryTarget.PARENT_TURN
+    await store.close()
 
 
 def test_background_tool_profile_overlay_is_phase_staged(monkeypatch):

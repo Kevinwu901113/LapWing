@@ -38,6 +38,48 @@ class ProactiveGateDecision:
     bypassed: bool = False # True when an urgent category short-circuited the gate
 
 
+@dataclass(frozen=True)
+class ProactiveGateContext:
+    """Live same-chat state for hard proactive suppression."""
+
+    target_chat_id: str | None = None
+    latest_user_message_at: datetime | float | int | None = None
+    latest_assistant_reply_at: datetime | float | int | None = None
+    pending_user_message: bool = False
+    active_user_turn: bool = False
+    queued_user_input: bool = False
+    active_user_task: bool = False
+    stuck_user_turn: bool = False
+
+    def hard_denial_reason(self) -> str | None:
+        user_at = _as_timestamp(self.latest_user_message_at)
+        assistant_at = _as_timestamp(self.latest_assistant_reply_at)
+        if user_at is not None and (assistant_at is None or user_at > assistant_at):
+            return "unanswered_user_message"
+        if self.stuck_user_turn:
+            return "stuck_user_turn"
+        if self.pending_user_message:
+            return "pending_user_message"
+        if self.active_user_turn:
+            return "active_user_turn"
+        if self.queued_user_input:
+            return "queued_user_input"
+        if self.active_user_task:
+            return "active_user_task"
+        return None
+
+
+def _as_timestamp(value: datetime | float | int | None) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.timestamp()
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _parse_hhmm(value: str) -> dtime:
     """Parse 'HH:MM' (24h) into a datetime.time. Empty → midnight."""
     if not value:
@@ -110,6 +152,7 @@ class ProactiveMessageGate:
         *,
         category: str | None = None,
         urgent: bool = False,
+        context: ProactiveGateContext | None = None,
     ) -> ProactiveGateDecision:
         """Decide whether a proactive send may proceed right now.
 
@@ -117,11 +160,28 @@ class ProactiveMessageGate:
         ``urgent`` is an explicit override flag the caller may set.
         Either one triggers the urgent-bypass path when allowed.
         """
+        hard_reason = context.hard_denial_reason() if context is not None else None
+        if hard_reason is not None:
+            reason = hard_reason
+            if context is not None and context.target_chat_id:
+                reason = f"{hard_reason}:target_chat_id={context.target_chat_id}"
+            decision = ProactiveGateDecision(decision="deny", reason=reason)
+            self._log_and_record(
+                decision,
+                urgent=bool(urgent),
+                target_chat_id=context.target_chat_id if context else None,
+            )
+            return decision
+
         if not self.enabled:
             decision = ProactiveGateDecision(
                 decision="allow", reason="proactive_messages.enabled=false"
             )
-            self._log_and_record(decision, urgent=False)
+            self._log_and_record(
+                decision,
+                urgent=False,
+                target_chat_id=context.target_chat_id if context else None,
+            )
             return decision
 
         cat_norm = (category or "").strip().lower()
@@ -132,7 +192,11 @@ class ProactiveMessageGate:
                 reason=f"urgent_bypass:category={cat_norm or '<flag>'}",
                 bypassed=True,
             )
-            self._log_and_record(decision, urgent=True)
+            self._log_and_record(
+                decision,
+                urgent=True,
+                target_chat_id=context.target_chat_id if context else None,
+            )
             return decision
 
         with self._lock:
@@ -148,7 +212,11 @@ class ProactiveMessageGate:
                         f"{self.quiet_end.strftime('%H:%M')}]"
                     ),
                 )
-                self._log_and_record(decision, urgent=False)
+                self._log_and_record(
+                    decision,
+                    urgent=False,
+                    target_chat_id=context.target_chat_id if context else None,
+                )
                 return decision
 
             # Daily cap (rolling 24h)
@@ -160,7 +228,11 @@ class ProactiveMessageGate:
                         f"(rolling 24h)"
                     ),
                 )
-                self._log_and_record(decision, urgent=False)
+                self._log_and_record(
+                    decision,
+                    urgent=False,
+                    target_chat_id=context.target_chat_id if context else None,
+                )
                 return decision
 
             # Min spacing
@@ -178,14 +250,22 @@ class ProactiveMessageGate:
                             f"remaining_seconds={secs}"
                         ),
                     )
-                    self._log_and_record(decision, urgent=False)
+                    self._log_and_record(
+                        decision,
+                        urgent=False,
+                        target_chat_id=context.target_chat_id if context else None,
+                    )
                     return decision
 
             decision = ProactiveGateDecision(
                 decision="allow",
                 reason="within_budget",
             )
-            self._log_and_record(decision, urgent=False)
+            self._log_and_record(
+                decision,
+                urgent=False,
+                target_chat_id=context.target_chat_id if context else None,
+            )
             self._history.append(now)
             return decision
 
@@ -211,13 +291,14 @@ class ProactiveMessageGate:
         decision: ProactiveGateDecision,
         *,
         urgent: bool,
+        target_chat_id: str | None = None,
     ) -> None:
         # Log every decision — auditability is part of the contract
         # (commit 9 builds on this with a structured PROACTIVE_MESSAGE_DECISION
         # mutation log entry; the human-readable line is always emitted here).
         logger.info(
-            "[proactive_gate] decision=%s urgent=%s reason=%s",
-            decision.decision, urgent, decision.reason,
+            "[proactive_gate] decision=%s urgent=%s reason=%s target_chat_id=%s",
+            decision.decision, urgent, decision.reason, target_chat_id or "",
         )
         if decision.bypassed and self.allow_urgent_bypass:
             # Urgent bypass spends budget too — keeps the cap honest if the

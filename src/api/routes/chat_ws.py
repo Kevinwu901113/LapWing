@@ -19,6 +19,7 @@ _brain = None
 _channel_manager = None
 _event_queue = None
 _auth_manager = None
+_chat_activity_tracker = None
 
 # chat_id → WebSocket 映射，用于 Agent 事件推送
 _chat_ws_map: dict[str, WebSocket] = {}
@@ -60,12 +61,13 @@ async def forward_agent_result(chat_id: str, notify) -> None:
         pass
 
 
-def init(brain, channel_manager, event_queue=None, auth_manager=None) -> None:
-    global _brain, _channel_manager, _event_queue, _auth_manager
+def init(brain, channel_manager, event_queue=None, auth_manager=None, chat_activity_tracker=None) -> None:
+    global _brain, _channel_manager, _event_queue, _auth_manager, _chat_activity_tracker
     _brain = brain
     _channel_manager = channel_manager
     _event_queue = event_queue
     _auth_manager = auth_manager
+    _chat_activity_tracker = chat_activity_tracker
 
 
 @router.websocket("/ws/chat")
@@ -150,6 +152,11 @@ async def websocket_chat(ws: WebSocket):
                 async def send_fn(text: str) -> None:
                     try:
                         await ws.send_json({"type": "interim", "content": text})
+                        tracker = _chat_activity_tracker or getattr(
+                            _brain, "_chat_activity_tracker_ref", None
+                        )
+                        if tracker is not None:
+                            tracker.mark_assistant_reply(chat_id, source="desktop_ws")
                     except Exception:
                         pass
 
@@ -207,7 +214,34 @@ async def websocket_chat(ws: WebSocket):
                         event_id=event_id,
                         idempotency_key=idempotency_key,
                     )
+                    tracker = _chat_activity_tracker or getattr(
+                        _brain, "_chat_activity_tracker_ref", None
+                    )
+                    if tracker is not None:
+                        tracker.mark_inbound_user_message(
+                            chat_id,
+                            user_id="owner",
+                            message_id=None,
+                            event_id=event_id,
+                            idempotency_key=idempotency_key,
+                        )
+                    logger.info(
+                        "[desktop/inbound] accepted chat_id=%s user_id=%s message_id=%s event_id=%s idempotency_key=%s",
+                        chat_id,
+                        "owner",
+                        "",
+                        event_id or "",
+                        idempotency_key or "",
+                    )
                     await _event_queue.put(event)
+                    logger.info(
+                        "[desktop/inbound] enqueued chat_id=%s user_id=%s message_id=%s event_id=%s idempotency_key=%s",
+                        chat_id,
+                        "owner",
+                        "",
+                        event_id or "",
+                        idempotency_key or "",
+                    )
                     await done  # propagate handler exception to except block
                     await ws.send_json({"type": "reply", "content": "", "final": True})
                 except Exception as exc:

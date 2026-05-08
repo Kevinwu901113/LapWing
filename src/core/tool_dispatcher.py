@@ -105,6 +105,26 @@ class ServiceContextView:
     def proactive_send_active(self):
         return self.raw.get("proactive_send_active")
 
+    @property
+    def chat_activity_tracker(self):
+        return self.raw.get("chat_activity_tracker")
+
+    @property
+    def event_queue(self):
+        return self.raw.get("event_queue")
+
+    @property
+    def main_loop(self):
+        return self.raw.get("main_loop")
+
+    @property
+    def busy_session_controller(self):
+        return self.raw.get("busy_session_controller")
+
+    @property
+    def speaking_arbiter(self):
+        return self.raw.get("speaking_arbiter")
+
     # ── Channels ────────────────────────────────────────────────────────
 
     @property
@@ -212,6 +232,10 @@ class ServiceContextView:
     @property
     def background_task_supervisor(self):
         return self.raw.get("background_task_supervisor") or self.raw.get("concurrent_bg_work_supervisor")
+
+    @property
+    def background_task_store(self):
+        return self.raw.get("background_task_store")
 
     # ── Agent-factory (set by AgentFactory, not _build_services) ───────
 

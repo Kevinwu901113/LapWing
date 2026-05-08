@@ -346,6 +346,19 @@ class AgentTaskStore:
                 "chat_backlog": await _count(conn, "chat_id = ? AND status = 'waiting_resource'", (chat_id,)),
             }
 
+    async def has_active_user_task_for_chat(self, chat_id: str) -> bool:
+        """True if a user-initiated background task is still non-terminal."""
+        async with self._reader() as conn:
+            count = await _count(
+                conn,
+                (
+                    "chat_id = ? AND parent_turn_id IS NOT NULL "
+                    "AND status IN ('pending','running','waiting_resource','waiting_input','resuming')"
+                ),
+                (chat_id,),
+            )
+        return count > 0
+
     async def startup_recovery(self) -> RecoveryNotice | None:
         now = datetime.now(timezone.utc)
         async with self._reader() as conn:

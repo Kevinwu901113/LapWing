@@ -88,6 +88,11 @@ def test_proactive_message_gate_constructed_in_container():
     assert brain._proactive_message_gate_ref is container.proactive_message_gate
 
 
+def test_configure_brain_dependencies_does_not_shadow_get_settings():
+    """A local import makes earlier get_settings() calls fail at runtime."""
+    assert "get_settings" not in AppContainer._configure_brain_dependencies.__code__.co_varnames
+
+
 def test_brain_services_dict_includes_proactive_message_gate():
     """LapwingBrain._build_services() must emit
     ``services["proactive_message_gate"]`` once the AppContainer wires the
