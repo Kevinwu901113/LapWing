@@ -641,12 +641,35 @@ class MainLoop:
             return False
 
         triggering = getattr(event, "triggering_event", None)
-        chat_id = str(getattr(triggering, "chat_id", "") or "")
-        if not chat_id:
+        raw_chat_id = str(getattr(triggering, "chat_id", "") or "")
+        if not raw_chat_id:
             logger.info(
                 "agent_task_result_delivery_skipped task_id=%s delivery_target=%s reason=missing_chat_id",
                 getattr(event, "task_id", ""),
                 delivery_target,
+            )
+            return False
+
+        from src.adapters.base import ChannelType
+
+        channel_manager = getattr(self._brain, "channel_manager", None)
+        channel = getattr(channel_manager, "last_active_channel", None) if channel_manager is not None else None
+        if channel is None:
+            channel = ChannelType.QQ
+
+        if channel_manager is not None:
+            chat_id = channel_manager.resolve_delivery_target(channel, raw_chat_id)
+        else:
+            chat_id = raw_chat_id
+
+        if chat_id is None:
+            logger.info(
+                "agent_task_result_delivery_skipped task_id=%s delivery_target=%s "
+                "raw_chat_id=%s channel=%s reason=invalid_qq_chat_id",
+                getattr(event, "task_id", ""),
+                delivery_target,
+                raw_chat_id[-8:],
+                channel.value,
             )
             return False
 
@@ -655,14 +678,8 @@ class MainLoop:
             return False
 
         async def _send(text_to_send: str) -> None:
-            channel_manager = getattr(self._brain, "channel_manager", None)
             if channel_manager is None:
                 raise RuntimeError("channel_manager unavailable for agent status delivery")
-            from src.adapters.base import ChannelType
-
-            channel = getattr(channel_manager, "last_active_channel", None)
-            if channel is None:
-                channel = ChannelType.QQ
             get_adapter = getattr(channel_manager, "get_adapter", None)
             adapter = get_adapter(channel) if callable(get_adapter) else None
             if adapter is not None and hasattr(adapter, "is_connected"):

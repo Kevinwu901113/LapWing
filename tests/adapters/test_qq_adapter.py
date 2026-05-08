@@ -1,7 +1,11 @@
 """QQAdapter 单元测试。"""
 
+import asyncio
+import logging
+
 import pytest
 from unittest.mock import AsyncMock
+from websockets.protocol import State as WsState
 
 from src.adapters.qq_adapter import QQAdapter
 
@@ -15,6 +19,21 @@ def _make_adapter(**overrides) -> QQAdapter:
         **overrides,
     }
     return QQAdapter(config=config)
+
+
+def _private_event(
+    *,
+    user_id: str = "200",
+    message_id: str = "msg-1",
+    message: object = "hello",
+) -> dict:
+    return {
+        "post_type": "message",
+        "message_type": "private",
+        "user_id": user_id,
+        "message_id": message_id,
+        "message": message,
+    }
 
 
 class TestExtractText:
@@ -163,3 +182,116 @@ class TestBuildMessageSegments:
         assert segments[0]["type"] == "text"
         assert segments[1]["type"] == "image"
         assert "base64://" in segments[1]["data"]["file"]
+
+
+@pytest.mark.asyncio
+class TestPrivateMessageObservability:
+    async def test_private_non_kevin_id_logs_drop(self, caplog):
+        adapter = _make_adapter()
+        adapter.on_message = AsyncMock()
+        caplog.set_level(logging.INFO, logger="lapwing.adapters.qq_adapter")
+
+        await adapter._handle_message_event(_private_event(user_id="201"))
+
+        adapter.on_message.assert_not_called()
+        assert "qq_message_drop" in caplog.text
+        assert "reason=private_user_id_mismatch" in caplog.text
+        assert "configured_kevin_id_tail=200" in caplog.text
+
+    async def test_self_message_logs_drop(self, caplog):
+        adapter = _make_adapter()
+        caplog.set_level(logging.INFO, logger="lapwing.adapters.qq_adapter")
+
+        await adapter._handle_message_event(_private_event(user_id="100"))
+
+        assert "reason=self_message" in caplog.text
+
+    async def test_duplicate_message_logs_drop(self, caplog):
+        adapter = _make_adapter()
+        adapter._mark_as_read = AsyncMock()
+        adapter.on_message = AsyncMock()
+        caplog.set_level(logging.INFO, logger="lapwing.adapters.qq_adapter")
+        event = _private_event(message_id="dup-1")
+
+        await adapter._handle_message_event(event)
+        await asyncio.sleep(0)
+        await adapter._handle_message_event(event)
+
+        assert "reason=duplicate_message" in caplog.text
+
+    async def test_empty_private_message_logs_drop(self, caplog):
+        adapter = _make_adapter()
+        caplog.set_level(logging.INFO, logger="lapwing.adapters.qq_adapter")
+
+        await adapter._handle_message_event(_private_event(message=""))
+
+        assert "reason=empty_private_message" in caplog.text
+
+    async def test_missing_on_message_logs_drop(self, caplog):
+        adapter = _make_adapter()
+        adapter._mark_as_read = AsyncMock()
+        caplog.set_level(logging.INFO, logger="lapwing.adapters.qq_adapter")
+
+        await adapter._handle_message_event(_private_event(message_id="missing-cb"))
+        await asyncio.sleep(0)
+
+        assert "reason=missing_on_message" in caplog.text
+
+    async def test_on_message_task_exception_is_logged(self, caplog):
+        adapter = _make_adapter()
+        adapter._mark_as_read = AsyncMock()
+
+        async def failing_on_message(**kwargs):
+            raise RuntimeError("boom")
+
+        adapter.on_message = failing_on_message
+        caplog.set_level(logging.ERROR, logger="lapwing.adapters.qq_adapter")
+
+        await adapter._handle_message_event(_private_event(message_id="raises"))
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert "qq_adapter_task_exception" in caplog.text
+        assert "task_name=qq-on-message" in caplog.text
+        assert "RuntimeError: boom" in caplog.text
+
+    async def test_call_api_timeout_logs_and_increments_counter(self, caplog):
+        class OpenWs:
+            state = WsState.OPEN
+
+            async def send(self, payload):
+                self.payload = payload
+
+        adapter = _make_adapter()
+        adapter.ws = OpenWs()
+        caplog.set_level(logging.WARNING, logger="lapwing.adapters.qq_adapter")
+
+        result = await adapter._call_api("send_private_msg", {}, timeout=0.01)
+
+        assert result == {"status": "failed", "retcode": -2}
+        assert adapter.api_call_timeout_count == 1
+        assert len(adapter._echo_futures) == 0
+        assert "api_call_timeout layer=qq_adapter action=send_private_msg" in caplog.text
+        assert "qq_adapter_health layer=qq_adapter reason=api_call_timeout" in caplog.text
+
+    async def test_send_private_msg_non_numeric_logs_structured_warning(self, caplog):
+        adapter = _make_adapter()
+        caplog.set_level(logging.WARNING, logger="lapwing.adapters.qq_adapter")
+
+        result = await adapter._send_private_msg("non_numeric_test_id", "hello")
+
+        assert result == {"status": "failed", "retcode": -3}
+        assert "QQ private send invalid user_id" in caplog.text
+        assert "reason=non_numeric_user_id" in caplog.text
+        # Only the tail of the non-numeric id is exposed
+        assert "non_numeric_test_id" not in caplog.text
+
+    async def test_send_private_msg_segments_non_numeric_logs_structured_warning(self, caplog):
+        adapter = _make_adapter()
+        caplog.set_level(logging.WARNING, logger="lapwing.adapters.qq_adapter")
+
+        result = await adapter._send_private_msg_segments("chat", [{"type": "text", "data": {"text": "hi"}}])
+
+        assert result == {"status": "failed", "retcode": -3}
+        assert "QQ private send invalid user_id" in caplog.text
+        assert "reason=non_numeric_user_id" in caplog.text

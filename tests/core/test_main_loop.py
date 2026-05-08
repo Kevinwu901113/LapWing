@@ -8,6 +8,7 @@ event / cancellation.
 from __future__ import annotations
 
 import asyncio
+import logging
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock
 
@@ -179,9 +180,26 @@ class _FakeChannelManager:
         self.last_active_channel = ChannelType.QQ
         self.sent: list[tuple[str, str]] = []
         self.adapter = _FakeAdapter()
+        self._kevin_id = "999"
 
     def get_adapter(self, _channel):
         return self.adapter
+
+    def resolve_delivery_target(self, channel, raw_chat_id):
+        from src.adapters.base import ChannelType
+        if channel == ChannelType.QQ:
+            try:
+                int(raw_chat_id)
+                return raw_chat_id
+            except (ValueError, TypeError):
+                pass
+            try:
+                int(self._kevin_id)
+                return self._kevin_id
+            except (ValueError, TypeError):
+                pass
+            return None
+        return raw_chat_id
 
     async def send(self, _channel, chat_id, text):
         self.sent.append((chat_id, text))
@@ -374,7 +392,7 @@ async def test_agent_parent_turn_result_delivers_status_without_inner_tick():
         SalienceLevel.HIGH, False, None,
     )
     triggering = AgentEvent(
-        "evt-1", "task-1", "chat", AgentEventType.AGENT_FAILED,
+        "evt-1", "task-1", "123456", AgentEventType.AGENT_FAILED,
         datetime.now(timezone.utc), "AgentTaskResult tool-dispatch failure",
         None, None, SalienceLevel.HIGH,
         {"parent_turn_id": "turn-1", "parent_event_id": "evt-parent"}, 1,
@@ -623,3 +641,154 @@ async def test_agent_needs_input_state_visible_after_owner_preempt(tmp_path):
     assert waiting[0].pending_question == "which city?"
 
     await store.close()
+
+
+# ── QQ delivery target resolution tests ──────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_agent_status_delivery_skips_non_numeric_qq_chat_id(caplog):
+    """Non-numeric chat_id with QQ channel: skip delivery, log invalid_qq_chat_id."""
+    from src.core.concurrent_bg_work.event_bus import AgentTaskResultEvent
+    from src.core.concurrent_bg_work.types import (
+        AgentEvent,
+        AgentEventType,
+        AgentResultDeliveryTarget,
+        AgentTaskSnapshot,
+        SalienceLevel,
+        TaskStatus,
+    )
+
+    brain = FakeBrain()
+    channel_manager = _FakeChannelManager()
+    # Remove kevin_id so resolution fails completely
+    channel_manager._kevin_id = ""
+    brain.channel_manager = channel_manager
+
+    loop = MainLoop(EventQueue(), brain=brain)
+    snapshot = AgentTaskSnapshot(
+        "task-1", "researcher", "test", TaskStatus.FAILED,
+        None, None, None, [], None, "failure", [],
+        SalienceLevel.HIGH, False, None,
+    )
+    triggering = AgentEvent(
+        "evt-1", "task-1", "chat", AgentEventType.AGENT_FAILED,
+        datetime.now(timezone.utc), "failure",
+        None, None, SalienceLevel.HIGH,
+        {"parent_turn_id": "turn-1", "parent_event_id": "evt-parent"}, 1,
+    )
+
+    caplog.set_level(logging.INFO, logger="lapwing.core.main_loop")
+    delivered = await loop._deliver_agent_status_event(
+        AgentTaskResultEvent(
+            task_id="task-1",
+            task_snapshot=snapshot,
+            triggering_event=triggering,
+            effective_salience=SalienceLevel.HIGH,
+            delivery_target=AgentResultDeliveryTarget.PARENT_TURN,
+        ),
+        AgentResultDeliveryTarget.PARENT_TURN,
+    )
+
+    assert delivered is False
+    assert channel_manager.sent == []
+    assert "reason=invalid_qq_chat_id" in caplog.text
+    assert "delivery_target=" in caplog.text
+    assert "channel=qq" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_agent_status_delivery_resolves_to_kevin_id_for_non_numeric_qq():
+    """Non-numeric chat_id on QQ resolves to kevin_id and delivers normally."""
+    from src.core.concurrent_bg_work.event_bus import AgentTaskResultEvent
+    from src.core.concurrent_bg_work.types import (
+        AgentEvent,
+        AgentEventType,
+        AgentResultDeliveryTarget,
+        AgentTaskSnapshot,
+        SalienceLevel,
+        TaskStatus,
+    )
+
+    brain = FakeBrain()
+    channel_manager = _FakeChannelManager()
+    channel_manager._kevin_id = "888"
+    brain.channel_manager = channel_manager
+
+    loop = MainLoop(EventQueue(), brain=brain)
+    snapshot = AgentTaskSnapshot(
+        "task-1", "researcher", "test", TaskStatus.FAILED,
+        None, None, None, [], None, "failure", [],
+        SalienceLevel.HIGH, False, None,
+    )
+    triggering = AgentEvent(
+        "evt-1", "task-1", "chat", AgentEventType.AGENT_FAILED,
+        datetime.now(timezone.utc), "failure",
+        None, None, SalienceLevel.HIGH,
+        {"parent_turn_id": "turn-1", "parent_event_id": "evt-parent"}, 1,
+    )
+
+    delivered = await loop._deliver_agent_status_event(
+        AgentTaskResultEvent(
+            task_id="task-1",
+            task_snapshot=snapshot,
+            triggering_event=triggering,
+            effective_salience=SalienceLevel.HIGH,
+            delivery_target=AgentResultDeliveryTarget.PARENT_TURN,
+        ),
+        AgentResultDeliveryTarget.PARENT_TURN,
+    )
+
+    assert delivered is True
+    # Should have sent to kevin_id "888", not "chat"
+    assert channel_manager.sent
+    assert channel_manager.sent[0][0] == "888"
+
+
+@pytest.mark.asyncio
+async def test_agent_status_delivered_false_does_not_mark_assistant_reply():
+    """When delivery returns False, ChatActivityTracker.mark_assistant_reply is not called."""
+    from unittest.mock import MagicMock
+
+    from src.core.concurrent_bg_work.event_bus import AgentTaskResultEvent
+    from src.core.concurrent_bg_work.types import (
+        AgentEvent,
+        AgentEventType,
+        AgentResultDeliveryTarget,
+        AgentTaskSnapshot,
+        SalienceLevel,
+        TaskStatus,
+    )
+
+    brain = FakeBrain()
+    channel_manager = _FakeChannelManager()
+    channel_manager._kevin_id = ""
+    brain.channel_manager = channel_manager
+
+    tracker = MagicMock()
+    loop = MainLoop(EventQueue(), brain=brain, chat_activity_tracker=tracker)
+    snapshot = AgentTaskSnapshot(
+        "task-1", "researcher", "test", TaskStatus.FAILED,
+        None, None, None, [], None, "failure", [],
+        SalienceLevel.HIGH, False, None,
+    )
+    triggering = AgentEvent(
+        "evt-1", "task-1", "chat", AgentEventType.AGENT_FAILED,
+        datetime.now(timezone.utc), "failure",
+        None, None, SalienceLevel.HIGH,
+        {"parent_turn_id": "turn-1", "parent_event_id": "evt-parent"}, 1,
+    )
+
+    delivered = await loop._deliver_agent_status_event(
+        AgentTaskResultEvent(
+            task_id="task-1",
+            task_snapshot=snapshot,
+            triggering_event=triggering,
+            effective_salience=SalienceLevel.HIGH,
+            delivery_target=AgentResultDeliveryTarget.PARENT_TURN,
+        ),
+        AgentResultDeliveryTarget.PARENT_TURN,
+    )
+
+    assert delivered is False
+    tracker.mark_assistant_reply.assert_not_called()

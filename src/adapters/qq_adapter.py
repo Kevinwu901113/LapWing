@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -83,6 +84,12 @@ class QQAdapter(BaseAdapter):
         self._echo_futures: dict[str, asyncio.Future] = {}
         self._message_dedup: dict[str, float] = {}
         self._connection_task: Optional[asyncio.Task] = None
+        self.last_raw_ws_message_at: float | None = None
+        self.last_post_event_at: float | None = None
+        self.last_echo_at: float | None = None
+        self.last_api_call_started_at: float | None = None
+        self.last_api_call_completed_at: float | None = None
+        self.api_call_timeout_count = 0
 
         # Group chat
         self._allowed_groups: set[str] = set(config.get("group_ids", []))
@@ -117,6 +124,10 @@ class QQAdapter(BaseAdapter):
 
     async def is_connected(self) -> bool:
         return self.ws is not None and self.ws.state == WsState.OPEN
+
+    @property
+    def pending_echo_count(self) -> int:
+        return len(self._echo_futures)
 
     async def send_text(self, chat_id: str, text: str) -> None:
         text = self._markdown_to_plain(text)
@@ -167,6 +178,7 @@ class QQAdapter(BaseAdapter):
                     self.ws = ws
                     delay = self._reconnect_delay
                     logger.info("QQ adapter 已连接")
+                    self._log_health_snapshot(reason="connected")
                     await self._listen(ws)
             except (websockets.ConnectionClosed, ConnectionRefusedError, OSError) as exc:
                 self.ws = None
@@ -176,23 +188,48 @@ class QQAdapter(BaseAdapter):
                         future.cancel()
                 self._echo_futures.clear()
                 if self._running:
-                    logger.warning("QQ 连接断开 (%s)，%ds 后重连", exc, delay)
+                    logger.warning(
+                        "connection_loop_disconnect layer=qq_adapter error=%s reconnect_delay=%s",
+                        exc,
+                        delay,
+                    )
+                    self._log_health_snapshot(reason="disconnect", level=logging.WARNING)
                     await asyncio.sleep(delay)
                     delay = min(delay * 2, self._max_reconnect_delay)
 
     async def _listen(self, ws) -> None:
-        async for raw_msg in ws:
-            try:
-                data = json.loads(raw_msg)
-                if "echo" in data:
-                    echo = data["echo"]
-                    future = self._echo_futures.get(echo)
-                    if future and not future.done():
-                        future.set_result(data)
-                elif "post_type" in data:
-                    await self._handle_event(data)
-            except json.JSONDecodeError:
-                logger.warning("QQ 收到无效 JSON: %s", raw_msg[:200])
+        try:
+            async for raw_msg in ws:
+                self.last_raw_ws_message_at = time.time()
+                logger.debug(
+                    "qq_raw_ws_message layer=qq_adapter pending_echo_count=%s",
+                    self.pending_echo_count,
+                )
+                try:
+                    data = json.loads(raw_msg)
+                    if "echo" in data:
+                        self.last_echo_at = time.time()
+                        echo = data["echo"]
+                        future = self._echo_futures.get(echo)
+                        if future and not future.done():
+                            future.set_result(data)
+                        else:
+                            logger.warning(
+                                "echo_without_future layer=qq_adapter echo=%s pending_echo_count=%s",
+                                echo,
+                                self.pending_echo_count,
+                            )
+                    elif "post_type" in data:
+                        self.last_post_event_at = time.time()
+                        await self._handle_event(data)
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "listen_json_decode_error layer=qq_adapter raw_preview=%s",
+                        str(raw_msg)[:200],
+                    )
+        finally:
+            logger.info("listen_loop_exit layer=qq_adapter")
+            self._log_health_snapshot(reason="listen_loop_exit")
 
     # ── 事件处理 ────────────────────────────────────────
 
@@ -209,12 +246,24 @@ class QQAdapter(BaseAdapter):
         message_type = event.get("message_type")
 
         if user_id == self.self_id:
+            self._log_message_drop(
+                message_type=message_type,
+                user_id=user_id,
+                message_id=message_id,
+                reason="self_message",
+            )
             return
 
         # 消息去重
         dedup_key = f"{user_id}:{message_id}"
         now = time.time()
         if dedup_key in self._message_dedup:
+            self._log_message_drop(
+                message_type=message_type,
+                user_id=user_id,
+                message_id=message_id,
+                reason="duplicate_message",
+            )
             return
         self._message_dedup[dedup_key] = now
         self._message_dedup = {k: v for k, v in self._message_dedup.items() if now - v < 60}
@@ -225,21 +274,57 @@ class QQAdapter(BaseAdapter):
         if message_type == "private":
             # Private: Kevin only (existing logic)
             if self.kevin_id and user_id != self.kevin_id:
+                self._log_message_drop(
+                    message_type=message_type,
+                    user_id=user_id,
+                    message_id=message_id,
+                    reason="private_user_id_mismatch",
+                )
                 return
             if not text and not image_urls:
+                self._log_message_drop(
+                    message_type=message_type,
+                    user_id=user_id,
+                    message_id=message_id,
+                    reason="empty_private_message",
+                )
                 return
-            asyncio.create_task(self._mark_as_read(user_id))
+            self._create_logged_task(
+                self._mark_as_read(user_id),
+                name="qq-mark-as-read",
+                context={
+                    "user_id": user_id,
+                    "message_id": message_id,
+                    "message_type": message_type,
+                },
+            )
             if self.on_message:
                 # 必须用 create_task 而非 await：on_message 内部会调用
                 # send_text → _call_api，后者需要 _listen 循环继续运转
                 # 来接收 echo 响应；若 await 则会死锁。
-                asyncio.create_task(self.on_message(
-                    chat_id=user_id,
-                    text=text,
-                    channel=ChannelType.QQ,
-                    raw_event=event,
-                    image_urls=image_urls,
-                ))
+                self._create_logged_task(
+                    self.on_message(
+                        chat_id=user_id,
+                        text=text,
+                        channel=ChannelType.QQ,
+                        raw_event=event,
+                        image_urls=image_urls,
+                    ),
+                    name="qq-on-message",
+                    context={
+                        "user_id": user_id,
+                        "message_id": message_id,
+                        "message_type": message_type,
+                    },
+                )
+            else:
+                self._log_message_drop(
+                    message_type=message_type,
+                    user_id=user_id,
+                    message_id=message_id,
+                    reason="missing_on_message",
+                )
+                return
 
         elif message_type == "group":
             group_id = str(event.get("group_id", ""))
@@ -267,7 +352,23 @@ class QQAdapter(BaseAdapter):
             if self._decider is None:
                 return
 
-            asyncio.create_task(self._evaluate_and_engage(ctx, group_msg))
+            self._create_logged_task(
+                self._evaluate_and_engage(ctx, group_msg),
+                name="qq-group-engagement",
+                context={
+                    "user_id": user_id,
+                    "message_id": message_id,
+                    "message_type": message_type,
+                    "group_id": group_id,
+                },
+            )
+        else:
+            self._log_message_drop(
+                message_type=message_type,
+                user_id=user_id,
+                message_id=message_id,
+                reason="unsupported_or_unhandled_message_type",
+            )
 
     async def _mark_as_read(self, user_id: str) -> None:
         """标记私聊消息已读。"""
@@ -503,7 +604,10 @@ class QQAdapter(BaseAdapter):
         try:
             numeric_id = int(user_id)
         except ValueError:
-            logger.warning("QQ user_id 非数字: %s", user_id)
+            logger.warning(
+                "QQ private send invalid user_id user_id=%s reason=non_numeric_user_id",
+                user_id[-8:],
+            )
             return {"status": "failed", "retcode": -3}
         return await self._call_api("send_private_msg", {
             "user_id": numeric_id,
@@ -515,7 +619,10 @@ class QQAdapter(BaseAdapter):
         try:
             numeric_id = int(user_id)
         except ValueError:
-            logger.warning("QQ user_id 非数字: %s", user_id)
+            logger.warning(
+                "QQ private send invalid user_id user_id=%s reason=non_numeric_user_id",
+                user_id[-8:],
+            )
             return {"status": "failed", "retcode": -3}
         return await self._call_api("send_private_msg", {
             "user_id": numeric_id,
@@ -581,18 +688,131 @@ class QQAdapter(BaseAdapter):
         request = {"action": action, "params": params, "echo": echo}
         future = asyncio.get_running_loop().create_future()
         self._echo_futures[echo] = future
+        self.last_api_call_started_at = time.time()
+        completed_at: float | None = None
 
         try:
             await self.ws.send(json.dumps(request))
             result = await asyncio.wait_for(future, timeout=timeout)
+            completed_at = time.time()
+            self.last_api_call_completed_at = completed_at
             return result
         except asyncio.TimeoutError:
-            logger.warning("QQ API 超时: %s", action)
+            self.api_call_timeout_count += 1
+            completed_at = time.time()
+            self.last_api_call_completed_at = completed_at
+            self._echo_futures.pop(echo, None)
+            logger.warning(
+                "api_call_timeout layer=qq_adapter action=%s timeout=%s timeout_count=%s",
+                action,
+                timeout,
+                self.api_call_timeout_count,
+            )
+            self._log_health_snapshot(
+                reason="api_call_timeout",
+                level=logging.WARNING,
+                action=action,
+            )
             return {"status": "failed", "retcode": -2}
         finally:
+            if completed_at is None:
+                self.last_api_call_completed_at = time.time()
             self._echo_futures.pop(echo, None)
 
     # ── 格式转换 ────────────────────────────────────────
+
+    def _safe_configured_kevin_id(self) -> dict[str, str | bool]:
+        if not self.kevin_id:
+            return {"present": False, "tail": "", "hash": ""}
+        return {
+            "present": True,
+            "tail": self.kevin_id[-4:],
+            "hash": hashlib.sha256(self.kevin_id.encode("utf-8")).hexdigest()[:8],
+        }
+
+    def _log_message_drop(
+        self,
+        *,
+        message_type: object,
+        user_id: str,
+        message_id: str,
+        reason: str,
+    ) -> None:
+        safe_id = self._safe_configured_kevin_id()
+        logger.info(
+            "qq_message_drop layer=qq_adapter message_type=%s user_id=%s message_id=%s "
+            "reason=%s configured_kevin_id_present=%s configured_kevin_id_tail=%s "
+            "configured_kevin_id_hash=%s",
+            message_type or "",
+            user_id,
+            message_id,
+            reason,
+            safe_id["present"],
+            safe_id["tail"],
+            safe_id["hash"],
+        )
+
+    def _create_logged_task(
+        self,
+        coro,
+        *,
+        name: str,
+        context: dict[str, object],
+    ) -> asyncio.Task:
+        task = asyncio.create_task(coro, name=name)
+
+        def _log_task_result(done: asyncio.Task) -> None:
+            try:
+                exc = done.exception()
+            except asyncio.CancelledError:
+                logger.debug(
+                    "qq_adapter_task_cancelled layer=qq_adapter task_name=%s context=%s",
+                    name,
+                    context,
+                )
+                return
+            if exc is None:
+                return
+            logger.error(
+                "qq_adapter_task_exception layer=qq_adapter task_name=%s context=%s",
+                name,
+                context,
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
+
+        task.add_done_callback(_log_task_result)
+        return task
+
+    def _age_seconds(self, timestamp: float | None) -> str:
+        if timestamp is None:
+            return "none"
+        return f"{max(0.0, time.time() - timestamp):.3f}"
+
+    def _log_health_snapshot(
+        self,
+        *,
+        reason: str,
+        level: int = logging.INFO,
+        action: str | None = None,
+    ) -> None:
+        connected = self.ws is not None and self.ws.state == WsState.OPEN
+        logger.log(
+            level,
+            "qq_adapter_health layer=qq_adapter reason=%s connected=%s pending_echo_count=%s "
+            "last_raw_ws_message_age=%s last_post_event_age=%s last_echo_age=%s "
+            "last_api_call_started_age=%s last_api_call_completed_age=%s "
+            "api_call_timeout_count=%s action=%s",
+            reason,
+            connected,
+            self.pending_echo_count,
+            self._age_seconds(self.last_raw_ws_message_at),
+            self._age_seconds(self.last_post_event_at),
+            self._age_seconds(self.last_echo_at),
+            self._age_seconds(self.last_api_call_started_at),
+            self._age_seconds(self.last_api_call_completed_at),
+            self.api_call_timeout_count,
+            action or "",
+        )
 
     def _markdown_to_plain(self, text: str) -> str:
         # 代码块必须在行内代码之前处理

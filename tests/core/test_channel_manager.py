@@ -149,3 +149,72 @@ async def test_send_to_owner_desktop_disconnected_falls_back():
     await mgr.send_to_owner("hi")
 
     assert qq.sent == [("222", "hi")]
+
+
+class TestResolveDeliveryTarget:
+    def test_numeric_qq_returns_as_is(self):
+        from src.core.channel_manager import ChannelManager
+
+        mgr = ChannelManager()
+        qq = FakeAdapter()
+        qq.config = {"kevin_id": "999"}
+        mgr.register(ChannelType.QQ, qq)
+
+        result = mgr.resolve_delivery_target(ChannelType.QQ, "123456")
+        assert result == "123456"
+
+    def test_non_numeric_qq_resolves_to_kevin_id(self):
+        from src.core.channel_manager import ChannelManager
+
+        mgr = ChannelManager()
+        qq = FakeAdapter()
+        qq.config = {"kevin_id": "999"}
+        mgr.register(ChannelType.QQ, qq)
+
+        result = mgr.resolve_delivery_target(ChannelType.QQ, "chat")
+        assert result == "999"
+
+    def test_non_numeric_qq_no_kevin_id_returns_none(self):
+        from src.core.channel_manager import ChannelManager
+
+        mgr = ChannelManager()
+        qq = FakeAdapter()
+        qq.config = {}
+        mgr.register(ChannelType.QQ, qq)
+
+        result = mgr.resolve_delivery_target(ChannelType.QQ, "chat")
+        assert result is None
+
+    def test_non_numeric_qq_non_numeric_kevin_id_returns_none(self):
+        from src.core.channel_manager import ChannelManager
+
+        mgr = ChannelManager()
+        qq = FakeAdapter()
+        qq.config = {"kevin_id": "not_a_number"}
+        mgr.register(ChannelType.QQ, qq)
+
+        result = mgr.resolve_delivery_target(ChannelType.QQ, "chat")
+        assert result is None
+
+    def test_qq_not_registered_returns_none_for_non_numeric(self):
+        from src.core.channel_manager import ChannelManager
+
+        mgr = ChannelManager()
+        # No QQ adapter registered
+        result = mgr.resolve_delivery_target(ChannelType.QQ, "chat")
+        assert result is None
+
+    def test_qq_not_registered_returns_as_is_for_numeric(self):
+        from src.core.channel_manager import ChannelManager
+
+        mgr = ChannelManager()
+        # No QQ adapter registered, but numeric is valid
+        result = mgr.resolve_delivery_target(ChannelType.QQ, "123456")
+        assert result == "123456"
+
+    def test_non_qq_channel_passes_through(self):
+        from src.core.channel_manager import ChannelManager
+
+        mgr = ChannelManager()
+        result = mgr.resolve_delivery_target(ChannelType.DESKTOP, "any-chat-id")
+        assert result == "any-chat-id"
