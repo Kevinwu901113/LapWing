@@ -376,6 +376,51 @@ class TestSendMessageIntegration:
         assert r2.success is False
         assert r2.payload["gate_decision"] == "deny"
 
+    async def test_failed_delivery_does_not_spend_proactive_budget(self):
+        from src.tools.personal_tools import _send_message
+        from src.tools.types import ToolExecutionContext, ToolExecutionRequest
+        from src.tools.shell_executor import ShellResult
+
+        gate = _gate(
+            datetime(2026, 1, 1, 14, 0),
+            max_per_day=1,
+            min_minutes_between=0,
+        )
+
+        class _FailingQQ:
+            async def send_private_message(self, qq_id, content):
+                raise RuntimeError("adapter down")
+
+        class _FakeChannelManager:
+            def get_adapter(self, name):
+                return _FailingQQ() if name == "qq" else None
+
+        async def _noop_shell(_):
+            return ShellResult(stdout="", stderr="", return_code=0)
+
+        ctx = ToolExecutionContext(
+            execute_shell=_noop_shell,
+            shell_default_cwd="/tmp",
+            services={
+                "channel_manager": _FakeChannelManager(),
+                "owner_qq_id": "12345",
+                "proactive_message_gate": gate,
+            },
+            auth_level=2,
+            runtime_profile="inner_tick",
+        )
+
+        result = await _send_message(
+            ToolExecutionRequest(
+                name="send_message",
+                arguments={"target": "kevin_qq", "content": "hello"},
+            ),
+            ctx,
+        )
+
+        assert result.success is False
+        assert gate.remaining_today() == 1
+
     async def test_inner_tick_denies_when_tracker_has_unanswered_user_message(self):
         from src.core.chat_activity import ChatActivityTracker
 

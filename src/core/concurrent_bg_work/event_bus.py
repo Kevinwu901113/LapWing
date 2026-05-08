@@ -122,6 +122,7 @@ class AgentEventBus:
         if self._should_notify_cognitive(event, task, effective):
             await self._push_cognitive(
                 event,
+                task,
                 effective,
                 delivery_target=delivery_target,
                 orphan=orphan,
@@ -197,12 +198,14 @@ class AgentEventBus:
     async def _push_cognitive(
         self,
         event: AgentEvent,
+        task,
         effective: SalienceLevel,
         *,
         delivery_target: AgentResultDeliveryTarget,
         orphan: bool,
         stale: bool,
     ) -> None:
+        self._attach_delivery_source(event, task)
         if self._cognitive_sink is not None:
             result = self._cognitive_sink.push(event, effective)
             if hasattr(result, "__await__"):
@@ -257,6 +260,16 @@ class AgentEventBus:
                 stale=stale,
                 priority=prio,
             ))
+
+    def _attach_delivery_source(self, event: AgentEvent, task) -> None:
+        payload = dict(event.payload or {})
+        if getattr(task, "chat_id", None):
+            payload.setdefault("delivery_chat_id", task.chat_id)
+        if getattr(task, "parent_turn_id", None):
+            payload.setdefault("parent_turn_id", task.parent_turn_id)
+        if getattr(task, "parent_event_id", None):
+            payload.setdefault("parent_event_id", task.parent_event_id)
+        event.payload = payload
 
     def _delivery_decision(
         self,

@@ -49,14 +49,18 @@ class DesktopChannelAdapter(BaseAdapter):
     async def send_text(self, chat_id: str, text: str) -> None:
         """向所有活跃桌面连接推送主动文本消息（保持旧协议格式）。"""
         dead = []
+        delivered = 0
         for cid, ws in list(self.connections.items()):
             try:
                 await ws.send_json({"type": "proactive", "content": text})
+                delivered += 1
             except Exception as exc:
                 logger.warning("Desktop 推送失败 [%s]: %s", cid, exc)
                 dead.append(cid)
         for cid in dead:
             self.connections.pop(cid, None)
+        if delivered == 0:
+            raise RuntimeError("Desktop 推送失败：没有连接成功接收消息")
 
     async def send_message(self, chat_id: str, message: RichMessage) -> None:
         """向所有活跃桌面连接推送富媒体消息（WebSocket 协议 v2）。
@@ -79,11 +83,15 @@ class DesktopChannelAdapter(BaseAdapter):
 
         payload = {"type": "message", "segments": ws_segments}
         dead = []
+        delivered = 0
         for cid, ws in list(self.connections.items()):
             try:
                 await ws.send_json(payload)
+                delivered += 1
             except Exception as exc:
                 logger.warning("Desktop 推送失败 [%s]: %s", cid, exc)
                 dead.append(cid)
         for cid in dead:
             self.connections.pop(cid, None)
+        if delivered == 0:
+            raise RuntimeError("Desktop 推送失败：没有连接成功接收消息")

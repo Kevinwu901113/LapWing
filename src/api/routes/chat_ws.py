@@ -150,15 +150,12 @@ async def websocket_chat(ws: WebSocket):
                     mgr.last_active_channel = ChannelType.DESKTOP
 
                 async def send_fn(text: str) -> None:
-                    try:
-                        await ws.send_json({"type": "interim", "content": text})
-                        tracker = _chat_activity_tracker or getattr(
-                            _brain, "_chat_activity_tracker_ref", None
-                        )
-                        if tracker is not None:
-                            tracker.mark_assistant_reply(chat_id, source="desktop_ws")
-                    except Exception:
-                        pass
+                    await ws.send_json({"type": "interim", "content": text})
+                    tracker = _chat_activity_tracker or getattr(
+                        _brain, "_chat_activity_tracker_ref", None
+                    )
+                    if tracker is not None:
+                        tracker.mark_assistant_reply(chat_id, source="desktop_ws")
 
                 async def typing_fn() -> None:
                     try:
@@ -188,7 +185,7 @@ async def websocket_chat(ws: WebSocket):
                     event_id = None
                     idempotency_key = None
                     try:
-                        from config.settings import get_settings
+                        from src.config import get_settings
                         flags = get_settings().concurrent_bg_work
                         if flags.enabled and flags.p1_ingress_correctness:
                             digest_source = f"desktop|{chat_id}|owner|{content}"

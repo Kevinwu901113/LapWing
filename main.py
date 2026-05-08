@@ -269,6 +269,217 @@ def handle_credential_command(args: argparse.Namespace) -> int:
     raise ValueError("未知 credential 子命令")
 
 
+async def handle_qq_model_command(chat_id: str, text: str, brain, send_fn) -> None:
+    """处理 QQ 的 /model 命令。"""
+    parts = text.strip().split(None, 1)
+    args = parts[1].strip() if len(parts) > 1 else ""
+    keyword = args.lower().split()[0] if args else ""
+    log = logging.getLogger("lapwing")
+
+    try:
+        if not args or keyword == "list":
+            options = brain.list_model_options()
+            status = brain.model_status(chat_id)
+            lines = ["可用模型："]
+            for o in options:
+                alias = str(o.get("alias") or "").strip()
+                ref = str(o.get("ref") or "").strip()
+                idx = o.get("index")
+                lines.append(f"{idx}. {alias + ' -> ' + ref if alias else ref}")
+            purposes = dict(status.get("purposes", {}) or {})
+            if purposes:
+                lines.append("")
+                for p in ("chat", "tool", "heartbeat"):
+                    d = purposes.get(p) or {}
+                    eff = str(d.get("effective") or "").strip()
+                    if eff:
+                        suffix = " (override)" if d.get("override") else ""
+                        lines.append(f"- {p}: {eff}{suffix}")
+            await send_fn("\n".join(lines))
+        elif keyword == "status":
+            status = brain.model_status(chat_id)
+            purposes = dict(status.get("purposes", {}) or {})
+            lines = ["模型状态："]
+            for p in ("chat", "tool", "heartbeat"):
+                d = purposes.get(p) or {}
+                lines.append(f"- {p}: {d.get('effective', '?')}")
+            await send_fn("\n".join(lines))
+        elif keyword == "default":
+            result = brain.reset_model(chat_id)
+            await send_fn(f"已恢复默认模型（清除 {result.get('cleared', 0)} 个覆盖）。")
+        else:
+            selector = args
+            if keyword == "switch":
+                selector = args.split(None, 1)[1] if " " in args else ""
+            result = brain.switch_model(chat_id, selector)
+            selected = dict(result.get("selected", {}) or {})
+            await send_fn(f"已切换：{selected.get('ref', args)}")
+    except ValueError as exc:
+        await send_fn(f"切换失败：{exc}")
+    except Exception as exc:
+        log.warning("[qq/model] %s", exc)
+        await send_fn("模型切换失败，请稍后再试。")
+
+
+async def handle_qq_message_for_container(
+    container,
+    *,
+    chat_id: str,
+    text: str,
+    channel,
+    raw_event: dict,
+    image_urls: list[str] | None = None,
+    model_command_handler=handle_qq_model_command,
+) -> None:
+    """QQ 消息进入 Brain 的桥接。Kept module-level so ingress can be tested."""
+    from src.adapters.base import ChannelType
+    from src.core.authority_gate import identify
+    from src.core.inbound import BusyInputMode
+
+    log = logging.getLogger("lapwing")
+    container.channel_manager.last_active_channel = channel
+    brain = container.brain
+
+    async def send_fn(reply_text: str) -> None:
+        await container.channel_manager.send(ChannelType.QQ, chat_id, reply_text)
+        tracker = getattr(container, "chat_activity_tracker", None)
+        if tracker is not None:
+            tracker.mark_assistant_reply(chat_id, source="qq_send_fn")
+
+    user_id = str(raw_event.get("user_id", ""))
+    auth_level = identify("qq", user_id)
+    qq_adp = container.channel_manager.adapters.get(ChannelType.QQ)
+    normalized = (
+        qq_adp.normalize_inbound(raw_event)
+        if qq_adp is not None and hasattr(qq_adp, "normalize_inbound")
+        else None
+    )
+    if normalized is None:
+        return
+
+    gate_decision = container.inbound_gate.evaluate(
+        normalized,
+        auth_level=int(auth_level),
+    )
+    if not gate_decision.accepted:
+        log.info(
+            "[qq/inbound] rejected chat_id=%s user_id=%s message_id=%s reason=%s",
+            normalized.chat_id,
+            normalized.user_id,
+            normalized.message_id,
+            gate_decision.reason,
+        )
+        return
+
+    from src.config import get_settings
+    concurrent_flags = get_settings().concurrent_bg_work
+    ingress_event_id = None
+    ingress_idempotency_key = None
+    if concurrent_flags.enabled and concurrent_flags.p1_ingress_correctness:
+        from src.core.concurrent_bg_work.ingress import IngressNormalizer
+        ingress = IngressNormalizer().normalize(normalized)
+        ingress_event_id = ingress.event_id
+        ingress_idempotency_key = ingress.idempotency_key
+
+    tracker = getattr(container, "chat_activity_tracker", None)
+    if tracker is not None:
+        tracker.mark_inbound_user_message(
+            normalized.chat_id,
+            user_id=normalized.user_id,
+            message_id=normalized.message_id,
+            event_id=ingress_event_id,
+            idempotency_key=ingress_idempotency_key,
+        )
+    log.info(
+        "[qq/inbound] accepted chat_id=%s user_id=%s message_id=%s event_id=%s idempotency_key=%s",
+        normalized.chat_id,
+        normalized.user_id,
+        normalized.message_id,
+        ingress_event_id or "",
+        ingress_idempotency_key or "",
+    )
+
+    intercept = container.command_intercept_layer.intercept(normalized)
+    if intercept.mode == BusyInputMode.COMMAND:
+        if intercept.command in {"model", "models"}:
+            await model_command_handler(chat_id, text, brain, send_fn)
+        else:
+            await send_fn("这个命令我现在不处理。")
+        return
+
+    session_state = "idle"
+    main_loop = getattr(container, "main_loop", None)
+    current = getattr(main_loop, "_current_task", None)
+    if current is not None and not current.done():
+        session_state = "running"
+    busy_decision = container.busy_session_controller.classify(
+        normalized,
+        session_state=session_state,
+        intercept=intercept,
+    )
+    if busy_decision.mode == BusyInputMode.STEER:
+        store = getattr(container, "steering_store", None)
+        if store is not None:
+            steering = container.busy_session_controller.steering_event_from_message(
+                normalized,
+                source_trust_level=getattr(auth_level, "name", str(auth_level)).lower(),
+            )
+            await store.add(steering)
+        if not (concurrent_flags.enabled and concurrent_flags.p1_ingress_correctness):
+            await send_fn("收到，我会在下一个安全边界处理这条修正。")
+            return
+    if busy_decision.mode == BusyInputMode.QUEUE:
+        log.info(
+            "[qq/inbound] busy input routed to EventQueue chat_id=%s message_id=%s",
+            normalized.chat_id,
+            normalized.message_id,
+        )
+
+    images: list[dict] | None = None
+    if image_urls:
+        qq_adp = container.channel_manager.adapters.get(ChannelType.QQ)
+        if qq_adp is not None:
+            downloaded = []
+            for url in image_urls:
+                img = await qq_adp._download_image_as_base64(url)
+                if img:
+                    downloaded.append(img)
+            if downloaded:
+                images = downloaded
+
+    async def typing_fn() -> None:
+        pass
+
+    async def noop_status(cid: str, t: str) -> None:
+        pass
+
+    from src.core.events import MessageEvent
+    event = MessageEvent.from_message(
+        chat_id=chat_id,
+        user_id=user_id,
+        text=text,
+        adapter="qq",
+        send_fn=send_fn,
+        auth_level=int(auth_level),
+        images=tuple(images) if images else (),
+        typing_fn=typing_fn,
+        status_callback=noop_status,
+        interaction_mode=busy_decision.mode.value,
+        source_message_id=normalized.message_id,
+        event_id=ingress_event_id,
+        idempotency_key=ingress_idempotency_key,
+    )
+    await container.event_queue.put(event)
+    log.info(
+        "[qq/inbound] enqueued chat_id=%s user_id=%s message_id=%s event_id=%s idempotency_key=%s",
+        chat_id,
+        user_id,
+        normalized.message_id,
+        ingress_event_id or "",
+        ingress_idempotency_key or "",
+    )
+
+
 def run_bot(logger: logging.Logger) -> int:
     import asyncio
     import signal
@@ -369,153 +580,14 @@ def run_bot(logger: logging.Logger) -> int:
             chat_id: str, text: str, channel, raw_event: dict,
             image_urls: list[str] | None = None,
         ) -> None:
-            """QQ 消息进入 Brain 的桥接。"""
-            container.channel_manager.last_active_channel = channel
-            brain = container.brain
-
-            async def send_fn(reply_text: str) -> None:
-                await container.channel_manager.send(ChannelType.QQ, chat_id, reply_text)
-                tracker = getattr(container, "chat_activity_tracker", None)
-                if tracker is not None:
-                    tracker.mark_assistant_reply(chat_id, source="qq_send_fn")
-
-            from src.core.authority_gate import identify
-            from src.core.inbound import BusyInputMode
-
-            user_id = str(raw_event.get("user_id", ""))
-            auth_level = identify("qq", user_id)
-            qq_adp = container.channel_manager.adapters.get(ChannelType.QQ)
-            normalized = (
-                qq_adp.normalize_inbound(raw_event)
-                if qq_adp is not None and hasattr(qq_adp, "normalize_inbound")
-                else None
-            )
-            if normalized is None:
-                return
-
-            gate_decision = container.inbound_gate.evaluate(
-                normalized,
-                auth_level=int(auth_level),
-            )
-            if not gate_decision.accepted:
-                logger.info(
-                    "[qq/inbound] rejected chat_id=%s user_id=%s message_id=%s reason=%s",
-                    normalized.chat_id,
-                    normalized.user_id,
-                    normalized.message_id,
-                    gate_decision.reason,
-                )
-                return
-            from config.settings import get_settings
-            concurrent_flags = get_settings().concurrent_bg_work
-            ingress_event_id = None
-            ingress_idempotency_key = None
-            if concurrent_flags.enabled and concurrent_flags.p1_ingress_correctness:
-                from src.core.concurrent_bg_work.ingress import IngressNormalizer
-                ingress = IngressNormalizer().normalize(normalized)
-                ingress_event_id = ingress.event_id
-                ingress_idempotency_key = ingress.idempotency_key
-
-            tracker = getattr(container, "chat_activity_tracker", None)
-            if tracker is not None:
-                tracker.mark_inbound_user_message(
-                    normalized.chat_id,
-                    user_id=normalized.user_id,
-                    message_id=normalized.message_id,
-                    event_id=ingress_event_id,
-                    idempotency_key=ingress_idempotency_key,
-                )
-            logger.info(
-                "[qq/inbound] accepted chat_id=%s user_id=%s message_id=%s event_id=%s idempotency_key=%s",
-                normalized.chat_id,
-                normalized.user_id,
-                normalized.message_id,
-                ingress_event_id or "",
-                ingress_idempotency_key or "",
-            )
-
-            intercept = container.command_intercept_layer.intercept(normalized)
-            if intercept.mode == BusyInputMode.COMMAND:
-                if intercept.command in {"model", "models"}:
-                    await _qq_cmd_model(chat_id, text, brain, send_fn)
-                else:
-                    await send_fn("这个命令我现在不处理。")
-                return
-
-            session_state = "idle"
-            main_loop = getattr(container, "main_loop", None)
-            current = getattr(main_loop, "_current_task", None)
-            if current is not None and not current.done():
-                session_state = "running"
-            busy_decision = container.busy_session_controller.classify(
-                normalized,
-                session_state=session_state,
-                intercept=intercept,
-            )
-            if busy_decision.mode == BusyInputMode.STEER:
-                store = getattr(container, "steering_store", None)
-                if store is not None:
-                    steering = container.busy_session_controller.steering_event_from_message(
-                        normalized,
-                        source_trust_level=getattr(auth_level, "name", str(auth_level)).lower(),
-                    )
-                    await store.add(steering)
-                if not (concurrent_flags.enabled and concurrent_flags.p1_ingress_correctness):
-                    await send_fn("收到，我会在下一个安全边界处理这条修正。")
-                    return
-            if busy_decision.mode == BusyInputMode.QUEUE:
-                logger.info(
-                    "[qq/inbound] busy input routed to EventQueue chat_id=%s message_id=%s",
-                    normalized.chat_id,
-                    normalized.message_id,
-                )
-
-            # 图片下载转 base64（QQ CDN URL 有时效性，需在调用 LLM 前下载）
-            images: list[dict] | None = None
-            if image_urls:
-                qq_adp = container.channel_manager.adapters.get(ChannelType.QQ)
-                if qq_adp is not None:
-                    downloaded = []
-                    for url in image_urls:
-                        img = await qq_adp._download_image_as_base64(url)
-                        if img:
-                            downloaded.append(img)
-                    if downloaded:
-                        images = downloaded
-
-            async def typing_fn() -> None:
-                pass  # QQ 无 typing indicator
-
-            async def noop_status(cid: str, t: str) -> None:
-                pass
-
-            # v2.0 Step 4: route through MainLoop's EventQueue instead
-            # of calling brain directly. Adapters are now event producers,
-            # MainLoop is the sole consumer.
-            from src.core.events import MessageEvent
-            event = MessageEvent.from_message(
+            await handle_qq_message_for_container(
+                container,
                 chat_id=chat_id,
-                user_id=user_id,
                 text=text,
-                adapter="qq",
-                send_fn=send_fn,
-                auth_level=int(auth_level),
-                images=tuple(images) if images else (),
-                typing_fn=typing_fn,
-                status_callback=noop_status,
-                interaction_mode=busy_decision.mode.value,
-                source_message_id=normalized.message_id,
-                event_id=ingress_event_id,
-                idempotency_key=ingress_idempotency_key,
-            )
-            await container.event_queue.put(event)
-            logger.info(
-                "[qq/inbound] enqueued chat_id=%s user_id=%s message_id=%s event_id=%s idempotency_key=%s",
-                chat_id,
-                user_id,
-                normalized.message_id,
-                ingress_event_id or "",
-                ingress_idempotency_key or "",
+                channel=channel,
+                raw_event=raw_event,
+                image_urls=image_urls,
+                model_command_handler=_qq_cmd_model,
             )
 
         qq_adapter = QQAdapter(config=qq_config, on_message=_qq_on_message)

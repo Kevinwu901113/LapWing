@@ -253,7 +253,30 @@ class TestPrivateMessageObservability:
 
         assert "qq_adapter_task_exception" in caplog.text
         assert "task_name=qq-on-message" in caplog.text
+        assert "exception_class=RuntimeError" in caplog.text
         assert "RuntimeError: boom" in caplog.text
+        assert "qq_adapter_health layer=qq_adapter reason=callback_exception" in caplog.text
+        assert adapter.callback_exception_count == 1
+
+    async def test_call_api_ws_not_open_logs_health_snapshot(self, caplog):
+        adapter = _make_adapter()
+        caplog.set_level(logging.WARNING, logger="lapwing.adapters.qq_adapter")
+
+        result = await adapter._call_api("send_private_msg", {}, timeout=0.01)
+
+        assert result == {"status": "failed", "retcode": -1}
+        assert "api_call_ws_not_open layer=qq_adapter action=send_private_msg" in caplog.text
+        assert "qq_adapter_health layer=qq_adapter reason=api_call_ws_not_open" in caplog.text
+
+    async def test_send_text_logs_non_ok_result_before_raising(self, caplog):
+        adapter = _make_adapter()
+        adapter._send_private_msg = AsyncMock(return_value={"status": "failed", "retcode": -7})
+        caplog.set_level(logging.WARNING, logger="lapwing.adapters.qq_adapter")
+
+        with pytest.raises(RuntimeError, match="retcode=-7"):
+            await adapter.send_text("200", "hello")
+
+        assert "qq_send_failure layer=qq_adapter action=send_private_msg retcode=-7" in caplog.text
 
     async def test_call_api_timeout_logs_and_increments_counter(self, caplog):
         class OpenWs:

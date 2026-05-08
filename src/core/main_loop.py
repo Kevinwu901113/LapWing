@@ -22,6 +22,7 @@ behaviour without depending on brain wiring.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import time
 import uuid
@@ -87,6 +88,10 @@ class MainLoop:
         "这次查询卡住了，可能是工具调度或外部检索异常。"
         "我先停止这次查询；如果你还需要，我可以不用实时搜索，"
         "直接按已有信息给你一个保守建议。"
+    )
+    FOREGROUND_EXCEPTION_REPLY = (
+        "这次处理时内部出错了，不是你的问题。"
+        "我已经停下这轮任务；你可以直接重发一句，我会重新处理。"
     )
 
     def __init__(
@@ -486,18 +491,53 @@ class MainLoop:
             )
             raise
         except Exception as exc:
-            logger.exception("think_conversational failed for %s", event.chat_id)
+            logger.exception(
+                "think_conversational failed for chat_id=%s user_id=%s event_id=%s "
+                "turn_id=%s message_id=%s",
+                event.chat_id,
+                event.user_id,
+                event.event_id or "",
+                turn_id,
+                event.source_message_id or "",
+            )
+            delivered = await self._send_user_visible_status(
+                event,
+                self.FOREGROUND_EXCEPTION_REPLY,
+                source="foreground_exception",
+            )
+            terminal_status = (
+                "failed_with_user_visible_error"
+                if delivered
+                else "failed_without_user_visible_error"
+            )
             if event.done_future is not None and not event.done_future.done():
-                event.done_future.set_exception(exc)
+                if delivered:
+                    event.done_future.set_result(self.FOREGROUND_EXCEPTION_REPLY)
+                else:
+                    event.done_future.set_exception(exc)
             for f in coalesced_futures:
                 if not f.done():
-                    f.set_exception(exc)
+                    if delivered:
+                        f.set_result(self.FOREGROUND_EXCEPTION_REPLY)
+                    else:
+                        f.set_exception(exc)
             if tracker is not None:
                 tracker.mark_turn_terminal(
                     event.chat_id,
                     turn_id=turn_id,
-                    status="failed",
+                    status=terminal_status,
                 )
+            logger.info(
+                "foreground_exception_recovery chat_id=%s user_id=%s event_id=%s "
+                "turn_id=%s message_id=%s delivered=%s terminal_status=%s",
+                event.chat_id,
+                event.user_id,
+                event.event_id or "",
+                turn_id,
+                event.source_message_id or "",
+                delivered,
+                terminal_status,
+            )
         finally:
             if self._current_task is task:
                 self._current_task = None
@@ -630,25 +670,18 @@ class MainLoop:
             await self._cancel_in_flight(f"operator:{event.reason}")
 
     async def _deliver_agent_status_event(self, event: Event, delivery_target: str) -> bool:
-        if bool(getattr(event, "orphan", False)) or bool(getattr(event, "stale", False)):
-            logger.info(
-                "agent_task_result_delivery_skipped task_id=%s delivery_target=%s orphan=%s stale=%s",
-                getattr(event, "task_id", ""),
-                delivery_target,
-                bool(getattr(event, "orphan", False)),
-                bool(getattr(event, "stale", False)),
-            )
-            return False
-
         triggering = getattr(event, "triggering_event", None)
-        raw_chat_id = str(getattr(triggering, "chat_id", "") or "")
-        if not raw_chat_id:
-            logger.info(
-                "agent_task_result_delivery_skipped task_id=%s delivery_target=%s reason=missing_chat_id",
-                getattr(event, "task_id", ""),
-                delivery_target,
-            )
-            return False
+        triggering_payload = getattr(triggering, "payload", None) or {}
+        raw_chat_id = str(
+            triggering_payload.get("delivery_chat_id")
+            or getattr(triggering, "chat_id", "")
+            or ""
+        )
+        parent_turn_present = bool(triggering_payload.get("parent_turn_id"))
+        parent_event_present = bool(triggering_payload.get("parent_event_id"))
+        raw_tail, raw_hash = _safe_tail_hash(raw_chat_id)
+        orphan = bool(getattr(event, "orphan", False))
+        stale = bool(getattr(event, "stale", False))
 
         from src.adapters.base import ChannelType
 
@@ -657,32 +690,77 @@ class MainLoop:
         if channel is None:
             channel = ChannelType.QQ
 
+        if orphan or stale:
+            logger.info(
+                "agent_task_result_delivery_skipped task_id=%s delivery_target=%s "
+                "raw_chat_id_tail=%s raw_chat_id_hash=%s channel=%s "
+                "parent_turn_id_present=%s parent_event_id_present=%s orphan=%s stale=%s "
+                "reason=orphan_or_stale",
+                getattr(event, "task_id", ""),
+                delivery_target,
+                raw_tail,
+                raw_hash,
+                channel.value,
+                parent_turn_present,
+                parent_event_present,
+                orphan,
+                stale,
+            )
+            return False
+
+        if not raw_chat_id:
+            logger.info(
+                "agent_task_result_delivery_skipped task_id=%s delivery_target=%s "
+                "parent_turn_id_present=%s parent_event_id_present=%s orphan=%s stale=%s "
+                "reason=missing_chat_id",
+                getattr(event, "task_id", ""),
+                delivery_target,
+                parent_turn_present,
+                parent_event_present,
+                orphan,
+                stale,
+            )
+            return False
+
         # Only agent_user_status / owner_status purposes may fall back from a
         # non-numeric QQ chat_id to the configured owner QQ id.  Require a
         # recognised delivery target and a parent identifier in the triggering
         # event payload — otherwise the delivery target is ambiguous.
         if delivery_target in ("parent_turn", "chat_status"):
-            triggering_payload = getattr(triggering, "payload", None) or {}
-            if triggering_payload.get("parent_turn_id") or triggering_payload.get("parent_event_id"):
+            if parent_turn_present or parent_event_present:
                 purpose = "agent_user_status"
             else:
                 logger.info(
                     "agent_task_result_delivery_skipped task_id=%s delivery_target=%s "
-                    "raw_chat_id=%s channel=%s reason=invalid_or_ambiguous_delivery_target",
+                    "raw_chat_id_tail=%s raw_chat_id_hash=%s channel=%s "
+                    "parent_turn_id_present=%s parent_event_id_present=%s orphan=%s stale=%s "
+                    "reason=invalid_or_ambiguous_delivery_target",
                     getattr(event, "task_id", ""),
                     delivery_target,
-                    raw_chat_id[-8:],
+                    raw_tail,
+                    raw_hash,
                     channel.value,
+                    parent_turn_present,
+                    parent_event_present,
+                    orphan,
+                    stale,
                 )
                 return False
         else:
             logger.info(
                 "agent_task_result_delivery_skipped task_id=%s delivery_target=%s "
-                "raw_chat_id=%s channel=%s reason=invalid_or_ambiguous_delivery_target",
+                "raw_chat_id_tail=%s raw_chat_id_hash=%s channel=%s "
+                "parent_turn_id_present=%s parent_event_id_present=%s orphan=%s stale=%s "
+                "reason=invalid_or_ambiguous_delivery_target",
                 getattr(event, "task_id", ""),
                 delivery_target,
-                raw_chat_id[-8:],
+                raw_tail,
+                raw_hash,
                 channel.value,
+                parent_turn_present,
+                parent_event_present,
+                orphan,
+                stale,
             )
             return False
 
@@ -694,11 +772,18 @@ class MainLoop:
         if chat_id is None:
             logger.info(
                 "agent_task_result_delivery_skipped task_id=%s delivery_target=%s "
-                "raw_chat_id=%s channel=%s reason=invalid_qq_chat_id",
+                "raw_chat_id_tail=%s raw_chat_id_hash=%s channel=%s "
+                "parent_turn_id_present=%s parent_event_id_present=%s orphan=%s stale=%s "
+                "reason=invalid_qq_chat_id",
                 getattr(event, "task_id", ""),
                 delivery_target,
-                raw_chat_id[-8:],
+                raw_tail,
+                raw_hash,
                 channel.value,
+                parent_turn_present,
+                parent_event_present,
+                orphan,
+                stale,
             )
             return False
 
@@ -709,17 +794,6 @@ class MainLoop:
         async def _send(text_to_send: str) -> None:
             if channel_manager is None:
                 raise RuntimeError("channel_manager unavailable for agent status delivery")
-            get_adapter = getattr(channel_manager, "get_adapter", None)
-            adapter = get_adapter(channel) if callable(get_adapter) else None
-            if adapter is not None and hasattr(adapter, "is_connected"):
-                connected = await adapter.is_connected()
-                if connected:
-                    await channel_manager.send(channel, chat_id, text_to_send)
-                    return
-            send_to_owner = getattr(channel_manager, "send_to_owner", None)
-            if callable(send_to_owner):
-                await send_to_owner(text_to_send, prefer_channel=channel)
-                return
             await channel_manager.send(channel, chat_id, text_to_send)
 
         from src.core.system_send import send_system_message
@@ -938,6 +1012,12 @@ def _agent_status_text(event: Event) -> str:
         return f"后台任务进展：{detail}{suffix}"
 
     return f"后台任务状态更新：{summary}{suffix}" if summary else ""
+
+
+def _safe_tail_hash(value: str) -> tuple[str, str]:
+    if not value:
+        return "", ""
+    return value[-8:], hashlib.sha256(value.encode("utf-8")).hexdigest()[:8]
 
 
 def _foreground_turn_timeout_seconds() -> int:

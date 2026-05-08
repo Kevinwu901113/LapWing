@@ -153,6 +153,7 @@ class ProactiveMessageGate:
         category: str | None = None,
         urgent: bool = False,
         context: ProactiveGateContext | None = None,
+        reserve: bool = True,
     ) -> ProactiveGateDecision:
         """Decide whether a proactive send may proceed right now.
 
@@ -196,6 +197,7 @@ class ProactiveMessageGate:
                 decision,
                 urgent=True,
                 target_chat_id=context.target_chat_id if context else None,
+                record_bypass=reserve,
             )
             return decision
 
@@ -266,7 +268,8 @@ class ProactiveMessageGate:
                 urgent=False,
                 target_chat_id=context.target_chat_id if context else None,
             )
-            self._history.append(now)
+            if reserve:
+                self._history.append(now)
             return decision
 
     def record_send(self, when: datetime | None = None) -> None:
@@ -292,6 +295,7 @@ class ProactiveMessageGate:
         *,
         urgent: bool,
         target_chat_id: str | None = None,
+        record_bypass: bool = True,
     ) -> None:
         # Log every decision — auditability is part of the contract
         # (commit 9 builds on this with a structured PROACTIVE_MESSAGE_DECISION
@@ -300,7 +304,7 @@ class ProactiveMessageGate:
             "[proactive_gate] decision=%s urgent=%s reason=%s target_chat_id=%s",
             decision.decision, urgent, decision.reason, target_chat_id or "",
         )
-        if decision.bypassed and self.allow_urgent_bypass:
+        if decision.bypassed and self.allow_urgent_bypass and record_bypass:
             # Urgent bypass spends budget too — keeps the cap honest if the
             # LLM tries to backdoor by always claiming urgency.
             self._history.append(self._clock())

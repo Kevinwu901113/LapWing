@@ -3,6 +3,7 @@
 import pytest
 
 from src.adapters.base import BaseAdapter, ChannelType
+from src.models.message import RichMessage
 
 
 class FakeAdapter(BaseAdapter):
@@ -63,6 +64,93 @@ async def test_send_to_channel():
     mgr.register(ChannelType.QQ, adapter)
     await mgr.send(ChannelType.QQ, "123", "hello")
     assert adapter.sent == [("123", "hello")]
+
+
+@pytest.mark.asyncio
+async def test_send_missing_adapter_raises_channel_operation_error():
+    from src.core.channel_manager import ChannelManager, ChannelOperationError
+
+    mgr = ChannelManager()
+
+    with pytest.raises(ChannelOperationError) as exc:
+        await mgr.send(ChannelType.QQ, "123", "hello")
+
+    assert exc.value.payload["safe_details"]["reason"] == "adapter_missing"
+
+
+@pytest.mark.asyncio
+async def test_send_disconnected_adapter_raises_channel_operation_error():
+    from src.core.channel_manager import ChannelManager, ChannelOperationError
+
+    mgr = ChannelManager()
+    adapter = FakeAdapter()
+    adapter._connected = False
+    mgr.register(ChannelType.QQ, adapter)
+
+    with pytest.raises(ChannelOperationError) as exc:
+        await mgr.send(ChannelType.QQ, "123", "hello")
+
+    assert exc.value.payload["safe_details"]["reason"] == "adapter_disconnected"
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_send_message_missing_adapter_raises_channel_operation_error():
+    from src.core.channel_manager import ChannelManager, ChannelOperationError
+
+    mgr = ChannelManager()
+
+    with pytest.raises(ChannelOperationError) as exc:
+        await mgr.send_message(ChannelType.QQ, "123", RichMessage.from_text("hello"))
+
+    assert exc.value.payload["safe_details"]["reason"] == "adapter_missing"
+
+
+@pytest.mark.asyncio
+async def test_send_message_disconnected_adapter_raises_channel_operation_error():
+    from src.core.channel_manager import ChannelManager, ChannelOperationError
+
+    mgr = ChannelManager()
+    adapter = FakeAdapter()
+    adapter._connected = False
+    mgr.register(ChannelType.QQ, adapter)
+
+    with pytest.raises(ChannelOperationError) as exc:
+        await mgr.send_message(ChannelType.QQ, "123", RichMessage.from_text("hello"))
+
+    assert exc.value.payload["safe_details"]["reason"] == "adapter_disconnected"
+    assert adapter.sent == []
+
+
+@pytest.mark.asyncio
+async def test_send_message_connected_adapter_sends():
+    from src.core.channel_manager import ChannelManager
+
+    mgr = ChannelManager()
+    adapter = FakeAdapter()
+    mgr.register(ChannelType.QQ, adapter)
+
+    await mgr.send_message(ChannelType.QQ, "123", RichMessage.from_text("hello"))
+
+    assert adapter.sent == [("123", "hello")]
+
+
+@pytest.mark.asyncio
+async def test_send_disabled_route_still_raises_existing_reason():
+    from src.core.channel_manager import ChannelManager, ChannelOperationError
+
+    mgr = ChannelManager()
+    adapter = FakeAdapter()
+    mgr.register(ChannelType.QQ, adapter)
+    mgr.disabled_routes.add(("qq", "private"))
+
+    with pytest.raises(ChannelOperationError) as exc:
+        await mgr.send(ChannelType.QQ, "123", "hello")
+
+    assert (
+        exc.value.payload["safe_details"]["reason"]
+        == "adapter route disabled by capability validation"
+    )
 
 
 @pytest.mark.asyncio

@@ -169,9 +169,18 @@ class FakeBrain:
         return "", None, False
 
 
+class FailingBrain(FakeBrain):
+    async def think_conversational(self, **kw):
+        self.calls.append(kw)
+        raise RuntimeError("brain boom")
+
+
 class _FakeAdapter:
+    def __init__(self, connected: bool = True):
+        self.connected = connected
+
     async def is_connected(self):
-        return True
+        return self.connected
 
 
 class _FakeChannelManager:
@@ -204,6 +213,13 @@ class _FakeChannelManager:
         return raw_chat_id
 
     async def send(self, _channel, chat_id, text):
+        if not await self.adapter.is_connected():
+            from src.core.channel_manager import ChannelOperationError, make_channel_error
+            raise ChannelOperationError(make_channel_error(
+                channel="qq",
+                operation="send_private",
+                reason="adapter_disconnected",
+            ))
         self.sent.append((chat_id, text))
 
     async def send_to_owner(self, text, prefer_channel=None):
@@ -346,6 +362,63 @@ async def test_foreground_user_turn_timeout_sends_recovery_reply():
     await loop.stop()
     await q.put(InnerTickEvent.make())
     await asyncio.wait_for(runner, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_foreground_exception_sends_user_visible_fallback_to_all_futures():
+    from src.core.chat_activity import ChatActivityTracker
+
+    q = EventQueue()
+    brain = FailingBrain()
+    tracker = ChatActivityTracker()
+    sent: list[str] = []
+    done = asyncio.get_event_loop().create_future()
+    coalesced_done = asyncio.get_event_loop().create_future()
+
+    async def send_fn(text: str):
+        sent.append(text)
+
+    await q.put(_make_owner_event(text="补一句", send_fn=send_fn, done_future=coalesced_done))
+    loop = MainLoop(q, brain=brain, chat_activity_tracker=tracker)
+    loop.OWNER_COALESCE_SECONDS = 0.01
+
+    await loop._handle_message(_make_owner_event(text="会炸", send_fn=send_fn, done_future=done))
+
+    assert sent == [MainLoop.FOREGROUND_EXCEPTION_REPLY]
+    assert done.result() == MainLoop.FOREGROUND_EXCEPTION_REPLY
+    assert coalesced_done.result() == MainLoop.FOREGROUND_EXCEPTION_REPLY
+    snapshot = tracker.snapshot("kev")
+    assert snapshot.last_terminal_status == "failed_with_user_visible_error"
+    assert snapshot.has_unanswered_user_message is False
+
+
+@pytest.mark.asyncio
+async def test_foreground_exception_failed_fallback_keeps_user_unanswered(caplog):
+    from src.core.chat_activity import ChatActivityTracker
+
+    q = EventQueue()
+    brain = FailingBrain()
+    tracker = ChatActivityTracker()
+    done = asyncio.get_event_loop().create_future()
+    attempts: list[str] = []
+
+    async def send_fn(text: str):
+        attempts.append(text)
+        raise RuntimeError("channel down")
+
+    loop = MainLoop(q, brain=brain, chat_activity_tracker=tracker)
+    loop.OWNER_COALESCE_SECONDS = 0.01
+    caplog.set_level(logging.WARNING, logger="lapwing.core.system_send")
+
+    await loop._handle_message(_make_owner_event(text="会炸", send_fn=send_fn, done_future=done))
+
+    assert attempts == [MainLoop.FOREGROUND_EXCEPTION_REPLY]
+    with pytest.raises(RuntimeError, match="brain boom"):
+        await done
+    snapshot = tracker.snapshot("kev")
+    assert snapshot.last_terminal_status == "failed_without_user_visible_error"
+    assert snapshot.has_unanswered_user_message is True
+    assert "system_send foreground_exception 投递失败" in caplog.text
 
 
 @pytest.mark.asyncio
@@ -793,6 +866,54 @@ async def test_agent_status_delivered_false_does_not_mark_assistant_reply():
     )
 
     assert delivered is False
+    tracker.mark_assistant_reply.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_agent_status_adapter_disconnected_returns_false_and_does_not_mark_reply():
+    from unittest.mock import MagicMock
+
+    from src.core.concurrent_bg_work.event_bus import AgentTaskResultEvent
+    from src.core.concurrent_bg_work.types import (
+        AgentEvent,
+        AgentEventType,
+        AgentResultDeliveryTarget,
+        AgentTaskSnapshot,
+        SalienceLevel,
+        TaskStatus,
+    )
+
+    brain = FakeBrain()
+    channel_manager = _FakeChannelManager()
+    channel_manager.adapter.connected = False
+    brain.channel_manager = channel_manager
+    tracker = MagicMock()
+    loop = MainLoop(EventQueue(), brain=brain, chat_activity_tracker=tracker)
+    snapshot = AgentTaskSnapshot(
+        "task-1", "researcher", "test", TaskStatus.FAILED,
+        None, None, None, [], None, "failure", [],
+        SalienceLevel.HIGH, False, None,
+    )
+    triggering = AgentEvent(
+        "evt-1", "task-1", "123456", AgentEventType.AGENT_FAILED,
+        datetime.now(timezone.utc), "failure",
+        None, None, SalienceLevel.HIGH,
+        {"parent_turn_id": "turn-1"}, 1,
+    )
+
+    delivered = await loop._deliver_agent_status_event(
+        AgentTaskResultEvent(
+            task_id="task-1",
+            task_snapshot=snapshot,
+            triggering_event=triggering,
+            effective_salience=SalienceLevel.HIGH,
+            delivery_target=AgentResultDeliveryTarget.PARENT_TURN,
+        ),
+        AgentResultDeliveryTarget.PARENT_TURN,
+    )
+
+    assert delivered is False
+    assert channel_manager.sent == []
     tracker.mark_assistant_reply.assert_not_called()
 
 

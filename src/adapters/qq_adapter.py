@@ -90,6 +90,8 @@ class QQAdapter(BaseAdapter):
         self.last_api_call_started_at: float | None = None
         self.last_api_call_completed_at: float | None = None
         self.api_call_timeout_count = 0
+        self.callback_exception_count = 0
+        self.last_callback_exception_at: float | None = None
 
         # Group chat
         self._allowed_groups: set[str] = set(config.get("group_ids", []))
@@ -134,12 +136,14 @@ class QQAdapter(BaseAdapter):
         if len(text) <= MAX_QQ_MSG_LENGTH:
             result = await self._send_private_msg(chat_id, text)
             if result.get("status") != "ok":
+                self._log_send_failure("send_private_msg", chat_id, result)
                 raise RuntimeError(f"QQ 消息发送失败: retcode={result.get('retcode')}")
         else:
             chunks = self._split_text(text, MAX_QQ_MSG_LENGTH)
             for chunk in chunks:
                 result = await self._send_private_msg(chat_id, chunk)
                 if result.get("status") != "ok":
+                    self._log_send_failure("send_private_msg", chat_id, result)
                     raise RuntimeError(f"QQ 消息发送失败: retcode={result.get('retcode')}")
                 await asyncio.sleep(0.5)
 
@@ -603,10 +607,13 @@ class QQAdapter(BaseAdapter):
     async def _send_private_msg(self, user_id: str, text: str) -> dict:
         try:
             numeric_id = int(user_id)
-        except ValueError:
+        except (TypeError, ValueError):
+            tail, digest = self._safe_identifier(user_id)
             logger.warning(
-                "QQ private send invalid user_id user_id=%s reason=non_numeric_user_id",
-                user_id[-8:],
+                "QQ private send invalid user_id user_id_tail=%s user_id_hash=%s "
+                "reason=non_numeric_user_id",
+                tail,
+                digest,
             )
             return {"status": "failed", "retcode": -3}
         return await self._call_api("send_private_msg", {
@@ -618,10 +625,13 @@ class QQAdapter(BaseAdapter):
         """发送由调用方预构建的消息段到私聊。"""
         try:
             numeric_id = int(user_id)
-        except ValueError:
+        except (TypeError, ValueError):
+            tail, digest = self._safe_identifier(user_id)
             logger.warning(
-                "QQ private send invalid user_id user_id=%s reason=non_numeric_user_id",
-                user_id[-8:],
+                "QQ private send invalid user_id user_id_tail=%s user_id_hash=%s "
+                "reason=non_numeric_user_id",
+                tail,
+                digest,
             )
             return {"status": "failed", "retcode": -3}
         return await self._call_api("send_private_msg", {
@@ -646,6 +656,7 @@ class QQAdapter(BaseAdapter):
         if segments:
             result = await self._send_private_msg_segments(chat_id, segments)
             if result.get("status") != "ok":
+                self._log_send_failure("send_private_msg", chat_id, result)
                 raise RuntimeError(f"QQ 消息发送失败: retcode={result.get('retcode')}")
 
     async def send_reply(self, chat_id: str, text: str, reply_to_message_id: str) -> None:
@@ -655,6 +666,7 @@ class QQAdapter(BaseAdapter):
         segments.extend(self._build_message_segments(text_plain))
         result = await self._send_private_msg_segments(chat_id, segments)
         if result.get("status") != "ok":
+            self._log_send_failure("send_private_msg", chat_id, result)
             raise RuntimeError(f"QQ 消息发送失败: retcode={result.get('retcode')}")
 
     async def poke(self, user_id: str) -> None:
@@ -682,6 +694,19 @@ class QQAdapter(BaseAdapter):
 
     async def _call_api(self, action: str, params: dict, timeout: float = 30.0) -> dict:
         if not self.ws or not self.ws.state == WsState.OPEN:
+            now = time.time()
+            self.last_api_call_started_at = now
+            self.last_api_call_completed_at = now
+            logger.warning(
+                "api_call_ws_not_open layer=qq_adapter action=%s pending_echo_count=%s",
+                action,
+                self.pending_echo_count,
+            )
+            self._log_health_snapshot(
+                reason="api_call_ws_not_open",
+                level=logging.WARNING,
+                action=action,
+            )
             return {"status": "failed", "retcode": -1}
 
         echo = f"{action}_{time.time()}"
@@ -760,6 +785,7 @@ class QQAdapter(BaseAdapter):
         context: dict[str, object],
     ) -> asyncio.Task:
         task = asyncio.create_task(coro, name=name)
+        safe_context = self._safe_task_context(context)
 
         def _log_task_result(done: asyncio.Task) -> None:
             try:
@@ -768,16 +794,26 @@ class QQAdapter(BaseAdapter):
                 logger.debug(
                     "qq_adapter_task_cancelled layer=qq_adapter task_name=%s context=%s",
                     name,
-                    context,
+                    safe_context,
                 )
                 return
             if exc is None:
                 return
+            self.callback_exception_count += 1
+            self.last_callback_exception_at = time.time()
             logger.error(
-                "qq_adapter_task_exception layer=qq_adapter task_name=%s context=%s",
+                "qq_adapter_task_exception layer=qq_adapter task_name=%s "
+                "exception_class=%s context=%s callback_exception_count=%s",
                 name,
-                context,
+                type(exc).__name__,
+                safe_context,
+                self.callback_exception_count,
                 exc_info=(type(exc), exc, exc.__traceback__),
+            )
+            self._log_health_snapshot(
+                reason="callback_exception",
+                level=logging.ERROR,
+                action=name,
             )
 
         task.add_done_callback(_log_task_result)
@@ -801,7 +837,8 @@ class QQAdapter(BaseAdapter):
             "qq_adapter_health layer=qq_adapter reason=%s connected=%s pending_echo_count=%s "
             "last_raw_ws_message_age=%s last_post_event_age=%s last_echo_age=%s "
             "last_api_call_started_age=%s last_api_call_completed_age=%s "
-            "api_call_timeout_count=%s action=%s",
+            "api_call_timeout_count=%s callback_exception_count=%s "
+            "last_callback_exception_age=%s action=%s",
             reason,
             connected,
             self.pending_echo_count,
@@ -811,8 +848,35 @@ class QQAdapter(BaseAdapter):
             self._age_seconds(self.last_api_call_started_at),
             self._age_seconds(self.last_api_call_completed_at),
             self.api_call_timeout_count,
+            self.callback_exception_count,
+            self._age_seconds(self.last_callback_exception_at),
             action or "",
         )
+
+    def _log_send_failure(self, action: str, chat_id: str, result: dict) -> None:
+        tail, digest = self._safe_identifier(chat_id)
+        logger.warning(
+            "qq_send_failure layer=qq_adapter action=%s retcode=%s chat_id_tail=%s chat_id_hash=%s",
+            action,
+            result.get("retcode"),
+            tail,
+            digest,
+        )
+
+    def _safe_task_context(self, context: dict[str, object]) -> dict[str, object]:
+        safe: dict[str, object] = dict(context)
+        if "user_id" in safe:
+            tail, digest = self._safe_identifier(safe["user_id"])
+            safe.pop("user_id", None)
+            safe["user_id_tail"] = tail
+            safe["user_id_hash"] = digest
+        return safe
+
+    def _safe_identifier(self, value: object) -> tuple[str, str]:
+        text = str(value or "")
+        if not text:
+            return "", ""
+        return text[-8:], hashlib.sha256(text.encode("utf-8")).hexdigest()[:8]
 
     def _markdown_to_plain(self, text: str) -> str:
         # 代码块必须在行内代码之前处理

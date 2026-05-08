@@ -422,6 +422,16 @@ async def _record_proactive_outbound_trajectory(
         )
 
 
+def _record_proactive_send_success(gate: Any, ctx: ToolExecutionContext) -> bool:
+    if gate is None or not _is_proactive_context(ctx):
+        return False
+    record_send = getattr(gate, "record_send", None)
+    if not callable(record_send):
+        return False
+    record_send()
+    return True
+
+
 async def _send_message(
     req: ToolExecutionRequest,
     ctx: ToolExecutionContext,
@@ -488,6 +498,7 @@ async def _send_message(
             category=category,
             urgent=urgent,
             context=gate_context,
+            reserve=False,
         )
         # Audit every decision (allow / defer / deny) into the mutation log
         # so allow:defer:deny ratios can be inspected after the fact.
@@ -554,6 +565,7 @@ async def _send_message(
                     reason="desktop_not_connected",
                 )
             await desktop_adapter.send_text(desktop_adapter.config.get("kevin_id", "owner"), content)
+            gate_recorded = _record_proactive_send_success(gate, ctx)
             _resolved = resolved_target_chat_id
             if _resolved is not None:
                 await _record_proactive_outbound_trajectory(
@@ -567,7 +579,12 @@ async def _send_message(
                 )
             return ToolExecutionResult(
                 success=True,
-                payload={"sent": True, "target": target, "content": content},
+                payload={
+                    "sent": True,
+                    "target": target,
+                    "content": content,
+                    "proactive_budget_recorded": gate_recorded,
+                },
             )
 
         elif target == "kevin_qq":
@@ -593,6 +610,7 @@ async def _send_message(
                     reason="qq_adapter_unavailable",
                 )
             await qq_adapter.send_private_message(str(owner_qq_id), content)
+            gate_recorded = _record_proactive_send_success(gate, ctx)
             _resolved = resolved_target_chat_id
             if _resolved is not None:
                 await _record_proactive_outbound_trajectory(
@@ -601,7 +619,12 @@ async def _send_message(
                 )
             return ToolExecutionResult(
                 success=True,
-                payload={"sent": True, "target": target, "content": content},
+                payload={
+                    "sent": True,
+                    "target": target,
+                    "content": content,
+                    "proactive_budget_recorded": gate_recorded,
+                },
             )
 
         elif target.startswith("qq_group:"):
@@ -627,6 +650,7 @@ async def _send_message(
                     reason="qq_adapter_unavailable",
                 )
             await qq_adapter.send_group_message(group_id, content)
+            gate_recorded = _record_proactive_send_success(gate, ctx)
             _resolved = resolved_target_chat_id
             if _resolved is not None:
                 await _record_proactive_outbound_trajectory(
@@ -641,7 +665,12 @@ async def _send_message(
                 )
             return ToolExecutionResult(
                 success=True,
-                payload={"sent": True, "target": target, "content": content},
+                payload={
+                    "sent": True,
+                    "target": target,
+                    "content": content,
+                    "proactive_budget_recorded": gate_recorded,
+                },
             )
 
         else:

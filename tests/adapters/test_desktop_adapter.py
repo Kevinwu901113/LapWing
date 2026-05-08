@@ -63,7 +63,8 @@ async def test_send_text_removes_dead_connections():
     bad_ws = FakeWs()
     bad_ws.raise_on_send = True
     adapter.add_connection("dead", bad_ws)
-    await adapter.send_text("owner", "test")
+    with pytest.raises(RuntimeError, match="没有连接成功接收消息"):
+        await adapter.send_text("owner", "test")
     assert "dead" not in adapter.connections
 
 

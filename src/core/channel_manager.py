@@ -146,8 +146,19 @@ class ChannelManager:
                 reason="adapter route disabled by capability validation",
             ))
         adapter = self.adapters.get(channel)
-        if adapter and await adapter.is_connected():
-            await adapter.send_text(chat_id, text)
+        if adapter is None:
+            raise ChannelOperationError(make_channel_error(
+                channel=channel.value,
+                operation="send_private",
+                reason="adapter_missing",
+            ))
+        if not await adapter.is_connected():
+            raise ChannelOperationError(make_channel_error(
+                channel=channel.value,
+                operation="send_private",
+                reason="adapter_disconnected",
+            ))
+        await adapter.send_text(chat_id, text)
 
     async def send_to_owner(self, text: str, prefer_channel: Optional[ChannelType] = None) -> None:
         """Heartbeat 主动消息路由：Desktop > last_active > 任意已连接通道。"""
@@ -195,8 +206,19 @@ class ChannelManager:
                 reason="adapter route disabled by capability validation",
             ))
         adapter = self.adapters.get(channel)
-        if adapter and await adapter.is_connected():
-            await adapter.send_message(chat_id, message)
+        if adapter is None:
+            raise ChannelOperationError(make_channel_error(
+                channel=channel.value,
+                operation="send_message",
+                reason="adapter_missing",
+            ))
+        if not await adapter.is_connected():
+            raise ChannelOperationError(make_channel_error(
+                channel=channel.value,
+                operation="send_message",
+                reason="adapter_disconnected",
+            ))
+        await adapter.send_message(chat_id, message)
 
     async def send_message_to_owner(
         self,

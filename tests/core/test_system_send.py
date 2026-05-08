@@ -69,6 +69,28 @@ async def test_send_system_message_returns_false_on_send_failure_but_still_recor
 
 
 @pytest.mark.asyncio
+async def test_send_system_message_returns_false_on_channel_operation_error():
+    from src.core.channel_manager import ChannelOperationError, make_channel_error
+
+    async def failing_send(text: str) -> None:
+        raise ChannelOperationError(make_channel_error(
+            channel="qq",
+            operation="send_private",
+            reason="adapter_disconnected",
+        ))
+
+    delivered = await send_system_message(
+        failing_send,
+        "boom",
+        source="foreground_exception",
+        chat_id="chat1",
+        adapter="qq",
+    )
+
+    assert delivered is False
+
+
+@pytest.mark.asyncio
 async def test_send_system_message_survives_recording_failures():
     send_fn = AsyncMock()
     trajectory = AsyncMock()
