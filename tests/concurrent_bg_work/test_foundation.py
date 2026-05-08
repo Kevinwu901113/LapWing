@@ -336,7 +336,10 @@ async def test_user_initiated_agent_result_does_not_reach_proactive_inner_turn()
         SalienceLevel,
     )
 
-    brain = AsyncMock()
+    class _Brain:
+        channel_manager = None
+
+    brain = _Brain()
     brain.think_inner = AsyncMock(return_value=("", None, False))
     snapshot = AgentTaskSnapshot("t1", "researcher", "x", TaskStatus.COMPLETED, None, None, None, [], "done", None, [], SalienceLevel.NORMAL, False, None)
     event = AgentEvent(
@@ -401,6 +404,47 @@ async def test_event_bus_routes_parent_turn_result_to_parent_not_proactive(tmp_p
     queued = await queue.get()
     assert isinstance(queued, AgentTaskResultEvent)
     assert queued.delivery_target == AgentResultDeliveryTarget.PARENT_TURN
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_event_bus_marks_stale_parent_result_silent(tmp_path):
+    from datetime import timedelta
+
+    from src.core.concurrent_bg_work.event_bus import AgentEventBus
+    from src.core.concurrent_bg_work.types import AgentEvent, AgentEventType
+
+    store = AgentTaskStore(tmp_path / "lapwing.db")
+    await store.init()
+    supervisor = TaskSupervisor(store=store, agent_registry=_Registry())
+    handle = await supervisor.start_agent_task(
+        spec_id="researcher",
+        objective="old snooker status",
+        chat_id="chat",
+        owner_user_id="owner",
+        parent_turn_id="turn-1",
+        parent_event_id="evt-1",
+    )
+    record = await store.read(handle.task_id)
+    assert record is not None
+
+    queue = EventQueue()
+    bus = AgentEventBus(task_store=store, event_queue=queue)
+    await bus.emit(AgentEvent(
+        event_id="agent_evt_stale",
+        task_id=handle.task_id,
+        chat_id="chat",
+        type=AgentEventType.AGENT_FAILED,
+        occurred_at=record.created_at + timedelta(hours=2),
+        summary_for_lapwing="old snooker task timeout",
+        summary_for_owner=None,
+        raw_payload_ref=None,
+        salience=None,
+        payload={},
+        sequence_in_task=1,
+    ))
+
+    assert queue.empty() is True
     await store.close()
 
 

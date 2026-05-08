@@ -177,6 +177,12 @@ max_persistent_agents = 10
 max_session_agents = 5
 session_cleanup_interval_seconds = 300
 
+[runtime_interaction_hardening]
+enabled = true
+adapter_strict_mode = false
+foreground_turn_timeout_seconds = 300
+owner_status_probe_grace_seconds = 30
+
 [concurrent_bg_work]
 enabled = false
 p1_ingress_correctness = false

@@ -157,14 +157,13 @@ class MainLoop:
         """Consume the queue until ``stop()`` is called."""
         self._alive = True
         logger.info("MainLoop started")
-        # Step 4 M4: spawn a concurrent watcher that cancels the in-flight
-        # handler the moment an OWNER message lands in the queue. Without
-        # it the run loop is blocked awaiting the handler and only sees
-        # the new event after the handler completes.
-        if not _concurrent_bg_work_p4_enabled():
-            self._owner_watcher_task = asyncio.create_task(
-                self._owner_preempt_watcher(), name="lapwing-owner-watcher",
-            )
+        # Step 4 M4: spawn a concurrent watcher that handles OWNER
+        # preemption/status probes while the dispatcher is blocked awaiting a
+        # long-running handler. This must stay active even when P4 cancellation
+        # evolution is enabled; otherwise OWNER-over-OWNER recovery regresses.
+        self._owner_watcher_task = asyncio.create_task(
+            self._owner_preempt_watcher(), name="lapwing-owner-watcher",
+        )
         try:
             while self._alive:
                 event = await self._queue.get()
@@ -597,6 +596,8 @@ class MainLoop:
                 bool(getattr(event, "orphan", False)),
                 bool(getattr(event, "stale", False)),
             )
+            if delivery_target in {"parent_turn", "chat_status"}:
+                await self._deliver_agent_status_event(event, delivery_target)
             return
 
         urgent_item = _agent_event_to_urgent_item(event)
@@ -627,6 +628,78 @@ class MainLoop:
             return
         if event.command in {"freeze_loop", "stop_all"}:
             await self._cancel_in_flight(f"operator:{event.reason}")
+
+    async def _deliver_agent_status_event(self, event: Event, delivery_target: str) -> bool:
+        if bool(getattr(event, "orphan", False)) or bool(getattr(event, "stale", False)):
+            logger.info(
+                "agent_task_result_delivery_skipped task_id=%s delivery_target=%s orphan=%s stale=%s",
+                getattr(event, "task_id", ""),
+                delivery_target,
+                bool(getattr(event, "orphan", False)),
+                bool(getattr(event, "stale", False)),
+            )
+            return False
+
+        triggering = getattr(event, "triggering_event", None)
+        chat_id = str(getattr(triggering, "chat_id", "") or "")
+        if not chat_id:
+            logger.info(
+                "agent_task_result_delivery_skipped task_id=%s delivery_target=%s reason=missing_chat_id",
+                getattr(event, "task_id", ""),
+                delivery_target,
+            )
+            return False
+
+        text = _agent_status_text(event)
+        if not text:
+            return False
+
+        async def _send(text_to_send: str) -> None:
+            channel_manager = getattr(self._brain, "channel_manager", None)
+            if channel_manager is None:
+                raise RuntimeError("channel_manager unavailable for agent status delivery")
+            from src.adapters.base import ChannelType
+
+            channel = getattr(channel_manager, "last_active_channel", None)
+            if channel is None:
+                channel = ChannelType.QQ
+            get_adapter = getattr(channel_manager, "get_adapter", None)
+            adapter = get_adapter(channel) if callable(get_adapter) else None
+            if adapter is not None and hasattr(adapter, "is_connected"):
+                connected = await adapter.is_connected()
+                if connected:
+                    await channel_manager.send(channel, chat_id, text_to_send)
+                    return
+            send_to_owner = getattr(channel_manager, "send_to_owner", None)
+            if callable(send_to_owner):
+                await send_to_owner(text_to_send, prefer_channel=channel)
+                return
+            await channel_manager.send(channel, chat_id, text_to_send)
+
+        from src.core.system_send import send_system_message
+
+        delivered = await send_system_message(
+            _send,
+            text,
+            source=f"agent_task_result_{delivery_target}",
+            chat_id=chat_id,
+            adapter="agent_task",
+            trajectory_store=getattr(self._brain, "trajectory_store", None),
+            mutation_log=getattr(self._brain, "_mutation_log_ref", None),
+        )
+        if delivered and self._chat_activity_tracker is not None:
+            self._chat_activity_tracker.mark_assistant_reply(
+                chat_id,
+                source=f"agent_task_result_{delivery_target}",
+            )
+        logger.info(
+            "agent_task_result_delivered task_id=%s delivery_target=%s chat_id=%s delivered=%s",
+            getattr(event, "task_id", ""),
+            delivery_target,
+            chat_id,
+            delivered,
+        )
+        return delivered
 
     def _wrap_user_reply_send_fn(self, event: MessageEvent):
         if event.send_fn is None:
@@ -769,6 +842,56 @@ def _agent_event_to_urgent_item(event: Event) -> dict:
         "task_id": getattr(event, "task_id", ""),
         "salience": str(getattr(event, "effective_salience", "")),
     }
+
+
+def _agent_status_text(event: Event) -> str:
+    triggering = getattr(event, "triggering_event", None)
+    summary = ""
+    if triggering is not None:
+        summary = str(
+            getattr(triggering, "summary_for_owner", None)
+            or getattr(triggering, "summary_for_lapwing", "")
+            or ""
+        ).strip()
+    snapshot = getattr(event, "task_snapshot", None)
+    if not summary and snapshot is not None:
+        summary = str(
+            getattr(snapshot, "error_summary", None)
+            or getattr(snapshot, "result_summary", None)
+            or getattr(snapshot, "last_progress_summary", None)
+            or ""
+        ).strip()
+    task_id = str(getattr(event, "task_id", "") or "").strip()
+    suffix = f"（任务 {task_id}）" if task_id else ""
+    kind = str(getattr(event, "kind", "") or "")
+    event_type = str(getattr(getattr(triggering, "type", None), "value", "") or "")
+
+    if kind == "agent_needs_input" or event_type == "agent_needs_input":
+        payload = getattr(event, "payload", None)
+        question = str(
+            getattr(payload, "question_for_owner", None)
+            or getattr(payload, "question_for_lapwing", None)
+            or summary
+        ).strip()
+        return f"这个后台任务需要你补充一下：{question}{suffix}" if question else ""
+
+    if event_type in {"agent_failed", "agent_budget_exhausted"}:
+        detail = summary or "没有拿到可用结果。"
+        return f"刚才那个后台任务失败了：{detail}{suffix}"
+
+    if event_type == "agent_cancelled":
+        detail = summary or "已取消。"
+        return f"后台任务已取消：{detail}{suffix}"
+
+    if event_type == "agent_completed":
+        detail = summary or "已经完成。"
+        return f"后台任务完成了：{detail}{suffix}"
+
+    if event_type == "agent_progress_summary":
+        detail = summary or "有新的进展。"
+        return f"后台任务进展：{detail}{suffix}"
+
+    return f"后台任务状态更新：{summary}{suffix}" if summary else ""
 
 
 def _foreground_turn_timeout_seconds() -> int:

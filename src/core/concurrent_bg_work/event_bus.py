@@ -268,7 +268,7 @@ class AgentEventBus:
         stale = _is_stale_parent_result(event, task)
         if task.parent_turn_id:
             if stale:
-                return AgentResultDeliveryTarget.CHAT_STATUS, False, True
+                return AgentResultDeliveryTarget.SILENT, False, True
             if event.type == AgentEventType.AGENT_PROGRESS_SUMMARY:
                 return AgentResultDeliveryTarget.CHAT_STATUS, False, False
             return AgentResultDeliveryTarget.PARENT_TURN, False, False

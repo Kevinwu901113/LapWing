@@ -8,6 +8,8 @@ event / cancellation.
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -166,6 +168,28 @@ class FakeBrain:
         return "", None, False
 
 
+class _FakeAdapter:
+    async def is_connected(self):
+        return True
+
+
+class _FakeChannelManager:
+    def __init__(self):
+        from src.adapters.base import ChannelType
+        self.last_active_channel = ChannelType.QQ
+        self.sent: list[tuple[str, str]] = []
+        self.adapter = _FakeAdapter()
+
+    def get_adapter(self, _channel):
+        return self.adapter
+
+    async def send(self, _channel, chat_id, text):
+        self.sent.append((chat_id, text))
+
+    async def send_to_owner(self, text, prefer_channel=None):
+        self.sent.append(("owner", text))
+
+
 @pytest.mark.asyncio
 async def test_owner_messages_coalesce_in_burst():
     """Three OWNER messages queued within the coalesce window should
@@ -298,6 +322,187 @@ async def test_foreground_user_turn_timeout_sends_recovery_reply():
     assert "这次查询卡住了" in result
     assert sent and "这次查询卡住了" in sent[0]
     assert loop._current_task is None  # type: ignore[attr-defined]
+
+    await loop.stop()
+    await q.put(InnerTickEvent.make())
+    await asyncio.wait_for(runner, timeout=2.0)
+
+
+@pytest.mark.asyncio
+async def test_owner_watcher_runs_even_when_p4_cancellation_evolution_enabled(monkeypatch):
+    from src.config import reload_settings
+
+    monkeypatch.setenv("CONCURRENT_BG_WORK_ENABLED", "true")
+    monkeypatch.setenv("CONCURRENT_BG_WORK_P4_CANCELLATION_EVOLUTION", "true")
+    reload_settings()
+    q = EventQueue()
+    loop = MainLoop(q)
+    runner = None
+    try:
+        runner = asyncio.create_task(loop.run())
+        await asyncio.sleep(0.01)
+        assert loop._owner_watcher_task is not None  # type: ignore[attr-defined]
+    finally:
+        await loop.stop()
+        await q.put(InnerTickEvent.make())
+        if runner is not None:
+            await asyncio.wait_for(runner, timeout=1.0)
+        monkeypatch.delenv("CONCURRENT_BG_WORK_ENABLED", raising=False)
+        monkeypatch.delenv("CONCURRENT_BG_WORK_P4_CANCELLATION_EVOLUTION", raising=False)
+        reload_settings()
+
+
+@pytest.mark.asyncio
+async def test_agent_parent_turn_result_delivers_status_without_inner_tick():
+    from src.core.concurrent_bg_work.event_bus import AgentTaskResultEvent
+    from src.core.concurrent_bg_work.types import (
+        AgentEvent,
+        AgentEventType,
+        AgentResultDeliveryTarget,
+        AgentTaskSnapshot,
+        SalienceLevel,
+        TaskStatus,
+    )
+
+    brain = FakeBrain()
+    brain.channel_manager = _FakeChannelManager()
+    brain.think_inner = AsyncMock(return_value=("", None, False))  # type: ignore[attr-defined]
+    loop = MainLoop(EventQueue(), brain=brain)
+    snapshot = AgentTaskSnapshot(
+        "task-1", "researcher", "find food", TaskStatus.FAILED,
+        None, None, None, [], None, "tool dispatch failed", [],
+        SalienceLevel.HIGH, False, None,
+    )
+    triggering = AgentEvent(
+        "evt-1", "task-1", "chat", AgentEventType.AGENT_FAILED,
+        datetime.now(timezone.utc), "AgentTaskResult tool-dispatch failure",
+        None, None, SalienceLevel.HIGH,
+        {"parent_turn_id": "turn-1", "parent_event_id": "evt-parent"}, 1,
+    )
+
+    await loop._dispatch(AgentTaskResultEvent(
+        task_id="task-1",
+        task_snapshot=snapshot,
+        triggering_event=triggering,
+        effective_salience=SalienceLevel.HIGH,
+        delivery_target=AgentResultDeliveryTarget.PARENT_TURN,
+    ))
+
+    assert brain.channel_manager.sent
+    assert "后台任务失败" in brain.channel_manager.sent[0][1]
+    assert "tool-dispatch failure" in brain.channel_manager.sent[0][1]
+
+
+@pytest.mark.asyncio
+async def test_complete_incident_timeline_blocks_proactive_and_suppresses_stale_diagnostic():
+    from src.core.chat_activity import ChatActivityTracker
+    from src.core.concurrent_bg_work.event_bus import AgentTaskResultEvent
+    from src.core.concurrent_bg_work.types import (
+        AgentEvent,
+        AgentEventType,
+        AgentResultDeliveryTarget,
+        AgentTaskSnapshot,
+        SalienceLevel,
+        TaskStatus,
+    )
+    from src.core.proactive_message_gate import ProactiveMessageGate
+    from src.tools.personal_tools import _send_message
+    from src.tools.shell_executor import ShellResult
+    from src.tools.types import ToolExecutionContext, ToolExecutionRequest
+
+    q = EventQueue()
+    tracker = ChatActivityTracker()
+    brain = FakeBrain(delay=10.0, reply="late")
+    channel_manager = _FakeChannelManager()
+    brain.channel_manager = channel_manager
+    sent: list[str] = []
+
+    async def send_fn(text: str):
+        sent.append(text)
+
+    loop = MainLoop(
+        q,
+        brain=brain,
+        chat_activity_tracker=tracker,
+        foreground_turn_timeout_seconds=60,
+        owner_status_probe_grace_seconds=0,
+    )
+    loop.OWNER_COALESCE_SECONDS = 0.01
+    loop.OWNER_WATCHER_POLL_SECONDS = 0.01
+    runner = asyncio.create_task(loop.run())
+
+    await q.put(_make_owner_event(chat_id="chat", text="帮我查一下华南理工大学大学城校区附近今天中午有什么好吃的，尽量查外面的店，不要只看食堂。", send_fn=send_fn))
+    await q.put(_make_owner_event(chat_id="chat", text="对了，我现在在学校。", send_fn=send_fn))
+    await q.put(_make_owner_event(chat_id="chat", text="我比较想吃米饭类，别太贵。", send_fn=send_fn))
+    await asyncio.sleep(0.05)
+    await q.put(_make_owner_event(chat_id="chat", text="先别管吃的了，告诉我你现在是不是还在查。", send_fn=send_fn))
+
+    await asyncio.wait_for(_wait_until(lambda: bool(sent)), timeout=1.0)
+    assert "这次查询卡住了" in sent[0]
+    await asyncio.sleep(0.05)
+    assert loop._current_task is None  # type: ignore[attr-defined]
+
+    class _ActiveStore:
+        async def has_active_user_task_for_chat(self, chat_id):
+            return chat_id == "chat"
+
+    gate = ProactiveMessageGate(
+        enabled=True,
+        quiet_hours_start="00:00",
+        quiet_hours_end="00:00",
+        min_minutes_between=0,
+    )
+
+    async def _noop_shell(_cmd):
+        return ShellResult(stdout="", stderr="", return_code=0)
+
+    ctx = ToolExecutionContext(
+        execute_shell=_noop_shell,
+        shell_default_cwd="/tmp",
+        services={
+            "channel_manager": channel_manager,
+            "owner_qq_id": "chat",
+            "proactive_message_gate": gate,
+            "chat_activity_tracker": tracker,
+            "event_queue": q,
+            "main_loop": loop,
+            "background_task_store": _ActiveStore(),
+        },
+        runtime_profile="inner_tick",
+    )
+    for content in ("早安～今天周五，有什么安排吗？", "早，吃了吗"):
+        result = await _send_message(
+            ToolExecutionRequest("send_message", {"target": "kevin_qq", "content": content}),
+            ctx,
+        )
+        assert result.success is False
+        assert "active_user_task" in result.payload["gate_reason"]
+
+    before = list(channel_manager.sent)
+    stale_trigger = AgentEvent(
+        "evt-stale", "task-stale", "chat", AgentEventType.AGENT_FAILED,
+        datetime.now(timezone.utc), "old snooker task timeout",
+        None, None, SalienceLevel.HIGH,
+        {"parent_turn_id": "old-turn", "parent_event_id": "old-event"}, 1,
+    )
+    stale_snapshot = AgentTaskSnapshot(
+        "task-stale", "researcher", "snooker", TaskStatus.FAILED,
+        None, None, None, [], None, "old snooker task timeout", [],
+        SalienceLevel.HIGH, False, None,
+    )
+    await loop._dispatch(AgentTaskResultEvent(
+        task_id="task-stale",
+        task_snapshot=stale_snapshot,
+        triggering_event=stale_trigger,
+        effective_salience=SalienceLevel.HIGH,
+        delivery_target=AgentResultDeliveryTarget.SILENT,
+        stale=True,
+    ))
+    assert channel_manager.sent == before
+
+    sent.clear()
+    await q.put(_make_owner_event(chat_id="chat", text="喂？", send_fn=send_fn))
+    await asyncio.wait_for(_wait_until(lambda: len(brain.calls) >= 2), timeout=1.0)
 
     await loop.stop()
     await q.put(InnerTickEvent.make())
