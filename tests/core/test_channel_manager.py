@@ -163,7 +163,18 @@ class TestResolveDeliveryTarget:
         result = mgr.resolve_delivery_target(ChannelType.QQ, "123456")
         assert result == "123456"
 
-    def test_non_numeric_qq_resolves_to_kevin_id(self):
+    def test_non_numeric_qq_resolves_to_kevin_id_with_agent_user_status_purpose(self):
+        from src.core.channel_manager import ChannelManager
+
+        mgr = ChannelManager()
+        qq = FakeAdapter()
+        qq.config = {"kevin_id": "999"}
+        mgr.register(ChannelType.QQ, qq)
+
+        result = mgr.resolve_delivery_target(ChannelType.QQ, "chat", purpose="agent_user_status")
+        assert result == "999"
+
+    def test_non_numeric_qq_direct_purpose_no_fallback(self):
         from src.core.channel_manager import ChannelManager
 
         mgr = ChannelManager()
@@ -172,6 +183,39 @@ class TestResolveDeliveryTarget:
         mgr.register(ChannelType.QQ, qq)
 
         result = mgr.resolve_delivery_target(ChannelType.QQ, "chat")
+        assert result is None
+
+    def test_non_numeric_qq_direct_reply_no_fallback(self):
+        from src.core.channel_manager import ChannelManager
+
+        mgr = ChannelManager()
+        qq = FakeAdapter()
+        qq.config = {"kevin_id": "999"}
+        mgr.register(ChannelType.QQ, qq)
+
+        result = mgr.resolve_delivery_target(ChannelType.QQ, "chat", purpose="direct_reply")
+        assert result is None
+
+    def test_non_numeric_qq_system_diagnostic_no_fallback(self):
+        from src.core.channel_manager import ChannelManager
+
+        mgr = ChannelManager()
+        qq = FakeAdapter()
+        qq.config = {"kevin_id": "999"}
+        mgr.register(ChannelType.QQ, qq)
+
+        result = mgr.resolve_delivery_target(ChannelType.QQ, "chat", purpose="system_diagnostic")
+        assert result is None
+
+    def test_non_numeric_qq_owner_status_fallback(self):
+        from src.core.channel_manager import ChannelManager
+
+        mgr = ChannelManager()
+        qq = FakeAdapter()
+        qq.config = {"kevin_id": "999"}
+        mgr.register(ChannelType.QQ, qq)
+
+        result = mgr.resolve_delivery_target(ChannelType.QQ, "chat", purpose="owner_status")
         assert result == "999"
 
     def test_non_numeric_qq_no_kevin_id_returns_none(self):

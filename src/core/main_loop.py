@@ -657,8 +657,37 @@ class MainLoop:
         if channel is None:
             channel = ChannelType.QQ
 
+        # Only agent_user_status / owner_status purposes may fall back from a
+        # non-numeric QQ chat_id to the configured owner QQ id.  Require a
+        # recognised delivery target and a parent identifier in the triggering
+        # event payload — otherwise the delivery target is ambiguous.
+        if delivery_target in ("parent_turn", "chat_status"):
+            triggering_payload = getattr(triggering, "payload", None) or {}
+            if triggering_payload.get("parent_turn_id") or triggering_payload.get("parent_event_id"):
+                purpose = "agent_user_status"
+            else:
+                logger.info(
+                    "agent_task_result_delivery_skipped task_id=%s delivery_target=%s "
+                    "raw_chat_id=%s channel=%s reason=invalid_or_ambiguous_delivery_target",
+                    getattr(event, "task_id", ""),
+                    delivery_target,
+                    raw_chat_id[-8:],
+                    channel.value,
+                )
+                return False
+        else:
+            logger.info(
+                "agent_task_result_delivery_skipped task_id=%s delivery_target=%s "
+                "raw_chat_id=%s channel=%s reason=invalid_or_ambiguous_delivery_target",
+                getattr(event, "task_id", ""),
+                delivery_target,
+                raw_chat_id[-8:],
+                channel.value,
+            )
+            return False
+
         if channel_manager is not None:
-            chat_id = channel_manager.resolve_delivery_target(channel, raw_chat_id)
+            chat_id = channel_manager.resolve_delivery_target(channel, raw_chat_id, purpose=purpose)
         else:
             chat_id = raw_chat_id
 

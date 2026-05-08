@@ -110,11 +110,12 @@ class ChannelManager:
             await adapter.stop()
             logger.info("通道已停止: %s", ch_type.value)
 
-    def resolve_delivery_target(self, channel: ChannelType, raw_chat_id: str) -> str | None:
+    def resolve_delivery_target(self, channel: ChannelType, raw_chat_id: str, *, purpose: str = "direct") -> str | None:
         """Resolve a chat_id suitable for sending on the given channel.
 
         For QQ, the target must be numeric (QQ private message API requirement).
-        Non-numeric ids are resolved to the configured owner QQ id as fallback.
+        Non-numeric ids only fall back to the configured owner QQ id for
+        approved purposes (``agent_user_status``, ``owner_status``).
         Returns None if no valid target can be resolved.
         """
         if channel == ChannelType.QQ:
@@ -123,6 +124,8 @@ class ChannelManager:
                 return raw_chat_id
             except (ValueError, TypeError):
                 pass
+            if purpose not in ("agent_user_status", "owner_status"):
+                return None
             adapter = self.adapters.get(channel)
             if adapter:
                 kevin_id = adapter.config.get("kevin_id", "")

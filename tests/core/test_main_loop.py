@@ -185,7 +185,7 @@ class _FakeChannelManager:
     def get_adapter(self, _channel):
         return self.adapter
 
-    def resolve_delivery_target(self, channel, raw_chat_id):
+    def resolve_delivery_target(self, channel, raw_chat_id, *, purpose="direct"):
         from src.adapters.base import ChannelType
         if channel == ChannelType.QQ:
             try:
@@ -193,6 +193,8 @@ class _FakeChannelManager:
                 return raw_chat_id
             except (ValueError, TypeError):
                 pass
+            if purpose not in ("agent_user_status", "owner_status"):
+                return None
             try:
                 int(self._kevin_id)
                 return self._kevin_id
@@ -792,3 +794,144 @@ async def test_agent_status_delivered_false_does_not_mark_assistant_reply():
 
     assert delivered is False
     tracker.mark_assistant_reply.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_agent_status_delivery_skips_when_no_parent_identifiers_in_payload(caplog):
+    """CHAT_STATUS delivery without parent_turn_id or parent_event_id → skip."""
+    from src.core.concurrent_bg_work.event_bus import AgentTaskResultEvent
+    from src.core.concurrent_bg_work.types import (
+        AgentEvent,
+        AgentEventType,
+        AgentResultDeliveryTarget,
+        AgentTaskSnapshot,
+        SalienceLevel,
+        TaskStatus,
+    )
+
+    brain = FakeBrain()
+    channel_manager = _FakeChannelManager()
+    brain.channel_manager = channel_manager
+
+    loop = MainLoop(EventQueue(), brain=brain)
+    snapshot = AgentTaskSnapshot(
+        "task-1", "researcher", "test", TaskStatus.FAILED,
+        None, None, None, [], None, "failure", [],
+        SalienceLevel.HIGH, False, None,
+    )
+    # Payload has no parent_turn_id or parent_event_id
+    triggering = AgentEvent(
+        "evt-1", "task-1", "123456", AgentEventType.AGENT_FAILED,
+        datetime.now(timezone.utc), "failure",
+        None, None, SalienceLevel.HIGH,
+        {}, 1,
+    )
+
+    caplog.set_level(logging.INFO, logger="lapwing.core.main_loop")
+    delivered = await loop._deliver_agent_status_event(
+        AgentTaskResultEvent(
+            task_id="task-1",
+            task_snapshot=snapshot,
+            triggering_event=triggering,
+            effective_salience=SalienceLevel.HIGH,
+            delivery_target=AgentResultDeliveryTarget.CHAT_STATUS,
+        ),
+        AgentResultDeliveryTarget.CHAT_STATUS,
+    )
+
+    assert delivered is False
+    assert channel_manager.sent == []
+    assert "reason=invalid_or_ambiguous_delivery_target" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_agent_status_delivery_skips_when_parent_turn_missing_identifiers(caplog):
+    """PARENT_TURN delivery without parent_turn_id or parent_event_id → skip."""
+    from src.core.concurrent_bg_work.event_bus import AgentTaskResultEvent
+    from src.core.concurrent_bg_work.types import (
+        AgentEvent,
+        AgentEventType,
+        AgentResultDeliveryTarget,
+        AgentTaskSnapshot,
+        SalienceLevel,
+        TaskStatus,
+    )
+
+    brain = FakeBrain()
+    channel_manager = _FakeChannelManager()
+    brain.channel_manager = channel_manager
+
+    loop = MainLoop(EventQueue(), brain=brain)
+    snapshot = AgentTaskSnapshot(
+        "task-1", "researcher", "test", TaskStatus.FAILED,
+        None, None, None, [], None, "failure", [],
+        SalienceLevel.HIGH, False, None,
+    )
+    triggering = AgentEvent(
+        "evt-1", "task-1", "chat", AgentEventType.AGENT_FAILED,
+        datetime.now(timezone.utc), "failure",
+        None, None, SalienceLevel.HIGH,
+        {}, 1,
+    )
+
+    caplog.set_level(logging.INFO, logger="lapwing.core.main_loop")
+    delivered = await loop._deliver_agent_status_event(
+        AgentTaskResultEvent(
+            task_id="task-1",
+            task_snapshot=snapshot,
+            triggering_event=triggering,
+            effective_salience=SalienceLevel.HIGH,
+            delivery_target=AgentResultDeliveryTarget.PARENT_TURN,
+        ),
+        AgentResultDeliveryTarget.PARENT_TURN,
+    )
+
+    assert delivered is False
+    assert channel_manager.sent == []
+    assert "reason=invalid_or_ambiguous_delivery_target" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_agent_status_delivery_skips_unknown_delivery_target(caplog):
+    """Unknown delivery_target value → skip with invalid_or_ambiguous_delivery_target."""
+    from src.core.concurrent_bg_work.event_bus import AgentTaskResultEvent
+    from src.core.concurrent_bg_work.types import (
+        AgentEvent,
+        AgentEventType,
+        AgentTaskSnapshot,
+        SalienceLevel,
+        TaskStatus,
+    )
+
+    brain = FakeBrain()
+    channel_manager = _FakeChannelManager()
+    brain.channel_manager = channel_manager
+
+    loop = MainLoop(EventQueue(), brain=brain)
+    snapshot = AgentTaskSnapshot(
+        "task-1", "researcher", "test", TaskStatus.FAILED,
+        None, None, None, [], None, "failure", [],
+        SalienceLevel.HIGH, False, None,
+    )
+    triggering = AgentEvent(
+        "evt-1", "task-1", "123456", AgentEventType.AGENT_FAILED,
+        datetime.now(timezone.utc), "failure",
+        None, None, SalienceLevel.HIGH,
+        {"parent_turn_id": "turn-1"}, 1,
+    )
+
+    caplog.set_level(logging.INFO, logger="lapwing.core.main_loop")
+    delivered = await loop._deliver_agent_status_event(
+        AgentTaskResultEvent(
+            task_id="task-1",
+            task_snapshot=snapshot,
+            triggering_event=triggering,
+            effective_salience=SalienceLevel.HIGH,
+            delivery_target="unknown_target",
+        ),
+        "unknown_target",
+    )
+
+    assert delivered is False
+    assert channel_manager.sent == []
+    assert "reason=invalid_or_ambiguous_delivery_target" in caplog.text
