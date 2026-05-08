@@ -2,6 +2,7 @@
 
 import pytest
 from unittest.mock import AsyncMock, MagicMock
+from src.agents.exceptions import AgentSpawnError
 from src.agents.registry import AgentRegistry, _SessionEntry
 from src.agents.catalog import AgentCatalog
 from src.agents.factory import AgentFactory
@@ -11,6 +12,22 @@ from src.agents.spec import AgentSpec, AgentLifecyclePolicy
 
 def _safe_lint():
     return LintResult(verdict="safe", reason="ok")
+
+
+def _base_services():
+    return {
+        "dispatcher": object(),
+        "tool_registry": object(),
+        "llm_router": object(),
+    }
+
+
+def _researcher_services():
+    return {
+        **_base_services(),
+        "research_engine": object(),
+        "ambient_store": object(),
+    }
 
 
 async def _make_registry(tmp_path, monkeypatch):
@@ -82,8 +99,9 @@ async def test_t09_session_agent_fresh_runtime(tmp_path, monkeypatch):
                          lifecycle="session"),
         ctx=MagicMock(),
     )
-    inst1 = await reg.get_or_create_instance(spec.name)
-    inst2 = await reg.get_or_create_instance(spec.name)
+    services = _base_services()
+    inst1 = await reg.get_or_create_instance(spec.name, services_override=services)
+    inst2 = await reg.get_or_create_instance(spec.name, services_override=services)
     # Two distinct instances (fresh runtime per delegation)
     assert inst1 is not inst2
     # Factory called twice
@@ -111,7 +129,10 @@ async def test_t10_save_agent_persists_spec_only(tmp_path, monkeypatch):
     assert spec.name not in reg._session_agents
     assert spec.name not in reg._ephemeral_agents
     # Re-fetching builds a fresh instance from catalog spec
-    inst = await reg.get_or_create_instance(spec.name)
+    inst = await reg.get_or_create_instance(
+        spec.name,
+        services_override=_base_services(),
+    )
     assert inst is not None
 
 
@@ -121,9 +142,32 @@ async def test_t10_save_agent_persists_spec_only(tmp_path, monkeypatch):
 async def test_get_or_create_instance_for_builtin(tmp_path, monkeypatch):
     reg, cat, factory, _ = await _make_registry(tmp_path, monkeypatch)
     await reg.init()
-    inst = await reg.get_or_create_instance("researcher")
+    services = _researcher_services()
+    inst = await reg.get_or_create_instance("researcher", services_override=services)
     assert inst is not None
     factory.create.assert_called()
+    _, kwargs = factory.create.call_args
+    assert kwargs["services_override"] is services
+
+
+@pytest.mark.asyncio
+async def test_get_or_create_instance_missing_services_raises(tmp_path, monkeypatch):
+    reg, _, factory, _ = await _make_registry(tmp_path, monkeypatch)
+    await reg.init()
+
+    with pytest.raises(AgentSpawnError) as exc_info:
+        await reg.get_or_create_instance(
+            "researcher",
+            services_override={"llm_router": object()},
+        )
+
+    assert exc_info.value.missing_services == (
+        "dispatcher",
+        "tool_registry",
+        "research_engine",
+        "ambient_store",
+    )
+    factory.create.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -35,8 +35,10 @@ async def test_message_event_routed_to_brain_with_correct_kwargs():
     loop = MainLoop(q, brain=brain)
     runner = asyncio.create_task(loop.run())
 
-    async def send_fn(text):  # pragma: no cover - assert by call signature
-        return None
+    sent = []
+
+    async def send_fn(text):
+        sent.append(text)
 
     done = asyncio.get_running_loop().create_future()
     event = MessageEvent.from_message(
@@ -59,7 +61,10 @@ async def test_message_event_routed_to_brain_with_correct_kwargs():
     assert kwargs["user_message"] == "hi"
     assert kwargs["adapter"] == "qq"
     assert kwargs["user_id"] == "kev"
-    assert kwargs["send_fn"] is send_fn
+    assert kwargs["send_fn"] is not None
+    assert kwargs["send_fn"] is not send_fn
+    await kwargs["send_fn"]("wrapped hello")
+    assert sent == ["wrapped hello"]
 
     await loop.stop()
     # Unblock loop's queue.get so run() exits.
@@ -86,8 +91,8 @@ async def test_brain_exception_propagates_to_done_future():
         done_future=done,
     ))
 
-    with pytest.raises(RuntimeError, match="brain went boom"):
-        await asyncio.wait_for(done, timeout=2.0)
+    reply = await asyncio.wait_for(done, timeout=2.0)
+    assert reply == MainLoop.FOREGROUND_EXCEPTION_REPLY
 
     await loop.stop()
     await q.put(MessageEvent.from_message(

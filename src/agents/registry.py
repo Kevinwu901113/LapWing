@@ -14,18 +14,23 @@ from __future__ import annotations
 
 import logging
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from src.agents.base import BaseAgent
 from src.agents.builtin_specs import (
     builtin_coder_spec as _builtin_coder_spec,
     builtin_researcher_spec as _builtin_researcher_spec,
 )
 from src.agents.catalog import AgentCatalogIntegrityError
+from src.agents.coder import Coder
+from src.agents.dynamic import DynamicAgent
+from src.agents.exceptions import AgentSpawnError
+from src.agents.researcher import Researcher
 from src.agents.spec import AgentSpec, AgentLifecyclePolicy
 
 if TYPE_CHECKING:
-    from src.agents.base import BaseAgent
     from src.agents.catalog import AgentCatalog
     from src.agents.factory import AgentFactory
     from src.agents.policy import AgentPolicy, CreateAgentInput
@@ -125,6 +130,12 @@ class AgentRegistry:
         # Legacy path: directly registered instances win for backwards-compat
         if name in self._legacy_agents:
             agent = self._legacy_agents[name]
+            missing = self._missing_required_services(
+                self._required_services_for_legacy(agent),
+                services_override,
+            )
+            if missing:
+                raise AgentSpawnError(name, missing)
             if services_override is not None:
                 setattr(agent, "_services", services_override)
             return agent
@@ -135,11 +146,69 @@ class AgentRegistry:
         if spec is None:
             return None
 
+        missing = self._missing_required_services(
+            self._required_services_for_spec(spec),
+            services_override,
+        )
+        if missing:
+            raise AgentSpawnError(name, missing)
+
         # Update session last_used if this is a session agent
         if name in self._session_agents:
             self._session_agents[name].last_used_at = time.monotonic()
 
         return self._factory.create(spec, services_override=services_override)
+
+    async def preflight_check(
+        self,
+        name: str,
+        services: Mapping[str, Any] | None,
+    ) -> list[str]:
+        """Return missing runtime services without creating an instance."""
+        if name in self._legacy_agents:
+            return self._missing_required_services(
+                self._required_services_for_legacy(self._legacy_agents[name]),
+                services,
+            )
+        spec = await self._lookup_spec(name)
+        if spec is None:
+            return []
+        return self._missing_required_services(
+            self._required_services_for_spec(spec),
+            services,
+        )
+
+    def _required_services_for_spec(self, spec: AgentSpec) -> tuple[str, ...]:
+        if spec.kind == "builtin":
+            if spec.name == "researcher":
+                return Researcher.REQUIRED_SERVICES
+            if spec.name == "coder":
+                return Coder.REQUIRED_SERVICES
+            return BaseAgent.REQUIRED_SERVICES
+        return DynamicAgent.REQUIRED_SERVICES
+
+    def _required_services_for_legacy(self, agent: "BaseAgent") -> tuple[str, ...]:
+        raw = getattr(agent, "REQUIRED_SERVICES", BaseAgent.REQUIRED_SERVICES)
+        return self._coerce_required_services(raw)
+
+    @staticmethod
+    def _coerce_required_services(raw: Any) -> tuple[str, ...]:
+        if not isinstance(raw, (tuple, list, set, frozenset)):
+            return BaseAgent.REQUIRED_SERVICES
+        required: list[str] = []
+        for key in raw:
+            if not isinstance(key, str) or not key:
+                return BaseAgent.REQUIRED_SERVICES
+            required.append(key)
+        return tuple(required)
+
+    @staticmethod
+    def _missing_required_services(
+        required: tuple[str, ...],
+        services: Mapping[str, Any] | None,
+    ) -> list[str]:
+        raw = services or {}
+        return [key for key in required if raw.get(key) is None]
 
     async def _lookup_spec(self, name: str) -> AgentSpec | None:
         if name in self._ephemeral_agents:

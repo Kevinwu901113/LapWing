@@ -24,6 +24,7 @@ from src.core.shell_policy import (
 from src.core.verifier import verify_shell_constraints_status as verify_constraints
 from src.core.trajectory_store import TrajectoryEntryType
 from src.core.authority_gate import AuthLevel, identify as identify_auth
+from src.agents.service_observability import log_required_service_presence
 from src.logging.state_mutation_log import MutationType
 from src.tools.registry import build_default_tool_registry
 from src.tools.shell_executor import execute as execute_shell
@@ -393,6 +394,7 @@ class LapwingBrain:
         proactive_gate = getattr(self, "_proactive_message_gate_ref", None)
         if proactive_gate is not None:
             services["proactive_message_gate"] = proactive_gate
+        log_required_service_presence(logger, "Brain._build_services.exit", services)
         return services
 
     async def _complete_chat(

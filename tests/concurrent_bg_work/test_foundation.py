@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock
 
 from src.adapters.base import NormalizedInboundMessage
 from src.agents.base import BaseAgent
+from src.agents.exceptions import AgentSpawnError
 from src.agents.types import AgentResult, AgentSpec as RuntimeAgentSpec
 from src.config import reload_settings
 from src.agents.spec import AgentSpec
@@ -47,10 +48,18 @@ def _reset_settings_cache_after_test():
 
 
 class _Registry:
+    REQUIRED = ("dispatcher", "tool_registry", "llm_router")
+    RESEARCHER_REQUIRED = REQUIRED + ("research_engine", "ambient_store")
+
     async def _lookup_spec(self, name: str):
         if name in {"researcher", "coder"}:
             return AgentSpec(name=name, kind="builtin")
         return None
+
+    async def preflight_check(self, name: str, services):
+        required = self.RESEARCHER_REQUIRED if name == "researcher" else self.REQUIRED
+        raw = services or {}
+        return [key for key in required if raw.get(key) is None]
 
 
 class _FakeAgent:
@@ -82,11 +91,23 @@ async def _noop_shell(_command: str):
     return None
 
 
+def _agent_runtime_services(supervisor) -> dict:
+    return {
+        "background_task_supervisor": supervisor,
+        "agent_registry": getattr(supervisor, "agent_registry", None) or _Registry(),
+        "dispatcher": object(),
+        "tool_registry": object(),
+        "llm_router": object(),
+        "research_engine": object(),
+        "ambient_store": object(),
+    }
+
+
 def _ctx(supervisor) -> ToolExecutionContext:
     return ToolExecutionContext(
         execute_shell=_noop_shell,
         shell_default_cwd=".",
-        services={"background_task_supervisor": supervisor},
+        services=_agent_runtime_services(supervisor),
         chat_id="chat",
         user_id="owner",
     )
@@ -513,6 +534,43 @@ async def test_delegate_to_researcher_routes_to_background_handle_under_p2c(monk
 
 
 @pytest.mark.asyncio
+async def test_delegate_to_researcher_missing_services_fails_before_background_task(monkeypatch):
+    class FakeSupervisor:
+        def __init__(self):
+            self.calls = []
+
+        async def start_agent_task(self, **kwargs):
+            self.calls.append(kwargs)
+            return AgentTaskHandle("task_bg", TaskStatus.PENDING, None, "/tmp/ws")
+
+    supervisor = FakeSupervisor()
+    _set_bg_flags(
+        monkeypatch,
+        CONCURRENT_BG_WORK_ENABLED=True,
+        CONCURRENT_BG_WORK_P2B_TASK_SUPERVISOR_READONLY=True,
+        CONCURRENT_BG_WORK_P2C_AGENT_RUNTIME_ASYNC=True,
+    )
+    services = _agent_runtime_services(supervisor)
+    services.pop("dispatcher")
+
+    result = await delegate_to_researcher_executor(
+        ToolExecutionRequest("delegate_to_researcher", {"task": "search lunch"}),
+        ToolExecutionContext(
+            execute_shell=_noop_shell,
+            shell_default_cwd=".",
+            services=services,
+            chat_id="chat",
+            user_id="owner",
+        ),
+    )
+
+    assert result.success is False
+    assert result.payload["missing_services"] == ["dispatcher"]
+    assert result.reason == "agent_services_unavailable: dispatcher"
+    assert supervisor.calls == []
+
+
+@pytest.mark.asyncio
 async def test_spawn_runtime_injects_event_bus_and_background_metadata(tmp_path):
     store = AgentTaskStore(tmp_path / "lapwing.db")
     await store.init()
@@ -537,6 +595,38 @@ async def test_spawn_runtime_injects_event_bus_and_background_metadata(tmp_path)
     assert registry.captured_services["agent_event_bus"] is supervisor.event_bus
     assert registry.captured_services["background_task_id"] == handle.task_id
     assert registry.captured_services["background_chat_id"] == "chat"
+    await store.close()
+
+
+@pytest.mark.asyncio
+async def test_runtime_spawn_error_marks_task_failed(tmp_path):
+    class FailingRegistry(_Registry):
+        async def get_or_create_instance(self, name: str, services_override=None):
+            raise AgentSpawnError(name, ("dispatcher",))
+
+    store = AgentTaskStore(tmp_path / "lapwing.db")
+    await store.init()
+    supervisor = TaskSupervisor(
+        store=store,
+        agent_registry=FailingRegistry(),
+        runtime_enabled=True,
+    )
+
+    handle = await supervisor.start_agent_task(
+        spec_id="researcher",
+        objective="find lunch",
+        chat_id="chat",
+        owner_user_id="owner",
+        services={"tool_registry": object(), "llm_router": object()},
+    )
+
+    while handle.task_id in supervisor._runtime_tasks:
+        await asyncio.sleep(0.01)
+
+    record = await store.read(handle.task_id)
+    assert record is not None
+    assert record.status == TaskStatus.FAILED
+    assert record.error_summary == "agent_services_unavailable: dispatcher"
     await store.close()
 
 
@@ -632,7 +722,7 @@ async def test_delegate_same_turn_id_is_idempotent(monkeypatch, tmp_path):
     ctx = ToolExecutionContext(
         execute_shell=_noop_shell,
         shell_default_cwd=".",
-        services={"background_task_supervisor": supervisor},
+        services=_agent_runtime_services(supervisor),
         chat_id="chat",
         user_id="owner",
         turn_id="turn-1",
@@ -673,7 +763,7 @@ async def test_delegate_different_turn_id_creates_new_task(monkeypatch, tmp_path
     ctx1 = ToolExecutionContext(
         execute_shell=_noop_shell,
         shell_default_cwd=".",
-        services={"background_task_supervisor": supervisor},
+        services=_agent_runtime_services(supervisor),
         chat_id="chat",
         user_id="owner",
         turn_id="turn-1",
@@ -681,7 +771,7 @@ async def test_delegate_different_turn_id_creates_new_task(monkeypatch, tmp_path
     ctx2 = ToolExecutionContext(
         execute_shell=_noop_shell,
         shell_default_cwd=".",
-        services={"background_task_supervisor": supervisor},
+        services=_agent_runtime_services(supervisor),
         chat_id="chat",
         user_id="owner",
         turn_id="turn-2",
@@ -722,7 +812,7 @@ async def test_delegate_missing_turn_id_creates_unique_tasks(monkeypatch, tmp_pa
     ctx = ToolExecutionContext(
         execute_shell=_noop_shell,
         shell_default_cwd=".",
-        services={"background_task_supervisor": supervisor},
+        services=_agent_runtime_services(supervisor),
         chat_id="chat",
         user_id="owner",
         turn_id="",  # missing
@@ -757,7 +847,7 @@ async def test_direct_start_agent_task_missing_turn_id_creates_unique_tasks(monk
     ctx = ToolExecutionContext(
         execute_shell=_noop_shell,
         shell_default_cwd=".",
-        services={"background_task_supervisor": supervisor},
+        services=_agent_runtime_services(supervisor),
         chat_id="chat",
         user_id="owner",
         turn_id="",  # missing

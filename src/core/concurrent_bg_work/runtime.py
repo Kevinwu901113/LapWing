@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import uuid
 
+from src.agents.exceptions import AgentSpawnError
 from src.agents.types import AgentMessage
 from src.core.concurrent_bg_work.event_bus import new_agent_event
 from src.core.concurrent_bg_work.types import (
@@ -59,10 +60,24 @@ class AgentRuntime:
             sequence=1,
         ))
         self.cancellation_token.raise_if_cancelled()
-        agent = await self.agent_registry.get_or_create_instance(
-            self.spec_id,
-            services_override=self.services,
-        )
+        try:
+            agent = await self.agent_registry.get_or_create_instance(
+                self.spec_id,
+                services_override=self.services,
+            )
+        except AgentSpawnError as exc:
+            await self.event_bus.emit(new_agent_event(
+                task_id=self.task_id,
+                chat_id=self.chat_id,
+                type=AgentEventType.AGENT_FAILED,
+                summary=(
+                    "agent_services_unavailable: "
+                    + ", ".join(exc.missing_services)
+                )[:500],
+                sequence=2,
+                salience=SalienceLevel.HIGH,
+            ))
+            return
         if agent is None:
             await self.event_bus.emit(new_agent_event(
                 task_id=self.task_id,

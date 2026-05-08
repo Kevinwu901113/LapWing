@@ -71,6 +71,8 @@ _FAST_PATH_HINTS: frozenset[str] = frozenset({
 class Researcher(BaseAgent):
     """搜索和调研 Agent。"""
 
+    REQUIRED_SERVICES = BaseAgent.REQUIRED_SERVICES + ("research_engine", "ambient_store")
+
     @classmethod
     def create(
         cls,

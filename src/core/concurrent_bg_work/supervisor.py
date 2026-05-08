@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
+from src.agents.service_observability import log_required_service_presence
 from src.core.concurrent_bg_work.event_bus import AgentEventBus, new_agent_event
 from src.core.concurrent_bg_work.policy import (
     ConcurrencyGate,
@@ -314,6 +315,12 @@ class TaskSupervisor:
     def _spawn_runtime(self, record: AgentTaskRecord, services: dict[str, Any]) -> None:
         if self.agent_registry is None:
             return
+        if record.spec_id == "researcher":
+            log_required_service_presence(
+                logger,
+                "TaskSupervisor._spawn_runtime.input_services",
+                services,
+            )
         child_services = dict(services)
         child_services.update({
             "agent_event_bus": self.event_bus,
@@ -321,6 +328,12 @@ class TaskSupervisor:
             "background_chat_id": record.chat_id,
             "background_owner_user_id": record.owner_user_id,
         })
+        if record.spec_id == "researcher":
+            log_required_service_presence(
+                logger,
+                "TaskSupervisor._spawn_runtime.child_services",
+                child_services,
+            )
         token = CancellationToken()
         self._tokens[record.task_id] = token
         runtime = AgentRuntime(

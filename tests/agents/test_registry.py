@@ -4,7 +4,16 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from src.agents.exceptions import AgentSpawnError
 from src.agents.registry import AgentRegistry
+
+
+def _base_services():
+    return {
+        "dispatcher": object(),
+        "tool_registry": object(),
+        "llm_router": object(),
+    }
 
 
 def _make_agent(name="test"):
@@ -50,7 +59,7 @@ class TestAgentRegistry:
         agent._services = {}
         reg.register("researcher", agent)
 
-        services = {"research_engine": object(), "llm_router": object()}
+        services = _base_services()
         resolved = await reg.get_or_create_instance(
             "researcher",
             services_override=services,
@@ -58,3 +67,33 @@ class TestAgentRegistry:
 
         assert resolved is agent
         assert agent._services is services
+
+    @pytest.mark.asyncio
+    async def test_legacy_get_or_create_falls_back_to_base_required_services(self):
+        reg = AgentRegistry()
+        agent = _make_agent("researcher")
+        reg.register("researcher", agent)
+
+        with pytest.raises(AgentSpawnError) as exc_info:
+            await reg.get_or_create_instance(
+                "researcher",
+                services_override={"llm_router": object()},
+            )
+
+        assert exc_info.value.missing_services == ("dispatcher", "tool_registry")
+
+    @pytest.mark.asyncio
+    async def test_legacy_get_or_create_uses_agent_required_services_attr(self):
+        reg = AgentRegistry()
+        agent = _make_agent("custom")
+        agent.REQUIRED_SERVICES = ("custom_service",)
+        reg.register("custom", agent)
+
+        missing = await reg.preflight_check("custom", {})
+        assert missing == ["custom_service"]
+
+        resolved = await reg.get_or_create_instance(
+            "custom",
+            services_override={"custom_service": object()},
+        )
+        assert resolved is agent

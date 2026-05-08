@@ -150,7 +150,13 @@ async def test_agent_registry_factory_path_injects_services_override():
 
     registry = AgentRegistry(catalog=catalog, factory=factory, policy=None)
 
-    services = {"dispatcher": object(), "agent_policy": object(), "budget_ledger": object()}
+    services = {
+        "dispatcher": object(),
+        "tool_registry": object(),
+        "llm_router": object(),
+        "agent_policy": object(),
+        "budget_ledger": object(),
+    }
     await registry.get_or_create_instance("coder", services_override=services)
 
     factory.create.assert_called_once()
@@ -165,7 +171,12 @@ def test_agent_factory_injects_services_for_builtin():
         mutation_log=MagicMock(),
     )
     spec = AgentSpec(name="coder", kind="builtin", runtime_profile="agent_coder")
-    services = {"dispatcher": object(), "agent_policy": object()}
+    services = {
+        "dispatcher": object(),
+        "tool_registry": object(),
+        "llm_router": object(),
+        "agent_policy": object(),
+    }
 
     agent = factory.create(spec, services_override=services)
 

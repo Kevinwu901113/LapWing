@@ -4,6 +4,7 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock
 
 from src.agents.budget import BudgetLedger
+from src.agents.exceptions import AgentSpawnError
 from src.agents.spec import AgentSpec, AgentLifecyclePolicy
 from src.agents.types import AgentResult
 from src.tools.agent_tools import (
@@ -92,6 +93,24 @@ async def test_delegate_to_agent_unknown_name():
     res = await delegate_to_agent_executor(req, ctx)
     assert res.success is False
     assert "not" in res.reason.lower() or "不可用" in res.reason or "不存在" in res.reason
+
+
+async def test_delegate_to_agent_spawn_error_returns_services_unavailable():
+    registry = MagicMock()
+    registry.get_or_create_instance = AsyncMock(
+        side_effect=AgentSpawnError("researcher", ("dispatcher",))
+    )
+    ctx = _make_ctx(registry=registry)
+    req = ToolExecutionRequest(
+        name="delegate_to_agent",
+        arguments={"agent_name": "researcher", "task": "x"},
+    )
+
+    res = await delegate_to_agent_executor(req, ctx)
+
+    assert res.success is False
+    assert res.payload["missing_services"] == ["dispatcher"]
+    assert res.reason == "agent_services_unavailable: dispatcher"
 
 
 async def test_delegate_to_agent_charges_delegation_depth():

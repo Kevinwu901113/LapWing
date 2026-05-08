@@ -36,6 +36,8 @@ logger = logging.getLogger("lapwing.agents.base")
 class BaseAgent:
     """通用 Agent：接收 AgentMessage，跑独立 tool loop，返回 AgentResult。"""
 
+    REQUIRED_SERVICES: tuple[str, ...] = ("dispatcher", "tool_registry", "llm_router")
+
     def __init__(
         self,
         spec: AgentSpec,

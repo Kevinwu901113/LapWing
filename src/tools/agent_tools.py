@@ -22,7 +22,9 @@ import traceback
 import uuid
 
 from src.agents.budget import BudgetExhausted
+from src.agents.exceptions import AgentSpawnError
 from src.agents.policy import AgentPolicyViolation, CreateAgentInput
+from src.agents.service_observability import log_required_service_presence
 from src.agents.types import AgentMessage, AgentResult
 from src.logging.state_mutation_log import MutationType
 from src.tools.types import ToolExecutionContext, ToolExecutionRequest, ToolExecutionResult, ToolSpec
@@ -35,8 +37,6 @@ logger = logging.getLogger("lapwing.tools.agent_tools")
 _ephemeral_run_counts: dict[str, int] = {}
 _completed_delegations: dict[str, int] = {}
 
-_AGENT_BASE_REQUIRED_SERVICES = ("dispatcher", "tool_registry", "llm_router")
-_RESEARCHER_REQUIRED_SERVICES = ("research_engine", "ambient_store")
 _HARD_ERROR_PATTERNS = (
     "未注入", "unavailable", "service_not_found", "not_initialized",
     "disabled", "circuit_break", "engine_unavailable",
@@ -108,11 +108,27 @@ async def delegate_to_agent_legacy_wait(spec_id: str, query: str, ctx: ToolExecu
     return await delegate_to_agent_executor(req, ctx)
 
 
-def _missing_required_agent_services(agent_name: str, services: dict) -> list[str]:
-    required = list(_AGENT_BASE_REQUIRED_SERVICES)
-    if agent_name == "researcher":
-        required.extend(_RESEARCHER_REQUIRED_SERVICES)
-    return [key for key in required if services.get(key) is None]
+def _agent_services_unavailable_result(missing_services) -> ToolExecutionResult:
+    missing = list(missing_services or [])
+    return ToolExecutionResult(
+        success=False,
+        payload={"missing_services": missing},
+        reason=f"agent_services_unavailable: {', '.join(missing)}",
+    )
+
+
+async def _preflight_agent_services(
+    agent_registry,
+    agent_name: str,
+    services: dict,
+) -> list[str] | None:
+    preflight = getattr(agent_registry, "preflight_check", None)
+    if preflight is None:
+        return None
+    result = preflight(agent_name, services)
+    if inspect.isawaitable(result):
+        result = await result
+    return list(result or [])
 
 
 def _hard_tool_error_reason(result: AgentResult) -> str | None:
@@ -246,23 +262,18 @@ async def _run_agent(
     if not agent_registry:
         return ToolExecutionResult(success=False, payload={}, reason="Agent Team 未就绪")
 
-    agent = await _resolve_agent(
-        agent_registry,
-        agent_name,
-        services_override=svc.raw,
-    )
+    try:
+        agent = await _resolve_agent(
+            agent_registry,
+            agent_name,
+            services_override=svc.raw,
+        )
+    except AgentSpawnError as exc:
+        return _agent_services_unavailable_result(exc.missing_services)
     if not agent:
         return ToolExecutionResult(
             success=False, payload={},
             reason=f"Agent '{agent_name}' 不可用",
-        )
-
-    missing_services = _missing_required_agent_services(agent_name, svc.raw)
-    if missing_services:
-        return ToolExecutionResult(
-            success=False,
-            payload={"missing_services": missing_services},
-            reason=f"agent_services_unavailable: {', '.join(missing_services)}",
         )
 
     # Budget: enter delegation depth (raises BudgetExhausted on overflow).
@@ -375,6 +386,12 @@ async def _execute_delegation(
         return ToolExecutionResult(
             success=False, payload={}, reason="task 不能为空",
         )
+    if agent_name == "researcher":
+        log_required_service_presence(
+            logger,
+            "agent_delegation.ctx_services",
+            ctx.services,
+        )
     if _background_delegate_enabled() and agent_name in {"researcher", "coder"}:
         return await _start_background_delegate(
             agent_name=agent_name,
@@ -411,6 +428,14 @@ async def _start_background_delegate(
             payload={"status": "background_task_supervisor_unavailable"},
             reason="background_task_supervisor unavailable while concurrent background work is active",
         )
+    agent_registry = svc.agent_registry
+    if agent_registry is None:
+        return ToolExecutionResult(success=False, payload={}, reason="Agent Team 未就绪")
+    missing_services = await _preflight_agent_services(agent_registry, agent_name, svc.raw)
+    if missing_services is None:
+        return ToolExecutionResult(success=False, payload={}, reason="Agent Team 未就绪")
+    if missing_services:
+        return _agent_services_unavailable_result(missing_services)
     if ctx.turn_id:
         parent_event_id = f"delegate_{ctx.turn_id}"
         parent_turn_id = ctx.turn_id
