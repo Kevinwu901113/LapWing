@@ -92,7 +92,8 @@ def _make_deps(tool_turn_result=None, tool_exec_result=None):
     mutation_log = AsyncMock()
     mutation_log.record = AsyncMock(return_value=1)
 
-    services = {"dispatcher": _FakeDispatcher(registry)}
+    fake_dispatcher = _FakeDispatcher(registry)
+    services = {"dispatcher": fake_dispatcher, "tool_dispatcher": fake_dispatcher}
     return router, registry, mutation_log, services
 
 

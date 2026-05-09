@@ -46,6 +46,7 @@ def _make_ctx(*, agent_name: str = "test_agent"):
         services={
             "agent_registry": registry,
             "dispatcher": MagicMock(),
+            "tool_dispatcher": MagicMock(),
             "tool_registry": MagicMock(),
             "llm_router": MagicMock(),
             "research_engine": MagicMock(),

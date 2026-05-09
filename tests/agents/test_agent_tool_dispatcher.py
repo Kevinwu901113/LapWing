@@ -116,11 +116,13 @@ async def test_base_agent_missing_dispatcher_fails_closed():
 
     output = await agent._execute_tool(tool_call, message)
 
-    assert "missing_dispatcher" in output
+    assert "tool_infra_unavailable" in output
+    assert "missing_tool_dispatcher" in output
     registry.execute.assert_not_called()
     mutation_log.record.assert_awaited_once()
     payload = mutation_log.record.await_args.args[1]
-    assert payload["guard"] == "dispatcher_missing"
+    assert payload["guard"] == "tool_infra_unavailable"
+    assert payload["organ"] == "tool_dispatcher"
 
 
 @pytest.mark.asyncio
@@ -129,7 +131,7 @@ async def test_resolve_agent_passes_turn_services_override():
     registry = MagicMock()
     registry.get_or_create_instance = AsyncMock(return_value=agent)
 
-    services = {"dispatcher": object(), "agent_policy": object()}
+    services = {"dispatcher": object(), "tool_dispatcher": object(), "agent_policy": object()}
     resolved = await _resolve_agent(registry, "coder", services_override=services)
 
     assert resolved is agent
@@ -152,6 +154,7 @@ async def test_agent_registry_factory_path_injects_services_override():
 
     services = {
         "dispatcher": object(),
+        "tool_dispatcher": object(),
         "tool_registry": object(),
         "llm_router": object(),
         "agent_policy": object(),
@@ -173,6 +176,7 @@ def test_agent_factory_injects_services_for_builtin():
     spec = AgentSpec(name="coder", kind="builtin", runtime_profile="agent_coder")
     services = {
         "dispatcher": object(),
+        "tool_dispatcher": object(),
         "tool_registry": object(),
         "llm_router": object(),
         "agent_policy": object(),
@@ -203,6 +207,7 @@ async def test_delegate_to_coder_passes_turn_services_into_registry():
     services = {
         "agent_registry": registry,
         "dispatcher": object(),
+        "tool_dispatcher": object(),
         "agent_policy": object(),
         "tool_registry": object(),
         "llm_router": object(),

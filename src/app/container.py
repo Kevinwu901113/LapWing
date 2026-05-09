@@ -166,6 +166,21 @@ class AppContainer:
         )
         self.brain._proactive_message_gate_ref = self.proactive_message_gate
 
+        from src.core.expression_gate import ExpressionGate
+        from src.core.infra_breaker import InfraCircuitBreaker
+
+        self.expression_gate = ExpressionGate()
+        self.brain._expression_gate_ref = self.expression_gate
+        cooldowns = tuple(float(v) for v in (_s.infra_breaker.cooldown_seconds or [60, 120, 300]))
+        if os.getenv("PYTEST_CURRENT_TEST") and _s.infra_breaker.test_cooldown_seconds:
+            cooldowns = (float(_s.infra_breaker.test_cooldown_seconds),)
+        self.infra_breaker = InfraCircuitBreaker(
+            enabled=_s.infra_breaker.enabled,
+            cooldown_schedule_seconds=cooldowns,
+            close_success_threshold=_s.infra_breaker.close_success_threshold,
+        )
+        self.brain._infra_breaker_ref = self.infra_breaker
+
         # Dispatcher — 内存 pub/sub 总线，给桌面端 SSE 和子系统实时广播用。
         # 持久化由 StateMutationLog 负责；dispatcher 只是 live stream。
         self.dispatcher: Dispatcher | None = None

@@ -371,6 +371,7 @@ class MainLoop:
         # ── Drive brain ─────────────────────────────────────────────
         final_text = merged_text
         final_images = merged_images
+        await self._maybe_record_topic_stop(event.chat_id, final_text)
 
         send_fn = self._wrap_user_reply_send_fn(event)
 
@@ -791,6 +792,46 @@ class MainLoop:
         if not text:
             return False
 
+        snapshot = getattr(event, "task_snapshot", None)
+        metadata = {
+            "task_id": getattr(event, "task_id", ""),
+            "delivery_target": delivery_target,
+            "stale": stale,
+            "topic_key": getattr(snapshot, "topic_key", None),
+            "intent_key": getattr(snapshot, "intent_key", None),
+            "generation": getattr(snapshot, "generation", None),
+        }
+        store = getattr(self._brain, "_background_task_store_ref", None)
+        if store is not None and metadata.get("topic_key"):
+            try:
+                metadata["stopped_at_generation"] = await store.stopped_generation(
+                    chat_id=chat_id,
+                    topic_key=str(metadata["topic_key"]),
+                )
+            except Exception:
+                logger.debug("stopped topic lookup failed", exc_info=True)
+
+        event_type = str(getattr(getattr(triggering, "type", None), "value", "") or "")
+        if getattr(event, "kind", "") == "agent_needs_input" or event_type == "agent_needs_input":
+            gate = getattr(self._brain, "_expression_gate_ref", None)
+            if gate is not None:
+                await gate.reject_internal(
+                    text,
+                    source="agent_needs_input",
+                    chat_id=chat_id,
+                    mutation_log=getattr(self._brain, "_mutation_log_ref", None),
+                    metadata=metadata,
+                )
+            return False
+        if event_type in {"agent_failed", "agent_budget_exhausted"}:
+            source = "background_failure"
+        elif event_type == "agent_completed":
+            source = "background_completion"
+        elif event_type == "agent_cancelled":
+            source = "confirmation"
+        else:
+            source = f"agent_task_result_{delivery_target}"
+
         async def _send(text_to_send: str) -> None:
             if channel_manager is None:
                 raise RuntimeError("channel_manager unavailable for agent status delivery")
@@ -801,11 +842,13 @@ class MainLoop:
         delivered = await send_system_message(
             _send,
             text,
-            source=f"agent_task_result_{delivery_target}",
+            source=source,
             chat_id=chat_id,
             adapter="agent_task",
             trajectory_store=getattr(self._brain, "trajectory_store", None),
             mutation_log=getattr(self._brain, "_mutation_log_ref", None),
+            expression_gate=getattr(self._brain, "_expression_gate_ref", None),
+            metadata=metadata,
         )
         if delivered and self._chat_activity_tracker is not None:
             self._chat_activity_tracker.mark_assistant_reply(
@@ -825,20 +868,65 @@ class MainLoop:
         if event.send_fn is None:
             return None
 
-        async def _send(text: str) -> None:
+        async def _send(text: str, *, source: str = "direct_reply", metadata: dict | None = None) -> None:
             async with self._speaking_arbiter.acquire(
                 event.chat_id,
                 purpose="user_reply",
                 chat_activity_tracker=self._chat_activity_tracker,
             ):
-                await event.send_fn(text)
+                from src.core.expression_gate import ExpressionGate, get_default_expression_gate, source_from_legacy
+                gate = getattr(self._brain, "_expression_gate_ref", None)
+                if not isinstance(gate, ExpressionGate):
+                    gate = get_default_expression_gate()
+                await gate.send(
+                    text,
+                    source=source_from_legacy(source),
+                    chat_id=event.chat_id,
+                    send_fn=event.send_fn,
+                    trajectory_store=getattr(self._brain, "trajectory_store", None),
+                    mutation_log=getattr(self._brain, "_mutation_log_ref", None),
+                    adapter=event.adapter,
+                    metadata=metadata or {},
+                )
             if self._chat_activity_tracker is not None:
                 self._chat_activity_tracker.mark_assistant_reply(
                     event.chat_id,
-                    source="user_reply",
+                    source=source,
                 )
 
         return _send
+
+    async def _maybe_record_topic_stop(self, chat_id: str, text: str) -> None:
+        try:
+            from src.config import get_settings
+            if not get_settings().intent_cancellation.enabled:
+                return
+            from src.core.topic_lineage import is_stop_request_for_weather
+            if not is_stop_request_for_weather(text):
+                return
+            store = getattr(self._brain, "_background_task_store_ref", None)
+            if store is None:
+                return
+            stopped = await store.stop_topic_prefix(
+                chat_id=chat_id,
+                topic_prefix="weather:",
+                reason="user_cancelled_weather_topic",
+            )
+            mutation_log = getattr(self._brain, "_mutation_log_ref", None)
+            if mutation_log is not None:
+                from src.logging.state_mutation_log import MutationType
+                await mutation_log.record(
+                    MutationType.TOPIC_STOPPED,
+                    {
+                        "chat_id": chat_id,
+                        "topic_prefix": "weather:",
+                        "stopped": stopped,
+                        "reason": "user_cancelled_weather_topic",
+                    },
+                    chat_id=chat_id,
+                )
+        except Exception:
+            logger.debug("topic stop marker write failed", exc_info=True)
 
     async def _send_user_visible_status(
         self,
@@ -867,6 +955,7 @@ class MainLoop:
             adapter=event.adapter,
             trajectory_store=getattr(self._brain, "trajectory_store", None),
             mutation_log=getattr(self._brain, "_mutation_log_ref", None),
+            expression_gate=getattr(self._brain, "_expression_gate_ref", None),
         )
         if delivered and self._chat_activity_tracker is not None:
             self._chat_activity_tracker.mark_assistant_reply(

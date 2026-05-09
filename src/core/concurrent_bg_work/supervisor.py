@@ -105,6 +105,9 @@ class TaskSupervisor:
         idempotency_key: str | None = None,
         spawned_by: str = "lapwing",
         services: dict[str, Any] | None = None,
+        intent_key: str | None = None,
+        topic_key: str | None = None,
+        generation: int | None = None,
     ) -> AgentTaskHandle:
         if not spec_id.strip():
             raise ToolValidationError("spec_id is required")
@@ -137,6 +140,10 @@ class TaskSupervisor:
             priority=priority,
         ))
         now = datetime.now(timezone.utc)
+        if topic_key and generation is None and hasattr(self.store, "next_generation"):
+            generation = await self.store.next_generation(chat_id=chat_id, topic_key=topic_key)
+        if topic_key and not intent_key:
+            intent_key = topic_key
         task_id = f"task_{uuid.uuid4().hex[:12]}"
         workspace_path = str(self.workspace_root / chat_id / task_id)
         Path(workspace_path).mkdir(parents=True, exist_ok=True)
@@ -176,6 +183,9 @@ class TaskSupervisor:
             salience=salience,
             priority=priority,
             idempotency_key=key,
+            intent_key=intent_key,
+            topic_key=topic_key,
+            generation=generation,
         )
         try:
             await self.store.create_task(record)

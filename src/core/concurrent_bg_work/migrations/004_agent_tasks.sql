@@ -33,7 +33,10 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
     notify_policy TEXT NOT NULL DEFAULT 'auto',
     salience TEXT NOT NULL DEFAULT 'normal',
     priority INTEGER NOT NULL DEFAULT 0,
-    idempotency_key TEXT NOT NULL
+    idempotency_key TEXT NOT NULL,
+    intent_key TEXT,
+    topic_key TEXT,
+    generation INTEGER
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_tasks_idempotency
@@ -44,6 +47,24 @@ CREATE INDEX IF NOT EXISTS idx_agent_tasks_root
     ON agent_tasks(root_task_id);
 CREATE INDEX IF NOT EXISTS idx_agent_tasks_owner_status
     ON agent_tasks(owner_user_id, status);
+-- idx_agent_tasks_topic_generation is created in _apply_migration after
+-- topic_key and generation columns are confirmed to exist.
+
+CREATE TABLE IF NOT EXISTS topic_generations (
+    chat_id TEXT NOT NULL,
+    topic_key TEXT NOT NULL,
+    generation INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (chat_id, topic_key)
+);
+
+CREATE TABLE IF NOT EXISTS stopped_topics (
+    chat_id TEXT NOT NULL,
+    topic_key TEXT NOT NULL,
+    stopped_at_generation INTEGER NOT NULL,
+    stopped_at TEXT NOT NULL,
+    reason TEXT,
+    PRIMARY KEY (chat_id, topic_key)
+);
 
 CREATE TABLE IF NOT EXISTS agent_events (
     event_id TEXT PRIMARY KEY,

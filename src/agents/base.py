@@ -36,7 +36,7 @@ logger = logging.getLogger("lapwing.agents.base")
 class BaseAgent:
     """通用 Agent：接收 AgentMessage，跑独立 tool loop，返回 AgentResult。"""
 
-    REQUIRED_SERVICES: tuple[str, ...] = ("dispatcher", "tool_registry", "llm_router")
+    REQUIRED_SERVICES: tuple[str, ...] = ("dispatcher", "tool_dispatcher", "tool_registry", "llm_router")
 
     def __init__(
         self,
@@ -451,7 +451,10 @@ class BaseAgent:
 
         req = ToolExecutionRequest(name=tool_call.name, arguments=tool_call.arguments)
         try:
-            dispatcher = services.get("dispatcher")
+            dispatcher = services.get("tool_dispatcher")
+            if dispatcher is None and hasattr(services.get("dispatcher"), "dispatch"):
+                dispatcher = services.get("dispatcher")
+                services.setdefault("tool_dispatcher", dispatcher)
             if dispatcher is None or not hasattr(dispatcher, "dispatch"):
                 mutation_log = services.get("mutation_log")
                 if mutation_log is not None:
@@ -461,8 +464,10 @@ class BaseAgent:
                             MutationType.TOOL_DENIED,
                             {
                                 "tool": tool_call.name,
-                                "guard": "dispatcher_missing",
-                                "reason": "missing_dispatcher",
+                                "guard": "tool_infra_unavailable",
+                                "reason": "missing_tool_dispatcher",
+                                "infra_failure_class": "tool_infra_unavailable",
+                                "organ": "tool_dispatcher",
                                 "auth_level": 3,
                                 "agent_name": self.spec.name,
                             },
@@ -472,9 +477,11 @@ class BaseAgent:
                 # Fail closed: no direct registry fallback, dispatcher is the only gate.
                 return json.dumps(
                     {
-                        "error": "tool_forbidden",
+                        "error": "tool_infra_unavailable",
                         "tool": tool_call.name,
-                        "reason": "missing_dispatcher",
+                        "reason": "missing_tool_dispatcher",
+                        "infra_failure_class": "tool_infra_unavailable",
+                        "organ": "tool_dispatcher",
                     },
                     ensure_ascii=False,
                 )

@@ -335,6 +335,7 @@ _ALL_SERVICE_KEYS = [
     # Tool execution
     ("tool_registry", "tool_registry"),
     ("dispatcher", "dispatcher"),
+    ("tool_dispatcher", "tool_dispatcher"),
     # Auditing
     ("mutation_log", "mutation_log"),
     # Agents
@@ -368,6 +369,8 @@ _ALL_SERVICE_KEYS = [
     ("correction_manager", "correction_manager"),
     # Safety
     ("circuit_breaker", "circuit_breaker"),
+    ("infra_breaker", "infra_breaker"),
+    ("expression_gate", "expression_gate"),
     # Ambient / interest / research
     ("ambient_store", "ambient_store"),
     ("interest_profile", "interest_profile"),
@@ -404,6 +407,19 @@ def test_require_dispatcher_present_returns():
     d = object()
     view = ServiceContextView({"dispatcher": d})
     assert view.require_dispatcher() is d
+
+
+def test_require_tool_dispatcher_missing_raises():
+    view = ServiceContextView({})
+    with pytest.raises(MissingServiceError, match="tool_dispatcher"):
+        view.require_tool_dispatcher()
+
+
+def test_require_tool_dispatcher_present_returns_dispatch_capable():
+    d = MagicMock()
+    d.dispatch = AsyncMock()
+    view = ServiceContextView({"tool_dispatcher": d})
+    assert view.require_tool_dispatcher() is d
 
 
 def test_require_agent_policy_missing_raises():

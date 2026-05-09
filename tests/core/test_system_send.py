@@ -37,7 +37,8 @@ async def test_send_system_message_delivers_and_records():
     assert kwargs["chat_id"] == "chat1"
     _, args, *_ = mutation_log.record.call_args
     payload = mutation_log.record.call_args.args[1]
-    assert payload["source"] == "reminder_notify"
+    assert payload["source"] == "reminder"
+    assert payload["metadata"]["legacy_source"] == "reminder_notify"
     assert payload["trajectory_id"] == 42
     assert payload["delivered"] is True
 

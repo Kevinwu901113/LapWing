@@ -73,6 +73,10 @@ class ServiceContextView:
     def dispatcher(self):
         return self.raw.get("dispatcher")
 
+    @property
+    def tool_dispatcher(self):
+        return self.raw.get("tool_dispatcher")
+
     # ── Auditing & logging ──────────────────────────────────────────────
 
     @property
@@ -209,6 +213,14 @@ class ServiceContextView:
     def circuit_breaker(self):
         return self.raw.get("circuit_breaker")
 
+    @property
+    def infra_breaker(self):
+        return self.raw.get("infra_breaker")
+
+    @property
+    def expression_gate(self):
+        return self.raw.get("expression_gate")
+
     # ── Ambient / interest / research ───────────────────────────────────
 
     @property
@@ -250,6 +262,16 @@ class ServiceContextView:
         obj = self.raw.get("dispatcher")
         if obj is None:
             raise MissingServiceError("dispatcher")
+        return obj
+
+    def require_tool_dispatcher(self):
+        """Fail-closed: agent tool calls must route through ToolDispatcher."""
+        obj = self.raw.get("tool_dispatcher")
+        if obj is None:
+            raise MissingServiceError("tool_dispatcher")
+        dispatch = getattr(obj, "dispatch", None)
+        if not callable(dispatch):
+            raise MissingServiceError("tool_dispatcher")
         return obj
 
     def require_agent_policy(self):
@@ -359,6 +381,99 @@ class ToolDispatcher:
             ),
         )
 
+    def _infra_unavailable_result(
+        self,
+        *,
+        organ: str,
+        reason: str,
+        cwd: str | None = None,
+        command: str = "",
+        safe_details: dict[str, Any] | None = None,
+    ) -> ToolExecutionResult:
+        details = {
+            "organ": organ,
+            "reason": reason,
+            "infra_failure_class": "tool_infra_unavailable",
+        }
+        if safe_details:
+            details.update(safe_details)
+        return make_tool_error_result(
+            status=ToolResultStatus.DEPENDENCY_ERROR,
+            error_code=ToolErrorCode.INFRA_UNAVAILABLE,
+            error_class=ToolErrorClass.DEPENDENCY,
+            retryable=True,
+            reason=reason,
+            safe_details=details,
+            base_payload={
+                "error": "tool_infra_unavailable",
+                "status": ToolResultStatus.DEPENDENCY_ERROR.value,
+                "error_code": ToolErrorCode.INFRA_UNAVAILABLE.value,
+                "error_class": ToolErrorClass.DEPENDENCY.value,
+                "retryable": True,
+                "safe_details": details,
+                "details_schema_version": "tool_error.v1",
+                "organ": organ,
+                "infra_failure_class": "tool_infra_unavailable",
+                "reason": reason,
+                "command": command,
+                "cwd": cwd or SHELL_DEFAULT_CWD,
+                "blocked": True,
+            },
+        )
+
+    def _assert_tool_infra_live(
+        self,
+        *,
+        ctx: ServiceContextView,
+        request: ToolExecutionRequest,
+        deps: RuntimeDeps | None,
+    ) -> ToolExecutionResult | None:
+        breaker = ctx.infra_breaker
+        for organ in ("tool_dispatcher", "tool_registry"):
+            if breaker is not None:
+                allowed, reason = breaker.should_allow(organ)
+                if not allowed:
+                    return self._infra_unavailable_result(
+                        organ=organ,
+                        reason=reason,
+                        cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
+                        command=str(request.arguments.get("command", "")).strip(),
+                    )
+
+        try:
+            ctx.require_tool_dispatcher()
+        except MissingServiceError:
+            if breaker is not None:
+                breaker.record_failure("tool_dispatcher")
+            return self._infra_unavailable_result(
+                organ="tool_dispatcher",
+                reason="missing_tool_dispatcher",
+                cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
+                command=str(request.arguments.get("command", "")).strip(),
+            )
+
+        registry = ctx.tool_registry
+        if registry is None:
+            if breaker is not None:
+                breaker.record_failure("tool_registry")
+            return self._infra_unavailable_result(
+                organ="tool_registry",
+                reason="missing_tool_registry",
+                cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
+                command=str(request.arguments.get("command", "")).strip(),
+            )
+        for attr in ("get", "execute"):
+            if not callable(getattr(registry, attr, None)):
+                if breaker is not None:
+                    breaker.record_failure("tool_registry")
+                return self._infra_unavailable_result(
+                    organ="tool_registry",
+                    reason=f"invalid_tool_registry:{attr}",
+                    cwd=(deps.shell_default_cwd if deps is not None else SHELL_DEFAULT_CWD),
+                    command=str(request.arguments.get("command", "")).strip(),
+                )
+        return None
+
     async def _record_tool_denied(
         self,
         *,
@@ -412,8 +527,14 @@ class ToolDispatcher:
         capability_version: str | None = None,
         capability_content_hash: str | None = None,
     ) -> ToolExecutionResult:
-        ctx = ServiceContextView(services or {})
+        services = dict(services or {})
+        services.setdefault("tool_registry", self._runtime._tool_registry)
+        services.setdefault("tool_dispatcher", self)
+        ctx = ServiceContextView(services)
         profile_obj = self._runtime._resolve_profile(profile)
+        infra_failure = self._assert_tool_infra_live(ctx=ctx, request=request, deps=deps)
+        if infra_failure is not None:
+            return infra_failure
         
         # ── Agent Policy Check ────────────────────────────────────────────────
         # Use isinstance against the v2 AgentSpec class rather than checking
@@ -867,6 +988,13 @@ class ToolDispatcher:
                     return _cache_hit
 
         execution = await self._runtime._tool_registry.execute(request, context=context)
+        if ctx.infra_breaker is not None:
+            if isinstance(execution.payload, dict) and execution.payload.get("error") == "tool_infra_unavailable":
+                organ = str(execution.payload.get("organ") or "tool_dispatcher")
+                ctx.infra_breaker.record_failure(organ)
+            elif execution.success:
+                ctx.infra_breaker.record_success("tool_dispatcher")
+                ctx.infra_breaker.record_success("tool_registry")
 
         # ── research 成功后写回 ambient cache ──────────────────────────
         if request.name == "research" and execution.success:

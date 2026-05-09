@@ -418,6 +418,7 @@ async def _start_background_delegate(
     expected_output: str = "",
 ) -> ToolExecutionResult:
     from src.core.concurrent_bg_work.types import NotifyPolicy, SalienceLevel
+    from src.core.topic_lineage import infer_topic_key
     from src.core.tool_dispatcher import ServiceContextView
 
     svc = ServiceContextView(ctx.services or {})
@@ -442,6 +443,11 @@ async def _start_background_delegate(
     else:
         parent_event_id = f"delegate_unscoped_{uuid.uuid4().hex}"
         parent_turn_id = None
+    intent_key, topic_key = infer_topic_key(
+        text=task,
+        chat_id=ctx.chat_id or "",
+        user_id=ctx.user_id or "",
+    )
     handle = await supervisor.start_agent_task(
         spec_id=agent_name,
         objective=task,
@@ -453,6 +459,8 @@ async def _start_background_delegate(
         notify_policy=NotifyPolicy.AUTO,
         salience=SalienceLevel.NORMAL,
         services=svc.raw,
+        intent_key=intent_key,
+        topic_key=topic_key,
     )
     return ToolExecutionResult(
         success=True,

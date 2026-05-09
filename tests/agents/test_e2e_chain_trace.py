@@ -341,6 +341,7 @@ class TestE2EChainTrace:
         services = {
             "agent_registry": agent_registry,
             "dispatcher": fake_dispatcher,
+            "tool_dispatcher": fake_dispatcher,
             "tool_registry": tool_registry,
             "llm_router": router,
             "research_engine": MagicMock(),
@@ -601,6 +602,7 @@ class TestE2EChainTrace:
         services = {
             "agent_registry": agent_registry,
             "dispatcher": fake_dispatcher,
+            "tool_dispatcher": fake_dispatcher,
             "tool_registry": tool_registry,
             "llm_router": router,
             "research_engine": MagicMock(),

@@ -35,6 +35,7 @@ from src.logging.state_mutation_log import (
     MutationType,
     current_iteration_id,
 )
+from src.core.expression_gate import get_default_expression_gate, source_from_legacy
 
 logger = logging.getLogger("lapwing.core.system_send")
 
@@ -51,6 +52,8 @@ async def send_system_message(
     trajectory_store: Any = None,
     mutation_log: Any = None,
     focus_id: str | None = None,
+    expression_gate: Any = None,
+    metadata: dict[str, Any] | None = None,
 ) -> bool:
     """Deliver a framework-level message to the user and record it.
 
@@ -82,6 +85,32 @@ async def send_system_message(
         ``False`` otherwise. Recording failures do not change the
         return value.
     """
+    gate = expression_gate or get_default_expression_gate()
+    try:
+        from src.config import get_settings
+        gate_enabled = bool(get_settings().expression_gate.enabled)
+    except Exception:
+        gate_enabled = True
+    if gate_enabled:
+        delivered = await gate.send(
+            text,
+            source=source_from_legacy(source),
+            chat_id=chat_id,
+            send_fn=send_fn,
+            trajectory_store=trajectory_store,
+            mutation_log=mutation_log,
+            adapter=adapter,
+            focus_id=focus_id,
+            metadata={"legacy_source": source, **(metadata or {})},
+        )
+        if not delivered:
+            logger.warning(
+                "system_send %s 投递失败 chat=%s",
+                source,
+                chat_id,
+            )
+        return delivered
+
     delivered = False
     try:
         await send_fn(text)

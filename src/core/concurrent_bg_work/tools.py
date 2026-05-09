@@ -56,6 +56,9 @@ async def start_agent_task_executor(req: ToolExecutionRequest, ctx: ToolExecutio
             priority=int(args.get("priority") or 0),
             replaces_task_id=args.get("replaces_task_id"),
             services=ctx.services or {},
+            intent_key=args.get("intent_key") or None,
+            topic_key=args.get("topic_key") or None,
+            generation=int(args["generation"]) if args.get("generation") is not None else None,
         )
     except ResourceExhaustedError as exc:
         return _failure(f"resource_exhausted: {exc}", {"status": "resource_exhausted"})
@@ -156,6 +159,9 @@ START_AGENT_TASK_SCHEMA = {
         "salience": {"type": "string", "enum": ["low", "normal", "high", "critical"], "default": "normal"},
         "priority": {"type": "integer", "default": 0},
         "replaces_task_id": {"type": ["string", "null"]},
+        "intent_key": {"type": ["string", "null"]},
+        "topic_key": {"type": ["string", "null"]},
+        "generation": {"type": ["integer", "null"]},
     },
     "required": ["spec_id", "objective"],
 }

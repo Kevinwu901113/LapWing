@@ -41,7 +41,7 @@ def _build_dynamic_agent_with_dispatcher(dispatcher, *, policy=None):
     profile.include_internal = False
     profile.shell_policy_enabled = False
 
-    services = {"dispatcher": dispatcher}
+    services = {"dispatcher": object(), "tool_dispatcher": dispatcher}
     if policy is not None:
         services["agent_policy"] = policy
 
@@ -82,7 +82,8 @@ async def test_dynamic_agent_missing_dispatcher_fails_closed():
     ))
 
     payload = json.loads(output)
-    assert payload.get("reason") == "missing_dispatcher"
+    assert payload.get("reason") == "missing_tool_dispatcher"
+    assert payload.get("error") == "tool_infra_unavailable"
 
 
 @pytest.mark.asyncio
@@ -258,7 +259,7 @@ async def test_dynamic_agent_kind_tampered_fail_closed_via_dispatcher():
     profile.include_internal = False
     profile.shell_policy_enabled = False
 
-    services = {"dispatcher": dispatcher}
+    services = {"dispatcher": object(), "tool_dispatcher": dispatcher}
     agent = DynamicAgent(
         spec=spec,
         profile=profile,

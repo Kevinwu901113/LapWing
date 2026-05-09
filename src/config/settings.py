@@ -331,6 +331,17 @@ _ENV_MAP: dict[str, list[str]] = {
     "CONCURRENT_BG_WORK_LOG_CONCURRENCY_DECISIONS": ["concurrent_bg_work", "diagnostic", "log_concurrency_decisions"],
     "CONCURRENT_BG_WORK_LOG_SEMANTIC_CANCEL_DECISIONS": ["concurrent_bg_work", "diagnostic", "log_semantic_cancel_decisions"],
     "OPERATOR_EMERGENCY_CONTROL_ENABLED": ["operator", "emergency_control_enabled"],
+    # ── subjecthood batch 1 ──
+    "EXPRESSION_GATE_ENABLED": ["expression_gate", "enabled"],
+    "EXPRESSION_GATE_DIRECT_REPLY_THROUGH_GATE": ["expression_gate", "direct_reply_through_gate"],
+    "EXPRESSION_GATE_FAIL_OPEN_DIRECT_REPLY": ["expression_gate", "fail_open_direct_reply"],
+    "EXPRESSION_GATE_DUPLICATE_INFRA_FAILURE_WINDOW_SECONDS": ["expression_gate", "duplicate_infra_failure_window_seconds"],
+    "SELF_PROJECTION_OUTBOUND_CONTEXT_INJECTION_ENABLED": ["self_projection", "outbound_context_injection_enabled"],
+    "SELF_PROJECTION_OUTBOUND_CONTEXT_LIMIT": ["self_projection", "outbound_context_limit"],
+    "SELF_PROJECTION_OUTBOUND_CONTEXT_CHAR_CAP": ["self_projection", "outbound_context_char_cap"],
+    "INFRA_BREAKER_ENABLED": ["infra_breaker", "enabled"],
+    "INFRA_BREAKER_TEST_COOLDOWN_SECONDS": ["infra_breaker", "test_cooldown_seconds"],
+    "INTENT_CANCELLATION_ENABLED": ["intent_cancellation", "enabled"],
 }
 
 
@@ -771,6 +782,31 @@ class OperatorConfig(BaseModel):
     emergency_control_enabled: bool = False
 
 
+class ExpressionGateConfig(BaseModel):
+    enabled: bool = True
+    direct_reply_through_gate: bool = True
+    fail_open_direct_reply: bool = True
+    duplicate_infra_failure_window_seconds: int = Field(default=300, ge=1)
+
+
+class SelfProjectionConfig(BaseModel):
+    outbound_context_injection_enabled: bool = True
+    outbound_context_limit: int = Field(default=20, ge=1)
+    outbound_context_char_cap: int = Field(default=8000, ge=500)
+    outbound_context_truncate_chars: int = Field(default=300, ge=50)
+
+
+class InfraBreakerConfig(BaseModel):
+    enabled: bool = True
+    cooldown_seconds: list[int] = Field(default_factory=lambda: [60, 120, 300])
+    test_cooldown_seconds: int = Field(default=5, ge=1)
+    close_success_threshold: int = Field(default=3, ge=1)
+
+
+class IntentCancellationConfig(BaseModel):
+    enabled: bool = True
+
+
 # ── root settings ────────────────────────────
 
 def _inject_env(data: dict[str, Any]) -> dict[str, Any]:
@@ -846,6 +882,10 @@ class LapwingSettings(BaseSettings):
         default_factory=ConcurrentBackgroundWorkConfig,
     )
     operator: OperatorConfig = Field(default_factory=OperatorConfig)
+    expression_gate: ExpressionGateConfig = Field(default_factory=ExpressionGateConfig)
+    self_projection: SelfProjectionConfig = Field(default_factory=SelfProjectionConfig)
+    infra_breaker: InfraBreakerConfig = Field(default_factory=InfraBreakerConfig)
+    intent_cancellation: IntentCancellationConfig = Field(default_factory=IntentCancellationConfig)
     credential_vault_path: str = ""
     phase0_mode: str = ""
 

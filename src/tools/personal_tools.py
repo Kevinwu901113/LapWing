@@ -479,6 +479,22 @@ async def _send_message(
 
     from src.core.tool_dispatcher import ServiceContextView
     svc = ServiceContextView(ctx.services or {})
+    infra_breaker = svc.infra_breaker
+    if infra_breaker is not None:
+        for organ in ("tool_dispatcher", "tool_registry"):
+            allowed, reason = infra_breaker.should_allow(organ)
+            if not allowed:
+                return ToolExecutionResult(
+                    success=False,
+                    payload={
+                        "sent": False,
+                        "error": "tool_infra_unavailable",
+                        "infra_failure_class": "tool_infra_unavailable",
+                        "organ": organ,
+                        "gate_reason": reason,
+                    },
+                    reason=f"infra_breaker:{organ}:{reason}",
+                )
 
     factual_gate_result = await _factual_claim_gate(content, ctx)
     if factual_gate_result is not None:
@@ -564,15 +580,38 @@ async def _send_message(
                     payload={"error": "Desktop 未连接。你可以改用 target='kevin_qq' 发到 QQ。"},
                     reason="desktop_not_connected",
                 )
-            await desktop_adapter.send_text(desktop_adapter.config.get("kevin_id", "owner"), content)
+            async def _send(text: str) -> None:
+                await desktop_adapter.send_text(desktop_adapter.config.get("kevin_id", "owner"), text)
+
+            expression_gate = svc.expression_gate
+            if expression_gate is not None:
+                delivered = await expression_gate.send(
+                    content,
+                    source="proactive",
+                    chat_id=resolved_target_chat_id,
+                    send_fn=_send,
+                    trajectory_store=svc.trajectory_store,
+                    mutation_log=svc.mutation_log,
+                    adapter="desktop",
+                    metadata={"target": target, "channel": "desktop", "category": category},
+                )
+                if not delivered:
+                    return ToolExecutionResult(
+                        success=False,
+                        payload={"sent": False, "target": target, "category": category},
+                        reason="expression_gate_blocked",
+                    )
+            else:
+                await _send(content)
+                _resolved = resolved_target_chat_id
+                if _resolved is not None:
+                    await _record_proactive_outbound_trajectory(
+                        ctx=ctx, target=target, content=content,
+                        channel="desktop", resolved_chat_id=_resolved,
+                    )
             gate_recorded = _record_proactive_send_success(gate, ctx)
             _resolved = resolved_target_chat_id
-            if _resolved is not None:
-                await _record_proactive_outbound_trajectory(
-                    ctx=ctx, target=target, content=content,
-                    channel="desktop", resolved_chat_id=_resolved,
-                )
-            else:
+            if _resolved is None:
                 logger.info(
                     "[send_message] skipped proactive trajectory write: "
                     "no resolved chat_id for target=%s", target,
@@ -609,14 +648,36 @@ async def _send_message(
                     payload={"error": "QQ 适配器不可用，无法发送私信。"},
                     reason="qq_adapter_unavailable",
                 )
-            await qq_adapter.send_private_message(str(owner_qq_id), content)
-            gate_recorded = _record_proactive_send_success(gate, ctx)
-            _resolved = resolved_target_chat_id
-            if _resolved is not None:
-                await _record_proactive_outbound_trajectory(
-                    ctx=ctx, target=target, content=content,
-                    channel="qq", resolved_chat_id=_resolved,
+            async def _send(text: str) -> None:
+                await qq_adapter.send_private_message(str(owner_qq_id), text)
+
+            expression_gate = svc.expression_gate
+            if expression_gate is not None:
+                delivered = await expression_gate.send(
+                    content,
+                    source="proactive",
+                    chat_id=resolved_target_chat_id,
+                    send_fn=_send,
+                    trajectory_store=svc.trajectory_store,
+                    mutation_log=svc.mutation_log,
+                    adapter="qq",
+                    metadata={"target": target, "channel": "qq", "category": category},
                 )
+                if not delivered:
+                    return ToolExecutionResult(
+                        success=False,
+                        payload={"sent": False, "target": target, "category": category},
+                        reason="expression_gate_blocked",
+                    )
+            else:
+                await _send(content)
+                _resolved = resolved_target_chat_id
+                if _resolved is not None:
+                    await _record_proactive_outbound_trajectory(
+                        ctx=ctx, target=target, content=content,
+                        channel="qq", resolved_chat_id=_resolved,
+                    )
+            gate_recorded = _record_proactive_send_success(gate, ctx)
             return ToolExecutionResult(
                 success=True,
                 payload={
@@ -649,15 +710,38 @@ async def _send_message(
                     payload={"error": "QQ 适配器不可用，无法发送群消息。"},
                     reason="qq_adapter_unavailable",
                 )
-            await qq_adapter.send_group_message(group_id, content)
+            async def _send(text: str) -> None:
+                await qq_adapter.send_group_message(group_id, text)
+
+            expression_gate = svc.expression_gate
+            if expression_gate is not None:
+                delivered = await expression_gate.send(
+                    content,
+                    source="proactive",
+                    chat_id=resolved_target_chat_id,
+                    send_fn=_send,
+                    trajectory_store=svc.trajectory_store,
+                    mutation_log=svc.mutation_log,
+                    adapter="qq_group",
+                    metadata={"target": target, "channel": "qq_group", "category": category},
+                )
+                if not delivered:
+                    return ToolExecutionResult(
+                        success=False,
+                        payload={"sent": False, "target": target, "category": category},
+                        reason="expression_gate_blocked",
+                    )
+            else:
+                await _send(content)
+                _resolved = resolved_target_chat_id
+                if _resolved is not None:
+                    await _record_proactive_outbound_trajectory(
+                        ctx=ctx, target=target, content=content,
+                        channel="qq_group", resolved_chat_id=_resolved,
+                    )
             gate_recorded = _record_proactive_send_success(gate, ctx)
             _resolved = resolved_target_chat_id
-            if _resolved is not None:
-                await _record_proactive_outbound_trajectory(
-                    ctx=ctx, target=target, content=content,
-                    channel="qq_group", resolved_chat_id=_resolved,
-                )
-            else:
+            if _resolved is None:
                 logger.info(
                     "[send_message] skipped proactive trajectory write: "
                     "group canonical chat_id not resolved for target=%s",

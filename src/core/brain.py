@@ -50,6 +50,20 @@ logger = logging.getLogger("lapwing.core.brain")
 # latency / response_length INFO records visible in lapwing.log.
 _metrics_logger = logging.getLogger("lapwing.metrics.complete_chat")
 
+
+def _extract_trajectory_text(entry) -> str:
+    content = getattr(entry, "content", {}) or {}
+    text = content.get("text")
+    if isinstance(text, str):
+        return text
+    text = content.get("content")
+    if isinstance(text, str):
+        return text
+    messages = content.get("messages")
+    if isinstance(messages, list):
+        return "\n".join(str(item) for item in messages)
+    return ""
+
 # 直接输出模式：模型裸文本 = 用户可见消息。工具调用是内部操作。
 # send_message 工具仅用于主动消息场景（意识 tick / 定时提醒等无对话上下文时）。
 
@@ -184,6 +198,73 @@ class LapwingBrain:
             return trajectory_entries_to_messages(rows)
         return []
 
+    async def _outbound_self_projection_message(self, chat_id: str) -> dict | None:
+        try:
+            settings = __import__("src.config", fromlist=["get_settings"]).get_settings()
+            cfg = settings.self_projection
+            if not cfg.outbound_context_injection_enabled:
+                return None
+        except Exception:
+            cfg = None
+        if self.trajectory_store is None:
+            return None
+        limit = int(getattr(cfg, "outbound_context_limit", 20) if cfg is not None else 20)
+        cap = int(getattr(cfg, "outbound_context_char_cap", 8000) if cfg is not None else 8000)
+        truncate = int(getattr(cfg, "outbound_context_truncate_chars", 300) if cfg is not None else 300)
+        try:
+            latest_user_ts, _latest_assistant_ts = await self.trajectory_store.latest_chat_turn_times(chat_id)
+            base_entries = await self.trajectory_store.recent_user_visible_outbound(
+                chat_id,
+                limit=limit,
+            )
+            strong_entries = []
+            if latest_user_ts is not None:
+                strong_entries = await self.trajectory_store.recent_user_visible_outbound(
+                    chat_id,
+                    limit=max(limit, 100),
+                    since_ts=latest_user_ts,
+                )
+        except Exception:
+            logger.debug("outbound self projection load failed", exc_info=True)
+            return None
+        by_id = {entry.id: entry for entry in base_entries}
+        for entry in strong_entries:
+            by_id[entry.id] = entry
+        entries = sorted(by_id.values(), key=lambda item: (item.timestamp, item.id))
+        if not entries:
+            return None
+        lines: list[str] = ["[Self Projection: recent user-visible outbound messages]"]
+        used = len(lines[0])
+        for entry in entries:
+            text = _extract_trajectory_text(entry)
+            if not text:
+                continue
+            source = str(entry.content.get("source") or entry.entry_type)
+            meta = entry.content.get("metadata") if isinstance(entry.content.get("metadata"), dict) else {}
+            meta_text = ""
+            if meta:
+                keep = {k: v for k, v in meta.items() if k in {"focus_id", "task_id", "topic_key", "generation"}}
+                if keep:
+                    meta_text = f" metadata={keep}"
+            rendered_text = text
+            if used + len(rendered_text) > cap:
+                rendered_text = rendered_text[:truncate] + "...[truncated]"
+            line = f"- ts={entry.timestamp:.3f} source={source}{meta_text}: {rendered_text}"
+            lines.append(line)
+            used += len(line)
+            if used >= cap:
+                break
+        return {"role": "system", "content": "\n".join(lines)}
+
+    @staticmethod
+    def _direct_reply_logged_by_gate() -> bool:
+        try:
+            from src.config import get_settings
+            flags = get_settings().expression_gate
+            return bool(flags.enabled and flags.direct_reply_through_gate)
+        except Exception:
+            return True
+
     async def clear_short_term_memory(self, chat_id: str) -> None:
         """仅清除短期对话记忆。"""
         self.task_runtime.clear_chat_state(chat_id)
@@ -296,9 +377,15 @@ class LapwingBrain:
         dispatcher = getattr(self, "_dispatcher_ref", None)
         if dispatcher is not None:
             services["dispatcher"] = dispatcher
+        tool_dispatcher = getattr(getattr(self, "task_runtime", None), "tool_dispatcher", None)
+        if tool_dispatcher is not None:
+            services["tool_dispatcher"] = tool_dispatcher
         mutation_log = getattr(self, "_mutation_log_ref", None)
         if mutation_log is not None:
             services["mutation_log"] = mutation_log
+        expression_gate = getattr(self, "_expression_gate_ref", None)
+        if expression_gate is not None:
+            services["expression_gate"] = expression_gate
         services["llm_router"] = self.router
         note_store = getattr(self, "_note_store", None)
         if note_store is not None:
@@ -343,6 +430,9 @@ class LapwingBrain:
         circuit_breaker = getattr(self, "_circuit_breaker_ref", None)
         if circuit_breaker is not None:
             services["circuit_breaker"] = circuit_breaker
+        infra_breaker = getattr(self, "_infra_breaker_ref", None)
+        if infra_breaker is not None:
+            services["infra_breaker"] = infra_breaker
         correction_manager = getattr(self, "_correction_manager", None)
         if correction_manager is not None:
             services["correction_manager"] = correction_manager
@@ -808,9 +898,6 @@ class LapwingBrain:
             self.task_runtime.resolve_pending_confirmation(chat_id, user_message)
         )
         if immediate_reply is not None:
-            await self._record_turn(
-                chat_id, "assistant", immediate_reply, focus_id=focus_id,
-            )
             if send_fn is not None:
                 from src.core.system_send import send_system_message
                 await send_system_message(
@@ -822,6 +909,11 @@ class LapwingBrain:
                     trajectory_store=self.trajectory_store,
                     mutation_log=getattr(self, "_mutation_log_ref", None),
                     focus_id=focus_id,
+                    expression_gate=getattr(self, "_expression_gate_ref", None),
+                )
+            else:
+                await self._record_turn(
+                    chat_id, "assistant", immediate_reply, focus_id=focus_id,
                 )
             return _ThinkCtx(messages=[], effective_user_message=effective_user_message,
                              approved_directory=approved_directory,
@@ -863,6 +955,9 @@ class LapwingBrain:
             auth_level=auth_level,
             group_id=group_id,
         )
+        projection = await self._outbound_self_projection_message(chat_id)
+        if projection is not None and messages:
+            messages = [messages[0], projection, *messages[1:]]
 
         # 多模态：将图片注入到最后一条 user 消息中（Anthropic content blocks 格式）
         if images:
@@ -1179,7 +1274,7 @@ class LapwingBrain:
             # 后处理：记录"她真正说出口的话"
             memory_text = "\n\n".join(spoken_parts) if spoken_parts else ""
             try:
-                if memory_text:
+                if memory_text and not (send_fn is not None and self._direct_reply_logged_by_gate()):
                     await self._record_turn(
                         chat_id, "assistant", memory_text, focus_id=ctx.focus_id,
                     )

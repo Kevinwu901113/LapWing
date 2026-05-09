@@ -167,6 +167,25 @@ def _contains_simulated_tool_call(text: str) -> bool:
     return any(p.search(text) for p in _SIMULATED_TOOL_PATTERNS)
 
 
+def _is_tool_infra_unavailable_payload(payload: dict[str, Any] | None) -> bool:
+    if not isinstance(payload, dict):
+        return False
+    return (
+        payload.get("error") == "tool_infra_unavailable"
+        or payload.get("infra_failure_class") == "tool_infra_unavailable"
+        or payload.get("error_code") == "tool.infra_unavailable"
+    )
+
+
+def _tool_infra_fallback_text(payload: dict[str, Any] | None) -> str:
+    organ = "工具调度"
+    if isinstance(payload, dict):
+        raw_organ = str(payload.get("organ") or "").replace("_", " ")
+        if raw_organ:
+            organ = raw_organ
+    return f"工具系统这边暂时不可用（{organ}）。我先停止这次查询，避免继续重复派发后台任务。"
+
+
 def _strip_simulated_tool_calls(text: str) -> str:
     """移除文本中的模拟工具调用。"""
     for p in _SIMULATED_TOOL_PATTERNS:
@@ -307,11 +326,15 @@ class TaskRuntime:
         async def _noop_shell(cmd: str):
             return ShellResult(stdout="", stderr="Shell disabled for agents", return_code=1)
 
+        services = {
+            "tool_registry": self._tool_registry,
+            "tool_dispatcher": self.tool_dispatcher,
+        }
         return ToolExecutionContext(
             execute_shell=_noop_shell,
             shell_default_cwd=SHELL_DEFAULT_CWD,
             workspace_root=SHELL_DEFAULT_CWD,
-            services={},
+            services=services,
             adapter="agent",
             user_id=f"agent:{agent_name}",
             auth_level=1,  # TRUSTED
@@ -1198,6 +1221,32 @@ class TaskRuntime:
                 **tool_event_common,
                 **tool_event_metrics,
             )
+            if _is_tool_infra_unavailable_payload(payload):
+                logger.warning(
+                    "[runtime] tool infra unavailable: tool=%s organ=%s reason=%s",
+                    tool_call.name,
+                    payload.get("organ") if isinstance(payload, dict) else "",
+                    payload.get("reason") if isinstance(payload, dict) else "",
+                )
+                ctx.state.record_failure("tool_infra_unavailable", "blocked")
+                fallback = _tool_infra_fallback_text(payload)
+                metadata = {
+                    "infra_failure_class": "tool_infra_unavailable",
+                    "organ": payload.get("organ") if isinstance(payload, dict) else "tool_dispatcher",
+                    "topic_key": payload.get("topic_key") if isinstance(payload, dict) else "",
+                }
+                if ctx.send_fn is not None:
+                    try:
+                        await ctx.send_fn(
+                            fallback,
+                            source="framework_fallback",
+                            metadata=metadata,
+                        )
+                    except TypeError:
+                        await ctx.send_fn(fallback)
+                ctx.final_reply = ""
+                _record_round_latency()
+                return TaskLoopStep(completed=True, payload=payload)
             # ── Error Burst Guard ──
             if execution_success:
                 ctx.error_guard.record_success()
@@ -1492,6 +1541,9 @@ class TaskRuntime:
         send_fn: Callable[[str], "Awaitable[Any]"] | None = None,
         focus_id: str | None = None,
     ) -> ToolExecutionResult:
+        merged_services = dict(services or {})
+        merged_services.setdefault("tool_registry", self._tool_registry)
+        merged_services.setdefault("tool_dispatcher", self.tool_dispatcher)
         return await self.tool_dispatcher.dispatch(
             request=request,
             profile=profile,
@@ -1501,7 +1553,7 @@ class TaskRuntime:
             chat_id=chat_id,
             event_bus=event_bus,
             workspace_root=workspace_root,
-            services=services,
+            services=merged_services,
             adapter=adapter,
             user_id=user_id,
             send_fn=send_fn,

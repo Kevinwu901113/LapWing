@@ -141,6 +141,13 @@ class MutationType(str, Enum):
     AGENT_NEEDS_INPUT = "agent.needs_input"
     AGENT_CANCELLED = "agent.task_cancelled"
 
+    # --- Subjecthood batch 1: expression / infra audit ---
+    EXPRESSION_GATE_REJECTED = "expression_gate.rejected"
+    EXPRESSION_GATE_SUPPRESSED = "expression_gate.suppressed"
+    EXPRESSION_GATE_FAIL_OPEN = "expression_gate.fail_open"
+    INFRA_BREAKER_TRANSITION = "infra_breaker.transition"
+    TOPIC_STOPPED = "topic.stopped"
+
     # --- Researcher fast-path telemetry (post-MVP planning) ---
     # Fired at the start of every Researcher.execute(); payload includes
     # the task text, freshness_hint, and a flag for whether this looks

@@ -11,6 +11,7 @@ from src.agents.registry import AgentRegistry
 def _base_services():
     return {
         "dispatcher": object(),
+        "tool_dispatcher": object(),
         "tool_registry": object(),
         "llm_router": object(),
     }
@@ -80,7 +81,7 @@ class TestAgentRegistry:
                 services_override={"llm_router": object()},
             )
 
-        assert exc_info.value.missing_services == ("dispatcher", "tool_registry")
+        assert exc_info.value.missing_services == ("dispatcher", "tool_dispatcher", "tool_registry")
 
     @pytest.mark.asyncio
     async def test_legacy_get_or_create_uses_agent_required_services_attr(self):

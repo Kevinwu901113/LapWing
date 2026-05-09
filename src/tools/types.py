@@ -66,6 +66,7 @@ class ToolErrorCode(str, Enum):
     TIMEOUT = "tool.timeout"
     PERMISSION_DENIED = "tool.permission_denied"
     DEPENDENCY_UNAVAILABLE = "tool.dependency_unavailable"
+    INFRA_UNAVAILABLE = "tool.infra_unavailable"
     INTERNAL_ERROR = "tool.internal_error"
 
 
@@ -178,6 +179,8 @@ def _reason_from_error(error_code: ToolErrorCode) -> str:
         return "tool execution timed out"
     if error_code == ToolErrorCode.DEPENDENCY_UNAVAILABLE:
         return "tool dependency unavailable"
+    if error_code == ToolErrorCode.INFRA_UNAVAILABLE:
+        return "tool infra unavailable"
     if error_code == ToolErrorCode.INTERNAL_ERROR:
         return "tool internal error"
     if error_code == ToolErrorCode.PRECONDITION_FAILED:

@@ -115,6 +115,9 @@ class AgentTaskRecord:
     salience: SalienceLevel
     priority: int
     idempotency_key: str
+    intent_key: str | None = None
+    topic_key: str | None = None
+    generation: int | None = None
 
 
 @dataclass(slots=True)
@@ -148,6 +151,9 @@ class AgentTaskSnapshot:
     salience: SalienceLevel
     is_blocked_by_input: bool
     pending_question: str | None
+    intent_key: str | None = None
+    topic_key: str | None = None
+    generation: int | None = None
 
 
 @dataclass(slots=True)

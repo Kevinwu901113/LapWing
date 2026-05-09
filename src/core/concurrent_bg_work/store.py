@@ -128,8 +128,8 @@ class AgentTaskStore:
                         artifact_refs, last_progress_summary, checkpoint_id,
                         checkpoint_question, cancellation_requested,
                         cancellation_reason, notify_policy, salience, priority,
-                        idempotency_key
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        idempotency_key, intent_key, topic_key, generation
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     _record_values(record),
                 )
@@ -359,6 +359,138 @@ class AgentTaskStore:
             )
         return count > 0
 
+    async def next_generation(self, *, chat_id: str, topic_key: str) -> int:
+        async def op(conn: aiosqlite.Connection):
+            await conn.execute(
+                """
+                INSERT INTO topic_generations (chat_id, topic_key, generation)
+                VALUES (?, ?, 1)
+                ON CONFLICT(chat_id, topic_key) DO UPDATE
+                SET generation = generation + 1
+                """,
+                (chat_id, topic_key),
+            )
+            async with conn.execute(
+                "SELECT generation FROM topic_generations WHERE chat_id = ? AND topic_key = ?",
+                (chat_id, topic_key),
+            ) as cur:
+                row = await cur.fetchone()
+            return int(row["generation"] if row is not None else 1)
+
+        return await self._writer.submit(op)
+
+    async def stop_topic(
+        self,
+        *,
+        chat_id: str,
+        topic_key: str,
+        stopped_at_generation: int | None = None,
+        reason: str = "user_cancelled_topic",
+    ) -> int:
+        async def op(conn: aiosqlite.Connection):
+            generation = stopped_at_generation
+            if generation is None:
+                async with conn.execute(
+                    "SELECT MAX(generation) AS generation FROM agent_tasks WHERE chat_id = ? AND topic_key = ?",
+                    (chat_id, topic_key),
+                ) as cur:
+                    row = await cur.fetchone()
+                generation = int(row["generation"] or 0) if row is not None else 0
+            await conn.execute(
+                """
+                INSERT INTO stopped_topics (chat_id, topic_key, stopped_at_generation, stopped_at, reason)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(chat_id, topic_key) DO UPDATE
+                SET stopped_at_generation = MAX(stopped_at_generation, excluded.stopped_at_generation),
+                    stopped_at = excluded.stopped_at,
+                    reason = excluded.reason
+                """,
+                (
+                    chat_id,
+                    topic_key,
+                    int(generation or 0),
+                    datetime.now(timezone.utc).isoformat(),
+                    reason,
+                ),
+            )
+            await conn.execute(
+                """
+                UPDATE agent_tasks
+                SET cancellation_requested = 1,
+                    cancellation_reason = ?
+                WHERE chat_id = ?
+                  AND topic_key = ?
+                  AND generation <= ?
+                  AND status NOT IN ('completed','failed','cancelled')
+                """,
+                (reason, chat_id, topic_key, int(generation or 0)),
+            )
+            return int(generation or 0)
+
+        return await self._writer.submit(op)
+
+    async def stop_topic_prefix(
+        self,
+        *,
+        chat_id: str,
+        topic_prefix: str,
+        reason: str = "user_cancelled_topic",
+    ) -> dict[str, int]:
+        async def op(conn: aiosqlite.Connection):
+            async with conn.execute(
+                """
+                SELECT topic_key, MAX(generation) AS generation
+                FROM agent_tasks
+                WHERE chat_id = ? AND topic_key LIKE ?
+                GROUP BY topic_key
+                """,
+                (chat_id, f"{topic_prefix}%"),
+            ) as cur:
+                rows = await cur.fetchall()
+            stopped: dict[str, int] = {}
+            now = datetime.now(timezone.utc).isoformat()
+            for row in rows:
+                topic_key = row["topic_key"]
+                generation = int(row["generation"] or 0)
+                stopped[topic_key] = generation
+                await conn.execute(
+                    """
+                    INSERT INTO stopped_topics (chat_id, topic_key, stopped_at_generation, stopped_at, reason)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT(chat_id, topic_key) DO UPDATE
+                    SET stopped_at_generation = MAX(stopped_at_generation, excluded.stopped_at_generation),
+                        stopped_at = excluded.stopped_at,
+                        reason = excluded.reason
+                    """,
+                    (chat_id, topic_key, generation, now, reason),
+                )
+                await conn.execute(
+                    """
+                    UPDATE agent_tasks
+                    SET cancellation_requested = 1,
+                        cancellation_reason = ?
+                    WHERE chat_id = ?
+                      AND topic_key = ?
+                      AND generation <= ?
+                      AND status NOT IN ('completed','failed','cancelled')
+                    """,
+                    (reason, chat_id, topic_key, generation),
+                )
+            return stopped
+
+        return await self._writer.submit(op)
+
+    async def stopped_generation(self, *, chat_id: str, topic_key: str) -> int | None:
+        async with self._reader() as conn:
+            async with conn.execute(
+                "SELECT stopped_at_generation FROM stopped_topics WHERE chat_id = ? AND topic_key = ?",
+                (chat_id, topic_key),
+            ) as cur:
+                row = await cur.fetchone()
+        if row is None:
+            return None
+        return int(row["stopped_at_generation"])
+
     async def startup_recovery(self) -> RecoveryNotice | None:
         now = datetime.now(timezone.utc)
         async with self._reader() as conn:
@@ -473,7 +605,21 @@ async def _configure(conn: aiosqlite.Connection) -> None:
 async def _apply_migration(conn: aiosqlite.Connection) -> None:
     migration = Path(__file__).parent / "migrations" / "004_agent_tasks.sql"
     await conn.executescript(migration.read_text(encoding="utf-8"))
+    await _add_column_if_missing(conn, "agent_tasks", "intent_key", "TEXT")
+    await _add_column_if_missing(conn, "agent_tasks", "topic_key", "TEXT")
+    await _add_column_if_missing(conn, "agent_tasks", "generation", "INTEGER")
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agent_tasks_topic_generation "
+        "ON agent_tasks(chat_id, topic_key, generation)"
+    )
     await conn.commit()
+
+
+async def _add_column_if_missing(conn: aiosqlite.Connection, table: str, column: str, sql_type: str) -> None:
+    async with conn.execute(f"PRAGMA table_info({table})") as cur:
+        cols = {row[1] for row in await cur.fetchall()}
+    if column not in cols:
+        await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sql_type}")
 
 
 def _record_values(record: AgentTaskRecord) -> tuple[Any, ...]:
@@ -513,6 +659,9 @@ def _record_values(record: AgentTaskRecord) -> tuple[Any, ...]:
         record.salience.value,
         record.priority,
         record.idempotency_key,
+        record.intent_key,
+        record.topic_key,
+        record.generation,
     )
 
 
@@ -555,6 +704,9 @@ def _row_to_record(row: aiosqlite.Row) -> AgentTaskRecord:
         salience=SalienceLevel(row["salience"]),
         priority=int(row["priority"]),
         idempotency_key=row["idempotency_key"],
+        intent_key=row["intent_key"],
+        topic_key=row["topic_key"],
+        generation=int(row["generation"]) if row["generation"] is not None else None,
     )
 
 
@@ -579,6 +731,9 @@ def _row_to_snapshot(row: aiosqlite.Row, events: list[str]) -> AgentTaskSnapshot
         salience=SalienceLevel(row["salience"]),
         is_blocked_by_input=row["status"] == TaskStatus.WAITING_INPUT.value,
         pending_question=row["checkpoint_question"],
+        intent_key=row["intent_key"],
+        topic_key=row["topic_key"],
+        generation=int(row["generation"]) if row["generation"] is not None else None,
     )
 
 

@@ -16,6 +16,7 @@ def _make_ctx(**services_override):
     services = {
         "agent_registry": MagicMock(),
         "dispatcher": MagicMock(),
+        "tool_dispatcher": MagicMock(),
         "tool_registry": MagicMock(),
         "llm_router": MagicMock(),
         "research_engine": MagicMock(),

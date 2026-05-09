@@ -47,3 +47,4 @@ evals/reports/*.json
 evals/reports/*.html
 
 deepseek_claude_env.sh
+mimo_claude_env.sh

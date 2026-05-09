@@ -499,6 +499,40 @@ class TrajectoryStore:
             latest_assistant = ts if latest_assistant is None else max(latest_assistant, ts)
         return latest_user, latest_assistant
 
+    async def recent_user_visible_outbound(
+        self,
+        source_chat_id: str,
+        *,
+        limit: int = 20,
+        since_ts: float | None = None,
+    ) -> list[TrajectoryEntry]:
+        """Delivered user-visible outbound entries for self-projection."""
+        types = (
+            TrajectoryEntryType.TELL_USER.value,
+            TrajectoryEntryType.ASSISTANT_TEXT.value,
+            TrajectoryEntryType.PROACTIVE_OUTBOUND.value,
+        )
+        placeholders = ",".join("?" for _ in types)
+        where = f"source_chat_id = ? AND entry_type IN ({placeholders})"
+        params: list[Any] = [source_chat_id, *types]
+        if since_ts is not None:
+            where += " AND timestamp > ?"
+            params.append(float(since_ts))
+        rows = await self._fetch(
+            where,
+            tuple(params),
+            order="timestamp DESC, id DESC",
+            limit=limit,
+        )
+        delivered: list[TrajectoryEntry] = []
+        for entry in reversed(rows):
+            if entry.entry_type == TrajectoryEntryType.TELL_USER.value and entry.content.get("delivered") is False:
+                continue
+            if entry.entry_type == TrajectoryEntryType.PROACTIVE_OUTBOUND.value and entry.content.get("delivered") is False:
+                continue
+            delivered.append(entry)
+        return delivered
+
     async def _fetch(
         self,
         where: str,
@@ -594,12 +628,16 @@ def trajectory_entries_to_messages(
 def _extract_legacy_text(entry: TrajectoryEntry) -> str | None:
     content = entry.content or {}
     if entry.entry_type == TrajectoryEntryType.TELL_USER.value:
+        if content.get("delivered") is False:
+            return None
         msgs = content.get("messages")
         if isinstance(msgs, list) and msgs:
             return "\n".join(str(m) for m in msgs)
         text = content.get("text")
         if isinstance(text, str):
             return text
+        return None
+    if entry.entry_type == TrajectoryEntryType.PROACTIVE_OUTBOUND.value and content.get("delivered") is False:
         return None
     text = content.get("text")
     if isinstance(text, str):
