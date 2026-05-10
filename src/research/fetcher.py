@@ -21,6 +21,22 @@ _SPA_NAV_KEYWORDS = (
 )
 _SPA_NAV_HIT_THRESHOLD = 3
 
+# Cloudflare / WAF challenge page detection — these pages contain no
+# real content and should be treated as fetch failures.
+_CHALLENGE_MARKERS = (
+    "正在进行安全验证",
+    "checking your browser",
+    "please wait",
+    "请稍候",
+    "just a moment",
+    "attention required",
+    "cloudflare",
+    "ddos protection",
+    "security check",
+    "enable javascript and cookies",
+)
+_CHALLENGE_MAX_LENGTH = 1500  # challenge pages are always short
+
 # 超时预算（秒）
 _FETCH_OVERALL_TIMEOUT = 15.0    # httpx + browser 合计上限
 _BROWSER_FETCH_TIMEOUT = 8.0     # 浏览器降级单次上限
@@ -212,6 +228,14 @@ class SmartFetcher:
         hits = sum(1 for kw in _SPA_NAV_KEYWORDS if kw in lowered)
         return hits >= _SPA_NAV_HIT_THRESHOLD
 
+    @staticmethod
+    def _is_challenge_page(text: str) -> bool:
+        """Detect Cloudflare/WAF challenge pages that contain no real content."""
+        if not text or len(text) > _CHALLENGE_MAX_LENGTH:
+            return False
+        lowered = text.lower()
+        return any(marker in lowered for marker in _CHALLENGE_MARKERS)
+
     async def _browser_fetch(self, url: str) -> str | None:
         """浏览器降级。硬超时 _BROWSER_FETCH_TIMEOUT 秒。"""
         tab_id_box: dict[str, str] = {}
@@ -238,5 +262,11 @@ class SmartFetcher:
                     logger.debug("close_tab 异常 %s: %s", tab_id, exc)
 
         if text:
-            return _WHITESPACE_RE.sub(" ", text).strip()
+            text = _WHITESPACE_RE.sub(" ", text).strip()
+            if self._is_challenge_page(text):
+                logger.warning(
+                    "browser fetch hit challenge page (Cloudflare/WAF): %s", url,
+                )
+                return None
+            return text
         return None

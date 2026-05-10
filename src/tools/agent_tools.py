@@ -22,6 +22,11 @@ import traceback
 import uuid
 
 from src.agents.budget import BudgetExhausted
+from src.agents.delegation_contract import (
+    assert_not_bare_tuple,
+    normalize_research_result,
+    serialize_agent_result as serialize_delegation_result,
+)
 from src.agents.exceptions import AgentSpawnError
 from src.agents.policy import AgentPolicyViolation, CreateAgentInput
 from src.agents.service_observability import log_required_service_presence
@@ -133,6 +138,8 @@ async def _preflight_agent_services(
 
 def _hard_tool_error_reason(result: AgentResult) -> str | None:
     for error in getattr(result, "tool_errors", []) or []:
+        if not isinstance(error, dict):
+            continue
         reason = str(error.get("reason") or "")
         payload = error.get("payload")
         text = f"{reason} {payload}"
@@ -174,6 +181,8 @@ def _serialize_agent_result(result: AgentResult, task_id: str) -> ToolExecutionR
     on the payload so the calling LLM doesn't have to parse JSON-in-
     JSON. ``result`` is still emitted for backward compatibility.
     """
+    assert_not_bare_tuple(result, "_serialize_agent_result")
+
     trace_tail = result.execution_trace[-5:] if result.execution_trace else []
     hard_error_reason = _hard_tool_error_reason(result)
 
@@ -199,8 +208,24 @@ def _serialize_agent_result(result: AgentResult, task_id: str) -> ToolExecutionR
             "artifacts": result.artifacts,
             "evidence": result.evidence,
         }
-        if isinstance(result.structured_result, dict):
-            for key, value in result.structured_result.items():
+        # Type-guard structured_result — must be dict, not tuple/list/None.
+        structured = result.structured_result
+        if structured is not None and not isinstance(structured, dict):
+            logger.warning(
+                "[agent_tools] structured_result is %s, expected dict; "
+                "falling back to normalize_research_result",
+                type(structured).__name__,
+            )
+            try:
+                structured = normalize_research_result(structured)
+            except TypeError:
+                logger.error(
+                    "[agent_tools] cannot normalize structured_result: %r",
+                    structured,
+                )
+                structured = None
+        if isinstance(structured, dict):
+            for key, value in structured.items():
                 payload.setdefault(key, value)
         if trace_tail:
             payload["execution_trace"] = trace_tail
@@ -316,10 +341,41 @@ async def _run_agent(
         except Exception as exc:
             tb = traceback.format_exc()
             tb_tail = "\n".join(tb.strip().splitlines()[-5:])
+            logger.error(
+                "[agent_tools] agent.execute(%s) raised %s: %s",
+                agent_name, type(exc).__name__, exc, exc_info=True,
+            )
             return ToolExecutionResult(
                 success=False,
                 payload={"task_id": task_id, "error_detail": tb_tail},
                 reason=f"Agent 执行异常: {exc}",
+            )
+
+        # ── Contract validation: agent.execute() must return AgentResult ──
+        try:
+            assert_not_bare_tuple(result, f"agent.execute({agent_name})")
+        except TypeError as exc:
+            logger.error(
+                "[agent_tools] contract violation: %s", exc, exc_info=True,
+            )
+            return ToolExecutionResult(
+                success=False,
+                payload={"task_id": task_id, "contract_violation": str(exc)},
+                reason=str(exc)[:300],
+            )
+        if not isinstance(result, AgentResult):
+            logger.error(
+                "[agent_tools] contract violation: agent.execute(%s) returned "
+                "%s instead of AgentResult; repr=%r",
+                agent_name, type(result).__name__, result,
+            )
+            return ToolExecutionResult(
+                success=False,
+                payload={"task_id": task_id, "actual_type": type(result).__name__},
+                reason=(
+                    f"agent.execute returned {type(result).__name__} "
+                    f"instead of AgentResult"
+                ),
             )
     finally:
         if ledger is not None:

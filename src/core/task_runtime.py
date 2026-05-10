@@ -159,6 +159,7 @@ _SIMULATED_TOOL_PATTERNS = [
     re.compile(r"\[调用\s+\w+[:\s(].*?[\])]"),
     re.compile(r"\[tool_call:\s*.*?\]", re.IGNORECASE),
     re.compile(r"\[calling\s+\w+[:\s].*?\]", re.IGNORECASE),
+    re.compile(r"<\|tool_call\|>", re.IGNORECASE),
 ]
 
 
@@ -1292,6 +1293,17 @@ class TaskRuntime:
             )
             ctx.last_payload = payload
 
+            # Mark pending background — suppress LLM fabricated answer.
+            if isinstance(payload, dict) and payload.get("background"):
+                ctx.has_pending_background = True
+                ctx.messages.append({
+                    "role": "user",
+                    "content": (
+                        "[系统提醒] 你刚才提交了一个后台任务，结果还没回来。"
+                        "不要自己编造答案。直接简短告知用户你已经在查了，结果出来会告诉他。"
+                    ),
+                })
+
             last_tool_name = tool_call.name
             logger.debug(
                 "[runtime] 第 %s 轮完成 tool call %s/%s: %s",
@@ -1429,6 +1441,11 @@ class TaskRuntime:
                 reason=state.failure_reason or "未达到验证目标",
             )
             return state.failure_message()
+
+        # When a background task is pending, suppress the LLM's fabricated
+        # answer — the real result will arrive via agent_task_result delivery.
+        if last_payload and last_payload.get("background"):
+            return ""
 
         reply = _sanitize_visible_text(model_text) if model_text else self.tool_fallback_reply(last_payload)
         if last_payload and last_payload.get("blocked"):

@@ -4,7 +4,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from src.agents.types import AgentResult
+from src.agents.types import AgentResult, ResearchResult, SourceRef
 from src.tools.agent_tools import (
     delegate_to_researcher_executor,
     delegate_to_coder_executor,
@@ -246,3 +246,158 @@ class TestDelegateToCoder:
         assert not result.success
         assert "boom" in result.reason
         assert result.payload.get("error_detail")
+
+
+# ── P0 Contract Tests: delegation return type hardening ───────────────────
+
+
+class TestDelegationContract:
+    """Blueprint test matrix for tuple indexing contract hardening."""
+
+    async def test_bare_tuple_result_does_not_crash(self):
+        """Repro: agent.execute returns bare tuple → should not raise
+        'tuple indices must be integers or slices, not str'."""
+        agent = MagicMock()
+        agent.execute = AsyncMock(return_value=(True, {"summary": "ok"}, None))
+        registry = MagicMock()
+        registry.get.return_value = agent
+
+        result = await delegate_to_researcher_executor(
+            ToolExecutionRequest(
+                name="delegate_to_researcher",
+                arguments={"task": "test tuple violation"},
+            ),
+            _make_ctx(agent_registry=registry),
+        )
+        # Should not crash — contract validation catches it.
+        assert not result.success
+        assert "bare tuple" in result.reason.lower()
+        assert result.payload.get("contract_violation")
+
+    async def test_research_result_dataclass_normal_path(self):
+        """Researcher returns ResearchResult dataclass → structured_result
+        should surface summary and sources."""
+        agent = MagicMock()
+        agent.execute = AsyncMock(return_value=AgentResult(
+            task_id="t1",
+            status="done",
+            result='{"summary": "天气晴朗", "sources": [{"ref": "weather.com"}]}',
+            structured_result={"summary": "天气晴朗", "sources": [{"ref": "weather.com"}]},
+        ))
+        registry = MagicMock()
+        registry.get.return_value = agent
+
+        result = await delegate_to_researcher_executor(
+            ToolExecutionRequest(
+                name="delegate_to_researcher",
+                arguments={"task": "查天气"},
+            ),
+            _make_ctx(agent_registry=registry),
+        )
+        assert result.success
+        assert result.payload.get("summary") == "天气晴朗"
+        assert result.payload.get("sources") == [{"ref": "weather.com"}]
+
+    async def test_dict_result_normal_path(self):
+        """Agent returns dict structured_result → keys surface on payload."""
+        agent = MagicMock()
+        agent.execute = AsyncMock(return_value=AgentResult(
+            task_id="t1",
+            status="done",
+            result="done",
+            structured_result={"summary": "A", "sources": [{"ref": "a.com"}]},
+        ))
+        registry = MagicMock()
+        registry.get.return_value = agent
+
+        result = await delegate_to_researcher_executor(
+            ToolExecutionRequest(
+                name="delegate_to_researcher",
+                arguments={"task": "test dict result"},
+            ),
+            _make_ctx(agent_registry=registry),
+        )
+        assert result.success
+        assert result.payload["summary"] == "A"
+
+    async def test_hard_error_passthrough(self):
+        """Agent delegation fails → structured error, no tuple crash."""
+        agent = MagicMock()
+        agent.execute = AsyncMock(return_value=AgentResult(
+            task_id="t1",
+            status="failed",
+            result="",
+            reason="research_engine 未注入",
+            error_detail="missing service",
+        ))
+        registry = MagicMock()
+        registry.get.return_value = agent
+
+        result = await delegate_to_researcher_executor(
+            ToolExecutionRequest(
+                name="delegate_to_researcher",
+                arguments={"task": "test hard error"},
+            ),
+            _make_ctx(agent_registry=registry),
+        )
+        assert not result.success
+        assert "research_engine" in result.reason
+
+    async def test_missing_service_returns_typed_error(self):
+        """Missing agent_registry → typed ToolExecutionResult, no crash."""
+        ctx = ToolExecutionContext(
+            execute_shell=AsyncMock(),
+            shell_default_cwd=".",
+            services={},
+        )
+        result = await delegate_to_researcher_executor(
+            ToolExecutionRequest(
+                name="delegate_to_researcher",
+                arguments={"task": "test missing service"},
+            ),
+            ctx,
+        )
+        assert not result.success
+        assert "未就绪" in result.reason
+
+    async def test_structured_result_non_dict_does_not_crash(self):
+        """structured_result is a non-dict (e.g. list) → normalize, no crash."""
+        agent = MagicMock()
+        agent.execute = AsyncMock(return_value=AgentResult(
+            task_id="t1",
+            status="done",
+            result="done",
+            structured_result=["unexpected", "list"],
+        ))
+        registry = MagicMock()
+        registry.get.return_value = agent
+
+        result = await delegate_to_researcher_executor(
+            ToolExecutionRequest(
+                name="delegate_to_researcher",
+                arguments={"task": "test non-dict structured"},
+            ),
+            _make_ctx(agent_registry=registry),
+        )
+        # Should not crash — type guard handles non-dict structured_result.
+        assert result.success
+
+    async def test_consecutive_success_no_burst_guard(self):
+        """Consecutive successful delegations → no burst guard trigger."""
+        agent = MagicMock()
+        agent.execute = AsyncMock(return_value=AgentResult(
+            task_id="t1", status="done", result="ok",
+        ))
+        registry = MagicMock()
+        registry.get.return_value = agent
+
+        ctx = _make_ctx(agent_registry=registry)
+        for i in range(5):
+            result = await delegate_to_researcher_executor(
+                ToolExecutionRequest(
+                    name="delegate_to_researcher",
+                    arguments={"task": f"test {i}"},
+                ),
+                ctx,
+            )
+            assert result.success

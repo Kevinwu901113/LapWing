@@ -1071,7 +1071,8 @@ def _agent_status_text(event: Event) -> str:
             or ""
         ).strip()
     task_id = str(getattr(event, "task_id", "") or "").strip()
-    suffix = f"（任务 {task_id}）" if task_id else ""
+    # task_id suffix removed — internal IDs should not leak to user-facing text.
+    suffix = ""
     kind = str(getattr(event, "kind", "") or "")
     event_type = str(getattr(getattr(triggering, "type", None), "value", "") or "")
 

@@ -267,7 +267,7 @@ class ToolRegistry:
             })
             return result
         except Exception as exc:
-            logger.warning("[tools] 工具 `%s` 执行异常: %s", request.name, exc)
+            logger.warning("[tools] 工具 `%s` 执行异常: %s", request.name, exc, exc_info=True)
             reason = f"工具执行失败：{request.name}"
             result = make_tool_error_result(
                 status=ToolResultStatus.EXECUTION_ERROR,
