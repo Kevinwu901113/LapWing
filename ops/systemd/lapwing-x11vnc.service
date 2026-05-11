@@ -1,0 +1,27 @@
+[Unit]
+Description=Lapwing x11vnc Bridge (VNC over SSH tunnel for browser takeover)
+Documentation=file:/home/kevin/lapwing/docs/operations/personal_browser_takeover.md
+# Bridges the Xvfb :99 display over the VNC protocol on 127.0.0.1:5900.
+# Owner connects via SSH tunnel; the bridge itself never listens on the LAN.
+# Required by Post-v1 B §2.2.
+Requires=lapwing-xvfb.service
+After=lapwing-xvfb.service
+
+[Service]
+Type=simple
+# -localhost: bind 127.0.0.1 only. SSH tunnel from Kevin's workstation.
+# -nopw + -ncache 10: no static VNC password (SSH carries auth); client-side
+#   caching for snappier rendering on home network.
+# -forever: keep accepting connections after the first client disconnects.
+# -shared: allow multiple simultaneous viewers (debug + Kevin pair-takeover).
+# -auth guess: x11vnc auto-resolves the Xvfb authority file.
+ExecStart=/usr/bin/x11vnc -display :99 -localhost -nopw -ncache 10 -forever -shared -auth guess
+Restart=on-failure
+RestartSec=5
+User=lapwing
+Group=lapwing
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

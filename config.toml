@@ -149,6 +149,8 @@ allowed_origins = [
 ]
 
 [browser]
+# PVE production: enabled = true, headless = false. See
+# docs/operations/personal_browser_takeover.md §Prerequisites.
 enabled = false
 headless = true
 max_tabs = 8

@@ -1,6 +1,6 @@
 [Unit]
 Description=Lapwing Xvfb Virtual Display (for headful Playwright on PVE)
-Documentation=file:/home/kevin/lapwing/docs/operations/personal_browser_xvfb.md
+Documentation=file:/home/kevin/lapwing/docs/operations/personal_browser_takeover.md
 Documentation=file:/home/kevin/lapwing/docs/architecture/lapwing_v1_blueprint.md
 # Personal-profile BrowserAdapter requires headful Playwright (blueprint §6.6).
 # PVE has no GUI, so we provide a virtual X display on :99.

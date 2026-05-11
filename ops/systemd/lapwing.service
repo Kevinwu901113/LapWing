@@ -1,0 +1,37 @@
+[Unit]
+Description=Lapwing Resident Agent (main process)
+Documentation=file:/home/kevin/lapwing/docs/operations/personal_browser_takeover.md
+Documentation=file:/home/kevin/lapwing/docs/architecture/lapwing_v1_blueprint.md
+# Post-v1 B §2.1 / §2.3: main process depends on the virtual display so
+# BrowserAdapter(profile=personal) can launch a headful Playwright context.
+Requires=lapwing-xvfb.service
+After=network-online.target lapwing-xvfb.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=lapwing
+Group=lapwing
+# Adjust WorkingDirectory to wherever the lapwing checkout lives in production.
+# In Kevin's PVE deployment this is typically /home/lapwing/lapwing.
+WorkingDirectory=/home/lapwing/lapwing
+# DISPLAY=:99 inherits the Xvfb display started by lapwing-xvfb.service.
+# Post-v1 B hard requirement: without this, BrowserAdapter(profile=personal)
+# falls back to headless and Kevin cannot take over via VNC.
+Environment=DISPLAY=:99
+# PYTHONUNBUFFERED=1 so journal sees logs without delay.
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/home/lapwing/lapwing/.venv/bin/python main.py
+Restart=on-failure
+RestartSec=10
+# Personal browser profile + cookie / localStorage stores live under
+# /home/lapwing/. Lock the unit out of /home/* writes elsewhere if the
+# distro defaults are restrictive — for now we trust the user account.
+StandardOutput=journal
+StandardError=journal
+# Headful Playwright + Xvfb together hold ~500MB resident. Cap on PVE to
+# protect coresident services; loosen if Kevin observes OOM-kills.
+MemoryMax=2G
+
+[Install]
+WantedBy=multi-user.target
