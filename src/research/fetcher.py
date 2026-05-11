@@ -229,7 +229,7 @@ class SmartFetcher:
         return hits >= _SPA_NAV_HIT_THRESHOLD
 
     @staticmethod
-    def _is_challenge_page(text: str) -> bool:
+    def is_challenge_page(text: str) -> bool:
         """Detect Cloudflare/WAF challenge pages that contain no real content."""
         if not text or len(text) > _CHALLENGE_MAX_LENGTH:
             return False
@@ -263,7 +263,7 @@ class SmartFetcher:
 
         if text:
             text = _WHITESPACE_RE.sub(" ", text).strip()
-            if self._is_challenge_page(text):
+            if self.is_challenge_page(text):
                 logger.warning(
                     "browser fetch hit challenge page (Cloudflare/WAF): %s", url,
                 )

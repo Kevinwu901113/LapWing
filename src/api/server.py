@@ -153,6 +153,19 @@ def create_app(
         _browser_routes.init(_browser_manager)
         app.include_router(_browser_routes.router)
 
+    # Kernel interrupts route (blueprint §8.6). Mounted when InterruptStore
+    # is wired on the brain — full kernel wiring lives in PR-08. Until then
+    # the route is dormant and pending interrupts cannot be listed/resolved
+    # via Desktop.
+    _interrupt_store = getattr(brain, "interrupt_store", None)
+    if _interrupt_store is not None:
+        from src.api.routes import interrupts as _interrupts_routes
+        _interrupts_routes.init(
+            interrupt_store=_interrupt_store,
+            kernel=getattr(brain, "kernel", None),
+        )
+        app.include_router(_interrupts_routes.router)
+
     app.add_middleware(
         CORSMiddleware,
         allow_origins=API_ALLOWED_ORIGINS,
