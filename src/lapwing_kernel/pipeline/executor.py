@@ -160,6 +160,26 @@ class ActionExecutor:
             )
         )
 
+        # Adapter-source interrupt → emit canonical interrupt.created event
+        # so the EventLog has a uniform record regardless of whether the
+        # Interrupt came from policy (executor's INTERRUPT branch already
+        # writes this) or from an adapter signaling status=captcha_required/
+        # waf_challenge/auth_required/user_attention_required.
+        if observation.interrupt_id and observation.status != "interrupted":
+            self._events.append(
+                Event.new(
+                    actor="system",
+                    type="interrupt.created",
+                    resource=action.resource,
+                    summary=(observation.summary or "")[:200],
+                    outcome="interrupted",
+                    refs={
+                        "action_id": action.id,
+                        "interrupt_id": observation.interrupt_id,
+                    },
+                )
+            )
+
         return observation
 
     def _create_policy_interrupt(self, action: Action) -> Observation:
