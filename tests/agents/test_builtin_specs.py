@@ -48,7 +48,9 @@ def test_factories_return_fresh_instances():
     assert a is not b
 
 
-def test_all_builtin_specs_returns_both():
+def test_all_builtin_specs_returns_all_kinds():
+    """v1 blueprint §16 O-1 / Slice I.1: resident_operator is now a
+    registered builtin agent kind alongside researcher and coder."""
     specs = all_builtin_specs()
     names = {s.name for s in specs}
-    assert names == {"researcher", "coder"}
+    assert names == {"researcher", "coder", "resident_operator"}

@@ -451,9 +451,16 @@ async def test_list_agents_registry_exception_fails_closed():
 
 
 def test_list_agents_in_standard_profile():
-    """E1. list_agents is available in STANDARD_PROFILE (main chat)."""
+    """E1. v1 blueprint §11.1 (Slice I.2): STANDARD_PROFILE collapsed
+    to <10 tools. list_agents is no longer on the cognitive main surface —
+    agent visibility is reached via read_state(scope='agents') which
+    returns the catalog list. The list_agents tool stays registered
+    globally and remains in INNER_TICK_PROFILE / LOCAL_EXECUTION_PROFILE.
+    """
     from src.core.runtime_profiles import STANDARD_PROFILE
-    assert "list_agents" in STANDARD_PROFILE.tool_names
+    assert "list_agents" not in STANDARD_PROFILE.tool_names
+    # And the facade replacement is present
+    assert "read_state" in STANDARD_PROFILE.tool_names
 
 
 def test_list_agents_in_task_execution_profile():
