@@ -334,6 +334,15 @@ class AppContainer:
         if BROWSER_ENABLED and not PHASE0_MODE:
             await self._init_browser()
 
+        # Post-v1 A: production kernel composition. Wires the Resident Agent
+        # Kernel (InterruptStore + EventLog + adapters) so cognition workers
+        # can call kernel.execute(Action) and the desktop /api/v2/interrupts
+        # route can resolve real interrupts. Gated by browser_enabled because
+        # without a BrowserManager there's no personal-profile adapter to
+        # register, and v1 kernel use cases all flow through browser/credential.
+        if BROWSER_ENABLED and not PHASE0_MODE:
+            self._init_kernel()
+
         await self._configure_brain_dependencies()
         self._prepared = True
         logger.info("应用容器依赖装配完成")
@@ -1540,3 +1549,112 @@ class AppContainer:
             logger.info("MiniMax VLM 客户端已注入浏览器子系统")
 
         logger.info("浏览器子系统已就绪")
+
+    def _init_kernel(self) -> None:
+        """Compose the production Resident Agent Kernel (Post-v1 A).
+
+        Wires the v1 kernel stack (InterruptStore + EventLog + BrowserAdapter
+        for fetch/personal profiles + CredentialAdapter + PolicyDecider +
+        SecretRedactor + ResourceRegistry) so cognition workers can call
+        kernel.execute(Action) and the desktop /api/v2/interrupts route can
+        resolve real interrupts.
+
+        This is the production counterpart to tests/integration/test_v1_closed_loop.py
+        :_build_kernel — same composition, different sources (real services
+        instead of test fakes).
+
+        See docs/lapwing_post_v1_a.md §2.
+        """
+        from src.lapwing_kernel.adapters.browser import BrowserAdapter
+        from src.lapwing_kernel.adapters.credential import CredentialAdapter
+        from src.lapwing_kernel.adapters.credential_use_state import (
+            CredentialUseState,
+        )
+        from src.lapwing_kernel.identity import ResidentIdentity
+        from src.lapwing_kernel.kernel import Kernel
+        from src.lapwing_kernel.pipeline.registry import ResourceRegistry
+        from src.lapwing_kernel.policy import PolicyDecider
+        from src.lapwing_kernel.redactor import SecretRedactor
+        from src.lapwing_kernel.stores.event_log import EventLog
+        from src.lapwing_kernel.stores.interrupt_store import InterruptStore
+
+        # Separate kernel DB. Sidesteps schema overlap with the legacy
+        # lapwing.db (trajectory_store / commitments / etc) and keeps v1
+        # kernel state in one file that can be inspected/reset on its own.
+        kernel_db = self._data_dir / "kernel.db"
+        interrupt_store = InterruptStore(kernel_db)
+        event_log = EventLog(kernel_db)
+
+        # CredentialUseState shares the same DB file. PolicyDecider reads
+        # has_been_used() so credential.use INTERRUPTs only on first use.
+        credential_use_state = CredentialUseState(kernel_db)
+
+        redactor = SecretRedactor()
+        policy = PolicyDecider(config={}, use_state=credential_use_state)
+
+        # ResidentIdentity — boot-time immutable facts. v1 doesn't read these
+        # for the V-A3 flow, but the kernel constructor requires the value.
+        # Stash the personal profile root under the data dir so PR-14's worker
+        # has a stable on-disk location even before the Xvfb Playwright launch
+        # (Post-v1 B) actually uses it.
+        settings = get_settings()
+        personal_profile_dir = self._data_dir / "browser_profiles" / "personal"
+        identity = ResidentIdentity(
+            agent_name="Lapwing",
+            owner_name=getattr(settings, "owner_name", None) or "Kevin",
+            home_server_name=os.uname().nodename,
+            linux_user=os.environ.get("USER", "lapwing"),
+            home_dir=Path(os.path.expanduser("~")),
+            personal_browser_profile=personal_profile_dir,
+        )
+
+        # Resource registry: one BrowserAdapter per profile, one CredentialAdapter.
+        registry = ResourceRegistry()
+        fetch_adapter = BrowserAdapter(
+            profile="fetch",
+            legacy_browser_manager=self._browser_manager,
+            interrupt_store=interrupt_store,
+            redactor=redactor,
+        )
+        registry.register(fetch_adapter, profile="fetch")
+        personal_adapter = BrowserAdapter(
+            profile="personal",
+            legacy_browser_manager=self._browser_manager,
+            interrupt_store=interrupt_store,
+            redactor=redactor,
+        )
+        registry.register(personal_adapter, profile="personal")
+
+        # CredentialAdapter takes the vault as a fact-store handle; the
+        # adapter itself does not need the interrupt store (policy decides
+        # INTERRUPT for first-use, executor persists the Interrupt).
+        if self._credential_vault is not None:
+            credential_adapter = CredentialAdapter(
+                vault=self._credential_vault,
+                use_state=credential_use_state,
+                redactor=redactor,
+            )
+            registry.register(credential_adapter)
+
+        kernel = Kernel(
+            identity=identity,
+            resource_registry=registry,
+            interrupt_store=interrupt_store,
+            event_log=event_log,
+            policy=policy,
+            redactor=redactor,
+            model_slots=None,
+        )
+
+        # Expose on container for cross-component access (workers, tests).
+        self._kernel = kernel
+        self._interrupt_store = interrupt_store
+        self._event_log = event_log
+        self._resource_registry = registry
+
+        # Attach to brain so server.py's existing wiring at the interrupts
+        # route picks it up (brain.kernel + brain.interrupt_store).
+        self.brain.kernel = kernel
+        self.brain.interrupt_store = interrupt_store
+
+        logger.info("Resident Agent Kernel 已组合 (kernel.db=%s)", kernel_db)

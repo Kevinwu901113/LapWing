@@ -147,32 +147,34 @@ def _resolve_tool_names(registry: ToolRegistry, profile) -> set[str]:
 
 
 class TestProfileExclusivity:
-    def test_chat_extended_has_specific_delegates_no_research(self):
-        """Post agents-as-tools refactor: the chat surface (now the
-        STANDARD profile, surfaced via the chat_extended legacy alias)
-        uses delegate_to_researcher / delegate_to_coder, not the
-        generic delegate_to_agent."""
+    def test_standard_profile_uses_unified_delegate(self):
+        """v1 blueprint §11.1 main-surface contract: STANDARD reaches
+        sub-agents through the unified delegate_to_agent. The pre-v1
+        delegate_to_researcher / delegate_to_coder shims remain registered
+        globally for non-cognitive callers but are NOT on the main surface
+        — splitting the seam in two confused both the model and the test.
+        """
         registry = _make_full_registry()
         names = _resolve_tool_names(registry, STANDARD_PROFILE)
-        assert "delegate_to_researcher" in names
-        assert "delegate_to_coder" in names
-        # Raw research / dynamic-agent management not on the chat tier
+        assert "delegate_to_agent" in names
+        # Legacy shims are off the main surface (Post-v1 A §2.4).
+        assert "delegate_to_researcher" not in names
+        assert "delegate_to_coder" not in names
+        # Raw research / dynamic-agent management not on the chat tier.
         assert "research" not in names
         assert "browse" not in names
-        for forbidden in ("create_agent", "destroy_agent", "save_agent",
-                          "delegate_to_agent"):
-            assert forbidden not in names, f"chat_extended must not expose {forbidden}"
+        for forbidden in ("create_agent", "destroy_agent", "save_agent"):
+            assert forbidden not in names, f"standard must not expose {forbidden}"
 
-    def test_standard_profile_outward_seams_are_only_two_delegates(self):
-        """Standard profile 外向 seam 只有 researcher/coder"""
+    def test_standard_profile_outward_seam_is_delegate_to_agent(self):
+        """Standard profile 唯一外向 seam: delegate_to_agent。"""
         registry = _make_full_registry()
         names = _resolve_tool_names(registry, STANDARD_PROFILE)
         assert "research" not in names
         assert "browse" not in names
         assert "browser_open" not in names
         assert "execute_shell" not in names
-        assert "delegate_to_researcher" in names
-        assert "delegate_to_coder" in names
+        assert "delegate_to_agent" in names
 
     def test_local_execution_does_not_expose_dynamic_agent_admin_tools(self):
         """Phase 6B: local_execution must not expose agent_admin tools."""
@@ -287,8 +289,12 @@ class TestProfileExclusivity:
         assert "run_skill" not in names
 
     def test_non_operator_profiles_never_expose_agent_admin_tools(self):
+        """v1: delegate_to_agent is now STANDARD's outward seam — not an
+        admin tool — so it is intentionally absent from this forbidden set.
+        Admin tools (create/destroy/save) remain operator-only.
+        """
         registry = _make_full_registry()
-        forbidden = {"delegate_to_agent", "create_agent", "destroy_agent", "save_agent"}
+        forbidden = {"create_agent", "destroy_agent", "save_agent"}
         profiles = (
             ZERO_TOOLS_PROFILE,
             STANDARD_PROFILE,

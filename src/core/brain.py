@@ -124,6 +124,12 @@ class LapwingBrain:
         self.attention_manager = None  # Set externally (AttentionManager | None) — v2.0 Step 2
         self.trajectory_store = None  # Set externally (TrajectoryStore | None) — v2.0 Step 2f
         self.focus_manager = None  # Set externally (FocusManager | None)
+        # Post-v1 A: production kernel + interrupt store. None until container
+        # wires them in _init_kernel(). server.py / agent workers read these
+        # via getattr(brain, "kernel", None) so the brain stays usable in
+        # Phase 0 / tests where the kernel isn't composed.
+        self.kernel = None  # Set externally — Post-v1 A (kernel composition)
+        self.interrupt_store = None  # Set externally — Post-v1 A
         self._conversation_end_task: asyncio.Task | None = None
 
     async def init_db(self) -> None:

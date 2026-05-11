@@ -237,11 +237,15 @@ class TestStandardProfileTarget:
         )
         assert not leaks, f"standard exposes non-self-capability tools: {leaks}"
 
-    def test_standard_profile_has_delegate_seams(self):
+    def test_standard_profile_has_delegate_seam(self):
+        """v1 blueprint §11.1: STANDARD reaches sub-agents through a
+        single unified delegate_to_agent seam — not the pre-v1
+        delegate_to_researcher / delegate_to_coder pair."""
         from src.core.runtime_profiles import STANDARD_PROFILE
         names = _resolved_tool_names(STANDARD_PROFILE)
-        assert "delegate_to_researcher" in names
-        assert "delegate_to_coder" in names
+        assert "delegate_to_agent" in names
+        assert "delegate_to_researcher" not in names
+        assert "delegate_to_coder" not in names
 
 
 class TestZeroToolsProfileTarget:
