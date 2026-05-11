@@ -60,13 +60,20 @@ semantic_distill_dedup_threshold = 0.85
 working_set_top_k = 10
 
 [memory.wiki]
-# Phase 1: read-only injection of wiki pages into working set context.
-# write_enabled stays false until Phase 2 has been validated.
+# v1 blueprint §12.1 (Slice J): wiki is read-mostly. Read paths stay open
+# (enabled=true, context_enabled=true) so existing entity seeds —
+# kevin.md, lapwing.md — keep being injected. All write paths are off.
+# gate_enabled went from true→false in PR-12: with write_enabled=false
+# the gate has nothing to gate; keeping it on confused operators about
+# whether writes were merely gated or fully off.
+# auto_writeback was added explicitly to lock down the ambient writeback
+# path that previously could have been toggled at runtime.
 enabled = true
 context_enabled = true
 write_enabled = false
-gate_enabled = true
+gate_enabled = false
 lint_enabled = false
+auto_writeback = false
 wiki_dir = "data/memory/wiki"
 context_budget_ratio = 0.40
 
@@ -307,17 +314,20 @@ gate_enabled = false
 identity_system_killswitch = false
 
 [capabilities]
-# Phase 0/1: All flags disabled. No runtime behavior is wired yet.
-# Phase 2+ will gate capability retrieval, curation, and auto-drafting
-# behind these flags.
-# Phase 3C: lifecycle_tools_enabled gates evaluate/plan/transition tools.
-# Requires capabilities.enabled=true. Defaults to false (operator-only).
-enabled = true
-retrieval_enabled = true
+# v1 blueprint §13.3 (Slice J): capability subsystem unwired by setting
+# enabled=false. The src/capabilities/ tree stays (per §13.4 deferred
+# Level 4 deletion) but container.py's `if CAPABILITIES_ENABLED:` block
+# skips registration, so no capability tools / curator / index gets wired.
+# Revert: change to true. v0.1 retrieval-only baseline returns.
+# Pre-existing comments below describe the disabled-by-default Phase 0/1
+# state; sub-flags don't matter while top-level enabled is false but stay
+# here so revert-to-old-state is a single line change.
+enabled = false
+retrieval_enabled = false
 curator_enabled = false
-curator_dry_run_enabled = true
+curator_dry_run_enabled = false
 auto_draft_enabled = false
-execution_summary_enabled = true
+execution_summary_enabled = false
 lifecycle_tools_enabled = false
 # Phase 7A: external package import into quarantine only (operator-only)
 external_import_enabled = false

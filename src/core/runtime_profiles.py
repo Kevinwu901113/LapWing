@@ -45,8 +45,13 @@ CHAT_SHELL_PROFILE = RuntimeProfile(
 # ── agents-as-tools refactor (2026-04-29): zero_tools / standard ────
 # ZERO_TOOLS is the pure-text reply path — IntentRouter routes pure
 # chitchat here so the model skips the OpenAI tool-call protocol
-# entirely. STANDARD is Lapwing's full self-capability surface; every
-# external seam goes through delegate_to_researcher / delegate_to_coder.
+# entirely. STANDARD is Lapwing's full self-capability surface; the v1
+# blueprint §11 cut it to <10 tools by introducing the read_state /
+# update_state / read_fact facades and the unified delegate_to_agent
+# entry point. delegate_to_researcher / delegate_to_coder remain
+# registered globally but live only on INNER_TICK_PROFILE /
+# LOCAL_EXECUTION_PROFILE / CHAT_SHELL_PROFILE — they are not on the
+# cognitive main surface anymore.
 
 ZERO_TOOLS_PROFILE = RuntimeProfile(
     name="zero_tools",
