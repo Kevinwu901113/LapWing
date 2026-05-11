@@ -490,6 +490,12 @@ class LapwingBrain:
         proactive_gate = getattr(self, "_proactive_message_gate_ref", None)
         if proactive_gate is not None:
             services["proactive_message_gate"] = proactive_gate
+        # Post-v1 A §2.1: kernel handle for kernel-driven workers
+        # (e.g. ResidentOperator). None when the container couldn't compose
+        # the kernel (PHASE0_MODE, BROWSER_ENABLED=false, or test fixtures).
+        kernel = getattr(self, "kernel", None)
+        if kernel is not None:
+            services["kernel"] = kernel
         log_required_service_presence(logger, "Brain._build_services.exit", services)
         return services
 

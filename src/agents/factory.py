@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from src.agents.coder import Coder
 from src.agents.dynamic import DynamicAgent
 from src.agents.researcher import Researcher
+from src.agents.resident_operator import ResidentOperator
 from src.agents.spec import AgentSpec, DYNAMIC_AGENT_DENYLIST
 from src.core.runtime_profiles import RuntimeProfile, get_runtime_profile
 
@@ -70,6 +71,16 @@ class AgentFactory:
             )
         if spec.name == "coder":
             return Coder.create(
+                self.llm_router,
+                self.tool_registry,
+                self.mutation_log,
+                services=services_override,
+            )
+        if spec.name == "resident_operator":
+            # Post-v1 A §2.2: kernel-driven persistent-identity worker.
+            # services_override is expected to contain "kernel" (wired by
+            # LapwingBrain._build_services from AppContainer._init_kernel).
+            return ResidentOperator.create(
                 self.llm_router,
                 self.tool_registry,
                 self.mutation_log,
