@@ -63,6 +63,49 @@ def builtin_coder_spec() -> AgentSpec:
     )
 
 
+def builtin_resident_operator_spec() -> AgentSpec:
+    """Resident Operator agent (blueprint §16 O-1, Slice I.1).
+
+    Drives kernel.execute(Action(...)) flows that need persistent identity
+    (personal browser profile, long sessions, owner-takeover-able interrupts).
+    Selected by cognition via delegate_to_agent(agent_name='resident_operator',
+    task=...) when the task requires:
+      - signed-in browser identity (cookies, autofill, 2FA tokens)
+      - multi-step browser actions that may hit CAPTCHA / login walls
+      - credential.use lease consumption (paired with BrowserAdapter.login)
+
+    Runtime worker class: src/agents/resident_operator.py ResidentOperator.
+    """
+    return AgentSpec(
+        id="builtin_resident_operator",
+        name="resident_operator",
+        display_name="Resident Operator",
+        description=(
+            "持久身份浏览器操作员 — 适合需要登录态、长会话、可能触发"
+            "owner 介入(CAPTCHA / 2FA / 登录)的任务。"
+        ),
+        kind="builtin",
+        system_prompt="",
+        model_slot="agent_execution",
+        runtime_profile="agent_execution",
+        lifecycle=AgentLifecyclePolicy(
+            mode="persistent", ttl_seconds=None, max_runs=None,
+        ),
+        resource_limits=AgentResourceLimits(
+            # Resident operator may sit through long interrupt waits; larger
+            # wall-time budget than researcher/coder.
+            max_tool_calls=40, max_llm_calls=20,
+            max_tokens=30000, max_wall_time_seconds=3600,
+        ),
+        created_by="system",
+        created_reason="builtin agent (v1 blueprint §16 O-1)",
+    )
+
+
 def all_builtin_specs() -> list[AgentSpec]:
     """Return fresh AgentSpec instances for every registered builtin."""
-    return [builtin_researcher_spec(), builtin_coder_spec()]
+    return [
+        builtin_researcher_spec(),
+        builtin_coder_spec(),
+        builtin_resident_operator_spec(),
+    ]
