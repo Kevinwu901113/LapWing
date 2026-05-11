@@ -1067,6 +1067,14 @@ class AppContainer:
         register_personal_tools(self.brain.tool_registry, personal_services)
         logger.info("Phase 4 个人工具已注册")
 
+        # v1 blueprint §11.1: state-facade tools (read_state / update_state /
+        # read_fact) — the cognitive STANDARD_PROFILE surface. Granular
+        # reminder/promise/focus/etc tools stay registered for
+        # INNER_TICK_PROFILE and LOCAL_EXECUTION_PROFILE.
+        from src.tools.state_tools import register_state_tools
+        register_state_tools(self.brain.tool_registry)
+        logger.info("v1 state-facade tools registered (read_state / update_state / read_fact)")
+
         # Research 子系统：search + fetch + refine 封装成 research(question)
         from config.settings import BOCHA_API_KEY, TAVILY_API_KEY, TAVILY_COUNTRY
         from src.research.backends.bocha import BochaBackend

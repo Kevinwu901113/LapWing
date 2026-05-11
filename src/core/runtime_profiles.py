@@ -59,30 +59,33 @@ ZERO_TOOLS_PROFILE = RuntimeProfile(
 STANDARD_PROFILE = RuntimeProfile(
     name="standard",
     capabilities=frozenset(),
+    # v1 blueprint §11.1 main surface: <10 tools.
+    # The granular tools (set_reminder / view_reminders / cancel_reminder /
+    # commit_promise / fulfill_promise / abandon_promise / add_correction /
+    # close_focus / recall_focus / read_note / list_notes / search_notes /
+    # write_note / list_capabilities / search_capability / view_capability /
+    # load_capability / run_capability / list_agents / convert_timezone /
+    # delegate_to_researcher / delegate_to_coder) are STILL REGISTERED
+    # globally and remain available in INNER_TICK_PROFILE / LOCAL_EXECUTION_PROFILE.
+    # On STANDARD_PROFILE they are reached via read_state / update_state /
+    # read_fact / delegate_to_agent.
     tool_names=frozenset({
-        # ── memory ──
-        "recall", "write_note", "read_note", "list_notes", "search_notes",
-        # ── time ──
-        "get_current_datetime", "convert_timezone",
-        # ── reminders ──
-        "set_reminder", "view_reminders", "cancel_reminder",
-        # ── promises ──
-        "commit_promise", "fulfill_promise", "abandon_promise",
-        # ── self-correction ──
-        "add_correction",
-        # ── conversation focus ──
-        "close_focus", "recall_focus",
-        # ── outward seams (the only edges out to the world) ──
-        "delegate_to_researcher", "delegate_to_coder",
-        # ── agent visibility ──
-        "list_agents",
-        # ── skills ──
+        # Core self-memory atomic read (heavily used; semantic-search shape
+        # doesn't fit read_fact's typed-query shape).
+        "recall",
+        # Time atomic — common enough to keep atomic.
+        "get_current_datetime",
+        # Façade tools (blueprint §11.1).
+        "read_state",
+        "update_state",
+        "read_fact",
+        # Outward seam to other agents (researcher / coder / resident_operator).
+        "delegate_to_agent",
+        # Skill / planning (kept atomic — heavy enough that bundling them
+        # under update_state would obscure the semantics).
         "run_skill",
-        "run_capability",
-        # ── capability read-only progressive disclosure ──
-        "list_capabilities", "search_capability", "view_capability", "load_capability",
-        # ── planning ──
-        "plan_task", "update_plan",
+        "plan_task",
+        "update_plan",
         # send_message intentionally excluded — proactive-only, see
         # COMPOSE_PROACTIVE_PROFILE / INNER_TICK_PROFILE.
     }),
