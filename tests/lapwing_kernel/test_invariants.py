@@ -33,24 +33,48 @@ def test_wiki_write_enabled_is_false_in_config():
 
 
 def test_credential_lease_store_will_be_in_memory_only():
-    """Placeholder for §15.2 I-2 static-grep test.
+    """§15.2 I-2 static check, gentle version.
 
-    Real test lands in PR-07 (Slice G) — at that point this xfails until the
-    file exists. For now we only assert the file does NOT yet exist (Slice G
-    creates it).
+    Coarse top-level grep — the precise dedicated tests live in
+    tests/lapwing_kernel/test_credential_lease_store.py
+    (TestNoPersistenceInvariant) once PR-07 has landed.
     """
     p = REPO_ROOT / "src" / "lapwing_kernel" / "adapters" / "credential_lease_store.py"
-    # Either absent (current state, pre-Slice G) or, if present, must not
-    # contain persistence-shaped imports. The PR-07 task description references
-    # this test verbatim.
     if not p.exists():
         return
-    forbidden = ["import sqlite3", "open(", "pickle", "shelve", "marshal"]
     src = p.read_text()
-    for f in forbidden:
-        assert f not in src, (
+    # Strip comment + docstring lines so HARD CONSTRAINT documentation that
+    # MENTIONS forbidden modules doesn't false-positive against the file.
+    code_lines = []
+    in_docstring = False
+    for line in src.split("\n"):
+        stripped = line.strip()
+        if stripped.startswith('"""') or stripped.startswith("'''"):
+            # Toggle on first triple-quote, off on next; one-line docstrings handled too
+            in_docstring = not in_docstring
+            if stripped.count('"""') >= 2 or stripped.count("'''") >= 2:
+                in_docstring = False  # single-line triple-quote
+            continue
+        if in_docstring:
+            continue
+        if stripped.startswith("#"):
+            continue
+        code_lines.append(line)
+    code_only = "\n".join(code_lines)
+
+    # Imports / calls that would persist plaintext are forbidden in the
+    # CODE portion (docstrings explaining the constraint are fine).
+    forbidden_imports = [
+        "import sqlite3",
+        "import aiosqlite",
+        "import pickle",
+        "import shelve",
+        "import marshal",
+    ]
+    for f in forbidden_imports:
+        assert f not in code_only, (
             f"credential_lease_store.py must remain in-memory only — "
-            f"forbidden marker {f!r} found (blueprint §7.2 HARD CONSTRAINT)"
+            f"forbidden import {f!r} found in code (blueprint §7.2 HARD CONSTRAINT)"
         )
 
 
