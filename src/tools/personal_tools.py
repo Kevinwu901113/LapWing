@@ -603,12 +603,6 @@ async def _send_message(
                     )
             else:
                 await _send(content)
-                _resolved = resolved_target_chat_id
-                if _resolved is not None:
-                    await _record_proactive_outbound_trajectory(
-                        ctx=ctx, target=target, content=content,
-                        channel="desktop", resolved_chat_id=_resolved,
-                    )
             gate_recorded = _record_proactive_send_success(gate, ctx)
             _resolved = resolved_target_chat_id
             if _resolved is None:
@@ -671,12 +665,6 @@ async def _send_message(
                     )
             else:
                 await _send(content)
-                _resolved = resolved_target_chat_id
-                if _resolved is not None:
-                    await _record_proactive_outbound_trajectory(
-                        ctx=ctx, target=target, content=content,
-                        channel="qq", resolved_chat_id=_resolved,
-                    )
             gate_recorded = _record_proactive_send_success(gate, ctx)
             return ToolExecutionResult(
                 success=True,
@@ -733,12 +721,6 @@ async def _send_message(
                     )
             else:
                 await _send(content)
-                _resolved = resolved_target_chat_id
-                if _resolved is not None:
-                    await _record_proactive_outbound_trajectory(
-                        ctx=ctx, target=target, content=content,
-                        channel="qq_group", resolved_chat_id=_resolved,
-                    )
             gate_recorded = _record_proactive_send_success(gate, ctx)
             _resolved = resolved_target_chat_id
             if _resolved is None:

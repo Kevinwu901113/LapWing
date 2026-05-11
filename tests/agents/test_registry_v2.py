@@ -17,7 +17,6 @@ def _safe_lint():
 def _base_services():
     return {
         "dispatcher": object(),
-        "tool_dispatcher": object(),
         "tool_registry": object(),
         "llm_router": object(),
     }
@@ -164,7 +163,6 @@ async def test_get_or_create_instance_missing_services_raises(tmp_path, monkeypa
 
     assert exc_info.value.missing_services == (
         "dispatcher",
-        "tool_dispatcher",
         "tool_registry",
         "research_engine",
         "ambient_store",

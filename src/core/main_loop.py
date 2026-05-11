@@ -874,10 +874,8 @@ class MainLoop:
                 purpose="user_reply",
                 chat_activity_tracker=self._chat_activity_tracker,
             ):
-                from src.core.expression_gate import ExpressionGate, get_default_expression_gate, source_from_legacy
-                gate = getattr(self._brain, "_expression_gate_ref", None)
-                if not isinstance(gate, ExpressionGate):
-                    gate = get_default_expression_gate()
+                from src.core.expression_gate import get_default_expression_gate, source_from_legacy
+                gate = getattr(self._brain, "_expression_gate_ref", None) or get_default_expression_gate()
                 await gate.send(
                     text,
                     source=source_from_legacy(source),

@@ -92,7 +92,7 @@ async def send_system_message(
     except Exception:
         gate_enabled = True
     if gate_enabled:
-        delivered = await gate.send(
+        return await gate.send(
             text,
             source=source_from_legacy(source),
             chat_id=chat_id,
@@ -103,13 +103,6 @@ async def send_system_message(
             focus_id=focus_id,
             metadata={"legacy_source": source, **(metadata or {})},
         )
-        if not delivered:
-            logger.warning(
-                "system_send %s 投递失败 chat=%s",
-                source,
-                chat_id,
-            )
-        return delivered
 
     delivered = False
     try:

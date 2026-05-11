@@ -53,7 +53,6 @@ def _ctx(*, registry, mutation_log):
             "agent_registry": registry,
             "mutation_log": mutation_log,
             "dispatcher": MagicMock(),
-            "tool_dispatcher": MagicMock(),
             "tool_registry": MagicMock(),
             "llm_router": MagicMock(),
             "research_engine": MagicMock(),

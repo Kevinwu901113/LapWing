@@ -19,7 +19,6 @@ from src.tools.types import ToolExecutionContext, ToolExecutionRequest
 def _make_ctx(*, registry=None, ledger=None, mutation_log=None):
     services = {
         "dispatcher": MagicMock(),
-        "tool_dispatcher": MagicMock(),
         "tool_registry": MagicMock(),
         "llm_router": MagicMock(),
         "research_engine": MagicMock(),

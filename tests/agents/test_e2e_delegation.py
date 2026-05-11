@@ -47,11 +47,9 @@ class _FakeDispatcher:
 
 
 def _make_agent_services(agent_registry, tool_registry, router):
-    fake_dispatcher = _FakeDispatcher(tool_registry)
     return {
         "agent_registry": agent_registry,
-        "dispatcher": fake_dispatcher,
-        "tool_dispatcher": fake_dispatcher,
+        "dispatcher": _FakeDispatcher(tool_registry),
         "tool_registry": tool_registry,
         "llm_router": router,
         "research_engine": MagicMock(),

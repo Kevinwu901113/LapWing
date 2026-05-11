@@ -131,7 +131,7 @@ async def test_resolve_agent_passes_turn_services_override():
     registry = MagicMock()
     registry.get_or_create_instance = AsyncMock(return_value=agent)
 
-    services = {"dispatcher": object(), "tool_dispatcher": object(), "agent_policy": object()}
+    services = {"dispatcher": object(), "agent_policy": object()}
     resolved = await _resolve_agent(registry, "coder", services_override=services)
 
     assert resolved is agent
@@ -207,7 +207,6 @@ async def test_delegate_to_coder_passes_turn_services_into_registry():
     services = {
         "agent_registry": registry,
         "dispatcher": object(),
-        "tool_dispatcher": object(),
         "agent_policy": object(),
         "tool_registry": object(),
         "llm_router": object(),
