@@ -1,0 +1,23 @@
+[Unit]
+Description=Lapwing Xvfb Virtual Display (for headful Playwright on PVE)
+Documentation=file:/home/kevin/lapwing/docs/operations/personal_browser_xvfb.md
+Documentation=file:/home/kevin/lapwing/docs/architecture/lapwing_v1_blueprint.md
+# Personal-profile BrowserAdapter requires headful Playwright (blueprint §6.6).
+# PVE has no GUI, so we provide a virtual X display on :99.
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/Xvfb :99 -screen 0 1440x900x24 -ac +extension RANDR +render -noreset
+Restart=always
+RestartSec=5
+# Run as a regular user that has a writable /tmp/.X11-unix.
+# Adjust User= to match the OS account that owns the personal browser profile
+# directory (typically the same user that runs Lapwing).
+User=lapwing
+Group=lapwing
+Environment=DISPLAY=:99
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
