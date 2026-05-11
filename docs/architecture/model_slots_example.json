@@ -1,0 +1,92 @@
+{
+  "_comment": "Canonical model_slots schema example per blueprint §10.1. This file is the versioned reference for the tier-list schema. The actual runtime config at data/config/model_routing.json is per-developer (gitignored — contains API key state); developers should mirror this structure into their local file's 'model_slots' top-level key. Loader: src/lapwing_kernel/model_slots.py ModelSlotResolver.from_config(). Empty candidates trigger ConfigError at construct time unless empty_candidates_policy is overridden.",
+  "main_conversation": {
+    "tiers": [
+      {"name": "primary",  "candidates": ["glm-5.1"]},
+      {"name": "fallback", "candidates": ["doubao-seed-2.0-pro"]}
+    ],
+    "selection_strategy": "first_available",
+    "capability_requirements": ["chat", "tools"],
+    "fallback_trigger": ["timeout", "5xx", "rate_limit", "provider_unavailable"],
+    "empty_candidates_policy": "config_error"
+  },
+  "persona_expression": {
+    "tiers": [
+      {"name": "primary",  "candidates": ["glm-5.1"]},
+      {"name": "fallback", "candidates": ["doubao-seed-2.0-pro"]}
+    ],
+    "selection_strategy": "first_available",
+    "capability_requirements": ["chat"],
+    "fallback_trigger": ["timeout", "5xx", "rate_limit", "provider_unavailable"],
+    "empty_candidates_policy": "config_error"
+  },
+  "self_reflection": {
+    "tiers": [
+      {"name": "primary",  "candidates": ["glm-5.1"]},
+      {"name": "fallback", "candidates": ["doubao-seed-2.0-pro"]}
+    ],
+    "selection_strategy": "first_available",
+    "capability_requirements": ["chat"],
+    "fallback_trigger": ["timeout", "5xx", "rate_limit", "provider_unavailable"],
+    "empty_candidates_policy": "config_error"
+  },
+  "lightweight_judgment": {
+    "tiers": [
+      {"name": "primary",  "candidates": ["glm-5.1"]},
+      {"name": "fallback", "candidates": ["doubao-seed-2.0-pro"]}
+    ],
+    "selection_strategy": "first_available",
+    "capability_requirements": ["chat"],
+    "fallback_trigger": ["timeout", "5xx", "rate_limit", "provider_unavailable"],
+    "empty_candidates_policy": "config_error"
+  },
+  "memory_processing": {
+    "tiers": [
+      {"name": "primary",  "candidates": ["glm-5.1"]},
+      {"name": "fallback", "candidates": ["doubao-seed-2.0-pro"]}
+    ],
+    "selection_strategy": "first_available",
+    "capability_requirements": ["chat"],
+    "fallback_trigger": ["timeout", "5xx", "rate_limit", "provider_unavailable"],
+    "empty_candidates_policy": "config_error"
+  },
+  "agent_execution": {
+    "tiers": [
+      {"name": "primary",  "candidates": ["glm-5.1"]},
+      {"name": "fallback", "candidates": ["doubao-seed-2.0-pro"]}
+    ],
+    "selection_strategy": "first_available",
+    "capability_requirements": ["chat", "tools"],
+    "fallback_trigger": ["timeout", "5xx", "rate_limit", "provider_unavailable"],
+    "empty_candidates_policy": "config_error"
+  },
+  "agent_coder": {
+    "tiers": [
+      {"name": "primary",  "candidates": ["glm-5.1"]},
+      {"name": "fallback", "candidates": ["minimax-latest", "doubao-seed-2.0-pro"]}
+    ],
+    "selection_strategy": "first_available",
+    "capability_requirements": ["chat", "tools"],
+    "fallback_trigger": ["timeout", "5xx", "rate_limit", "provider_unavailable"],
+    "empty_candidates_policy": "config_error"
+  },
+  "agent_researcher": {
+    "tiers": [
+      {"name": "primary",  "candidates": ["glm-5.1"]},
+      {"name": "fallback", "candidates": ["doubao-seed-2.0-pro"]}
+    ],
+    "selection_strategy": "first_available",
+    "capability_requirements": ["chat", "tools"],
+    "fallback_trigger": ["timeout", "5xx", "rate_limit", "provider_unavailable"],
+    "empty_candidates_policy": "config_error"
+  },
+  "heartbeat_proactive": {
+    "tiers": [
+      {"name": "primary",  "candidates": ["moonshotai/kimi-k2-instruct"]}
+    ],
+    "selection_strategy": "first_available",
+    "capability_requirements": ["chat"],
+    "fallback_trigger": ["timeout", "5xx", "rate_limit", "provider_unavailable"],
+    "empty_candidates_policy": "config_error"
+  }
+}
