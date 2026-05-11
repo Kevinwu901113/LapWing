@@ -85,6 +85,7 @@ _SECRET_PATTERNS: list[tuple[re.Pattern, str]] = [
     (re.compile(r"sk-(?:proj-)?[A-Za-z0-9]{20,}"), "[REDACTED:api_key]"),
     (re.compile(r"nvapi-[A-Za-z0-9_-]{20,}"), "[REDACTED:nvapi_key]"),
     (re.compile(r"tvly-[A-Za-z0-9]{20,}"), "[REDACTED:tavily_key]"),
+    (re.compile(r"\bxox[abp]-[A-Za-z0-9-]{20,}\b"), "[REDACTED:slack_token]"),
     (re.compile(r"(?i)(?:bearer|token|authorization)[:\s]+[A-Za-z0-9_\-\.]{40,}"), "[REDACTED:bearer]"),
 ]
 

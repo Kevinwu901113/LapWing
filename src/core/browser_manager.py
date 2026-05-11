@@ -103,8 +103,21 @@ class InteractiveElement:
     is_visible: bool
     selector: str
 
-    def to_label(self) -> str:
-        """生成 LLM 可读的元素描述行。"""
+    def to_label(self, redactor: "object | None" = None) -> str:
+        """生成 LLM 可读的元素描述行。
+
+        Two-layer secret defense (blueprint §5 / P0-Redaction):
+          1. element_type=="password" or sensitive name/aria-label pattern →
+             value is replaced with [REDACTED] regardless of redactor argument
+             (this is mandatory; even without an injected redactor, sensitive
+             values never leak through this label)
+          2. If a SecretRedactor is provided, non-sensitive values pass through
+             its redact_text() to scrub secret-shaped substrings as well.
+        """
+        # Local import keeps this method usable in contexts that don't have the
+        # kernel package wired (legacy tools, smoke tests).
+        from src.lapwing_kernel.redactor import SecretRedactor
+
         label = _TAG_LABEL_MAP.get(self.tag, self.tag)
         parts: list[str] = [f"[{self.index}]", label]
 
@@ -119,7 +132,20 @@ class InteractiveElement:
             parts.append(f"→ {self.href}")
 
         if self.value:
-            parts.append(f"[值={self.value}]")
+            is_sensitive = SecretRedactor.is_sensitive_input(
+                input_type=self.element_type,
+                name=self.name,
+                autocomplete=None,
+                placeholder=None,
+                aria_label=self.aria_label,
+            )
+            if is_sensitive:
+                parts.append("[值=[REDACTED]]")
+            elif redactor is not None:
+                redacted = redactor.redact_text(self.value)
+                parts.append(f"[值={redacted}]")
+            else:
+                parts.append(f"[值={self.value}]")
 
         return " ".join(parts)
 
@@ -229,8 +255,41 @@ _EXTRACT_ELEMENTS_JS = """
         const name = node.name || null;
         const title = node.title || null;
         const href = tag === 'a' ? node.getAttribute('href') : null;
-        const value = (tag === 'input' || tag === 'select' || tag === 'textarea')
-            ? (node.value || null) : null;
+
+        // Layer 1 secret defense (blueprint §5.4 P0-Redaction):
+        // For sensitive inputs (password type, OTP/current-password/new-password
+        // autocomplete, or names matching the sensitive pattern), extract null
+        // for value so the secret never reaches Python or the LLM.
+        // Layer 2 (to_label()) provides defense-in-depth on the Python side.
+        let value = null;
+        if (tag === 'input' || tag === 'select' || tag === 'textarea') {
+            let isSensitive = false;
+            if (tag === 'input') {
+                const ac = (node.autocomplete || '').toLowerCase();
+                if (node.type === 'password') {
+                    isSensitive = true;
+                } else if (ac === 'one-time-code' || ac === 'current-password' || ac === 'new-password') {
+                    isSensitive = true;
+                } else {
+                    const sensitivePattern = /(otp|passcode|password|token|secret|recovery[\\W_]?code|api[\\W_]?key|private[\\W_]?key|access[\\W_]?token|refresh[\\W_]?token)/i;
+                    const attrs = [
+                        node.getAttribute('name') || '',
+                        node.getAttribute('id') || '',
+                        node.getAttribute('placeholder') || '',
+                        node.getAttribute('aria-label') || '',
+                    ];
+                    for (let i = 0; i < attrs.length; i++) {
+                        if (sensitivePattern.test(attrs[i])) {
+                            isSensitive = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (!isSensitive) {
+                value = node.value || null;
+            }
+        }
 
         // 描述文本优先级: aria-label > innerText > placeholder > name > title
         const text = ariaLabel || innerText || placeholder || name || title || '';
